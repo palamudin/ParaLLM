@@ -136,6 +136,222 @@ function Normalize-BudgetConfig {
     }
 }
 
+function Coerce-Bool {
+    param(
+        [object]$Value,
+        [bool]$Default = $false
+    )
+
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) {
+        return ([double]$Value) -ne 0
+    }
+    if ($Value -is [string]) {
+        $normalized = $Value.Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+            return $Default
+        }
+        if ($normalized -in @('1', 'true', 'yes', 'on')) {
+            return $true
+        }
+        if ($normalized -in @('0', 'false', 'no', 'off')) {
+            return $false
+        }
+    }
+    return $Default
+}
+
+function Normalize-StringList {
+    param([object]$Value)
+
+    $items = @()
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        foreach ($entry in $Value) {
+            $items += @(Normalize-StringList -Value $entry)
+        }
+    } elseif ($Value -is [string]) {
+        foreach ($entry in ($Value -split "[`r`n,]+")) {
+            $trimmed = $entry.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                $items += $trimmed
+            }
+        }
+    }
+
+    $deduped = @{}
+    foreach ($item in $items) {
+        $deduped[$item] = $true
+    }
+    return @($deduped.Keys)
+}
+
+function Normalize-StringArrayPreserveItems {
+    param([object]$Value)
+
+    $items = New-Object System.Collections.Generic.List[string]
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        foreach ($entry in $Value) {
+            foreach ($normalized in (Normalize-StringArrayPreserveItems -Value $entry)) {
+                if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+                    $items.Add([string]$normalized)
+                }
+            }
+        }
+    } elseif ($Value -is [string]) {
+        $trimmed = $Value.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+            $items.Add($trimmed)
+        }
+    }
+
+    $deduped = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($item in $items) {
+        if (-not $seen.ContainsKey($item)) {
+            $seen[$item] = $true
+            $deduped.Add($item)
+        }
+    }
+
+    return ,([string[]]$deduped.ToArray())
+}
+
+function ConvertTo-JsonArray {
+    param([object]$Value)
+
+    $list = New-Object System.Collections.ArrayList
+    if ($null -eq $Value) {
+        return ,$list
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        foreach ($entry in $Value) {
+            [void]$list.Add($entry)
+        }
+        return ,$list
+    }
+
+    [void]$list.Add($Value)
+    return ,$list
+}
+
+function Normalize-UrlArrayValues {
+    param([object]$Value)
+
+    $urls = New-Object System.Collections.Generic.List[string]
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        foreach ($entry in $Value) {
+            foreach ($url in (Normalize-UrlArrayValues -Value $entry)) {
+                if (-not [string]::IsNullOrWhiteSpace($url)) {
+                    $urls.Add([string]$url)
+                }
+            }
+        }
+    } elseif ($Value -is [string]) {
+        $matches = [System.Text.RegularExpressions.Regex]::Matches($Value, 'https?://\S+')
+        if ($matches.Count -gt 0) {
+            foreach ($match in $matches) {
+                $urls.Add($match.Value.Trim())
+            }
+        } else {
+            $trimmed = $Value.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                $urls.Add($trimmed)
+            }
+        }
+    }
+
+    $deduped = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($url in $urls) {
+        if (-not $seen.ContainsKey($url)) {
+            $seen[$url] = $true
+            $deduped.Add($url)
+        }
+    }
+
+    return ,([string[]]$deduped.ToArray())
+}
+
+function Normalize-AllowedDomains {
+    param([object]$Value)
+
+    $domains = @{}
+    foreach ($entry in (Normalize-StringList -Value $Value)) {
+        $normalized = [string]$entry
+        $normalized = $normalized -replace '^https?://', ''
+        $normalized = $normalized -replace '/.*$', ''
+        $normalized = $normalized.Trim().Trim('.').ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+            $domains[$normalized] = $true
+        }
+    }
+
+    return @($domains.Keys | Select-Object -First 100)
+}
+
+function Get-DefaultResearchConfig {
+    return [ordered]@{
+        enabled = $false
+        externalWebAccess = $true
+        domains = @()
+    }
+}
+
+function Normalize-ResearchConfig {
+    param([object]$Config)
+
+    $default = Get-DefaultResearchConfig
+    $enabled = $default['enabled']
+    $externalWebAccess = $default['externalWebAccess']
+    $domains = @($default['domains'])
+
+    if ($null -ne $Config) {
+        if (Test-ObjectKey -Value $Config -Key 'enabled') {
+            $enabled = Coerce-Bool -Value $Config['enabled'] -Default $enabled
+        }
+        if (Test-ObjectKey -Value $Config -Key 'externalWebAccess') {
+            $externalWebAccess = Coerce-Bool -Value $Config['externalWebAccess'] -Default $externalWebAccess
+        }
+        if (Test-ObjectKey -Value $Config -Key 'domains') {
+            $domains = @(Normalize-AllowedDomains -Value $Config['domains'])
+        }
+    }
+
+    return [ordered]@{
+        enabled = $enabled
+        externalWebAccess = $externalWebAccess
+        domains = $domains
+    }
+}
+
+function Get-DefaultVettingConfig {
+    return [ordered]@{
+        enabled = $false
+    }
+}
+
+function Normalize-VettingConfig {
+    param([object]$Config)
+
+    $default = Get-DefaultVettingConfig
+    $enabled = $default['enabled']
+
+    if ($null -ne $Config -and (Test-ObjectKey -Value $Config -Key 'enabled')) {
+        $enabled = Coerce-Bool -Value $Config['enabled'] -Default $enabled
+    }
+
+    return [ordered]@{
+        enabled = $enabled
+    }
+}
+
+function Get-WebSearchToolCallPriceUsd {
+    return 0.01
+}
+
 function Get-WorkerCatalog {
     param([string]$DefaultModel = 'gpt-5-mini')
 
@@ -316,12 +532,15 @@ function Get-DefaultLoopState {
 function Get-DefaultUsageBucket {
     return [ordered]@{
         calls = 0
+        webSearchCalls = 0
         inputTokens = 0
         cachedInputTokens = 0
         billableInputTokens = 0
         outputTokens = 0
         reasoningTokens = 0
         totalTokens = 0
+        modelCostUsd = 0.0
+        toolCostUsd = 0.0
         estimatedCostUsd = 0.0
         lastModel = $null
         lastResponseId = $null
@@ -525,18 +744,104 @@ function Test-ObjectKey {
     return $null -ne $Value.PSObject.Properties[$Key]
 }
 
+function Normalize-CheckpointStateValue {
+    param([object]$Checkpoint)
+
+    if ($null -eq $Checkpoint) {
+        return $null
+    }
+
+    $normalized = ConvertTo-HashtableCompat -Value $Checkpoint
+    if ($null -eq $normalized -or -not ($normalized -is [System.Collections.IDictionary])) {
+        return $normalized
+    }
+
+    foreach ($field in @('requestTargets', 'researchQueries', 'benefits', 'detriments', 'requiredCircumstances', 'invalidatingCircumstances', 'immediateConsequences', 'downstreamConsequences', 'uncertainty', 'reversalConditions', 'constraintsSeen', 'evidenceGaps')) {
+        if (Test-ObjectKey -Value $normalized -Key $field) {
+            $normalized[$field] = ConvertTo-JsonArray -Value (Normalize-StringArrayPreserveItems -Value $normalized[$field])
+        }
+    }
+    foreach ($field in @('researchSources', 'urlCitations')) {
+        if (Test-ObjectKey -Value $normalized -Key $field) {
+            $normalized[$field] = ConvertTo-JsonArray -Value (Normalize-UrlArrayValues -Value $normalized[$field])
+        }
+    }
+
+    if (Test-ObjectKey -Value $normalized -Key 'evidenceLedger') {
+        $entries = New-Object System.Collections.ArrayList
+        foreach ($entry in @($normalized['evidenceLedger'])) {
+            $entryValue = ConvertTo-HashtableCompat -Value $entry
+            if ($entryValue -is [System.Collections.IDictionary] -and (Test-ObjectKey -Value $entryValue -Key 'sourceUrls')) {
+                $entryValue['sourceUrls'] = ConvertTo-JsonArray -Value (Normalize-UrlArrayValues -Value $entryValue['sourceUrls'])
+            }
+            [void]$entries.Add($entryValue)
+        }
+        $normalized['evidenceLedger'] = $entries
+    }
+
+    return $normalized
+}
+
+function Normalize-SummaryStateValue {
+    param([object]$Summary)
+
+    if ($null -eq $Summary) {
+        return $null
+    }
+
+    $normalized = ConvertTo-HashtableCompat -Value $Summary
+    if ($null -eq $normalized -or -not ($normalized -is [System.Collections.IDictionary])) {
+        return $normalized
+    }
+
+    foreach ($field in @('stableFindings', 'conditionalTruths', 'claimsNeedingVerification', 'sourceWorkers')) {
+        if (Test-ObjectKey -Value $normalized -Key $field) {
+            $normalized[$field] = ConvertTo-JsonArray -Value (Normalize-StringArrayPreserveItems -Value $normalized[$field])
+        }
+    }
+
+    foreach ($field in @('peerSteerPackets', 'conflicts', 'evidenceVerdicts')) {
+        if (Test-ObjectKey -Value $normalized -Key $field) {
+            $items = New-Object System.Collections.ArrayList
+            foreach ($entry in @($normalized[$field])) {
+                $entryValue = ConvertTo-HashtableCompat -Value $entry
+                if ($field -eq 'evidenceVerdicts' -and $entryValue -is [System.Collections.IDictionary]) {
+                    foreach ($subField in @('supportingWorkers', 'challengingWorkers')) {
+                        if (Test-ObjectKey -Value $entryValue -Key $subField) {
+                            $entryValue[$subField] = ConvertTo-JsonArray -Value (Normalize-StringArrayPreserveItems -Value $entryValue[$subField])
+                        }
+                    }
+                    if (Test-ObjectKey -Value $entryValue -Key 'sourceUrls') {
+                        $entryValue['sourceUrls'] = ConvertTo-JsonArray -Value (Normalize-UrlArrayValues -Value $entryValue['sourceUrls'])
+                    }
+                }
+                if ($field -eq 'conflicts' -and $entryValue -is [System.Collections.IDictionary] -and (Test-ObjectKey -Value $entryValue -Key 'positions')) {
+                    $entryValue['positions'] = @($entryValue['positions'])
+                }
+                [void]$items.Add($entryValue)
+            }
+            $normalized[$field] = $items
+        }
+    }
+
+    return $normalized
+}
+
 function Normalize-UsageBucket {
     param([object]$Bucket)
 
     $default = Get-DefaultUsageBucket
     $normalized = [ordered]@{
         calls = [int]$default['calls']
+        webSearchCalls = [int]$default['webSearchCalls']
         inputTokens = [int]$default['inputTokens']
         cachedInputTokens = [int]$default['cachedInputTokens']
         billableInputTokens = [int]$default['billableInputTokens']
         outputTokens = [int]$default['outputTokens']
         reasoningTokens = [int]$default['reasoningTokens']
         totalTokens = [int]$default['totalTokens']
+        modelCostUsd = [double]$default['modelCostUsd']
+        toolCostUsd = [double]$default['toolCostUsd']
         estimatedCostUsd = [double]$default['estimatedCostUsd']
         lastModel = $default['lastModel']
         lastResponseId = $default['lastResponseId']
@@ -544,13 +849,15 @@ function Normalize-UsageBucket {
     }
 
     if ($null -ne $Bucket) {
-        foreach ($key in @('calls', 'inputTokens', 'cachedInputTokens', 'billableInputTokens', 'outputTokens', 'reasoningTokens', 'totalTokens')) {
+        foreach ($key in @('calls', 'webSearchCalls', 'inputTokens', 'cachedInputTokens', 'billableInputTokens', 'outputTokens', 'reasoningTokens', 'totalTokens')) {
             if ((Test-ObjectKey -Value $Bucket -Key $key) -and $null -ne $Bucket[$key]) {
                 $normalized[$key] = [Math]::Max(0, [int]$Bucket[$key])
             }
         }
-        if ((Test-ObjectKey -Value $Bucket -Key 'estimatedCostUsd') -and $null -ne $Bucket['estimatedCostUsd']) {
-            $normalized['estimatedCostUsd'] = [Math]::Round([Math]::Max(0.0, [double]$Bucket['estimatedCostUsd']), 6)
+        foreach ($key in @('modelCostUsd', 'toolCostUsd', 'estimatedCostUsd')) {
+            if ((Test-ObjectKey -Value $Bucket -Key $key) -and $null -ne $Bucket[$key]) {
+                $normalized[$key] = [Math]::Round([Math]::Max(0.0, [double]$Bucket[$key]), 6)
+            }
         }
         foreach ($key in @('lastModel', 'lastResponseId', 'lastUpdated')) {
             if (Test-ObjectKey -Value $Bucket -Key $key) {
@@ -616,7 +923,7 @@ function Normalize-State {
             $normalized['activeTask'] = $State['activeTask']
         }
         if (Test-ObjectKey -Value $State -Key 'summary') {
-            $normalized['summary'] = $State['summary']
+            $normalized['summary'] = Normalize-SummaryStateValue -Summary $State['summary']
         }
         if ((Test-ObjectKey -Value $State -Key 'memoryVersion') -and $null -ne $State['memoryVersion']) {
             $normalized['memoryVersion'] = [int]$State['memoryVersion']
@@ -632,10 +939,11 @@ function Normalize-State {
             if ($State['workers'] -is [System.Collections.IDictionary]) {
                 foreach ($key in $State['workers'].Keys) {
                     $workers[$key] = $State['workers'][$key]
+                    $workers[$key] = Normalize-CheckpointStateValue -Checkpoint $workers[$key]
                 }
             } elseif ($State['workers'].PSObject -and $State['workers'].PSObject.Properties.Count -gt 0) {
                 foreach ($entry in $State['workers'].PSObject.Properties) {
-                    $workers[$entry.Name] = $entry.Value
+                    $workers[$entry.Name] = Normalize-CheckpointStateValue -Checkpoint $entry.Value
                 }
             }
             $normalized['workers'] = $workers
@@ -772,6 +1080,8 @@ function Get-TaskRuntime {
         model = (Get-DefaultModelId)
         reasoningEffort = 'low'
         maxOutputTokens = [int]((Get-DefaultBudgetConfig)['maxOutputTokens'])
+        research = Get-DefaultResearchConfig
+        vetting = Get-DefaultVettingConfig
     }
 
     if ($Task -and (Test-ObjectKey -Value $Task -Key 'runtime') -and $Task['runtime']) {
@@ -787,6 +1097,12 @@ function Get-TaskRuntime {
             $budget = Normalize-BudgetConfig -Budget $Task['runtime']['budget']
             $runtime['maxOutputTokens'] = [int]$budget['maxOutputTokens']
         }
+        if ((Test-ObjectKey -Value $Task['runtime'] -Key 'research')) {
+            $runtime['research'] = Normalize-ResearchConfig -Config $Task['runtime']['research']
+        }
+        if ((Test-ObjectKey -Value $Task['runtime'] -Key 'vetting')) {
+            $runtime['vetting'] = Normalize-VettingConfig -Config $Task['runtime']['vetting']
+        }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($ModelOverride)) {
@@ -794,6 +1110,26 @@ function Get-TaskRuntime {
     }
 
     return $runtime
+}
+
+function Get-ResearchConfig {
+    param([hashtable]$Task)
+
+    if ($Task -and (Test-ObjectKey -Value $Task -Key 'runtime') -and $Task['runtime'] -and (Test-ObjectKey -Value $Task['runtime'] -Key 'research')) {
+        return (Normalize-ResearchConfig -Config $Task['runtime']['research'])
+    }
+
+    return (Get-DefaultResearchConfig)
+}
+
+function Get-VettingConfig {
+    param([hashtable]$Task)
+
+    if ($Task -and (Test-ObjectKey -Value $Task -Key 'runtime') -and $Task['runtime'] -and (Test-ObjectKey -Value $Task['runtime'] -Key 'vetting')) {
+        return (Normalize-VettingConfig -Config $Task['runtime']['vetting'])
+    }
+
+    return (Get-DefaultVettingConfig)
 }
 
 function Get-BudgetConfig {
@@ -865,6 +1201,90 @@ function Get-ResponseOutputText {
     return $null
 }
 
+function Get-WebSearchCallItems {
+    param([object]$Response)
+
+    $items = @()
+    if ($null -eq $Response -or $null -eq $Response.output) {
+        return $items
+    }
+
+    foreach ($item in $Response.output) {
+        if ($null -ne $item -and $item.type -eq 'web_search_call') {
+            $items += ,$item
+        }
+    }
+
+    return $items
+}
+
+function Get-ResponseWebSearchQueries {
+    param([object]$Response)
+
+    $queries = @{}
+    foreach ($item in (Get-WebSearchCallItems -Response $Response)) {
+        if ($null -ne $item.action) {
+            if ($null -ne $item.action.query -and -not [string]::IsNullOrWhiteSpace([string]$item.action.query)) {
+                $queries[[string]$item.action.query] = $true
+            }
+            if ($null -ne $item.action.queries) {
+                foreach ($query in @($item.action.queries)) {
+                    if ($null -ne $query -and -not [string]::IsNullOrWhiteSpace([string]$query)) {
+                        $queries[[string]$query] = $true
+                    }
+                }
+            }
+        }
+    }
+
+    return @($queries.Keys)
+}
+
+function Get-ResponseWebSearchSources {
+    param([object]$Response)
+
+    $urls = @{}
+    foreach ($item in (Get-WebSearchCallItems -Response $Response)) {
+        if ($null -eq $item.action -or $null -eq $item.action.sources) {
+            continue
+        }
+        foreach ($source in @($item.action.sources)) {
+            if ($null -ne $source.url -and -not [string]::IsNullOrWhiteSpace([string]$source.url)) {
+                $urls[[string]$source.url] = $true
+            }
+        }
+    }
+
+    return @($urls.Keys)
+}
+
+function Get-ResponseUrlCitations {
+    param([object]$Response)
+
+    $urls = @{}
+    if ($null -eq $Response -or $null -eq $Response.output) {
+        return @()
+    }
+
+    foreach ($item in $Response.output) {
+        if ($null -eq $item -or $item.type -ne 'message' -or $null -eq $item.content) {
+            continue
+        }
+        foreach ($content in @($item.content)) {
+            if ($null -eq $content.annotations) {
+                continue
+            }
+            foreach ($annotation in @($content.annotations)) {
+                if ($null -ne $annotation -and $annotation.type -eq 'url_citation' -and $null -ne $annotation.url -and -not [string]::IsNullOrWhiteSpace([string]$annotation.url)) {
+                    $urls[[string]$annotation.url] = $true
+                }
+            }
+        }
+    }
+
+    return @($urls.Keys)
+}
+
 function Get-ResponseUsageDelta {
     param(
         [object]$Response,
@@ -898,17 +1318,23 @@ function Get-ResponseUsageDelta {
     }
 
     $billableInputTokens = [Math]::Max(0, $inputTokens - $cachedInputTokens)
+    $webSearchCalls = @((Get-WebSearchCallItems -Response $Response)).Count
     $pricing = Get-ModelPricing -Model $Model
-    $estimatedCostUsd = (($billableInputTokens * [double]$pricing['inputPer1M']) + ($cachedInputTokens * [double]$pricing['cachedInputPer1M']) + ($outputTokens * [double]$pricing['outputPer1M'])) / 1000000.0
+    $modelCostUsd = (($billableInputTokens * [double]$pricing['inputPer1M']) + ($cachedInputTokens * [double]$pricing['cachedInputPer1M']) + ($outputTokens * [double]$pricing['outputPer1M'])) / 1000000.0
+    $toolCostUsd = $webSearchCalls * (Get-WebSearchToolCallPriceUsd)
+    $estimatedCostUsd = $modelCostUsd + $toolCostUsd
 
     return [ordered]@{
         calls = 1
+        webSearchCalls = $webSearchCalls
         inputTokens = $inputTokens
         cachedInputTokens = $cachedInputTokens
         billableInputTokens = $billableInputTokens
         outputTokens = $outputTokens
         reasoningTokens = $reasoningTokens
         totalTokens = $totalTokens
+        modelCostUsd = [Math]::Round($modelCostUsd, 6)
+        toolCostUsd = [Math]::Round($toolCostUsd, 6)
         estimatedCostUsd = [Math]::Round($estimatedCostUsd, 6)
     }
 }
@@ -922,10 +1348,12 @@ function Merge-UsageBucket {
     )
 
     $merged = Normalize-UsageBucket -Bucket $Bucket
-    foreach ($key in @('calls', 'inputTokens', 'cachedInputTokens', 'billableInputTokens', 'outputTokens', 'reasoningTokens', 'totalTokens')) {
+    foreach ($key in @('calls', 'webSearchCalls', 'inputTokens', 'cachedInputTokens', 'billableInputTokens', 'outputTokens', 'reasoningTokens', 'totalTokens')) {
         $merged[$key] = [int]$merged[$key] + [int]$Delta[$key]
     }
-    $merged['estimatedCostUsd'] = [Math]::Round(([double]$merged['estimatedCostUsd'] + [double]$Delta['estimatedCostUsd']), 6)
+    foreach ($key in @('modelCostUsd', 'toolCostUsd', 'estimatedCostUsd')) {
+        $merged[$key] = [Math]::Round(([double]$merged[$key] + [double]$Delta[$key]), 6)
+    }
     $merged['lastModel'] = $Model
     $merged['lastResponseId'] = $ResponseId
     $merged['lastUpdated'] = (Get-Date).ToUniversalTime().ToString('o')
@@ -1032,7 +1460,10 @@ function Invoke-OpenAIJson {
         [string]$InputText,
         [string]$SchemaName,
         [hashtable]$Schema,
-        [int]$MaxOutputTokens = 0
+        [int]$MaxOutputTokens = 0,
+        [object[]]$Tools = @(),
+        [object]$ToolChoice = $null,
+        [string[]]$Include = @()
     )
 
     $headers = @{
@@ -1059,6 +1490,15 @@ function Invoke-OpenAIJson {
 
     if ($MaxOutputTokens -gt 0) {
         $bodyObject['max_output_tokens'] = $MaxOutputTokens
+    }
+    if ($Tools -and @($Tools).Count -gt 0) {
+        $bodyObject['tools'] = @($Tools)
+    }
+    if ($null -ne $ToolChoice) {
+        $bodyObject['tool_choice'] = $ToolChoice
+    }
+    if ($Include -and @($Include).Count -gt 0) {
+        $bodyObject['include'] = @($Include)
     }
 
     $body = $bodyObject | ConvertTo-Json -Depth 25
@@ -1091,6 +1531,9 @@ function Invoke-OpenAIJson {
     return @{
         response = $response
         parsed = $parsed
+        webSearchQueries = @(Get-ResponseWebSearchQueries -Response $response)
+        webSearchSources = @(Get-ResponseWebSearchSources -Response $response)
+        urlCitations = @(Get-ResponseUrlCitations -Response $response)
     }
 }
 

@@ -35,6 +35,16 @@ $budget = normalize_budget_config([
     'maxOutputTokens' => post_int_value('maxOutputTokens', default_budget_config()['maxOutputTokens']),
 ]);
 
+$research = normalize_research_config([
+    'enabled' => post_value('researchEnabled', default_research_config()['enabled']),
+    'externalWebAccess' => post_value('researchExternalWebAccess', default_research_config()['externalWebAccess']),
+    'domains' => post_value('researchDomains', default_research_config()['domains']),
+]);
+
+$vetting = normalize_vetting_config([
+    'enabled' => post_value('vettingEnabled', default_vetting_config()['enabled']),
+]);
+
 $workers = task_workers([
     'runtime' => ['model' => $model]
 ]);
@@ -50,6 +60,8 @@ $task = [
         'model' => $model,
         'reasoningEffort' => $reasoningEffort,
         'budget' => $budget,
+        'research' => $research,
+        'vetting' => $vetting,
         'pricingSource' => 'https://openai.com/api/pricing',
         'pricingCheckedAt' => '2026-04-18'
     ],

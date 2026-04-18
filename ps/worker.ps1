@@ -48,10 +48,42 @@ function Normalize-RequestTargets {
     }
 
     if ($normalized.Count -gt 0) {
-        return @($normalized | Select-Object -Unique)
+        return ,([string[]]@($normalized | Select-Object -Unique))
     }
 
     return (Get-DefaultRequestTargets -Task $Task -CurrentWorkerId $CurrentWorkerId)
+}
+
+function Normalize-UrlList {
+    param([object]$Urls)
+    return (Normalize-UrlArrayValues -Value $Urls)
+}
+
+function Normalize-EvidenceLedger {
+    param([object]$Ledger)
+
+    $normalized = @()
+    foreach ($entry in @($Ledger)) {
+        if ($null -eq $entry) {
+            continue
+        }
+        $claim = if (Test-ObjectKey -Value $entry -Key 'claim') { ([string]$entry['claim']).Trim() } else { '' }
+        if ([string]::IsNullOrWhiteSpace($claim)) {
+            continue
+        }
+        $supportLevel = if (Test-ObjectKey -Value $entry -Key 'supportLevel') { ([string]$entry['supportLevel']).Trim() } else { 'weak' }
+        $note = if (Test-ObjectKey -Value $entry -Key 'note') { ([string]$entry['note']).Trim() } else { '' }
+        $sourceUrls = if (Test-ObjectKey -Value $entry -Key 'sourceUrls') { Normalize-UrlList -Urls $entry['sourceUrls'] } else { @() }
+
+        $normalized += ,([ordered]@{
+            claim = $claim
+            supportLevel = if ([string]::IsNullOrWhiteSpace($supportLevel)) { 'weak' } else { $supportLevel }
+            sourceUrls = $sourceUrls
+            note = $note
+        })
+    }
+
+    return $normalized
 }
 
 function New-MockCheckpoint {
@@ -59,6 +91,7 @@ function New-MockCheckpoint {
         [hashtable]$Task,
         [hashtable]$Worker,
         [hashtable]$Runtime,
+        [hashtable]$ResearchConfig,
         [int]$StepNumber,
         [array]$Constraints,
         [object]$PriorSummary,
@@ -73,6 +106,7 @@ function New-MockCheckpoint {
     } else {
         'No peer steer received yet.'
     }
+    $researchMode = if ($ResearchConfig['enabled']) { 'mock_research' } else { 'mock' }
 
     $requestToPeer = if ($Worker['role'] -eq 'utility') {
         'Pressure-test whether the expected upside survives real-world constraints without adding hidden coordination drag.'
@@ -98,7 +132,7 @@ function New-MockCheckpoint {
             recommendedNextAction = 'No summary available yet.'
         }}
         benefits = @(
-            'Keeps an explicit lane focused on ' + [string]$Worker['focus'],
+            ('Keeps an explicit lane focused on ' + [string]$Worker['focus']),
             'Preserves parallel disagreement instead of forcing one blended answer',
             'Supports sparse steer packets without merging all process state'
         )
@@ -117,7 +151,7 @@ function New-MockCheckpoint {
             'Untracked worker additions or silent model changes'
         )
         immediateConsequences = @(
-            'More coverage over blind spots tied to ' + [string]$Worker['focus'],
+            ('More coverage over blind spots tied to ' + [string]$Worker['focus']),
             'Higher coordination load per round'
         )
         downstreamConsequences = @(
@@ -133,6 +167,28 @@ function New-MockCheckpoint {
             'Reduce this lane if it stops adding distinct evidence',
             'Raise or lower sharing cadence only after checking budget and convergence behavior'
         )
+        researchMode = $researchMode
+        researchQueries = if ($ResearchConfig['enabled']) { @($Task['objective']) } else { @() }
+        researchSources = @()
+        urlCitations = @()
+        evidenceLedger = @(
+            [ordered]@{
+                claim = 'Parallel lane separation keeps this viewpoint explicit instead of flattening it into a single answer.'
+                supportLevel = 'weak'
+                sourceUrls = @()
+                note = 'Mock mode only; this is a scaffolded claim and still needs grounded evidence.'
+            },
+            [ordered]@{
+                claim = 'Budget ceilings and model controls are necessary once multiple lanes can run live.'
+                supportLevel = 'weak'
+                sourceUrls = @()
+                note = 'Mock mode only; production confidence depends on live accounting and observed loop behavior.'
+            }
+        )
+        evidenceGaps = @(
+            'No live web sources were consulted in mock mode.',
+            'Claims should be re-run with grounded research before being treated as supported.'
+        )
         confidence = if ($Worker['role'] -eq 'utility') { 0.72 } else { 0.77 }
         requestToPeer = $requestToPeer
         requestTargets = $defaultTargets
@@ -147,6 +203,7 @@ function New-LiveCheckpoint {
         [hashtable]$Task,
         [hashtable]$Worker,
         [hashtable]$Runtime,
+        [hashtable]$ResearchConfig,
         [int]$StepNumber,
         [array]$Constraints,
         [object]$PriorSummary,
@@ -158,7 +215,7 @@ function New-LiveCheckpoint {
     $schema = @{
         type = 'object'
         additionalProperties = $false
-        required = @('workerId', 'label', 'role', 'viewpoint', 'focus', 'step', 'modelUsed', 'observation', 'peerSteer', 'sharedMemorySeen', 'benefits', 'detriments', 'requiredCircumstances', 'invalidatingCircumstances', 'immediateConsequences', 'downstreamConsequences', 'uncertainty', 'reversalConditions', 'confidence', 'requestToPeer', 'requestTargets', 'constraintsSeen')
+        required = @('workerId', 'label', 'role', 'viewpoint', 'focus', 'step', 'modelUsed', 'observation', 'peerSteer', 'sharedMemorySeen', 'benefits', 'detriments', 'requiredCircumstances', 'invalidatingCircumstances', 'immediateConsequences', 'downstreamConsequences', 'uncertainty', 'reversalConditions', 'researchMode', 'researchQueries', 'researchSources', 'urlCitations', 'evidenceLedger', 'evidenceGaps', 'confidence', 'requestToPeer', 'requestTargets', 'constraintsSeen')
         properties = @{
             workerId = @{ type = 'string' }
             label = @{ type = 'string' }
@@ -186,6 +243,25 @@ function New-LiveCheckpoint {
             downstreamConsequences = @{ type = 'array'; items = @{ type = 'string' } }
             uncertainty = @{ type = 'array'; items = @{ type = 'string' } }
             reversalConditions = @{ type = 'array'; items = @{ type = 'string' } }
+            researchMode = @{ type = 'string' }
+            researchQueries = @{ type = 'array'; items = @{ type = 'string' } }
+            researchSources = @{ type = 'array'; items = @{ type = 'string' } }
+            urlCitations = @{ type = 'array'; items = @{ type = 'string' } }
+            evidenceLedger = @{
+                type = 'array'
+                items = @{
+                    type = 'object'
+                    additionalProperties = $false
+                    required = @('claim', 'supportLevel', 'sourceUrls', 'note')
+                    properties = @{
+                        claim = @{ type = 'string' }
+                        supportLevel = @{ type = 'string' }
+                        sourceUrls = @{ type = 'array'; items = @{ type = 'string' } }
+                        note = @{ type = 'string' }
+                    }
+                }
+            }
+            evidenceGaps = @{ type = 'array'; items = @{ type = 'string' } }
             confidence = @{ type = 'number' }
             requestToPeer = @{ type = 'string' }
             requestTargets = @{ type = 'array'; items = @{ type = 'string' } }
@@ -210,7 +286,21 @@ Preserve disagreement rather than smoothing it away.
 Do not reveal hidden chain-of-thought.
 Set workerId to $($Worker['id']), label to $($Worker['label']), role to $($Worker['role']), focus to $($Worker['focus']), modelUsed to $($Runtime['model']), and step to $StepNumber.
 requestTargets must only contain peers from this list: $($peerTargets -join ', ').
+If researchMode is web_search, use the web search tool before answering and keep evidence grounded in URLs actually consulted.
+Every evidenceLedger item must capture one concrete claim, its supportLevel, the relevant sourceUrls, and a short note on why the evidence matters.
+If evidence is missing or weak, say so in evidenceGaps instead of overstating certainty.
 "@
+
+    $researchDescription = if ($ResearchConfig['enabled']) {
+        'Enabled. Workers may use web_search.'
+    } else {
+        'Disabled. Workers must reason from existing context only.'
+    }
+    $researchDomainsText = if ($ResearchConfig['domains'].Count -gt 0) {
+        $ResearchConfig['domains'] -join ', '
+    } else {
+        'none'
+    }
 
     $inputText = @"
 Objective:
@@ -221,6 +311,11 @@ $(($Constraints -join "`n"))
 
 Worker roster:
 $(($Task['workers'] | ConvertTo-Json -Depth 10))
+
+Research policy:
+$researchDescription
+externalWebAccess: $($ResearchConfig['externalWebAccess'])
+allowedDomains: $researchDomainsText
 
 Shared memory version seen:
 $PriorMemoryVersion
@@ -234,8 +329,32 @@ $peerText
 Produce a checkpoint from your assigned viewpoint.
 "@
 
-    $result = Invoke-OpenAIJson -ApiKey $ApiKey -Model $Runtime['model'] -ReasoningEffort $Runtime['reasoningEffort'] -Instructions $instructions -InputText $inputText -SchemaName ('worker_' + $Worker['id'].ToLowerInvariant() + '_checkpoint') -Schema $schema -MaxOutputTokens ([int]$Runtime['maxOutputTokens'])
+    $tools = @()
+    $toolChoice = $null
+    $include = @()
+    if ($ResearchConfig['enabled']) {
+        $webSearchTool = [ordered]@{
+            type = 'web_search'
+            external_web_access = [bool]$ResearchConfig['externalWebAccess']
+        }
+        if ($ResearchConfig['domains'].Count -gt 0) {
+            $webSearchTool['filters'] = [ordered]@{
+                allowed_domains = @($ResearchConfig['domains'])
+            }
+        }
+        $tools = @($webSearchTool)
+        $toolChoice = 'auto'
+        $include = @('web_search_call.action.sources')
+    }
+
+    $result = Invoke-OpenAIJson -ApiKey $ApiKey -Model $Runtime['model'] -ReasoningEffort $Runtime['reasoningEffort'] -Instructions $instructions -InputText $inputText -SchemaName ('worker_' + $Worker['id'].ToLowerInvariant() + '_checkpoint') -Schema $schema -MaxOutputTokens ([int]$Runtime['maxOutputTokens']) -Tools $tools -ToolChoice $toolChoice -Include $include
     $parsed = $result['parsed']
+    $parsed['researchQueries'] = @(Normalize-StringArrayPreserveItems -Value $result['webSearchQueries'])
+    $parsed['researchSources'] = @(Normalize-UrlList -Urls $result['webSearchSources'])
+    $parsed['urlCitations'] = @(Normalize-UrlList -Urls $result['urlCitations'])
+    $parsed['researchMode'] = if ($parsed['researchSources'].Count -gt 0 -or $parsed['researchQueries'].Count -gt 0) { 'web_search' } elseif ($ResearchConfig['enabled']) { 'research_requested_no_sources' } else { 'model_only' }
+    $parsed['evidenceLedger'] = @(Normalize-EvidenceLedger -Ledger $parsed['evidenceLedger'])
+    $parsed['evidenceGaps'] = @(Normalize-StringList -Value $parsed['evidenceGaps'])
     $parsed['updatedAt'] = (Get-Date).ToUniversalTime().ToString('o')
     return @{
         checkpoint = $parsed
@@ -264,6 +383,7 @@ if ($null -eq $worker) {
 }
 
 $runtime = Get-TaskRuntime -Task $task -ModelOverride $worker['model']
+$researchConfig = Get-ResearchConfig -Task $task
 $constraints = @($task['constraints'])
 $priorSummary = $state['summary']
 $priorMemoryVersion = 0
@@ -287,7 +407,7 @@ if ($runtime['executionMode'] -eq 'live') {
     if ($apiKey) {
         try {
             Assert-BudgetAvailable -Root $RootPath -Target $workerId -Task $task
-            $liveResult = New-LiveCheckpoint -ApiKey $apiKey -Task $task -Worker $worker -Runtime $runtime -StepNumber $stepNumber -Constraints $constraints -PriorSummary $priorSummary -PriorMemoryVersion $priorMemoryVersion -PeerMessages $peerMessages
+            $liveResult = New-LiveCheckpoint -ApiKey $apiKey -Task $task -Worker $worker -Runtime $runtime -ResearchConfig $researchConfig -StepNumber $stepNumber -Constraints $constraints -PriorSummary $priorSummary -PriorMemoryVersion $priorMemoryVersion -PeerMessages $peerMessages
             $checkpoint = $liveResult['checkpoint']
             $responseId = $liveResult['responseId']
             $usageSnapshot = Update-UsageTracking -Root $RootPath -Target $workerId -TaskId ([string]$task['taskId']) -Model $runtime['model'] -ResponseId $responseId -Response $liveResult['response']
@@ -321,7 +441,7 @@ if ($runtime['executionMode'] -eq 'live') {
 }
 
 if ($null -eq $checkpoint) {
-    $checkpoint = New-MockCheckpoint -Task $task -Worker $worker -Runtime $runtime -StepNumber $stepNumber -Constraints $constraints -PriorSummary $priorSummary -PriorMemoryVersion $priorMemoryVersion -PeerMessages $peerMessages
+    $checkpoint = New-MockCheckpoint -Task $task -Worker $worker -Runtime $runtime -ResearchConfig $researchConfig -StepNumber $stepNumber -Constraints $constraints -PriorSummary $priorSummary -PriorMemoryVersion $priorMemoryVersion -PeerMessages $peerMessages
 }
 
 $checkpoint['step'] = $stepNumber
@@ -330,6 +450,20 @@ $checkpoint['label'] = $worker['label']
 $checkpoint['role'] = $worker['role']
 $checkpoint['focus'] = $worker['focus']
 $checkpoint['modelUsed'] = $runtime['model']
+$checkpoint['benefits'] = Normalize-StringArrayPreserveItems -Value $checkpoint['benefits']
+$checkpoint['detriments'] = Normalize-StringArrayPreserveItems -Value $checkpoint['detriments']
+$checkpoint['requiredCircumstances'] = Normalize-StringArrayPreserveItems -Value $checkpoint['requiredCircumstances']
+$checkpoint['invalidatingCircumstances'] = Normalize-StringArrayPreserveItems -Value $checkpoint['invalidatingCircumstances']
+$checkpoint['immediateConsequences'] = Normalize-StringArrayPreserveItems -Value $checkpoint['immediateConsequences']
+$checkpoint['downstreamConsequences'] = Normalize-StringArrayPreserveItems -Value $checkpoint['downstreamConsequences']
+$checkpoint['uncertainty'] = Normalize-StringArrayPreserveItems -Value $checkpoint['uncertainty']
+$checkpoint['reversalConditions'] = Normalize-StringArrayPreserveItems -Value $checkpoint['reversalConditions']
+$checkpoint['constraintsSeen'] = Normalize-StringArrayPreserveItems -Value $checkpoint['constraintsSeen']
+$checkpoint['researchQueries'] = Normalize-StringArrayPreserveItems -Value $checkpoint['researchQueries']
+$checkpoint['researchSources'] = Normalize-UrlList -Urls $checkpoint['researchSources']
+$checkpoint['urlCitations'] = Normalize-UrlList -Urls $checkpoint['urlCitations']
+$checkpoint['evidenceLedger'] = Normalize-EvidenceLedger -Ledger $checkpoint['evidenceLedger']
+$checkpoint['evidenceGaps'] = Normalize-StringArrayPreserveItems -Value $checkpoint['evidenceGaps']
 $checkpoint['requestTargets'] = Normalize-RequestTargets -Targets $checkpoint['requestTargets'] -Task $task -CurrentWorkerId $workerId
 
 $state = Read-State -Root $RootPath
@@ -359,6 +493,8 @@ Add-Step -Root $RootPath -Stage ('worker_' + $workerId) -Message ($worker['label
     memoryVersionSeen = $priorMemoryVersion
     mode = $modeUsed
     model = $runtime['model']
+    researchMode = [string]$checkpoint['researchMode']
+    researchSourceCount = @($checkpoint['researchSources']).Count
     responseId = $responseId
     totalTokens = if ($budgetTotals) { [int]$budgetTotals['totalTokens'] } else { 0 }
     estimatedCostUsd = if ($budgetTotals) { [double]$budgetTotals['estimatedCostUsd'] } else { 0.0 }

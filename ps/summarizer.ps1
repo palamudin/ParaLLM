@@ -4,11 +4,60 @@ param(
 
 . (Join-Path $RootPath 'ps\common.ps1') -RootPath $RootPath
 
+function Normalize-UrlList {
+    param([object]$Urls)
+    return (Normalize-UrlArrayValues -Value $Urls)
+}
+
+function Normalize-WorkerIdList {
+    param([object]$Ids)
+
+    $normalized = @{}
+    foreach ($id in (Normalize-StringArrayPreserveItems -Value $Ids)) {
+        $candidate = ([string]$id).Trim().ToUpperInvariant()
+        if ($candidate -match '^[A-Z]+$') {
+            $normalized[$candidate] = $true
+        }
+    }
+    return ,([string[]]@($normalized.Keys))
+}
+
+function Normalize-EvidenceVerdicts {
+    param([object]$Verdicts)
+
+    $normalized = @()
+    foreach ($verdict in @($Verdicts)) {
+        if ($null -eq $verdict) {
+            continue
+        }
+        $claim = if (Test-ObjectKey -Value $verdict -Key 'claim') { ([string]$verdict['claim']).Trim() } else { '' }
+        if ([string]::IsNullOrWhiteSpace($claim)) {
+            continue
+        }
+        $status = if (Test-ObjectKey -Value $verdict -Key 'status') { ([string]$verdict['status']).Trim() } else { 'unvetted' }
+        $rationale = if (Test-ObjectKey -Value $verdict -Key 'rationale') { ([string]$verdict['rationale']).Trim() } else { '' }
+        $sourceUrls = if (Test-ObjectKey -Value $verdict -Key 'sourceUrls') { Normalize-UrlList -Urls $verdict['sourceUrls'] } else { @() }
+        $supportingWorkers = if (Test-ObjectKey -Value $verdict -Key 'supportingWorkers') { Normalize-WorkerIdList -Ids $verdict['supportingWorkers'] } else { @() }
+        $challengingWorkers = if (Test-ObjectKey -Value $verdict -Key 'challengingWorkers') { Normalize-WorkerIdList -Ids $verdict['challengingWorkers'] } else { @() }
+
+        $normalized += ,([ordered]@{
+            claim = $claim
+            status = if ([string]::IsNullOrWhiteSpace($status)) { 'unvetted' } else { $status }
+            supportingWorkers = $supportingWorkers
+            challengingWorkers = $challengingWorkers
+            sourceUrls = $sourceUrls
+            rationale = $rationale
+        })
+    }
+    return $normalized
+}
+
 function New-MockSummary {
     param(
         [hashtable]$Task,
         [array]$Workers,
-        [hashtable]$WorkerState
+        [hashtable]$WorkerState,
+        [hashtable]$VettingConfig
     )
 
     $round = 0
@@ -53,6 +102,32 @@ function New-MockSummary {
             'Adversarial expansion is useful when the spend ceiling and output cap stay hard enough to prevent runaway loops.',
             'Mixing models by position can improve robustness if the cheaper lanes carry most of the exploration.'
         )
+        vettingSummary = if ($VettingConfig['enabled']) {
+            'Mock vetting suggests the checkpoint schema is ready for evidence review, but the claims still need live sourced validation.'
+        } else {
+            'Vetting is disabled; this summary preserves conflicts but does not score evidence quality.'
+        }
+        evidenceVerdicts = @(
+            [ordered]@{
+                claim = 'Budget ceilings are necessary once multiple live lanes are active.'
+                status = if ($VettingConfig['enabled']) { 'weak' } else { 'unvetted' }
+                supportingWorkers = @('A', 'B')
+                challengingWorkers = @()
+                sourceUrls = @()
+                rationale = 'Mock mode cannot confirm the claim with live source evidence, but both lanes converge on it as an operating principle.'
+            }
+        )
+        claimsNeedingVerification = @(
+            'Any claim that relies on current external facts rather than local design intent.',
+            'Any recommendation that assumes the current pricing or capability mix stays unchanged.'
+        )
+        evidenceCoverage = [ordered]@{
+            supported = 0
+            mixed = 0
+            weak = if ($VettingConfig['enabled']) { 1 } else { 0 }
+            unsupported = 0
+            unvetted = if ($VettingConfig['enabled']) { 0 } else { 1 }
+        }
         peerSteerPackets = $packets
         recommendedNextAction = 'Keep the default live model cheap, override only the lanes that need stronger reasoning, and review cost deltas after each round.'
         sourceWorkers = @($Workers | ForEach-Object { [string]$_['id'] })
@@ -66,13 +141,14 @@ function New-LiveSummary {
         [hashtable]$Task,
         [array]$Workers,
         [hashtable]$WorkerState,
-        [hashtable]$Runtime
+        [hashtable]$Runtime,
+        [hashtable]$VettingConfig
     )
 
     $schema = @{
         type = 'object'
         additionalProperties = $false
-        required = @('taskId', 'round', 'stableFindings', 'conflicts', 'conditionalTruths', 'peerSteerPackets', 'recommendedNextAction', 'sourceWorkers')
+        required = @('taskId', 'round', 'stableFindings', 'conflicts', 'conditionalTruths', 'vettingSummary', 'evidenceVerdicts', 'claimsNeedingVerification', 'evidenceCoverage', 'peerSteerPackets', 'recommendedNextAction', 'sourceWorkers')
         properties = @{
             taskId = @{ type = 'string' }
             round = @{ type = 'integer' }
@@ -101,6 +177,36 @@ function New-LiveSummary {
                 }
             }
             conditionalTruths = @{ type = 'array'; items = @{ type = 'string' } }
+            vettingSummary = @{ type = 'string' }
+            evidenceVerdicts = @{
+                type = 'array'
+                items = @{
+                    type = 'object'
+                    additionalProperties = $false
+                    required = @('claim', 'status', 'supportingWorkers', 'challengingWorkers', 'sourceUrls', 'rationale')
+                    properties = @{
+                        claim = @{ type = 'string' }
+                        status = @{ type = 'string' }
+                        supportingWorkers = @{ type = 'array'; items = @{ type = 'string' } }
+                        challengingWorkers = @{ type = 'array'; items = @{ type = 'string' } }
+                        sourceUrls = @{ type = 'array'; items = @{ type = 'string' } }
+                        rationale = @{ type = 'string' }
+                    }
+                }
+            }
+            claimsNeedingVerification = @{ type = 'array'; items = @{ type = 'string' } }
+            evidenceCoverage = @{
+                type = 'object'
+                additionalProperties = $false
+                required = @('supported', 'mixed', 'weak', 'unsupported', 'unvetted')
+                properties = @{
+                    supported = @{ type = 'integer' }
+                    mixed = @{ type = 'integer' }
+                    weak = @{ type = 'integer' }
+                    unsupported = @{ type = 'integer' }
+                    unvetted = @{ type = 'integer' }
+                }
+            }
             peerSteerPackets = @{
                 type = 'array'
                 items = @{
@@ -122,8 +228,12 @@ function New-LiveSummary {
     $instructions = @"
 You are the summarizer in a sparse multi-lane reasoning loop.
 Merge all worker checkpoints into a structured summary.
+Act as the evidence vetter for the shared memory.
 Preserve disagreements and conditional truths.
 Do not erase contradictions.
+Judge worker claims using the evidence they provide.
+Do not upgrade weak evidence into a supported fact.
+If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.
 Return JSON only that matches the schema exactly.
 "@
 
@@ -134,12 +244,17 @@ $(($Task | ConvertTo-Json -Depth 20))
 Worker lineup:
 $(($Workers | ConvertTo-Json -Depth 10))
 
+Vetting enabled:
+$($VettingConfig['enabled'])
+
 Worker checkpoints:
 $(($WorkerState | ConvertTo-Json -Depth 20))
 "@
 
     $result = Invoke-OpenAIJson -ApiKey $ApiKey -Model $Runtime['model'] -ReasoningEffort $Runtime['reasoningEffort'] -Instructions $instructions -InputText $inputText -SchemaName 'loop_summary_multi' -Schema $schema -MaxOutputTokens ([int]$Runtime['maxOutputTokens'])
     $parsed = $result['parsed']
+    $parsed['evidenceVerdicts'] = @(Normalize-EvidenceVerdicts -Verdicts $parsed['evidenceVerdicts'])
+    $parsed['claimsNeedingVerification'] = @(Normalize-StringArrayPreserveItems -Value $parsed['claimsNeedingVerification'])
     $parsed['mergedAt'] = (Get-Date).ToUniversalTime().ToString('o')
     return @{
         summary = $parsed
@@ -167,6 +282,7 @@ foreach ($worker in $workers) {
 
 $summaryConfig = Get-SummarizerConfig -Task $task
 $runtime = Get-TaskRuntime -Task $task -ModelOverride $summaryConfig['model']
+$vettingConfig = Get-VettingConfig -Task $task
 $summary = $null
 $responseId = $null
 $usageSnapshot = $null
@@ -177,7 +293,7 @@ if ($runtime['executionMode'] -eq 'live') {
     if ($apiKey) {
         try {
             Assert-BudgetAvailable -Root $RootPath -Target 'summarizer' -Task $task
-            $liveResult = New-LiveSummary -ApiKey $apiKey -Task $task -Workers $workers -WorkerState $workerState -Runtime $runtime
+            $liveResult = New-LiveSummary -ApiKey $apiKey -Task $task -Workers $workers -WorkerState $workerState -Runtime $runtime -VettingConfig $vettingConfig
             $summary = $liveResult['summary']
             $responseId = $liveResult['responseId']
             $usageSnapshot = Update-UsageTracking -Root $RootPath -Target 'summarizer' -TaskId ([string]$task['taskId']) -Model $runtime['model'] -ResponseId $responseId -Response $liveResult['response']
@@ -206,8 +322,14 @@ if ($runtime['executionMode'] -eq 'live') {
 }
 
 if ($null -eq $summary) {
-    $summary = New-MockSummary -Task $task -Workers $workers -WorkerState $workerState
+    $summary = New-MockSummary -Task $task -Workers $workers -WorkerState $workerState -VettingConfig $vettingConfig
 }
+
+$summary['stableFindings'] = Normalize-StringArrayPreserveItems -Value $summary['stableFindings']
+$summary['conditionalTruths'] = Normalize-StringArrayPreserveItems -Value $summary['conditionalTruths']
+$summary['claimsNeedingVerification'] = Normalize-StringArrayPreserveItems -Value $summary['claimsNeedingVerification']
+$summary['sourceWorkers'] = Normalize-WorkerIdList -Ids $summary['sourceWorkers']
+$summary['evidenceVerdicts'] = Normalize-EvidenceVerdicts -Verdicts $summary['evidenceVerdicts']
 
 $state = Read-State -Root $RootPath
 $state['summary'] = $summary
@@ -237,6 +359,7 @@ Add-Step -Root $RootPath -Stage 'summarizer' -Message 'Summarizer merged worker 
     model = $runtime['model']
     responseId = $responseId
     workerCount = $workers.Count
+    vettingEnabled = [bool]$vettingConfig['enabled']
     totalTokens = if ($budgetTotals) { [int]$budgetTotals['totalTokens'] } else { 0 }
     estimatedCostUsd = if ($budgetTotals) { [double]$budgetTotals['estimatedCostUsd'] } else { 0.0 }
     checkpointFile = [System.IO.Path]::GetFileName($historySummaryPath)

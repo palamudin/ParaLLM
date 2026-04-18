@@ -23,6 +23,7 @@
           <div><strong>Loop Status:</strong> <span id="loopStatus">idle</span></div>
           <div><strong>Loop Progress:</strong> <span id="loopProgress">0 / 0</span></div>
           <div><strong>Session Tokens:</strong> <span id="usageTokens">0 / 0</span></div>
+          <div><strong>Web Search Calls:</strong> <span id="usageWebSearchCalls">0</span></div>
           <div><strong>Estimated Spend:</strong> <span id="usageCost">$0.0000 / $0.0000</span></div>
         </div>
         <div class="authbox">
@@ -98,6 +99,38 @@
         <div>
           <label for="loopDelayMs">Delay Between Rounds (ms)</label>
           <input id="loopDelayMs" type="number" min="0" max="10000" value="1000" />
+        </div>
+      </div>
+
+      <div class="configgrid">
+        <div>
+          <label for="researchEnabled">Worker Research</label>
+          <select id="researchEnabled">
+            <option value="0">Disabled</option>
+            <option value="1">Web Search</option>
+          </select>
+        </div>
+        <div>
+          <label for="researchExternalWebAccess">Live Web Access</label>
+          <select id="researchExternalWebAccess">
+            <option value="1">Live</option>
+            <option value="0">Cached / Indexed Only</option>
+          </select>
+        </div>
+        <div>
+          <label for="vettingEnabled">Summarizer Vetting</label>
+          <select id="vettingEnabled">
+            <option value="1">Enabled</option>
+            <option value="0">Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="configgrid">
+        <div class="stack-full">
+          <label for="researchDomains">Research Domain Allowlist</label>
+          <input id="researchDomains" type="text" placeholder="Optional, comma-separated domains like openai.com, platform.openai.com" />
+          <div class="fieldnote">Workers can search broadly or be constrained to specific domains. The summarizer vets the worker evidence without doing its own web research.</div>
         </div>
       </div>
 

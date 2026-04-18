@@ -46,12 +46,102 @@ function default_budget_config(): array {
     ];
 }
 
+function coerce_bool($value, bool $default = false): bool {
+    if (is_bool($value)) {
+        return $value;
+    }
+    if (is_int($value) || is_float($value)) {
+        return ((int)$value) !== 0;
+    }
+    if (is_string($value)) {
+        $normalized = strtolower(trim($value));
+        if ($normalized === '') {
+            return $default;
+        }
+        if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+            return true;
+        }
+        if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
+            return false;
+        }
+    }
+    return $default;
+}
+
+function normalize_string_list($value): array {
+    $items = [];
+    if (is_array($value)) {
+        foreach ($value as $entry) {
+            foreach (normalize_string_list($entry) as $normalized) {
+                $items[] = $normalized;
+            }
+        }
+    } elseif (is_string($value)) {
+        foreach (preg_split('/[\r\n,]+/', $value) ?: [] as $entry) {
+            $entry = trim($entry);
+            if ($entry !== '') {
+                $items[] = $entry;
+            }
+        }
+    }
+
+    $deduped = [];
+    foreach ($items as $item) {
+        $deduped[$item] = true;
+    }
+    return array_keys($deduped);
+}
+
+function normalize_allowed_domains($value): array {
+    $domains = [];
+    foreach (normalize_string_list($value) as $entry) {
+        $entry = preg_replace('#^https?://#i', '', trim($entry));
+        $entry = preg_replace('#/.*$#', '', (string)$entry);
+        $entry = strtolower(trim((string)$entry, " \t\n\r\0\x0B./"));
+        if ($entry === '') {
+            continue;
+        }
+        $domains[$entry] = true;
+    }
+    return array_slice(array_keys($domains), 0, 100);
+}
+
 function normalize_budget_config(array $config = []): array {
     $default = default_budget_config();
     return [
         'maxTotalTokens' => max(0, (int)($config['maxTotalTokens'] ?? $default['maxTotalTokens'])),
         'maxCostUsd' => max(0.0, round((float)($config['maxCostUsd'] ?? $default['maxCostUsd']), 6)),
         'maxOutputTokens' => max(0, (int)($config['maxOutputTokens'] ?? $default['maxOutputTokens'])),
+    ];
+}
+
+function default_research_config(): array {
+    return [
+        'enabled' => false,
+        'externalWebAccess' => true,
+        'domains' => [],
+    ];
+}
+
+function normalize_research_config(array $config = []): array {
+    $default = default_research_config();
+    return [
+        'enabled' => coerce_bool($config['enabled'] ?? $default['enabled'], $default['enabled']),
+        'externalWebAccess' => coerce_bool($config['externalWebAccess'] ?? $default['externalWebAccess'], $default['externalWebAccess']),
+        'domains' => normalize_allowed_domains($config['domains'] ?? $default['domains']),
+    ];
+}
+
+function default_vetting_config(): array {
+    return [
+        'enabled' => false,
+    ];
+}
+
+function normalize_vetting_config(array $config = []): array {
+    $default = default_vetting_config();
+    return [
+        'enabled' => coerce_bool($config['enabled'] ?? $default['enabled'], $default['enabled']),
     ];
 }
 
@@ -68,12 +158,15 @@ function normalize_model_id(?string $model, ?string $fallback = null): string {
 function default_usage_bucket(): array {
     return [
         'calls' => 0,
+        'webSearchCalls' => 0,
         'inputTokens' => 0,
         'cachedInputTokens' => 0,
         'billableInputTokens' => 0,
         'outputTokens' => 0,
         'reasoningTokens' => 0,
         'totalTokens' => 0,
+        'modelCostUsd' => 0.0,
+        'toolCostUsd' => 0.0,
         'estimatedCostUsd' => 0.0,
         'lastModel' => null,
         'lastResponseId' => null,
@@ -85,12 +178,15 @@ function normalize_usage_bucket(?array $bucket): array {
     $default = default_usage_bucket();
     return [
         'calls' => max(0, (int)($bucket['calls'] ?? $default['calls'])),
+        'webSearchCalls' => max(0, (int)($bucket['webSearchCalls'] ?? $default['webSearchCalls'])),
         'inputTokens' => max(0, (int)($bucket['inputTokens'] ?? $default['inputTokens'])),
         'cachedInputTokens' => max(0, (int)($bucket['cachedInputTokens'] ?? $default['cachedInputTokens'])),
         'billableInputTokens' => max(0, (int)($bucket['billableInputTokens'] ?? $default['billableInputTokens'])),
         'outputTokens' => max(0, (int)($bucket['outputTokens'] ?? $default['outputTokens'])),
         'reasoningTokens' => max(0, (int)($bucket['reasoningTokens'] ?? $default['reasoningTokens'])),
         'totalTokens' => max(0, (int)($bucket['totalTokens'] ?? $default['totalTokens'])),
+        'modelCostUsd' => round((float)($bucket['modelCostUsd'] ?? $default['modelCostUsd']), 6),
+        'toolCostUsd' => round((float)($bucket['toolCostUsd'] ?? $default['toolCostUsd']), 6),
         'estimatedCostUsd' => round((float)($bucket['estimatedCostUsd'] ?? $default['estimatedCostUsd']), 6),
         'lastModel' => $bucket['lastModel'] ?? null,
         'lastResponseId' => $bucket['lastResponseId'] ?? null,

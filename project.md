@@ -44,7 +44,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Default low-cost recommendation: `gpt-5-mini`
 - Per-position model selection for each worker lane and the summarizer
 - Reasoning effort can be tuned per task
-- Session budget guardrails for total tokens, estimated spend, and per-call output tokens
+- Optional grounded worker research with `web_search`, live-web toggle, and domain allow-lists
+- Summarizer evidence-vetting mode that scores worker claims without doing its own web research
+- Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
 - API key can be managed locally through the UI and is only displayed as a masked last-4 preview
 - Secrets stay in `Auth.txt` locally and should never be logged
 
@@ -67,12 +69,16 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Shared-state locking between PHP and PowerShell
 - Stale queued/running job recovery based on queue age and heartbeat age
 - Per-position model selection in the UI for workers and summarizer
-- Session usage accounting with token and estimated-spend tracking in state, jobs, and the top-bar counters
+- Grounded worker research mode using the OpenAI Responses API `web_search` tool with optional OpenAI-domain allow-lists
+- Worker checkpoints now carry evidence ledgers, research queries, consulted source URLs, and evidence gaps
+- Summarizer now acts as a vetter, preserving conflicts while scoring supported, mixed, weak, or disputed claims
+- Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
 - Masked API key management in the top bar for local test-key swapping
 - Per-round checkpoint snapshots such as `*_A_step002.json` and `*_summary_round002.json`
 - UI history panels for recent jobs and checkpoint artifacts
 - Optional live model execution with mock fallback still available
+- Verified live smoke run with grounded worker search and summarizer vetting against OpenAI-owned sources on April 18, 2026
 
 ## Immediate Milestones
 
@@ -82,6 +88,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 4. Add export and replay tooling for audited sessions
 5. Add bounded multi-job queueing instead of a single active background job slot
 6. Add richer lane templates so new adversarial workers can be spawned from selectable viewpoints instead of only the next default letter slot
+7. Reconcile conflicting OpenAI-owned pricing statements for web-search content tokens before treating cost estimates as billing-accurate
 
 ## Notes
 

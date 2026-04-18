@@ -173,9 +173,10 @@ function renderWorkerControls(task, loop) {
   });
 
   const summarizerModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
+  const vettingEnabled = !!task.runtime?.vetting?.enabled;
   const $summaryCard = $("<div>").addClass("workercontrol");
   $summaryCard.append($("<div>").addClass("workercontrol-title").text("Summarizer"));
-  $summaryCard.append($("<div>").addClass("workercontrol-meta").text("Canonical merge lane"));
+  $summaryCard.append($("<div>").addClass("workercontrol-meta").text(vettingEnabled ? "Canonical merge lane | evidence vetter" : "Canonical merge lane"));
   const $summaryRow = $("<div>").addClass("inlineform");
   $summaryRow.append(
     $("<select>").addClass("position-model").attr("data-position", "summarizer").html(buildModelOptions(summarizerModel)),
@@ -197,6 +198,10 @@ function syncTaskForm(task) {
   $("#maxCostUsd").val(task.runtime?.budget?.maxCostUsd ?? 1.0);
   $("#maxTotalTokens").val(task.runtime?.budget?.maxTotalTokens ?? 120000);
   $("#maxOutputTokens").val(task.runtime?.budget?.maxOutputTokens ?? 1200);
+  $("#researchEnabled").val(task.runtime?.research?.enabled ? "1" : "0");
+  $("#researchExternalWebAccess").val(task.runtime?.research?.externalWebAccess === false ? "0" : "1");
+  $("#vettingEnabled").val(task.runtime?.vetting?.enabled === false ? "0" : "1");
+  $("#researchDomains").val((task.runtime?.research?.domains || []).join(", "));
 }
 
 function applyLoopUi(state) {
@@ -207,15 +212,24 @@ function applyLoopUi(state) {
   const workers = task?.workers || [];
   const usage = state.usage || {};
   const budget = task?.runtime?.budget || {};
+  const research = task?.runtime?.research || {};
+  const vetting = task?.runtime?.vetting || {};
 
   $("#taskId").text(task?.taskId || "none");
   $("#memoryVersion").text(state.memoryVersion ?? 0);
   $("#loopJobId").text(loop?.jobId || "none");
   $("#loopStatus").text(loop?.status || "idle");
   $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
-  $("#loopNote").text(loop?.lastMessage || "Autonomous mode runs all configured workers and then summarizes.");
+  $("#loopNote").text(
+    loop?.lastMessage ||
+      (
+        (research.enabled ? "Workers can run grounded web research" : "Workers are running without web research") +
+        " and the summarizer " + (vetting.enabled === false ? "merges only." : "acts as the evidence vetter.")
+      )
+  );
   $("#workerCount").text(workers.length || 0);
   $("#usageTokens").text((usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0));
+  $("#usageWebSearchCalls").text(usage.webSearchCalls ?? 0);
   $("#usageCost").text(formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0));
 
   latestLoopActive = isActive;
@@ -295,6 +309,9 @@ function postForm(url, payload, successText) {
 $(function () {
   populateStaticModelSelect("#model", "gpt-5-mini");
   populateStaticModelSelect("#summarizerModel", "gpt-5-mini");
+  $("#researchEnabled").val("0");
+  $("#researchExternalWebAccess").val("1");
+  $("#vettingEnabled").val("1");
   refreshState();
   setInterval(refreshState, 2000);
 
@@ -308,6 +325,10 @@ $(function () {
     const maxCostUsd = parseFloat($("#maxCostUsd").val()) || 0;
     const maxTotalTokens = parseInt($("#maxTotalTokens").val(), 10) || 0;
     const maxOutputTokens = parseInt($("#maxOutputTokens").val(), 10) || 0;
+    const researchEnabled = $("#researchEnabled").val();
+    const researchExternalWebAccess = $("#researchExternalWebAccess").val();
+    const vettingEnabled = $("#vettingEnabled").val();
+    const researchDomains = $("#researchDomains").val().trim();
 
     if (!objective) {
       showMessage("Objective is required.", true);
@@ -323,7 +344,11 @@ $(function () {
       reasoningEffort,
       maxCostUsd,
       maxTotalTokens,
-      maxOutputTokens
+      maxOutputTokens,
+      researchEnabled,
+      researchExternalWebAccess,
+      vettingEnabled,
+      researchDomains
     }, "Task started");
   });
 

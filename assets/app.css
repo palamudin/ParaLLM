@@ -145,6 +145,12 @@ body {
   color: var(--muted);
 }
 
+.fieldnote {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .btnrow {
   display: flex;
   gap: 10px;
