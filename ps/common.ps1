@@ -951,7 +951,18 @@ function Update-UsageTracking {
         $state = Read-StateUnlocked -Root $Root
         $state = Normalize-State -State $state
         $usage = Normalize-UsageState -Usage $state['usage']
+        $existingByTarget = if ($usage['byTarget'] -is [System.Collections.IDictionary]) { $usage['byTarget'] } else { @{} }
+        $existingByModel = if ($usage['byModel'] -is [System.Collections.IDictionary]) { $usage['byModel'] } else { @{} }
         $usage = Merge-UsageBucket -Bucket $usage -Delta $delta -Model $Model -ResponseId $ResponseId
+        $usage['byTarget'] = $existingByTarget
+        $usage['byModel'] = $existingByModel
+
+        if ($null -eq $usage['byTarget'] -or -not ($usage['byTarget'] -is [System.Collections.IDictionary])) {
+            $usage['byTarget'] = @{}
+        }
+        if ($null -eq $usage['byModel'] -or -not ($usage['byModel'] -is [System.Collections.IDictionary])) {
+            $usage['byModel'] = @{}
+        }
 
         if (-not $usage['byTarget'].ContainsKey($Target)) {
             $usage['byTarget'][$Target] = Get-DefaultUsageBucket
@@ -1052,14 +1063,34 @@ function Invoke-OpenAIJson {
 
     $body = $bodyObject | ConvertTo-Json -Depth 25
     $response = Invoke-RestMethod -Method Post -Uri 'https://api.openai.com/v1/responses' -Headers $headers -ContentType 'application/json' -Body $body
+    if ($null -ne $response.error) {
+        throw ('Model response error: ' + ($response.error | ConvertTo-Json -Depth 10))
+    }
+
     $text = Get-ResponseOutputText -Response $response
     if ([string]::IsNullOrWhiteSpace($text)) {
+        if ($response.status -eq 'incomplete' -and $null -ne $response.incomplete_details -and $response.incomplete_details.reason) {
+            throw ('Model response incomplete: ' + [string]$response.incomplete_details.reason)
+        }
         throw 'Model response did not include output_text.'
+    }
+
+    if ($response.status -eq 'incomplete' -and $null -ne $response.incomplete_details -and $response.incomplete_details.reason) {
+        throw ('Model response incomplete: ' + [string]$response.incomplete_details.reason)
+    }
+
+    try {
+        $parsed = ConvertTo-HashtableCompat -Value ($text | ConvertFrom-Json)
+    } catch {
+        if ($response.status -eq 'incomplete' -and $null -ne $response.incomplete_details -and $response.incomplete_details.reason) {
+            throw ('Model response incomplete: ' + [string]$response.incomplete_details.reason)
+        }
+        throw ('Model response JSON parse failed: ' + $_.Exception.Message)
     }
 
     return @{
         response = $response
-        parsed = ConvertTo-HashtableCompat -Value ($text | ConvertFrom-Json)
+        parsed = $parsed
     }
 }
 
