@@ -4,68 +4,58 @@ param(
 
 . (Join-Path $RootPath 'ps\common.ps1') -RootPath $RootPath
 
-$state = Read-State -Root $RootPath
-$task = Get-Task -State $state
-if ($null -eq $task) {
-    Write-Output 'No active task.'
-    exit 1
-}
-
-$runtime = Get-TaskRuntime -Task $task
-$workerA = $state['workers']['A']
-$workerB = $state['workers']['B']
-if ($null -eq $workerA -or $null -eq $workerB) {
-    Write-Output 'Both worker checkpoints are required before summarizing.'
-    exit 1
-}
-
 function New-MockSummary {
     param(
         [hashtable]$Task,
-        [hashtable]$WorkerA,
-        [hashtable]$WorkerB
+        [array]$Workers,
+        [hashtable]$WorkerState
     )
+
+    $round = 0
+    foreach ($worker in $Workers) {
+        $checkpoint = $WorkerState[$worker['id']]
+        if ($checkpoint -and [int]$checkpoint['step'] -gt $round) {
+            $round = [int]$checkpoint['step']
+        }
+    }
+
+    $packets = @(Expand-PeerSteerPackets -Task $Task -State @{ workers = $WorkerState })
+    $conflicts = @()
+    $primary = $Workers | Where-Object { $_['id'] -eq 'A' } | Select-Object -First 1
+    $challengers = @($Workers | Where-Object { $_['id'] -ne 'A' } | Select-Object -First 3)
+    foreach ($challenger in $challengers) {
+        $conflicts += ,([ordered]@{
+            topic = $challenger['focus']
+            positions = @(
+                [ordered]@{
+                    workerId = if ($primary) { $primary['id'] } else { $Workers[0]['id'] }
+                    claim = 'Momentum is only justified when it remains auditable and budget-bounded.'
+                },
+                [ordered]@{
+                    workerId = $challenger['id']
+                    claim = 'This lane argues that the design is still exposed around ' + [string]$challenger['focus'] + '.'
+                }
+            )
+        })
+    }
 
     return [ordered]@{
         taskId = $Task['taskId']
-        round = [Math]::Max([int]$WorkerA['step'], [int]$WorkerB['step'])
+        round = $round
         stableFindings = @(
-            'Structured checkpoints are mandatory for usable mid-process sharing.',
-            'Independent roles plus a shared state object improve continuity.',
-            'Over-sharing raw reasoning would damage parallel search quality.',
-            'Peer steer packets can be useful if they stay brief and role-bounded.'
+            'Structured checkpoints let many lanes disagree without losing continuity.',
+            'Budget ceilings are mandatory once multiple model-backed lanes are active.',
+            'Per-position model selection changes both quality and spend, so it must be visible.'
         )
-        conflicts = @(
-            [ordered]@{
-                topic = 'Coupling tradeoff'
-                workerA = 'Shared summaries reduce duplicate work and improve continuity.'
-                workerB = 'Shared summaries increase convergence risk and error propagation.'
-            },
-            [ordered]@{
-                topic = 'Checkpoint frequency'
-                workerA = 'Regular checkpoints help steer branches.'
-                workerB = 'High-frequency checkpoints can collapse independence.'
-            }
-        )
+        conflicts = $conflicts
         conditionalTruths = @(
-            'This architecture is useful when checkpoint cadence stays sparse and structured.',
-            'It becomes brittle when summaries overwrite contradictions or assumptions are treated as facts.',
-            'A steer packet is safer than a raw-thought dump when two lanes need mid-process influence.'
+            'More lanes help only when each lane preserves a distinct viewpoint.',
+            'Adversarial expansion is useful when the spend ceiling and output cap stay hard enough to prevent runaway loops.',
+            'Mixing models by position can improve robustness if the cheaper lanes carry most of the exploration.'
         )
-        peerSteerPackets = @(
-            [ordered]@{
-                from = 'A'
-                to = 'B'
-                message = [string]$WorkerA['requestToPeer']
-            },
-            [ordered]@{
-                from = 'B'
-                to = 'A'
-                message = [string]$WorkerB['requestToPeer']
-            }
-        )
-        recommendedNextAction = 'Run another round and inspect whether peer steer sharpens disagreement without collapsing independence.'
-        sourceWorkers = @('A', 'B')
+        peerSteerPackets = $packets
+        recommendedNextAction = 'Keep the default live model cheap, override only the lanes that need stronger reasoning, and review cost deltas after each round.'
+        sourceWorkers = @($Workers | ForEach-Object { [string]$_['id'] })
         mergedAt = (Get-Date).ToUniversalTime().ToString('o')
     }
 }
@@ -73,10 +63,10 @@ function New-MockSummary {
 function New-LiveSummary {
     param(
         [string]$ApiKey,
-        [hashtable]$Runtime,
         [hashtable]$Task,
-        [hashtable]$WorkerA,
-        [hashtable]$WorkerB
+        [array]$Workers,
+        [hashtable]$WorkerState,
+        [hashtable]$Runtime
     )
 
     $schema = @{
@@ -92,11 +82,21 @@ function New-LiveSummary {
                 items = @{
                     type = 'object'
                     additionalProperties = $false
-                    required = @('topic', 'workerA', 'workerB')
+                    required = @('topic', 'positions')
                     properties = @{
                         topic = @{ type = 'string' }
-                        workerA = @{ type = 'string' }
-                        workerB = @{ type = 'string' }
+                        positions = @{
+                            type = 'array'
+                            items = @{
+                                type = 'object'
+                                additionalProperties = $false
+                                required = @('workerId', 'claim')
+                                properties = @{
+                                    workerId = @{ type = 'string' }
+                                    claim = @{ type = 'string' }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -120,45 +120,78 @@ function New-LiveSummary {
     }
 
     $instructions = @"
-You are the summarizer in a dual-process reasoning loop.
-Merge the two worker checkpoints into a structured summary.
+You are the summarizer in a sparse multi-lane reasoning loop.
+Merge all worker checkpoints into a structured summary.
 Preserve disagreements and conditional truths.
+Do not erase contradictions.
 Return JSON only that matches the schema exactly.
 "@
 
     $inputText = @"
 Task:
-$(($Task | ConvertTo-Json -Depth 10))
+$(($Task | ConvertTo-Json -Depth 20))
 
-Worker A checkpoint:
-$(($WorkerA | ConvertTo-Json -Depth 10))
+Worker lineup:
+$(($Workers | ConvertTo-Json -Depth 10))
 
-Worker B checkpoint:
-$(($WorkerB | ConvertTo-Json -Depth 10))
+Worker checkpoints:
+$(($WorkerState | ConvertTo-Json -Depth 20))
 "@
 
-    $result = Invoke-OpenAIJson -ApiKey $ApiKey -Model $Runtime['model'] -ReasoningEffort $Runtime['reasoningEffort'] -Instructions $instructions -InputText $inputText -SchemaName 'loop_summary' -Schema $schema
+    $result = Invoke-OpenAIJson -ApiKey $ApiKey -Model $Runtime['model'] -ReasoningEffort $Runtime['reasoningEffort'] -Instructions $instructions -InputText $inputText -SchemaName 'loop_summary_multi' -Schema $schema -MaxOutputTokens ([int]$Runtime['maxOutputTokens'])
     $parsed = $result['parsed']
     $parsed['mergedAt'] = (Get-Date).ToUniversalTime().ToString('o')
     return @{
         summary = $parsed
         responseId = [string]$result['response'].id
+        response = $result['response']
     }
 }
 
+$state = Read-State -Root $RootPath
+$task = Get-Task -State $state
+if ($null -eq $task) {
+    Write-Output 'No active task.'
+    exit 1
+}
+
+$workers = @(Get-WorkerDefinitions -Task $task)
+$workerState = @{}
+foreach ($worker in $workers) {
+    if (-not $state['workers'].ContainsKey($worker['id']) -or $null -eq $state['workers'][$worker['id']]) {
+        Write-Output 'All configured worker checkpoints are required before summarizing.'
+        exit 1
+    }
+    $workerState[$worker['id']] = $state['workers'][$worker['id']]
+}
+
+$summaryConfig = Get-SummarizerConfig -Task $task
+$runtime = Get-TaskRuntime -Task $task -ModelOverride $summaryConfig['model']
 $summary = $null
 $responseId = $null
+$usageSnapshot = $null
 $modeUsed = 'mock'
 
 if ($runtime['executionMode'] -eq 'live') {
     $apiKey = Get-ApiKey -Root $RootPath
     if ($apiKey) {
         try {
-            $liveResult = New-LiveSummary -ApiKey $apiKey -Runtime $runtime -Task $task -WorkerA $workerA -WorkerB $workerB
+            Assert-BudgetAvailable -Root $RootPath -Target 'summarizer' -Task $task
+            $liveResult = New-LiveSummary -ApiKey $apiKey -Task $task -Workers $workers -WorkerState $workerState -Runtime $runtime
             $summary = $liveResult['summary']
             $responseId = $liveResult['responseId']
+            $usageSnapshot = Update-UsageTracking -Root $RootPath -Target 'summarizer' -TaskId ([string]$task['taskId']) -Model $runtime['model'] -ResponseId $responseId -Response $liveResult['response']
             $modeUsed = 'live'
         } catch {
+            if ($_.Exception.Message -like 'Budget limit reached:*') {
+                Add-Step -Root $RootPath -Stage 'budget' -Message 'Budget stopped the summarizer before another live call.' -Context @{
+                    taskId = $task['taskId']
+                    model = $runtime['model']
+                    error = $_.Exception.Message
+                }
+                throw
+            }
+
             Add-Step -Root $RootPath -Stage 'summarizer' -Message 'Live API call failed; falling back to mock.' -Context @{
                 taskId = $task['taskId']
                 model = $runtime['model']
@@ -173,18 +206,29 @@ if ($runtime['executionMode'] -eq 'live') {
 }
 
 if ($null -eq $summary) {
-    $summary = New-MockSummary -Task $task -WorkerA $workerA -WorkerB $workerB
+    $summary = New-MockSummary -Task $task -Workers $workers -WorkerState $workerState
 }
 
+$state = Read-State -Root $RootPath
 $state['summary'] = $summary
 $state['memoryVersion'] = [int]$state['memoryVersion'] + 1
 Write-State -Root $RootPath -State $state
-$summaryJson = $summary | ConvertTo-Json -Depth 10
+
+$summaryJson = $summary | ConvertTo-Json -Depth 20
 $summaryPath = Join-Path $RootPath ("data\checkpoints\{0}_summary.json" -f $task['taskId'])
 $historySummaryPath = Join-Path $RootPath ("data\checkpoints\{0}_summary_round{1:D3}.json" -f $task['taskId'], [int]$summary['round'])
-$summaryJson | Set-Content -Path $summaryPath -Encoding UTF8
-$summaryJson | Set-Content -Path $historySummaryPath -Encoding UTF8
-Add-Event -Root $RootPath -Type 'summary_written' -Payload @{ taskId = $task['taskId']; memoryVersion = $state['memoryVersion']; mode = $modeUsed }
+Write-Utf8NoBom -Path $summaryPath -Value $summaryJson
+Write-Utf8NoBom -Path $historySummaryPath -Value $summaryJson
+
+Add-Event -Root $RootPath -Type 'summary_written' -Payload @{
+    taskId = $task['taskId']
+    memoryVersion = $state['memoryVersion']
+    mode = $modeUsed
+    model = $runtime['model']
+    sourceWorkers = @($workers | ForEach-Object { [string]$_['id'] })
+}
+
+$budgetTotals = if ($null -ne $usageSnapshot) { $usageSnapshot } else { $state['usage'] }
 Add-Step -Root $RootPath -Stage 'summarizer' -Message 'Summarizer merged worker checkpoints.' -Context @{
     taskId = $task['taskId']
     round = $summary['round']
@@ -192,6 +236,10 @@ Add-Step -Root $RootPath -Stage 'summarizer' -Message 'Summarizer merged worker 
     mode = $modeUsed
     model = $runtime['model']
     responseId = $responseId
+    workerCount = $workers.Count
+    totalTokens = if ($budgetTotals) { [int]$budgetTotals['totalTokens'] } else { 0 }
+    estimatedCostUsd = if ($budgetTotals) { [double]$budgetTotals['estimatedCostUsd'] } else { 0.0 }
     checkpointFile = [System.IO.Path]::GetFileName($historySummaryPath)
 }
+
 Write-Output 'Summary written.'

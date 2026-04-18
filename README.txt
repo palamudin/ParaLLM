@@ -5,8 +5,7 @@ What this is
 ------------
 A local prototype scaffold for:
 - Commander input
-- Worker A (utility / benefit pressure)
-- Worker B (risk / adversarial pressure)
+- Dynamic worker lanes that start with A/B and can expand with more adversarial viewpoints
 - Summarizer / canonical memory
 - JSON persistence and event logging
 - Autonomous multi-round execution
@@ -14,6 +13,9 @@ A local prototype scaffold for:
 - Detached background loop execution through PHP + PowerShell
 - Stale-job recovery for interrupted background runs
 - Recent job and artifact history in the UI
+- Per-position model selection
+- Session token / spend tracking with budget limits
+- Masked API key management through the UI
 
 Folder target
 -------------
@@ -45,12 +47,15 @@ This is prototype scaffolding, not hardened production design.
 Main flow
 ---------
 1. Enter objective + constraints.
-2. Choose `Mock` or `Live API`, model, and reasoning effort.
-3. Click Start Task.
-4. Either click `Run Round` for one cycle or `Run Auto Loop` to queue a detached background run.
-5. Use `Cancel Loop` to stop after the current round.
-6. Watch worker panels, summary, event log, step log, and loop status update while the background job progresses.
-7. Use the Recent Jobs and Recent Artifacts panels to review prior runs and per-round checkpoints.
+2. Set or swap the API key in the top bar if you want to use `Live API`.
+3. Choose `Mock` or `Live API`, the default worker model, summarizer model, and reasoning effort.
+4. Adjust the session budget if you want tighter spend control.
+5. Click Start Task.
+6. Either click `Run Round` for one cycle or `Run Auto Loop` to queue a detached background run.
+7. Use `Add Adversarial` to grow the worker roster with another viewpoint lane.
+8. Use `Cancel Loop` to stop after the current round.
+9. Watch worker panels, summary, event log, step log, spend counters, and loop status update while the background job progresses.
+10. Use the Recent Jobs and Recent Artifacts panels to review prior runs and per-round checkpoints.
 
 Main files
 ----------
@@ -74,6 +79,7 @@ The backend also uses a shared lock so PHP and PowerShell do not trample the sam
 `Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.
 If a queued or running background job goes stale, polling endpoints will mark it as recovered, move it to `error`, and append a recovery entry to the step log.
 History polling is read-mostly and stays available even if a recovery check has to be deferred briefly because the loop lock is busy.
+The top bar shows the current masked API key, session tokens, and estimated spend so you can control live testing costs without exposing the full secret in the browser.
 
 Next sensible step
 ------------------

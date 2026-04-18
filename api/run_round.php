@@ -21,6 +21,7 @@ try {
     $result['message'] = 'Round executed.';
     json_response($result);
 } catch (Throwable $ex) {
-    append_step('error', 'Round execution failed.', ['error' => $ex->getMessage()]);
-    json_response(['message' => $ex->getMessage()], 500);
+    $isBudgetStop = stripos($ex->getMessage(), 'Budget limit reached:') === 0;
+    append_step($isBudgetStop ? 'budget' : 'error', $isBudgetStop ? 'Round execution stopped at the configured budget limit.' : 'Round execution failed.', ['error' => $ex->getMessage()]);
+    json_response(['message' => $ex->getMessage()], $isBudgetStop ? 409 : 500);
 }

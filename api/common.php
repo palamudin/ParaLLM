@@ -16,6 +16,244 @@ define('LOCK_STALE_SECONDS', 45);
 define('JOB_QUEUE_STALE_SECONDS', 60);
 define('JOB_RUNNING_STALE_SECONDS', 180);
 
+function default_model_catalog(): array {
+    return [
+        'gpt-5.4' => ['label' => 'GPT-5.4', 'inputPer1M' => 2.50, 'cachedInputPer1M' => 0.25, 'outputPer1M' => 15.00],
+        'gpt-5.4-mini' => ['label' => 'GPT-5.4 mini', 'inputPer1M' => 0.75, 'cachedInputPer1M' => 0.075, 'outputPer1M' => 4.50],
+        'gpt-5.4-nano' => ['label' => 'GPT-5.4 nano', 'inputPer1M' => 0.20, 'cachedInputPer1M' => 0.02, 'outputPer1M' => 1.25],
+        'gpt-5.2' => ['label' => 'GPT-5.2', 'inputPer1M' => 1.75, 'cachedInputPer1M' => 0.175, 'outputPer1M' => 14.00],
+        'gpt-5.1' => ['label' => 'GPT-5.1', 'inputPer1M' => 1.25, 'cachedInputPer1M' => 0.125, 'outputPer1M' => 10.00],
+        'gpt-5' => ['label' => 'GPT-5', 'inputPer1M' => 1.25, 'cachedInputPer1M' => 0.125, 'outputPer1M' => 10.00],
+        'gpt-5-mini' => ['label' => 'GPT-5 mini', 'inputPer1M' => 0.25, 'cachedInputPer1M' => 0.025, 'outputPer1M' => 2.00],
+        'gpt-5-nano' => ['label' => 'GPT-5 nano', 'inputPer1M' => 0.05, 'cachedInputPer1M' => 0.005, 'outputPer1M' => 0.40],
+        'gpt-4.1' => ['label' => 'GPT-4.1', 'inputPer1M' => 2.00, 'cachedInputPer1M' => 0.50, 'outputPer1M' => 8.00],
+        'gpt-4.1-mini' => ['label' => 'GPT-4.1 mini', 'inputPer1M' => 0.40, 'cachedInputPer1M' => 0.10, 'outputPer1M' => 1.60],
+        'gpt-4.1-nano' => ['label' => 'GPT-4.1 nano', 'inputPer1M' => 0.10, 'cachedInputPer1M' => 0.025, 'outputPer1M' => 0.40],
+        'gpt-4o' => ['label' => 'GPT-4o', 'inputPer1M' => 2.50, 'cachedInputPer1M' => 1.25, 'outputPer1M' => 10.00],
+        'gpt-4o-mini' => ['label' => 'GPT-4o mini', 'inputPer1M' => 0.15, 'cachedInputPer1M' => 0.075, 'outputPer1M' => 0.60],
+    ];
+}
+
+function default_model_id(): string {
+    return 'gpt-5-mini';
+}
+
+function default_budget_config(): array {
+    return [
+        'maxTotalTokens' => 120000,
+        'maxCostUsd' => 1.00,
+        'maxOutputTokens' => 1200,
+    ];
+}
+
+function normalize_budget_config(array $config = []): array {
+    $default = default_budget_config();
+    return [
+        'maxTotalTokens' => max(0, (int)($config['maxTotalTokens'] ?? $default['maxTotalTokens'])),
+        'maxCostUsd' => max(0.0, round((float)($config['maxCostUsd'] ?? $default['maxCostUsd']), 6)),
+        'maxOutputTokens' => max(0, (int)($config['maxOutputTokens'] ?? $default['maxOutputTokens'])),
+    ];
+}
+
+function normalize_model_id(?string $model, ?string $fallback = null): string {
+    $catalog = default_model_catalog();
+    $candidate = trim((string)$model);
+    if ($candidate !== '' && isset($catalog[$candidate])) {
+        return $candidate;
+    }
+    $fallback = $fallback !== null ? trim($fallback) : default_model_id();
+    return isset($catalog[$fallback]) ? $fallback : default_model_id();
+}
+
+function default_usage_bucket(): array {
+    return [
+        'calls' => 0,
+        'inputTokens' => 0,
+        'cachedInputTokens' => 0,
+        'billableInputTokens' => 0,
+        'outputTokens' => 0,
+        'reasoningTokens' => 0,
+        'totalTokens' => 0,
+        'estimatedCostUsd' => 0.0,
+        'lastModel' => null,
+        'lastResponseId' => null,
+        'lastUpdated' => null,
+    ];
+}
+
+function normalize_usage_bucket(?array $bucket): array {
+    $default = default_usage_bucket();
+    return [
+        'calls' => max(0, (int)($bucket['calls'] ?? $default['calls'])),
+        'inputTokens' => max(0, (int)($bucket['inputTokens'] ?? $default['inputTokens'])),
+        'cachedInputTokens' => max(0, (int)($bucket['cachedInputTokens'] ?? $default['cachedInputTokens'])),
+        'billableInputTokens' => max(0, (int)($bucket['billableInputTokens'] ?? $default['billableInputTokens'])),
+        'outputTokens' => max(0, (int)($bucket['outputTokens'] ?? $default['outputTokens'])),
+        'reasoningTokens' => max(0, (int)($bucket['reasoningTokens'] ?? $default['reasoningTokens'])),
+        'totalTokens' => max(0, (int)($bucket['totalTokens'] ?? $default['totalTokens'])),
+        'estimatedCostUsd' => round((float)($bucket['estimatedCostUsd'] ?? $default['estimatedCostUsd']), 6),
+        'lastModel' => $bucket['lastModel'] ?? null,
+        'lastResponseId' => $bucket['lastResponseId'] ?? null,
+        'lastUpdated' => $bucket['lastUpdated'] ?? null,
+    ];
+}
+
+function default_usage_state(): array {
+    return array_merge(default_usage_bucket(), [
+        'byTarget' => [],
+        'byModel' => [],
+    ]);
+}
+
+function normalize_usage_state(?array $usage): array {
+    $normalized = normalize_usage_bucket($usage ?? []);
+    $normalized['byTarget'] = [];
+    $normalized['byModel'] = [];
+
+    if (is_array($usage['byTarget'] ?? null)) {
+        foreach ($usage['byTarget'] as $target => $bucket) {
+            if (!is_string($target) || trim($target) === '') {
+                continue;
+            }
+            $normalized['byTarget'][$target] = normalize_usage_bucket(is_array($bucket) ? $bucket : []);
+        }
+    }
+
+    if (is_array($usage['byModel'] ?? null)) {
+        foreach ($usage['byModel'] as $model => $bucket) {
+            if (!is_string($model) || trim($model) === '') {
+                continue;
+            }
+            $normalized['byModel'][$model] = normalize_usage_bucket(is_array($bucket) ? $bucket : []);
+        }
+    }
+
+    return $normalized;
+}
+
+function worker_catalog(): array {
+    return [
+        ['id' => 'A', 'label' => 'Worker A', 'role' => 'utility', 'focus' => 'benefits, feasibility, leverage, momentum'],
+        ['id' => 'B', 'label' => 'Worker B', 'role' => 'adversarial', 'focus' => 'systemic failure, coupling, downside, hidden risk'],
+        ['id' => 'C', 'label' => 'Worker C', 'role' => 'adversarial', 'focus' => 'cost ceilings, burn rate, economic drag'],
+        ['id' => 'D', 'label' => 'Worker D', 'role' => 'adversarial', 'focus' => 'security abuse, privilege escalation, hostile actors'],
+        ['id' => 'E', 'label' => 'Worker E', 'role' => 'adversarial', 'focus' => 'reliability collapse, uptime loss, brittle dependencies'],
+        ['id' => 'F', 'label' => 'Worker F', 'role' => 'adversarial', 'focus' => 'concurrency races, lock contention, timing faults'],
+        ['id' => 'G', 'label' => 'Worker G', 'role' => 'adversarial', 'focus' => 'data integrity, corruption, replay hazards'],
+        ['id' => 'H', 'label' => 'Worker H', 'role' => 'adversarial', 'focus' => 'compliance, policy drift, governance gaps'],
+        ['id' => 'I', 'label' => 'Worker I', 'role' => 'adversarial', 'focus' => 'user confusion, adoption friction, trust loss'],
+        ['id' => 'J', 'label' => 'Worker J', 'role' => 'adversarial', 'focus' => 'performance cliffs, hot paths, slow feedback'],
+        ['id' => 'K', 'label' => 'Worker K', 'role' => 'adversarial', 'focus' => 'observability blind spots, missing traces, opaque failures'],
+        ['id' => 'L', 'label' => 'Worker L', 'role' => 'adversarial', 'focus' => 'scalability failure, fan-out load, resource exhaustion'],
+        ['id' => 'M', 'label' => 'Worker M', 'role' => 'adversarial', 'focus' => 'recovery posture, rollback gaps, broken resumes'],
+        ['id' => 'N', 'label' => 'Worker N', 'role' => 'adversarial', 'focus' => 'integration mismatch, boundary contracts, interoperability'],
+        ['id' => 'O', 'label' => 'Worker O', 'role' => 'adversarial', 'focus' => 'abuse cases, spam, malicious automation'],
+        ['id' => 'P', 'label' => 'Worker P', 'role' => 'adversarial', 'focus' => 'latency budgets, throughput realism, field conditions'],
+        ['id' => 'Q', 'label' => 'Worker Q', 'role' => 'adversarial', 'focus' => 'incentive mismatch, local maxima, misuse of metrics'],
+        ['id' => 'R', 'label' => 'Worker R', 'role' => 'adversarial', 'focus' => 'scope creep, hidden complexity, disguised expansions'],
+        ['id' => 'S', 'label' => 'Worker S', 'role' => 'adversarial', 'focus' => 'maintainability drag, operator toil, handoff risk'],
+        ['id' => 'T', 'label' => 'Worker T', 'role' => 'adversarial', 'focus' => 'edge cases, chaos inputs, pathological sequences'],
+        ['id' => 'U', 'label' => 'Worker U', 'role' => 'adversarial', 'focus' => 'human factors, fatigue, procedural mistakes'],
+        ['id' => 'V', 'label' => 'Worker V', 'role' => 'adversarial', 'focus' => 'vendor lock-in, portability loss, external dependence'],
+        ['id' => 'W', 'label' => 'Worker W', 'role' => 'adversarial', 'focus' => 'privacy leakage, retention risk, oversharing'],
+        ['id' => 'X', 'label' => 'Worker X', 'role' => 'adversarial', 'focus' => 'product mismatch, weak demand signal, false confidence'],
+        ['id' => 'Y', 'label' => 'Worker Y', 'role' => 'adversarial', 'focus' => 'decision paralysis, review bottlenecks, process drag'],
+        ['id' => 'Z', 'label' => 'Worker Z', 'role' => 'adversarial', 'focus' => 'wildcard attack surfaces, overlooked weirdness, novel failure'],
+    ];
+}
+
+function normalize_worker_definition(array $worker, ?string $defaultModel = null): array {
+    $workerId = strtoupper(trim((string)($worker['id'] ?? '')));
+    if (!preg_match('/^[A-Z]$/', $workerId)) {
+        throw new InvalidArgumentException('Worker ids must be single uppercase letters.');
+    }
+
+    $catalogMap = [];
+    foreach (worker_catalog() as $entry) {
+        $catalogMap[$entry['id']] = $entry;
+    }
+    $catalogWorker = $catalogMap[$workerId] ?? ['id' => $workerId, 'label' => 'Worker ' . $workerId, 'role' => 'adversarial', 'focus' => 'general adversarial review'];
+    $fallbackModel = $defaultModel !== null ? $defaultModel : default_model_id();
+
+    return [
+        'id' => $workerId,
+        'label' => trim((string)($worker['label'] ?? $catalogWorker['label'])) ?: $catalogWorker['label'],
+        'role' => trim((string)($worker['role'] ?? $catalogWorker['role'])) ?: $catalogWorker['role'],
+        'focus' => trim((string)($worker['focus'] ?? $catalogWorker['focus'])) ?: $catalogWorker['focus'],
+        'model' => normalize_model_id($worker['model'] ?? null, $fallbackModel),
+    ];
+}
+
+function task_workers(array $task): array {
+    $defaultModel = normalize_model_id($task['runtime']['model'] ?? null, default_model_id());
+    $workers = [];
+    if (isset($task['workers']) && is_array($task['workers'])) {
+        foreach ($task['workers'] as $worker) {
+            if (!is_array($worker)) {
+                continue;
+            }
+            $normalized = normalize_worker_definition($worker, $defaultModel);
+            $workers[$normalized['id']] = $normalized;
+        }
+    }
+
+    if (!$workers) {
+        foreach (array_slice(worker_catalog(), 0, 2) as $worker) {
+            $normalized = normalize_worker_definition($worker, $defaultModel);
+            $workers[$normalized['id']] = $normalized;
+        }
+    }
+
+    ksort($workers);
+    return array_values($workers);
+}
+
+function empty_worker_state_map(array $workers): array {
+    $map = [];
+    foreach ($workers as $worker) {
+        if (!is_array($worker) || empty($worker['id'])) {
+            continue;
+        }
+        $map[(string)$worker['id']] = null;
+    }
+    return $map;
+}
+
+function find_task_worker(array $task, string $workerId): ?array {
+    $workerId = strtoupper(trim($workerId));
+    foreach (task_workers($task) as $worker) {
+        if (($worker['id'] ?? null) === $workerId) {
+            return $worker;
+        }
+    }
+    return null;
+}
+
+function next_adversarial_worker_definition(array $task): ?array {
+    $defaultModel = normalize_model_id($task['runtime']['model'] ?? null, default_model_id());
+    $existing = [];
+    foreach (task_workers($task) as $worker) {
+        $existing[(string)$worker['id']] = true;
+    }
+    foreach (worker_catalog() as $worker) {
+        if ($worker['id'] === 'A' || isset($existing[$worker['id']])) {
+            continue;
+        }
+        return normalize_worker_definition($worker, $defaultModel);
+    }
+    return null;
+}
+
+function summarizer_config(array $task): array {
+    $defaultModel = normalize_model_id($task['runtime']['model'] ?? null, default_model_id());
+    $summary = isset($task['summarizer']) && is_array($task['summarizer']) ? $task['summarizer'] : [];
+    return [
+        'id' => 'summarizer',
+        'label' => trim((string)($summary['label'] ?? 'Summarizer')) ?: 'Summarizer',
+        'model' => normalize_model_id($summary['model'] ?? null, $defaultModel),
+    ];
+}
+
 function default_loop_state(): array {
     return [
         'status' => 'idle',
@@ -37,9 +275,10 @@ function default_loop_state(): array {
 function default_state(): array {
     return [
         'activeTask' => null,
-        'workers' => ['A' => null, 'B' => null],
+        'workers' => [],
         'summary' => null,
         'memoryVersion' => 0,
+        'usage' => default_usage_state(),
         'loop' => default_loop_state(),
         'lastUpdated' => gmdate('c')
     ];
@@ -50,10 +289,19 @@ function normalize_state(array $state): array {
     $normalized['activeTask'] = $state['activeTask'] ?? null;
     $normalized['summary'] = $state['summary'] ?? null;
     $normalized['memoryVersion'] = isset($state['memoryVersion']) ? (int)$state['memoryVersion'] : 0;
+    $normalized['usage'] = normalize_usage_state(isset($state['usage']) && is_array($state['usage']) ? $state['usage'] : []);
     $normalized['lastUpdated'] = $state['lastUpdated'] ?? gmdate('c');
 
     if (isset($state['workers']) && is_array($state['workers'])) {
-        $normalized['workers'] = array_merge(['A' => null, 'B' => null], $state['workers']);
+        $workers = [];
+        foreach ($state['workers'] as $workerId => $checkpoint) {
+            if (!is_string($workerId) || trim($workerId) === '') {
+                continue;
+            }
+            $workers[$workerId] = $checkpoint;
+        }
+        ksort($workers);
+        $normalized['workers'] = $workers;
     }
 
     if (isset($state['loop']) && is_array($state['loop'])) {
@@ -250,6 +498,16 @@ function task_file_path(string $taskId): string {
     return TASKS_PATH . DIRECTORY_SEPARATOR . $taskId . '.json';
 }
 
+function write_task_snapshot(array $task): void {
+    if (empty($task['taskId'])) {
+        return;
+    }
+    file_put_contents(
+        task_file_path((string)$task['taskId']),
+        json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+    );
+}
+
 function json_response($data, int $code = 200): void {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
@@ -261,11 +519,46 @@ function post_value(string $key, $default = null) {
     return $_POST[$key] ?? $default;
 }
 
-function target_map(): array {
+function post_float_value(string $key, float $default): float {
+    $value = post_value($key, $default);
+    return is_numeric($value) ? (float)$value : $default;
+}
+
+function post_int_value(string $key, int $default): int {
+    $value = post_value($key, $default);
+    return is_numeric($value) ? (int)$value : $default;
+}
+
+function available_targets(?array $task): array {
+    if (!$task) {
+        return ['summarizer'];
+    }
+    $targets = array_map(static function (array $worker): string {
+        return (string)$worker['id'];
+    }, task_workers($task));
+    $targets[] = 'summarizer';
+    return $targets;
+}
+
+function is_valid_target(string $target, ?array $task): bool {
+    return in_array($target, available_targets($task), true);
+}
+
+function resolve_target_spec(string $target, ?array $task): array {
+    if ($target === 'summarizer') {
+        return [
+            'script' => 'summarizer.ps1',
+            'args' => []
+        ];
+    }
+
+    if (!$task || !find_task_worker($task, $target)) {
+        throw new RuntimeException('Invalid target.');
+    }
+
     return [
-        'A' => 'workerA.ps1',
-        'B' => 'workerB.ps1',
-        'summarizer' => 'summarizer.ps1'
+        'script' => 'worker.ps1',
+        'args' => ['-WorkerId', $target]
     ];
 }
 
@@ -289,15 +582,6 @@ function read_job_unlocked(string $jobId): ?array {
     return is_array($decoded) ? $decoded : null;
 }
 
-function write_job_unlocked(array $job): array {
-    $normalized = default_job($job);
-    file_put_contents(
-        job_file_path($normalized['jobId']),
-        json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
-    );
-    return $normalized;
-}
-
 function default_job(array $config): array {
     return [
         'jobId' => $config['jobId'],
@@ -306,6 +590,7 @@ function default_job(array $config): array {
         'status' => $config['status'] ?? 'queued',
         'rounds' => (int)$config['rounds'],
         'delayMs' => (int)$config['delayMs'],
+        'workerCount' => max(0, (int)($config['workerCount'] ?? 0)),
         'cancelRequested' => (bool)($config['cancelRequested'] ?? false),
         'queuedAt' => $config['queuedAt'] ?? gmdate('c'),
         'startedAt' => $config['startedAt'] ?? null,
@@ -314,9 +599,19 @@ function default_job(array $config): array {
         'completedRounds' => (int)($config['completedRounds'] ?? 0),
         'currentRound' => (int)($config['currentRound'] ?? 0),
         'lastMessage' => $config['lastMessage'] ?? 'Queued.',
+        'usage' => normalize_usage_state(isset($config['usage']) && is_array($config['usage']) ? $config['usage'] : []),
         'results' => $config['results'] ?? [],
         'error' => $config['error'] ?? null
     ];
+}
+
+function write_job_unlocked(array $job): array {
+    $normalized = default_job($job);
+    file_put_contents(
+        job_file_path($normalized['jobId']),
+        json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+    );
+    return $normalized;
 }
 
 function read_job(string $jobId): ?array {
@@ -441,7 +736,7 @@ function recover_loop_state_if_needed(): array {
             return $state;
         }
 
-        if (in_array($jobStatus, ['completed', 'cancelled', 'error'], true) || $status !== $jobStatus) {
+        if (in_array($jobStatus, ['completed', 'cancelled', 'error', 'budget_exhausted'], true) || $status !== $jobStatus) {
             $state = set_loop_state($state, [
                 'status' => $jobStatus,
                 'jobId' => $jobId,
@@ -509,7 +804,7 @@ function launch_background_php(string $scriptPath, array $args = []): void {
     }
 }
 
-function ps_command(string $scriptName): string {
+function ps_command(string $scriptName, array $extraArgs = []): string {
     $scriptPath = PS_PATH . DIRECTORY_SEPARATOR . $scriptName;
     if (!file_exists($scriptPath)) {
         throw new RuntimeException('Script not found: ' . $scriptName);
@@ -521,17 +816,22 @@ function ps_command(string $scriptName): string {
         '-File', $scriptPath,
         '-RootPath', ROOT_PATH
     ];
+    foreach ($extraArgs as $arg) {
+        $parts[] = (string)$arg;
+    }
     $escaped = array_map('escapeshellarg', $parts);
     return implode(' ', $escaped) . ' 2>&1';
 }
 
-function run_powershell_target(string $target): array {
-    $map = target_map();
-    if (!isset($map[$target])) {
-        throw new RuntimeException('Invalid target.');
+function run_powershell_target(string $target, ?array $task = null): array {
+    $stateTask = $task;
+    if ($stateTask === null) {
+        $state = read_state();
+        $stateTask = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
     }
 
-    $cmd = ps_command($map[$target]);
+    $spec = resolve_target_spec($target, $stateTask);
+    $cmd = ps_command($spec['script'], $spec['args']);
     $lines = [];
     $exitCode = 0;
     exec($cmd, $lines, $exitCode);
@@ -539,6 +839,7 @@ function run_powershell_target(string $target): array {
 
     append_event('powershell_run', [
         'target' => $target,
+        'script' => $spec['script'],
         'exitCode' => $exitCode,
         'output' => $output
     ]);

@@ -3,12 +3,6 @@ require __DIR__ . '/common.php';
 ensure_data_paths();
 
 $target = trim((string)post_value('target', ''));
-$map = target_map();
-
-if (!isset($map[$target])) {
-    json_response(['message' => 'Invalid target.'], 400);
-}
-
 $state = recover_loop_state_if_needed();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
@@ -16,10 +10,13 @@ if (empty($state['activeTask'])) {
 if (loop_is_active($state)) {
     json_response(['message' => 'The autonomous loop is running. Cancel it before manual dispatch.'], 409);
 }
+if (!is_valid_target($target, $state['activeTask'])) {
+    json_response(['message' => 'Invalid target.'], 400);
+}
 
 try {
     append_step('dispatch', 'Dispatching PowerShell target.', ['target' => $target]);
-    $result = run_powershell_target($target);
+    $result = run_powershell_target($target, $state['activeTask']);
     append_step('dispatch', 'PowerShell target completed.', [
         'target' => $target,
         'outputPreview' => $result['output'],
@@ -35,5 +32,6 @@ try {
         'target' => $target,
         'error' => $ex->getMessage()
     ]);
-    json_response(['message' => $ex->getMessage()], 500);
+    $code = stripos($ex->getMessage(), 'Budget limit reached:') === 0 ? 409 : 500;
+    json_response(['message' => $ex->getMessage()], $code);
 }

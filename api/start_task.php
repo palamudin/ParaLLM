@@ -21,15 +21,23 @@ if (!in_array($executionMode, ['live', 'mock'], true)) {
     $executionMode = 'live';
 }
 
-$model = trim((string)post_value('model', 'gpt-5-mini'));
-if ($model === '') {
-    $model = 'gpt-5-mini';
-}
+$model = normalize_model_id((string)post_value('model', default_model_id()), default_model_id());
+$summarizerModel = normalize_model_id((string)post_value('summarizerModel', $model), $model);
 
 $reasoningEffort = trim((string)post_value('reasoningEffort', 'low'));
 if (!in_array($reasoningEffort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
     $reasoningEffort = 'low';
 }
+
+$budget = normalize_budget_config([
+    'maxTotalTokens' => post_int_value('maxTotalTokens', default_budget_config()['maxTotalTokens']),
+    'maxCostUsd' => post_float_value('maxCostUsd', default_budget_config()['maxCostUsd']),
+    'maxOutputTokens' => post_int_value('maxOutputTokens', default_budget_config()['maxOutputTokens']),
+]);
+
+$workers = task_workers([
+    'runtime' => ['model' => $model]
+]);
 
 $taskId = 't-' . date('Ymd-His') . '-' . substr(md5(uniqid('', true)), 0, 6);
 $task = [
@@ -40,36 +48,43 @@ $task = [
     'runtime' => [
         'executionMode' => $executionMode,
         'model' => $model,
-        'reasoningEffort' => $reasoningEffort
+        'reasoningEffort' => $reasoningEffort,
+        'budget' => $budget,
+        'pricingSource' => 'https://openai.com/api/pricing',
+        'pricingCheckedAt' => '2026-04-18'
+    ],
+    'summarizer' => [
+        'id' => 'summarizer',
+        'label' => 'Summarizer',
+        'model' => $summarizerModel
     ],
     'syncPolicy' => [
         'mode' => 'checkpoint',
         'shareOnBlocker' => true,
         'shareEverySteps' => 3
     ],
-    'workers' => [
-        ['id' => 'A', 'role' => 'utility'],
-        ['id' => 'B', 'role' => 'risk']
-    ]
+    'workers' => $workers
 ];
 
 $state = mutate_state(function (array $state) use ($task): array {
     $state['activeTask'] = $task;
-    $state['workers'] = ['A' => null, 'B' => null];
+    $state['workers'] = empty_worker_state_map(task_workers($task));
     $state['summary'] = null;
     $state['memoryVersion'] = ($state['memoryVersion'] ?? 0) + 1;
+    $state['usage'] = default_usage_state();
     $state['loop'] = default_loop_state();
     return $state;
 });
 
-$taskFile = TASKS_PATH . DIRECTORY_SEPARATOR . $taskId . '.json';
-file_put_contents($taskFile, json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+write_task_snapshot($task);
 append_event('task_started', ['taskId' => $taskId, 'objective' => $objective]);
 append_step('task', 'Created a new task and reset worker memory.', [
     'taskId' => $taskId,
     'constraintCount' => count($constraints),
     'runtime' => $task['runtime'],
-    'syncPolicy' => $task['syncPolicy']
+    'syncPolicy' => $task['syncPolicy'],
+    'workerCount' => count($workers),
+    'summarizerModel' => $summarizerModel
 ]);
 
 json_response(['message' => 'Task created.', 'taskId' => $taskId]);

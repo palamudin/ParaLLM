@@ -46,6 +46,7 @@ foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
         'objective' => $task['objective'] ?? null,
         'status' => $job['status'] ?? null,
         'mode' => $job['mode'] ?? null,
+        'workerCount' => isset($job['workerCount']) ? (int)$job['workerCount'] : 0,
         'rounds' => isset($job['rounds']) ? (int)$job['rounds'] : 0,
         'completedRounds' => isset($job['completedRounds']) ? (int)$job['completedRounds'] : 0,
         'queuedAt' => $job['queuedAt'] ?? null,
@@ -53,6 +54,8 @@ foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
         'finishedAt' => $job['finishedAt'] ?? null,
         'lastHeartbeatAt' => $job['lastHeartbeatAt'] ?? null,
         'lastMessage' => $job['lastMessage'] ?? null,
+        'totalTokens' => isset($job['usage']['totalTokens']) ? (int)$job['usage']['totalTokens'] : 0,
+        'estimatedCostUsd' => isset($job['usage']['estimatedCostUsd']) ? (float)$job['usage']['estimatedCostUsd'] : 0.0,
         'error' => $job['error'] ?? null,
     ];
 }
@@ -79,7 +82,7 @@ foreach ($artifactFiles as $artifactFile) {
         'roundOrStep' => null,
     ];
 
-    if (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([AB])_step(\d+)\.json$/i', $name, $matches)) {
+    if (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = $matches[2];
         $entry['kind'] = 'worker_step';

@@ -32,6 +32,8 @@ function create_loop_job(array $task, int $rounds, int $delayMs, string $mode = 
         'status' => 'queued',
         'rounds' => $rounds,
         'delayMs' => $delayMs,
+        'workerCount' => count(task_workers($task)),
+        'usage' => default_usage_state(),
         'queuedAt' => $queuedAt,
         'lastMessage' => 'Queued background loop.'
     ]);
@@ -71,7 +73,6 @@ function execute_loop_process(array $config): array {
     $jobId = $config['jobId'] ?? null;
     $mode = $config['mode'] ?? 'sync';
     $taskId = $config['taskId'] ?? null;
-    $sequence = ['A', 'B', 'summarizer'];
     $results = [];
     $completedRounds = 0;
     $cancelled = false;
@@ -125,6 +126,11 @@ function execute_loop_process(array $config): array {
             if (!$currentTaskId || $currentTaskId !== $taskId) {
                 throw new RuntimeException('No active task.');
             }
+            $task = $snapshot['activeTask'];
+            $workerSequence = array_map(static function (array $worker): string {
+                return (string)$worker['id'];
+            }, task_workers($task));
+            $sequence = array_merge($workerSequence, ['summarizer']);
             if (current_loop_state($snapshot)['cancelRequested']) {
                 $cancelled = true;
                 break;
@@ -167,8 +173,9 @@ function execute_loop_process(array $config): array {
             ];
 
             foreach ($sequence as $target) {
-                $targetResult = run_powershell_target($target);
+                $targetResult = run_powershell_target($target, $task);
                 $roundResult['targets'][] = $targetResult;
+                $usageSnapshot = read_state()['usage'] ?? default_usage_state();
 
                 mutate_state(function (array $state) use ($taskId): array {
                     $activeTaskId = $state['activeTask']['taskId'] ?? null;
@@ -188,6 +195,18 @@ function execute_loop_process(array $config): array {
                     'exitCode' => $targetResult['exitCode'],
                     'outputPreview' => $targetResult['output']
                 ]);
+
+                if ($jobId !== null) {
+                    mutate_job($jobId, function (?array $job) use ($round, $usageSnapshot): array {
+                        $currentStatus = is_array($job) && isset($job['status']) ? $job['status'] : 'running';
+                        return default_job(array_merge($job ?? [], [
+                            'status' => $currentStatus,
+                            'currentRound' => $round,
+                            'lastHeartbeatAt' => gmdate('c'),
+                            'usage' => $usageSnapshot
+                        ]));
+                    });
+                }
             }
 
             $results[] = $roundResult;
@@ -208,7 +227,8 @@ function execute_loop_process(array $config): array {
             });
 
             if ($jobId !== null) {
-                mutate_job($jobId, function (?array $job) use ($round, $roundResult): array {
+                $usageSnapshot = read_state()['usage'] ?? default_usage_state();
+                mutate_job($jobId, function (?array $job) use ($round, $roundResult, $usageSnapshot): array {
                     $resultsList = $job['results'] ?? [];
                     $resultsList[] = $roundResult;
                     return default_job(array_merge($job ?? [], [
@@ -217,7 +237,8 @@ function execute_loop_process(array $config): array {
                         'currentRound' => 0,
                         'lastHeartbeatAt' => gmdate('c'),
                         'lastMessage' => 'Completed round ' . $round . '.',
-                        'results' => $resultsList
+                        'results' => $resultsList,
+                        'usage' => $usageSnapshot
                     ]));
                 });
             }
@@ -274,7 +295,8 @@ function execute_loop_process(array $config): array {
         });
 
         if ($jobId !== null) {
-            mutate_job($jobId, function (?array $job) use ($finalStatus, $completedRounds, $finalMessage, $results): array {
+            $usageSnapshot = read_state()['usage'] ?? default_usage_state();
+            mutate_job($jobId, function (?array $job) use ($finalStatus, $completedRounds, $finalMessage, $results, $usageSnapshot): array {
                 return default_job(array_merge($job ?? [], [
                     'status' => $finalStatus,
                     'completedRounds' => $completedRounds,
@@ -282,7 +304,8 @@ function execute_loop_process(array $config): array {
                     'finishedAt' => gmdate('c'),
                     'lastHeartbeatAt' => gmdate('c'),
                     'lastMessage' => $finalMessage,
-                    'results' => $results
+                    'results' => $results,
+                    'usage' => $usageSnapshot
                 ]));
             });
         }
@@ -302,11 +325,15 @@ function execute_loop_process(array $config): array {
             'results' => $results
         ];
     } catch (Throwable $ex) {
-        mutate_state(function (array $state) use ($taskId, $jobId, $mode, $rounds, $delayMs, $completedRounds, $ex): array {
+        $isBudgetStop = stripos($ex->getMessage(), 'Budget limit reached:') === 0;
+        $finalStatus = $isBudgetStop ? 'budget_exhausted' : 'error';
+        $finalMessage = $isBudgetStop ? $ex->getMessage() : ('Loop error: ' . $ex->getMessage());
+
+        mutate_state(function (array $state) use ($taskId, $jobId, $mode, $rounds, $delayMs, $completedRounds, $finalStatus, $finalMessage): array {
             $loopTaskId = $state['activeTask']['taskId'] ?? null;
             if ($loopTaskId && $loopTaskId === $taskId) {
                 return set_loop_state($state, [
-                    'status' => 'error',
+                    'status' => $finalStatus,
                     'jobId' => $jobId,
                     'mode' => $mode,
                     'totalRounds' => $rounds,
@@ -315,31 +342,34 @@ function execute_loop_process(array $config): array {
                     'delayMs' => $delayMs,
                     'finishedAt' => gmdate('c'),
                     'lastHeartbeatAt' => gmdate('c'),
-                    'lastMessage' => 'Loop error: ' . $ex->getMessage()
+                    'lastMessage' => $finalMessage
                 ]);
             }
             return $state;
         });
 
         if ($jobId !== null) {
-            mutate_job($jobId, function (?array $job) use ($completedRounds, $ex, $results): array {
+            $usageSnapshot = read_state()['usage'] ?? default_usage_state();
+            mutate_job($jobId, function (?array $job) use ($completedRounds, $finalStatus, $finalMessage, $ex, $results, $usageSnapshot): array {
                 return default_job(array_merge($job ?? [], [
-                    'status' => 'error',
+                    'status' => $finalStatus,
                     'completedRounds' => $completedRounds,
                     'currentRound' => 0,
                     'finishedAt' => gmdate('c'),
                     'lastHeartbeatAt' => gmdate('c'),
-                    'lastMessage' => 'Loop error: ' . $ex->getMessage(),
+                    'lastMessage' => $finalMessage,
                     'results' => $results,
+                    'usage' => $usageSnapshot,
                     'error' => $ex->getMessage()
                 ]));
             });
         }
 
-        append_step('error', 'Autonomous loop failed.', [
+        append_step($isBudgetStop ? 'budget' : 'error', $isBudgetStop ? 'Autonomous loop stopped at the configured budget limit.' : 'Autonomous loop failed.', [
             'taskId' => $taskId,
             'jobId' => $jobId,
             'completedRounds' => $completedRounds,
+            'status' => $finalStatus,
             'error' => $ex->getMessage()
         ]);
 
