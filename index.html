@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Loop Prototype</title>
+  <link rel="stylesheet" href="assets/app.css" />
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div>
+        <h1>AI Loop Prototype</h1>
+        <p>Commander -> Worker A / Worker B -> Summarizer</p>
+      </div>
+      <div class="statusbox">
+        <div><strong>Task:</strong> <span id="taskId">none</span></div>
+        <div><strong>Memory Version:</strong> <span id="memoryVersion">0</span></div>
+      </div>
+    </header>
+
+    <section class="panel commander">
+      <h2>Commander Input</h2>
+      <label for="objective">Objective</label>
+      <textarea id="objective" rows="5" placeholder="Enter task/objective here..."></textarea>
+      <label for="constraints">Constraints (one per line)</label>
+      <textarea id="constraints" rows="4" placeholder="Keep workers independent until checkpoint&#10;Preserve contradictions"></textarea>
+      <div class="configgrid">
+        <div>
+          <label for="executionMode">Execution Mode</label>
+          <select id="executionMode">
+            <option value="live" selected>Live API</option>
+            <option value="mock">Mock</option>
+          </select>
+        </div>
+        <div>
+          <label for="model">Model</label>
+          <input id="model" type="text" value="gpt-5-mini" />
+        </div>
+        <div>
+          <label for="reasoningEffort">Reasoning</label>
+          <select id="reasoningEffort">
+            <option value="none">none</option>
+            <option value="low" selected>low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+          </select>
+        </div>
+      </div>
+      <div class="btnrow">
+        <button id="startTask">Start Task</button>
+        <button id="runA">Run A</button>
+        <button id="runB">Run B</button>
+        <button id="summarize">Summarize</button>
+        <button id="runRound">Run Round</button>
+        <button id="refresh">Refresh</button>
+        <button id="resetState" class="danger">Reset State</button>
+      </div>
+      <div id="message"></div>
+    </section>
+
+    <section class="grid2">
+      <div class="panel">
+        <h2>Worker A - Utility View</h2>
+        <pre id="workerA">No data.</pre>
+      </div>
+      <div class="panel">
+        <h2>Worker B - Risk View</h2>
+        <pre id="workerB">No data.</pre>
+      </div>
+    </section>
+
+    <section class="grid2">
+      <div class="panel">
+        <h2>Summary</h2>
+        <pre id="summary">No data.</pre>
+      </div>
+      <div class="panel">
+        <h2>Canonical Memory</h2>
+        <pre id="memory">No data.</pre>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Event Log</h2>
+      <pre id="events">No data.</pre>
+    </section>
+
+    <section class="panel">
+      <h2>Step Log</h2>
+      <pre id="steps">No data.</pre>
+    </section>
+  </div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+Auth.txt
+data/checkpoints/
+data/tasks/
+data/*.json
+data/*.jsonl
+*.zip
