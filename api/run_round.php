@@ -6,12 +6,11 @@ $state = read_state();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }
+if (loop_is_running($state)) {
+    json_response(['message' => 'The autonomous loop is already running.'], 409);
+}
 
-$sequence = [
-    'A' => 'workerA.ps1',
-    'B' => 'workerB.ps1',
-    'summarizer' => 'summarizer.ps1'
-];
+$sequence = ['A', 'B', 'summarizer'];
 $results = [];
 
 try {
@@ -19,22 +18,18 @@ try {
         'taskId' => $state['activeTask']['taskId'] ?? null
     ]);
 
-    foreach ($sequence as $target => $script) {
-        $output = shell_exec(ps_command($script));
-        $trimmed = trim((string)$output);
-        $results[] = [
-            'target' => $target,
-            'output' => $trimmed
-        ];
-        append_event('powershell_run', ['target' => $target, 'output' => $trimmed]);
+    foreach ($sequence as $target) {
+        $result = run_powershell_target($target);
+        $results[] = $result;
         append_step('round', 'Round target completed.', [
             'target' => $target,
-            'outputPreview' => $trimmed
+            'outputPreview' => $result['output'],
+            'exitCode' => $result['exitCode']
         ]);
     }
 
     append_step('round', 'Full round execution finished.', [
-        'targets' => array_keys($sequence)
+        'targets' => $sequence
     ]);
 
     json_response([

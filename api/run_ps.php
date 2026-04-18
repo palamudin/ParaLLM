@@ -3,11 +3,7 @@ require __DIR__ . '/common.php';
 ensure_data_paths();
 
 $target = trim((string)post_value('target', ''));
-$map = [
-    'A' => 'workerA.ps1',
-    'B' => 'workerB.ps1',
-    'summarizer' => 'summarizer.ps1'
-];
+$map = target_map();
 
 if (!isset($map[$target])) {
     json_response(['message' => 'Invalid target.'], 400);
@@ -17,20 +13,22 @@ $state = read_state();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }
+if (loop_is_running($state)) {
+    json_response(['message' => 'The autonomous loop is running. Cancel it before manual dispatch.'], 409);
+}
 
 try {
-    $cmd = ps_command($map[$target]);
     append_step('dispatch', 'Dispatching PowerShell target.', ['target' => $target]);
-    $output = shell_exec($cmd);
-    append_event('powershell_run', ['target' => $target, 'output' => trim((string)$output)]);
+    $result = run_powershell_target($target);
     append_step('dispatch', 'PowerShell target completed.', [
         'target' => $target,
-        'outputPreview' => trim((string)$output)
+        'outputPreview' => $result['output'],
+        'exitCode' => $result['exitCode']
     ]);
     json_response([
         'message' => 'Executed ' . $target,
         'target' => $target,
-        'output' => trim((string)$output)
+        'output' => $result['output']
     ]);
 } catch (Throwable $ex) {
     append_step('error', 'PowerShell target failed.', [

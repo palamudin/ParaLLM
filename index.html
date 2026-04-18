@@ -17,6 +17,8 @@
       <div class="statusbox">
         <div><strong>Task:</strong> <span id="taskId">none</span></div>
         <div><strong>Memory Version:</strong> <span id="memoryVersion">0</span></div>
+        <div><strong>Loop Status:</strong> <span id="loopStatus">idle</span></div>
+        <div><strong>Loop Progress:</strong> <span id="loopProgress">0 / 0</span></div>
       </div>
     </header>
 
@@ -49,12 +51,28 @@
           </select>
         </div>
       </div>
+      <div class="configgrid">
+        <div>
+          <label for="loopRounds">Auto Loop Rounds</label>
+          <input id="loopRounds" type="number" min="1" max="12" value="3" />
+        </div>
+        <div>
+          <label for="loopDelayMs">Delay Between Rounds (ms)</label>
+          <input id="loopDelayMs" type="number" min="0" max="10000" value="1000" />
+        </div>
+        <div>
+          <label for="loopNote">Loop Notes</label>
+          <div id="loopNote">Autonomous mode runs A -> B -> Summarizer repeatedly.</div>
+        </div>
+      </div>
       <div class="btnrow">
         <button id="startTask">Start Task</button>
         <button id="runA">Run A</button>
         <button id="runB">Run B</button>
         <button id="summarize">Summarize</button>
         <button id="runRound">Run Round</button>
+        <button id="runLoop">Run Auto Loop</button>
+        <button id="cancelLoop" class="danger">Cancel Loop</button>
         <button id="refresh">Refresh</button>
         <button id="resetState" class="danger">Reset State</button>
       </div>

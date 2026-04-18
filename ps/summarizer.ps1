@@ -179,8 +179,11 @@ if ($null -eq $summary) {
 $state['summary'] = $summary
 $state['memoryVersion'] = [int]$state['memoryVersion'] + 1
 Write-State -Root $RootPath -State $state
+$summaryJson = $summary | ConvertTo-Json -Depth 10
 $summaryPath = Join-Path $RootPath ("data\checkpoints\{0}_summary.json" -f $task['taskId'])
-$summary | ConvertTo-Json -Depth 10 | Set-Content -Path $summaryPath -Encoding UTF8
+$historySummaryPath = Join-Path $RootPath ("data\checkpoints\{0}_summary_round{1:D3}.json" -f $task['taskId'], [int]$summary['round'])
+$summaryJson | Set-Content -Path $summaryPath -Encoding UTF8
+$summaryJson | Set-Content -Path $historySummaryPath -Encoding UTF8
 Add-Event -Root $RootPath -Type 'summary_written' -Payload @{ taskId = $task['taskId']; memoryVersion = $state['memoryVersion']; mode = $modeUsed }
 Add-Step -Root $RootPath -Stage 'summarizer' -Message 'Summarizer merged worker checkpoints.' -Context @{
     taskId = $task['taskId']
@@ -189,5 +192,6 @@ Add-Step -Root $RootPath -Stage 'summarizer' -Message 'Summarizer merged worker 
     mode = $modeUsed
     model = $runtime['model']
     responseId = $responseId
+    checkpointFile = [System.IO.Path]::GetFileName($historySummaryPath)
 }
 Write-Output 'Summary written.'

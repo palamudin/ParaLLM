@@ -224,8 +224,11 @@ $checkpoint['viewpoint'] = 'risk'
 
 $state['workers']['B'] = $checkpoint
 Write-State -Root $RootPath -State $state
-$cpPath = Join-Path $RootPath ("data\checkpoints\{0}_B.json" -f $task['taskId'])
-$checkpoint | ConvertTo-Json -Depth 10 | Set-Content -Path $cpPath -Encoding UTF8
+$checkpointJson = $checkpoint | ConvertTo-Json -Depth 10
+$latestCpPath = Join-Path $RootPath ("data\checkpoints\{0}_B.json" -f $task['taskId'])
+$historyCpPath = Join-Path $RootPath ("data\checkpoints\{0}_B_step{1:D3}.json" -f $task['taskId'], $stepNumber)
+$checkpointJson | Set-Content -Path $latestCpPath -Encoding UTF8
+$checkpointJson | Set-Content -Path $historyCpPath -Encoding UTF8
 Add-Event -Root $RootPath -Type 'worker_checkpoint' -Payload @{ worker = 'B'; taskId = $task['taskId']; viewpoint = 'risk'; mode = $modeUsed }
 Add-Step -Root $RootPath -Stage 'worker_B' -Message 'Worker B produced a checkpoint.' -Context @{
     taskId = $task['taskId']
@@ -234,5 +237,6 @@ Add-Step -Root $RootPath -Stage 'worker_B' -Message 'Worker B produced a checkpo
     mode = $modeUsed
     model = $runtime['model']
     responseId = $responseId
+    checkpointFile = [System.IO.Path]::GetFileName($historyCpPath)
 }
 Write-Output 'Worker B checkpoint written.'

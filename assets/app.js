@@ -6,16 +6,40 @@ function pretty(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function applyLoopUi(loop) {
+  const isRunning = loop?.status === "running";
+  $("#loopStatus").text(loop?.status || "idle");
+  $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
+  $("#loopNote").text(loop?.lastMessage || "Autonomous mode runs A -> B -> Summarizer repeatedly.");
+
+  const disableWhileRunning = [
+    "#startTask",
+    "#runA",
+    "#runB",
+    "#summarize",
+    "#runRound",
+    "#runLoop",
+    "#resetState"
+  ];
+
+  disableWhileRunning.forEach(function (selector) {
+    $(selector).prop("disabled", isRunning);
+  });
+  $("#cancelLoop").prop("disabled", !isRunning);
+}
+
 function refreshState() {
   $.getJSON("api/get_state.php")
     .done(function (data) {
       $("#taskId").text(data.activeTask?.taskId || "none");
       $("#memoryVersion").text(data.memoryVersion ?? 0);
+      applyLoopUi(data.loop || null);
       $("#workerA").text(data.workers?.A ? pretty(data.workers.A) : "No data.");
       $("#workerB").text(data.workers?.B ? pretty(data.workers.B) : "No data.");
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,
+        loop: data.loop,
         memoryVersion: data.memoryVersion,
         lastUpdated: data.lastUpdated
       }));
@@ -91,6 +115,16 @@ $(function () {
 
   $("#runRound").on("click", function () {
     postForm("api/run_round.php", {}, "Round ran");
+  });
+
+  $("#runLoop").on("click", function () {
+    const rounds = parseInt($("#loopRounds").val(), 10) || 3;
+    const delayMs = parseInt($("#loopDelayMs").val(), 10) || 0;
+    postForm("api/run_loop.php", { rounds, delayMs }, "Auto loop finished");
+  });
+
+  $("#cancelLoop").on("click", function () {
+    postForm("api/cancel_loop.php", {}, "Cancel sent");
   });
 
   $("#refresh").on("click", refreshState);

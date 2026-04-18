@@ -91,6 +91,16 @@ body {
   margin-top: 8px;
 }
 
+#loopNote {
+  margin-top: 8px;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0d1016;
+  color: var(--muted);
+}
+
 .btnrow {
   display: flex;
   gap: 10px;
@@ -108,6 +118,11 @@ button {
 
 button:hover { filter: brightness(1.1); }
 button:active { transform: translateY(1px); }
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+}
 
 button.danger {
   border-color: #7a3939;

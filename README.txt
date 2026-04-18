@@ -9,6 +9,8 @@ A local prototype scaffold for:
 - Worker B (risk / adversarial pressure)
 - Summarizer / canonical memory
 - JSON persistence and event logging
+- Autonomous multi-round execution
+- Cross-process locking between PHP and PowerShell
 
 Folder target
 -------------
@@ -40,11 +42,11 @@ This is prototype scaffolding, not hardened production design.
 Main flow
 ---------
 1. Enter objective + constraints.
-2. Click Start Task.
-3. Click Run A.
-4. Click Run B.
-5. Click Summarize.
-6. Watch panels and event log update.
+2. Choose `Mock` or `Live API`, model, and reasoning effort.
+3. Click Start Task.
+4. Either click `Run Round` for one cycle or `Run Auto Loop` for repeated cycles.
+5. Use `Cancel Loop` to stop after the current round.
+6. Watch worker panels, summary, event log, and step log update.
 
 Main files
 ----------
@@ -57,10 +59,13 @@ Main files
 
 Current behavior
 ----------------
-Workers are mocked logic with structured outputs.
-They do not call real model APIs yet.
-That is intentional so the loop and state handling work first.
+Workers support two modes:
+- `mock`: local scaffolded reasoning output
+- `live`: real model calls through the OpenAI Responses API
+
+The loop preserves contradictions, step logs, and per-round checkpoint files.
+The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
 
 Next sensible step
 ------------------
-Replace workerA.ps1 / workerB.ps1 internals with real API-driven reasoning calls while keeping the same checkpoint schema.
+Move autonomous looping off the request thread and into a queue / background runner so longer sessions survive page refreshes and can scale past a single blocking HTTP request.

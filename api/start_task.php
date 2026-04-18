@@ -2,6 +2,11 @@
 require __DIR__ . '/common.php';
 ensure_data_paths();
 
+$state = read_state();
+if (loop_is_running($state)) {
+    json_response(['message' => 'An autonomous loop is running. Cancel it before starting a new task.'], 409);
+}
+
 $objective = trim((string)post_value('objective', ''));
 if ($objective === '') {
     json_response(['message' => 'Objective is required.'], 400);
@@ -48,14 +53,16 @@ $task = [
     ]
 ];
 
-$state = read_state();
-$state['activeTask'] = $task;
-$state['workers'] = ['A' => null, 'B' => null];
-$state['summary'] = null;
-$state['memoryVersion'] = ($state['memoryVersion'] ?? 0) + 1;
-write_state($state);
+$state = mutate_state(function (array $state) use ($task): array {
+    $state['activeTask'] = $task;
+    $state['workers'] = ['A' => null, 'B' => null];
+    $state['summary'] = null;
+    $state['memoryVersion'] = ($state['memoryVersion'] ?? 0) + 1;
+    $state['loop'] = default_loop_state();
+    return $state;
+});
 
-$taskFile = DATA_PATH . DIRECTORY_SEPARATOR . 'tasks' . DIRECTORY_SEPARATOR . $taskId . '.json';
+$taskFile = TASKS_PATH . DIRECTORY_SEPARATOR . $taskId . '.json';
 file_put_contents($taskFile, json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 append_event('task_started', ['taskId' => $taskId, 'objective' => $objective]);
 append_step('task', 'Created a new task and reset worker memory.', [
