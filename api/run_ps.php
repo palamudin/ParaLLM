@@ -9,7 +9,7 @@ if (!isset($map[$target])) {
     json_response(['message' => 'Invalid target.'], 400);
 }
 
-$state = read_state();
+$state = recover_loop_state_if_needed();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }

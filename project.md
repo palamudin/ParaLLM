@@ -61,14 +61,16 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Cancellation that stops after the current round completes
 - Detached background loop launching through `scripts/loop_runner.php`
 - Shared-state locking between PHP and PowerShell
+- Stale queued/running job recovery based on queue age and heartbeat age
 - Per-round checkpoint snapshots such as `*_A_step002.json` and `*_summary_round002.json`
+- UI history panels for recent jobs and checkpoint artifacts
 - Optional live model execution with mock fallback still available
 
 ## Immediate Milestones
 
-1. Add stale-job recovery and resume/retry tooling for interrupted background runs
+1. Add resume/retry tooling for interrupted background runs instead of only recovery-to-error
 2. Add explicit exception policy for when raw artifacts are allowed vs. structured checkpoints only
-3. Add side-by-side round history review in the UI
+3. Add side-by-side round history review in the UI with richer drill-down than filename lists
 4. Add export and replay tooling for audited sessions
 5. Add bounded multi-job queueing instead of a single active background job slot
 

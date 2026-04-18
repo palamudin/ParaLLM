@@ -12,6 +12,8 @@ A local prototype scaffold for:
 - Autonomous multi-round execution
 - Cross-process locking between PHP and PowerShell
 - Detached background loop execution through PHP + PowerShell
+- Stale-job recovery for interrupted background runs
+- Recent job and artifact history in the UI
 
 Folder target
 -------------
@@ -48,6 +50,7 @@ Main flow
 4. Either click `Run Round` for one cycle or `Run Auto Loop` to queue a detached background run.
 5. Use `Cancel Loop` to stop after the current round.
 6. Watch worker panels, summary, event log, step log, and loop status update while the background job progresses.
+7. Use the Recent Jobs and Recent Artifacts panels to review prior runs and per-round checkpoints.
 
 Main files
 ----------
@@ -69,7 +72,9 @@ Workers support two modes:
 The loop preserves contradictions, step logs, and per-round checkpoint files.
 The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
 `Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.
+If a queued or running background job goes stale, polling endpoints will mark it as recovered, move it to `error`, and append a recovery entry to the step log.
+History polling is read-mostly and stays available even if a recovery check has to be deferred briefly because the loop lock is busy.
 
 Next sensible step
 ------------------
-Add stale-job recovery, richer history browsing, and eventually a bounded multi-job queue instead of a single active background slot.
+Add resume/retry tooling for interrupted jobs, richer side-by-side round inspection, and eventually a bounded multi-job queue instead of a single active background slot.

@@ -3,7 +3,7 @@ require __DIR__ . '/common.php';
 require __DIR__ . '/loop_runtime.php';
 ensure_data_paths();
 
-$state = read_state();
+$state = recover_loop_state_if_needed();
 if (!loop_is_active($state)) {
     json_response(['message' => 'No autonomous loop is currently running.'], 400);
 }

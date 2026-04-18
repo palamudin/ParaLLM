@@ -6,7 +6,7 @@ ensure_data_paths();
 $rounds = clamp_loop_rounds(post_value('rounds', 3));
 $delayMs = clamp_loop_delay_ms(post_value('delayMs', 1000));
 
-$state = read_state();
+$state = recover_loop_state_if_needed();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }

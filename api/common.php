@@ -12,7 +12,9 @@ define('STATE_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'state.json');
 define('EVENTS_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'events.jsonl');
 define('STEPS_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'steps.jsonl');
 define('LOCK_TIMEOUT_MS', 15000);
-define('LOCK_STALE_SECONDS', 900);
+define('LOCK_STALE_SECONDS', 45);
+define('JOB_QUEUE_STALE_SECONDS', 60);
+define('JOB_RUNNING_STALE_SECONDS', 180);
 
 function default_loop_state(): array {
     return [
@@ -244,6 +246,10 @@ function loop_is_active(array $state): bool {
     return in_array(loop_status($state), ['queued', 'running'], true);
 }
 
+function task_file_path(string $taskId): string {
+    return TASKS_PATH . DIRECTORY_SEPARATOR . $taskId . '.json';
+}
+
 function json_response($data, int $code = 200): void {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
@@ -265,6 +271,31 @@ function target_map(): array {
 
 function job_file_path(string $jobId): string {
     return JOBS_PATH . DIRECTORY_SEPARATOR . $jobId . '.json';
+}
+
+function read_job_unlocked(string $jobId): ?array {
+    $path = job_file_path($jobId);
+    if (!file_exists($path)) {
+        return null;
+    }
+    $raw = @file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        return null;
+    }
+    if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
+        $raw = substr($raw, 3);
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : null;
+}
+
+function write_job_unlocked(array $job): array {
+    $normalized = default_job($job);
+    file_put_contents(
+        job_file_path($normalized['jobId']),
+        json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+    );
+    return $normalized;
 }
 
 function default_job(array $config): array {
@@ -290,57 +321,159 @@ function default_job(array $config): array {
 
 function read_job(string $jobId): ?array {
     return with_lock(function () use ($jobId): ?array {
-        $path = job_file_path($jobId);
-        if (!file_exists($path)) {
-            return null;
-        }
-        $raw = @file_get_contents($path);
-        if ($raw === false || trim($raw) === '') {
-            return null;
-        }
-        if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
-            $raw = substr($raw, 3);
-        }
-        $decoded = json_decode($raw, true);
-        return is_array($decoded) ? $decoded : null;
+        return read_job_unlocked($jobId);
     });
 }
 
 function write_job(array $job): array {
     $normalized = default_job($job);
     with_lock(function () use ($normalized): void {
-        file_put_contents(
-            job_file_path($normalized['jobId']),
-            json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
-        );
+        write_job_unlocked($normalized);
     });
     return $normalized;
 }
 
 function mutate_job(string $jobId, callable $callback): ?array {
     return with_lock(function () use ($jobId, $callback): ?array {
-        $path = job_file_path($jobId);
-        $existing = null;
-        if (file_exists($path)) {
-            $raw = @file_get_contents($path);
-            if ($raw !== false && trim($raw) !== '') {
-                if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
-                    $raw = substr($raw, 3);
-                }
-                $decoded = json_decode($raw, true);
-                if (is_array($decoded)) {
-                    $existing = $decoded;
-                }
-            }
-        }
+        $existing = read_job_unlocked($jobId);
         $next = $callback($existing);
         if ($next === null) {
             return $existing;
         }
-        $normalized = default_job($next);
-        file_put_contents($path, json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        return $normalized;
+        return write_job_unlocked($next);
     });
+}
+
+function parse_job_ts(?string $value): ?int {
+    if (!is_string($value) || trim($value) === '') {
+        return null;
+    }
+    $ts = strtotime($value);
+    return $ts === false ? null : $ts;
+}
+
+function recover_loop_state_if_needed(): array {
+    return with_lock(function (): array {
+        $state = read_state_unlocked();
+        $loop = current_loop_state($state);
+        $status = $loop['status'] ?? 'idle';
+
+        if (!in_array($status, ['queued', 'running'], true)) {
+            return $state;
+        }
+
+        $jobId = $loop['jobId'] ?? null;
+        if (!is_string($jobId) || $jobId === '') {
+            $state = set_loop_state($state, [
+                'status' => 'error',
+                'finishedAt' => gmdate('c'),
+                'lastHeartbeatAt' => gmdate('c'),
+                'lastMessage' => 'Loop recovery failed: missing background job metadata.'
+            ]);
+            write_state_unlocked($state);
+            return $state;
+        }
+
+        $job = read_job_unlocked($jobId);
+        if ($job === null) {
+            $state = set_loop_state($state, [
+                'status' => 'error',
+                'jobId' => $jobId,
+                'finishedAt' => gmdate('c'),
+                'lastHeartbeatAt' => gmdate('c'),
+                'lastMessage' => 'Loop recovery failed: background job record is missing.'
+            ]);
+            write_state_unlocked($state);
+            return $state;
+        }
+
+        $jobStatus = $job['status'] ?? 'queued';
+        $now = time();
+        $queueTs = parse_job_ts($job['queuedAt'] ?? null);
+        $heartbeatTs = parse_job_ts($job['lastHeartbeatAt'] ?? null)
+            ?? parse_job_ts($job['startedAt'] ?? null)
+            ?? $queueTs;
+        $queueStale = $jobStatus === 'queued' && $queueTs !== null && ($now - $queueTs) > JOB_QUEUE_STALE_SECONDS;
+        $runStale = $jobStatus === 'running' && $heartbeatTs !== null && ($now - $heartbeatTs) > JOB_RUNNING_STALE_SECONDS;
+
+        if ($queueStale || $runStale) {
+            $message = $queueStale
+                ? 'Recovered a stale queued background loop.'
+                : 'Recovered a stale running background loop.';
+
+            $job = write_job_unlocked(array_merge($job, [
+                'status' => 'error',
+                'finishedAt' => gmdate('c'),
+                'lastHeartbeatAt' => gmdate('c'),
+                'lastMessage' => $message,
+                'error' => $message
+            ]));
+
+            $state = set_loop_state($state, [
+                'status' => 'error',
+                'jobId' => $jobId,
+                'mode' => $job['mode'] ?? ($loop['mode'] ?? 'background'),
+                'totalRounds' => (int)($job['rounds'] ?? ($loop['totalRounds'] ?? 0)),
+                'completedRounds' => (int)($job['completedRounds'] ?? ($loop['completedRounds'] ?? 0)),
+                'currentRound' => 0,
+                'delayMs' => (int)($job['delayMs'] ?? ($loop['delayMs'] ?? 0)),
+                'cancelRequested' => (bool)($job['cancelRequested'] ?? false),
+                'queuedAt' => $job['queuedAt'] ?? null,
+                'startedAt' => $job['startedAt'] ?? null,
+                'finishedAt' => $job['finishedAt'] ?? gmdate('c'),
+                'lastHeartbeatAt' => $job['lastHeartbeatAt'] ?? gmdate('c'),
+                'lastMessage' => $message
+            ]);
+            write_state_unlocked($state);
+
+            $line = json_encode([
+                'ts' => gmdate('c'),
+                'stage' => 'recovery',
+                'message' => $message,
+                'context' => [
+                    'jobId' => $jobId,
+                    'taskId' => $job['taskId'] ?? null,
+                    'previousStatus' => $jobStatus
+                ]
+            ], JSON_UNESCAPED_SLASHES);
+            file_put_contents(STEPS_FILE, $line . PHP_EOL, FILE_APPEND);
+
+            return $state;
+        }
+
+        if (in_array($jobStatus, ['completed', 'cancelled', 'error'], true) || $status !== $jobStatus) {
+            $state = set_loop_state($state, [
+                'status' => $jobStatus,
+                'jobId' => $jobId,
+                'mode' => $job['mode'] ?? ($loop['mode'] ?? 'background'),
+                'totalRounds' => (int)($job['rounds'] ?? ($loop['totalRounds'] ?? 0)),
+                'completedRounds' => (int)($job['completedRounds'] ?? ($loop['completedRounds'] ?? 0)),
+                'currentRound' => (int)($job['currentRound'] ?? 0),
+                'delayMs' => (int)($job['delayMs'] ?? ($loop['delayMs'] ?? 0)),
+                'cancelRequested' => (bool)($job['cancelRequested'] ?? false),
+                'queuedAt' => $job['queuedAt'] ?? ($loop['queuedAt'] ?? null),
+                'startedAt' => $job['startedAt'] ?? ($loop['startedAt'] ?? null),
+                'finishedAt' => $job['finishedAt'] ?? ($loop['finishedAt'] ?? null),
+                'lastHeartbeatAt' => $job['lastHeartbeatAt'] ?? ($loop['lastHeartbeatAt'] ?? null),
+                'lastMessage' => $job['lastMessage'] ?? ($loop['lastMessage'] ?? 'Ready.')
+            ]);
+            write_state_unlocked($state);
+        }
+
+        return $state;
+    });
+}
+
+function try_recover_loop_state_if_needed(): array {
+    try {
+        return recover_loop_state_if_needed();
+    } catch (Throwable $ex) {
+        $state = read_state_unlocked();
+        $loop = current_loop_state($state);
+        $loop['lastMessage'] = ($loop['lastMessage'] ?? 'Ready.') . ' Recovery check deferred: ' . $ex->getMessage();
+        $state['loop'] = $loop;
+        return $state;
+    }
 }
 
 function php_cli_path(): string {

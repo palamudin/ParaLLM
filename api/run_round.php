@@ -3,7 +3,7 @@ require __DIR__ . '/common.php';
 require __DIR__ . '/loop_runtime.php';
 ensure_data_paths();
 
-$state = read_state();
+$state = recover_loop_state_if_needed();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }
