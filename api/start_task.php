@@ -3,8 +3,8 @@ require __DIR__ . '/common.php';
 ensure_data_paths();
 
 $state = read_state();
-if (loop_is_running($state)) {
-    json_response(['message' => 'An autonomous loop is running. Cancel it before starting a new task.'], 409);
+if (loop_is_active($state)) {
+    json_response(['message' => 'An autonomous loop is active. Cancel it before starting a new task.'], 409);
 }
 
 $objective = trim((string)post_value('objective', ''));

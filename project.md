@@ -35,6 +35,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `data/steps.jsonl`: structured step log for human-readable process trace
 - `data/tasks/*.json`: task snapshots
 - `data/checkpoints/*.json`: worker and summary checkpoints
+- `data/jobs/*.json`: background loop job metadata and result summaries
 - `data/locks/loop.lock`: cross-process lock directory used by PHP and PowerShell
 
 ## Runtime Options
@@ -58,17 +59,18 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Manual single-round execution
 - Autonomous multi-round execution with configurable round count and delay
 - Cancellation that stops after the current round completes
+- Detached background loop launching through `scripts/loop_runner.php`
 - Shared-state locking between PHP and PowerShell
 - Per-round checkpoint snapshots such as `*_A_step002.json` and `*_summary_round002.json`
 - Optional live model execution with mock fallback still available
 
 ## Immediate Milestones
 
-1. Add background queueing so long loops do not tie up a single HTTP request
+1. Add stale-job recovery and resume/retry tooling for interrupted background runs
 2. Add explicit exception policy for when raw artifacts are allowed vs. structured checkpoints only
-3. Add richer lock / stale-run recovery and crash-safe cleanup
-4. Add side-by-side round history review in the UI
-5. Add export and replay tooling for audited sessions
+3. Add side-by-side round history review in the UI
+4. Add export and replay tooling for audited sessions
+5. Add bounded multi-job queueing instead of a single active background job slot
 
 ## Notes
 

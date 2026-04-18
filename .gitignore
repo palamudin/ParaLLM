@@ -1,6 +1,8 @@
 Auth.txt
 data/checkpoints/
 data/tasks/
+data/jobs/
+data/locks/
 data/*.json
 data/*.jsonl
 *.zip

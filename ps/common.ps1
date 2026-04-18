@@ -53,13 +53,17 @@ function Write-Utf8NoBom {
 function Get-DefaultLoopState {
     return [ordered]@{
         status = 'idle'
+        jobId = $null
+        mode = 'manual'
         totalRounds = 0
         completedRounds = 0
         currentRound = 0
         delayMs = 0
         cancelRequested = $false
+        queuedAt = $null
         startedAt = $null
         finishedAt = $null
+        lastHeartbeatAt = $null
         lastMessage = 'Ready.'
     }
 }

@@ -11,6 +11,7 @@ A local prototype scaffold for:
 - JSON persistence and event logging
 - Autonomous multi-round execution
 - Cross-process locking between PHP and PowerShell
+- Detached background loop execution through PHP + PowerShell
 
 Folder target
 -------------
@@ -44,18 +45,20 @@ Main flow
 1. Enter objective + constraints.
 2. Choose `Mock` or `Live API`, model, and reasoning effort.
 3. Click Start Task.
-4. Either click `Run Round` for one cycle or `Run Auto Loop` for repeated cycles.
+4. Either click `Run Round` for one cycle or `Run Auto Loop` to queue a detached background run.
 5. Use `Cancel Loop` to stop after the current round.
-6. Watch worker panels, summary, event log, and step log update.
+6. Watch worker panels, summary, event log, step log, and loop status update while the background job progresses.
 
 Main files
 ----------
 - index.html               UI
 - assets/app.js            frontend logic
 - api/*.php                broker endpoints
+- scripts/loop_runner.php  background loop runner
 - ps/*.ps1                 worker/summarizer scripts
 - data/state.json          canonical state
 - data/events.jsonl        append-only event log
+- data/jobs/*.json         background job metadata
 
 Current behavior
 ----------------
@@ -65,7 +68,8 @@ Workers support two modes:
 
 The loop preserves contradictions, step logs, and per-round checkpoint files.
 The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
+`Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.
 
 Next sensible step
 ------------------
-Move autonomous looping off the request thread and into a queue / background runner so longer sessions survive page refreshes and can scale past a single blocking HTTP request.
+Add stale-job recovery, richer history browsing, and eventually a bounded multi-job queue instead of a single active background slot.

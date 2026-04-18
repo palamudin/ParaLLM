@@ -3,7 +3,7 @@ require __DIR__ . '/common.php';
 ensure_data_paths();
 
 $state = read_state();
-if (loop_is_running($state)) {
+if (loop_is_active($state)) {
     json_response(['message' => 'An autonomous loop is running. Cancel it before resetting state.'], 409);
 }
 

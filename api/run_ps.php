@@ -13,7 +13,7 @@ $state = read_state();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }
-if (loop_is_running($state)) {
+if (loop_is_active($state)) {
     json_response(['message' => 'The autonomous loop is running. Cancel it before manual dispatch.'], 409);
 }
 

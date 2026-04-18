@@ -5,6 +5,7 @@ define('ROOT_PATH', dirname(__DIR__));
 define('DATA_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'data');
 define('TASKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'tasks');
 define('CHECKPOINTS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'checkpoints');
+define('JOBS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'jobs');
 define('LOCKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'locks');
 define('PS_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'ps');
 define('STATE_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'state.json');
@@ -16,13 +17,17 @@ define('LOCK_STALE_SECONDS', 900);
 function default_loop_state(): array {
     return [
         'status' => 'idle',
+        'jobId' => null,
+        'mode' => 'manual',
         'totalRounds' => 0,
         'completedRounds' => 0,
         'currentRound' => 0,
         'delayMs' => 0,
         'cancelRequested' => false,
+        'queuedAt' => null,
         'startedAt' => null,
         'finishedAt' => null,
+        'lastHeartbeatAt' => null,
         'lastMessage' => 'Ready.'
     ];
 }
@@ -61,6 +66,7 @@ function ensure_data_paths(): void {
         DATA_PATH,
         TASKS_PATH,
         CHECKPOINTS_PATH,
+        JOBS_PATH,
         LOCKS_PATH,
     ];
 
@@ -226,8 +232,16 @@ function set_loop_state(array $state, array $patch): array {
     return $state;
 }
 
+function loop_status(array $state): string {
+    return (string)(current_loop_state($state)['status'] ?? 'idle');
+}
+
 function loop_is_running(array $state): bool {
-    return (current_loop_state($state)['status'] ?? 'idle') === 'running';
+    return loop_status($state) === 'running';
+}
+
+function loop_is_active(array $state): bool {
+    return in_array(loop_status($state), ['queued', 'running'], true);
 }
 
 function json_response($data, int $code = 200): void {
@@ -247,6 +261,119 @@ function target_map(): array {
         'B' => 'workerB.ps1',
         'summarizer' => 'summarizer.ps1'
     ];
+}
+
+function job_file_path(string $jobId): string {
+    return JOBS_PATH . DIRECTORY_SEPARATOR . $jobId . '.json';
+}
+
+function default_job(array $config): array {
+    return [
+        'jobId' => $config['jobId'],
+        'taskId' => $config['taskId'],
+        'mode' => $config['mode'] ?? 'background',
+        'status' => $config['status'] ?? 'queued',
+        'rounds' => (int)$config['rounds'],
+        'delayMs' => (int)$config['delayMs'],
+        'cancelRequested' => (bool)($config['cancelRequested'] ?? false),
+        'queuedAt' => $config['queuedAt'] ?? gmdate('c'),
+        'startedAt' => $config['startedAt'] ?? null,
+        'finishedAt' => $config['finishedAt'] ?? null,
+        'lastHeartbeatAt' => $config['lastHeartbeatAt'] ?? null,
+        'completedRounds' => (int)($config['completedRounds'] ?? 0),
+        'currentRound' => (int)($config['currentRound'] ?? 0),
+        'lastMessage' => $config['lastMessage'] ?? 'Queued.',
+        'results' => $config['results'] ?? [],
+        'error' => $config['error'] ?? null
+    ];
+}
+
+function read_job(string $jobId): ?array {
+    return with_lock(function () use ($jobId): ?array {
+        $path = job_file_path($jobId);
+        if (!file_exists($path)) {
+            return null;
+        }
+        $raw = @file_get_contents($path);
+        if ($raw === false || trim($raw) === '') {
+            return null;
+        }
+        if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
+            $raw = substr($raw, 3);
+        }
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : null;
+    });
+}
+
+function write_job(array $job): array {
+    $normalized = default_job($job);
+    with_lock(function () use ($normalized): void {
+        file_put_contents(
+            job_file_path($normalized['jobId']),
+            json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+        );
+    });
+    return $normalized;
+}
+
+function mutate_job(string $jobId, callable $callback): ?array {
+    return with_lock(function () use ($jobId, $callback): ?array {
+        $path = job_file_path($jobId);
+        $existing = null;
+        if (file_exists($path)) {
+            $raw = @file_get_contents($path);
+            if ($raw !== false && trim($raw) !== '') {
+                if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
+                    $raw = substr($raw, 3);
+                }
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $existing = $decoded;
+                }
+            }
+        }
+        $next = $callback($existing);
+        if ($next === null) {
+            return $existing;
+        }
+        $normalized = default_job($next);
+        file_put_contents($path, json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        return $normalized;
+    });
+}
+
+function php_cli_path(): string {
+    $candidates = [
+        dirname(dirname(ROOT_PATH)) . DIRECTORY_SEPARATOR . 'php' . DIRECTORY_SEPARATOR . 'php.exe',
+        PHP_BINARY,
+    ];
+
+    foreach ($candidates as $candidate) {
+        if (is_string($candidate) && $candidate !== '' && file_exists($candidate)) {
+            return $candidate;
+        }
+    }
+
+    throw new RuntimeException('Unable to locate PHP CLI executable.');
+}
+
+function launch_background_php(string $scriptPath, array $args = []): void {
+    $phpPath = php_cli_path();
+    $argumentList = array_merge([$scriptPath], $args);
+    $psArgs = implode(', ', array_map(static function (string $value): string {
+        return "'" . str_replace("'", "''", $value) . "'";
+    }, $argumentList));
+
+    $psScript = '$php=' . "'" . str_replace("'", "''", $phpPath) . "';" .
+        '$args=@(' . $psArgs . ');' .
+        'Start-Process -WindowStyle Hidden -FilePath $php -ArgumentList $args';
+
+    $cmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' . escapeshellarg($psScript) . ' 2>&1';
+    $output = shell_exec($cmd);
+    if ($output !== null && stripos($output, 'Start-Process') !== false && stripos($output, 'error') !== false) {
+        throw new RuntimeException(trim($output));
+    }
 }
 
 function ps_command(string $scriptName): string {

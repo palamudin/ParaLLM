@@ -7,7 +7,8 @@ function pretty(value) {
 }
 
 function applyLoopUi(loop) {
-  const isRunning = loop?.status === "running";
+  const isActive = loop?.status === "running" || loop?.status === "queued";
+  $("#loopJobId").text(loop?.jobId || "none");
   $("#loopStatus").text(loop?.status || "idle");
   $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
   $("#loopNote").text(loop?.lastMessage || "Autonomous mode runs A -> B -> Summarizer repeatedly.");
@@ -23,9 +24,9 @@ function applyLoopUi(loop) {
   ];
 
   disableWhileRunning.forEach(function (selector) {
-    $(selector).prop("disabled", isRunning);
+    $(selector).prop("disabled", isActive);
   });
-  $("#cancelLoop").prop("disabled", !isRunning);
+  $("#cancelLoop").prop("disabled", !isActive);
 }
 
 function refreshState() {
@@ -120,7 +121,7 @@ $(function () {
   $("#runLoop").on("click", function () {
     const rounds = parseInt($("#loopRounds").val(), 10) || 3;
     const delayMs = parseInt($("#loopDelayMs").val(), 10) || 0;
-    postForm("api/run_loop.php", { rounds, delayMs }, "Auto loop finished");
+    postForm("api/start_loop.php", { rounds, delayMs }, "Auto loop queued");
   });
 
   $("#cancelLoop").on("click", function () {
