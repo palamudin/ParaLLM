@@ -112,6 +112,7 @@ function Project-TaskForSummary {
     return [ordered]@{
         taskId = [string]$Task['taskId']
         objective = Truncate-TextValue -Value $Task['objective'] -MaxLength 800
+        sessionContext = Truncate-TextValue -Value $Task['sessionContext'] -MaxLength 600
         constraints = @(Limit-StringList -Value $Task['constraints'] -MaxItems 12 -MaxLength 240)
         syncPolicy = if (Test-ObjectKey -Value $Task -Key 'syncPolicy') { ConvertTo-HashtableCompat -Value $Task['syncPolicy'] } else { @{} }
         runtime = [ordered]@{

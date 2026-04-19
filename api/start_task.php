@@ -12,6 +12,8 @@ if ($objective === '') {
     json_response(['message' => 'Objective is required.'], 400);
 }
 
+$sessionContext = trim((string)post_value('sessionContext', ''));
+
 $constraintsRaw = post_value('constraints', '[]');
 $constraints = json_decode((string)$constraintsRaw, true);
 if (!is_array($constraints)) $constraints = [];
@@ -54,6 +56,7 @@ $task = [
     'taskId' => $taskId,
     'objective' => $objective,
     'constraints' => array_values($constraints),
+    'sessionContext' => $sessionContext,
     'createdAt' => gmdate('c'),
     'runtime' => [
         'executionMode' => $executionMode,
@@ -80,6 +83,7 @@ $task = [
 
 $state = mutate_state(function (array $state) use ($task): array {
     $state['activeTask'] = $task;
+    $state['draft'] = build_draft_from_task($task);
     $state['workers'] = empty_worker_state_map(task_workers($task));
     $state['summary'] = null;
     $state['memoryVersion'] = ($state['memoryVersion'] ?? 0) + 1;
@@ -93,6 +97,7 @@ append_event('task_started', ['taskId' => $taskId, 'objective' => $objective]);
 append_step('task', 'Created a new task and reset worker memory.', [
     'taskId' => $taskId,
     'constraintCount' => count($constraints),
+    'hasSessionContext' => $sessionContext !== '',
     'runtime' => $task['runtime'],
     'syncPolicy' => $task['syncPolicy'],
     'workerCount' => count($workers),

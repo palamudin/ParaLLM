@@ -101,6 +101,7 @@ function New-MockCheckpoint {
 
     $viewpoint = if ($Worker['role'] -eq 'utility') { 'utility' } else { 'adversarial' }
     $defaultTargets = Get-DefaultRequestTargets -Task $Task -CurrentWorkerId $Worker['id']
+    $sessionContext = if (Test-ObjectKey -Value $Task -Key 'sessionContext') { ([string]$Task['sessionContext']).Trim() } else { '' }
     $peerText = if ($PeerMessages.Count -gt 0) {
         ($PeerMessages | ForEach-Object { '{0}: {1}' -f $_['from'], $_['message'] }) -join "`n"
     } else {
@@ -122,7 +123,11 @@ function New-MockCheckpoint {
         focus = $Worker['focus']
         step = $StepNumber
         modelUsed = $Runtime['model']
-        observation = ('{0} reading of objective with focus on {1}.' -f $Worker['label'], $Worker['focus'])
+        observation = if (-not [string]::IsNullOrWhiteSpace($sessionContext)) {
+            ('{0} reading of objective with focus on {1}, informed by carry-forward session context.' -f $Worker['label'], $Worker['focus'])
+        } else {
+            ('{0} reading of objective with focus on {1}.' -f $Worker['label'], $Worker['focus'])
+        }
         peerSteer = $peerText
         sharedMemorySeen = if ($PriorSummary) { [ordered]@{
             memoryVersion = $PriorMemoryVersion
@@ -168,7 +173,13 @@ function New-MockCheckpoint {
             'Raise or lower sharing cadence only after checking budget and convergence behavior'
         )
         researchMode = $researchMode
-        researchQueries = if ($ResearchConfig['enabled']) { @($Task['objective']) } else { @() }
+        researchQueries = if ($ResearchConfig['enabled']) {
+            if (-not [string]::IsNullOrWhiteSpace($sessionContext)) {
+                @($Task['objective'], $sessionContext)
+            } else {
+                @($Task['objective'])
+            }
+        } else { @() }
         researchSources = @()
         urlCitations = @()
         evidenceLedger = @(
@@ -274,6 +285,7 @@ function New-LiveCheckpoint {
     } else {
         'No peer steer received yet.'
     }
+    $sessionContext = if (Test-ObjectKey -Value $Task -Key 'sessionContext') { ([string]$Task['sessionContext']).Trim() } else { '' }
 
     $summaryText = if ($PriorSummary) { $PriorSummary | ConvertTo-Json -Depth 15 } else { 'none' }
     $instructions = @"
@@ -305,6 +317,9 @@ If evidence is missing or weak, say so in evidenceGaps instead of overstating ce
     $inputText = @"
 Objective:
 $([string]$Task['objective'])
+
+Session context:
+$(if ([string]::IsNullOrWhiteSpace($sessionContext)) { 'none' } else { $sessionContext })
 
 Constraints:
 $(($Constraints -join "`n"))

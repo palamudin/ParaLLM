@@ -36,6 +36,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `data/tasks/*.json`: task snapshots
 - `data/checkpoints/*.json`: worker and summary checkpoints
 - `data/outputs/*.json`: dedicated worker and summarizer output artifacts with response metadata for quality review
+- `data/sessions/*.json`: archived session snapshots captured by Reset Session with carry-forward context
 - `data/jobs/*.json`: background loop job metadata and result summaries
 - `data/locks/loop.lock`: cross-process lock directory used by PHP and PowerShell
 
@@ -49,6 +50,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
 - API key can be managed locally through the UI and is only displayed as a masked last-4 preview
+- Form draft state is persisted locally so edits do not get stomped by polling refreshes
 - Secrets stay in `Auth.txt` locally and should never be logged
 
 ## Sync Model
@@ -62,6 +64,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 ## Current POC Features
 
 - Dynamic worker roster starting with `A` and `B`, with bounded adversarial expansion through additional lettered lanes
+- Commander form now includes a `Session Context` field for short carry-forward memory between sessions
 - Manual single-target execution for any configured worker lane and the summarizer
 - Manual single-round execution
 - Autonomous multi-round execution with configurable round count and delay
@@ -79,6 +82,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
 - Masked API key management in the top bar for local test-key swapping
+- Reset Session archives the current state to `data/sessions`, clears the active task, and reloads a fresh draft with short carry-forward context
 - Per-round checkpoint snapshots such as `*_A_step002.json` and `*_summary_round002.json`
 - UI history panels for recent jobs and checkpoint artifacts
 - Optional live model execution with mock fallback still available

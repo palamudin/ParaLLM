@@ -43,6 +43,8 @@
 
     <section class="panel commander">
       <h2>Commander Input</h2>
+      <label for="sessionContext">Session Context</label>
+      <textarea id="sessionContext" rows="4" placeholder="Short carry-forward context from a previous session will appear here after Reset Session."></textarea>
       <label for="objective">Objective</label>
       <textarea id="objective" rows="5" placeholder="Enter task/objective here..."></textarea>
       <label for="constraints">Constraints (one per line)</label>
@@ -149,6 +151,7 @@
         <button id="addAdversarial">Add Adversarial</button>
         <button id="cancelLoop" class="danger">Cancel Loop</button>
         <button id="refresh">Refresh</button>
+        <button id="resetSession">Reset Session</button>
         <button id="resetState" class="danger">Reset State</button>
       </div>
       <div id="message"></div>

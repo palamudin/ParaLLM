@@ -50,6 +50,11 @@ function Get-OutputsPath {
     return (Join-Path $Root 'data\outputs')
 }
 
+function Get-SessionsPath {
+    param([string]$Root)
+    return (Join-Path $Root 'data\sessions')
+}
+
 function Get-TaskFilePath {
     param(
         [string]$Root,
@@ -114,6 +119,28 @@ function Get-DefaultBudgetConfig {
     }
 }
 
+function Get-DefaultDraft {
+    $budget = Get-DefaultBudgetConfig
+    $model = Get-DefaultModelId
+    return [ordered]@{
+        objective = ''
+        constraints = @()
+        sessionContext = ''
+        executionMode = 'live'
+        model = $model
+        summarizerModel = $model
+        reasoningEffort = 'low'
+        maxTotalTokens = [int]$budget['maxTotalTokens']
+        maxCostUsd = [double]$budget['maxCostUsd']
+        maxOutputTokens = [int]$budget['maxOutputTokens']
+        researchEnabled = $false
+        researchExternalWebAccess = $true
+        researchDomains = @()
+        vettingEnabled = $true
+        updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+    }
+}
+
 function Normalize-BudgetConfig {
     param([object]$Budget)
 
@@ -138,6 +165,89 @@ function Normalize-BudgetConfig {
         maxTotalTokens = $maxTotalTokens
         maxCostUsd = [Math]::Round($maxCostUsd, 6)
         maxOutputTokens = $maxOutputTokens
+    }
+}
+
+function Normalize-Draft {
+    param([object]$Draft)
+
+    $default = Get-DefaultDraft
+    $executionMode = [string]$default['executionMode']
+    $reasoningEffort = [string]$default['reasoningEffort']
+    $model = [string]$default['model']
+    $summarizerModel = [string]$default['summarizerModel']
+    $maxTotalTokens = [int]$default['maxTotalTokens']
+    $maxCostUsd = [double]$default['maxCostUsd']
+    $maxOutputTokens = [int]$default['maxOutputTokens']
+    $researchEnabled = [bool]$default['researchEnabled']
+    $researchExternalWebAccess = [bool]$default['researchExternalWebAccess']
+    $researchDomains = @($default['researchDomains'])
+    $vettingEnabled = [bool]$default['vettingEnabled']
+    $updatedAt = [string]$default['updatedAt']
+
+    if ($null -ne $Draft) {
+        if ((Test-ObjectKey -Value $Draft -Key 'executionMode') -and $Draft['executionMode']) {
+            $candidate = ([string]$Draft['executionMode']).Trim()
+            if ($candidate -in @('live', 'mock')) {
+                $executionMode = $candidate
+            }
+        }
+        if ((Test-ObjectKey -Value $Draft -Key 'reasoningEffort') -and $Draft['reasoningEffort']) {
+            $candidate = ([string]$Draft['reasoningEffort']).Trim()
+            if ($candidate -in @('none', 'low', 'medium', 'high', 'xhigh')) {
+                $reasoningEffort = $candidate
+            }
+        }
+        if (Test-ObjectKey -Value $Draft -Key 'model') {
+            $model = Normalize-ModelId -Model ([string]$Draft['model']) -Fallback $model
+        }
+        if (Test-ObjectKey -Value $Draft -Key 'summarizerModel') {
+            $summarizerModel = Normalize-ModelId -Model ([string]$Draft['summarizerModel']) -Fallback $model
+        } else {
+            $summarizerModel = Normalize-ModelId -Model $summarizerModel -Fallback $model
+        }
+        if ((Test-ObjectKey -Value $Draft -Key 'maxTotalTokens') -and $null -ne $Draft['maxTotalTokens']) {
+            $maxTotalTokens = [Math]::Max(0, [int]$Draft['maxTotalTokens'])
+        }
+        if ((Test-ObjectKey -Value $Draft -Key 'maxCostUsd') -and $null -ne $Draft['maxCostUsd']) {
+            $maxCostUsd = [Math]::Round([Math]::Max(0.0, [double]$Draft['maxCostUsd']), 6)
+        }
+        if ((Test-ObjectKey -Value $Draft -Key 'maxOutputTokens') -and $null -ne $Draft['maxOutputTokens']) {
+            $maxOutputTokens = [Math]::Max(0, [int]$Draft['maxOutputTokens'])
+        }
+        if (Test-ObjectKey -Value $Draft -Key 'researchEnabled') {
+            $researchEnabled = Coerce-Bool -Value $Draft['researchEnabled'] -Default $researchEnabled
+        }
+        if (Test-ObjectKey -Value $Draft -Key 'researchExternalWebAccess') {
+            $researchExternalWebAccess = Coerce-Bool -Value $Draft['researchExternalWebAccess'] -Default $researchExternalWebAccess
+        }
+        if (Test-ObjectKey -Value $Draft -Key 'researchDomains') {
+            $researchDomains = @(Normalize-AllowedDomains -Value $Draft['researchDomains'])
+        }
+        if (Test-ObjectKey -Value $Draft -Key 'vettingEnabled') {
+            $vettingEnabled = Coerce-Bool -Value $Draft['vettingEnabled'] -Default $vettingEnabled
+        }
+        if ((Test-ObjectKey -Value $Draft -Key 'updatedAt') -and $Draft['updatedAt']) {
+            $updatedAt = [string]$Draft['updatedAt']
+        }
+    }
+
+    return [ordered]@{
+        objective = if ($null -ne $Draft -and (Test-ObjectKey -Value $Draft -Key 'objective')) { ([string]$Draft['objective']).Trim() } else { [string]$default['objective'] }
+        constraints = ConvertTo-JsonArray -Value (Normalize-StringArrayPreserveItems -Value $(if ($null -ne $Draft -and (Test-ObjectKey -Value $Draft -Key 'constraints')) { $Draft['constraints'] } else { $default['constraints'] }))
+        sessionContext = if ($null -ne $Draft -and (Test-ObjectKey -Value $Draft -Key 'sessionContext')) { ([string]$Draft['sessionContext']).Trim() } else { [string]$default['sessionContext'] }
+        executionMode = $executionMode
+        model = $model
+        summarizerModel = $summarizerModel
+        reasoningEffort = $reasoningEffort
+        maxTotalTokens = $maxTotalTokens
+        maxCostUsd = $maxCostUsd
+        maxOutputTokens = $maxOutputTokens
+        researchEnabled = $researchEnabled
+        researchExternalWebAccess = $researchExternalWebAccess
+        researchDomains = ConvertTo-JsonArray -Value $researchDomains
+        vettingEnabled = $vettingEnabled
+        updatedAt = if ([string]::IsNullOrWhiteSpace($updatedAt)) { (Get-Date).ToUniversalTime().ToString('o') } else { $updatedAt }
     }
 }
 
@@ -607,6 +717,7 @@ function Get-DefaultUsageState {
 function Get-DefaultState {
     return [ordered]@{
         activeTask = $null
+        draft = Get-DefaultDraft
         workers = @{}
         summary = $null
         memoryVersion = 0
@@ -623,6 +734,7 @@ function Ensure-DataPaths {
         (Get-DataPath -Root $Root),
         (Join-Path $Root 'data\tasks'),
         (Get-OutputsPath -Root $Root),
+        (Get-SessionsPath -Root $Root),
         (Join-Path $Root 'data\checkpoints'),
         (Join-Path $Root 'data\jobs'),
         (Get-LocksPath -Root $Root)
@@ -960,6 +1072,7 @@ function Normalize-State {
     $default = Get-DefaultState
     $normalized = [ordered]@{
         activeTask = $default['activeTask']
+        draft = Get-DefaultDraft
         workers = @{}
         summary = $default['summary']
         memoryVersion = $default['memoryVersion']
@@ -971,6 +1084,9 @@ function Normalize-State {
     if ($null -ne $State) {
         if (Test-ObjectKey -Value $State -Key 'activeTask') {
             $normalized['activeTask'] = $State['activeTask']
+        }
+        if (Test-ObjectKey -Value $State -Key 'draft') {
+            $normalized['draft'] = Normalize-Draft -Draft $State['draft']
         }
         if (Test-ObjectKey -Value $State -Key 'summary') {
             $normalized['summary'] = Normalize-SummaryStateValue -Summary $State['summary']

@@ -6,6 +6,7 @@ define('DATA_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'data');
 define('TASKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'tasks');
 define('CHECKPOINTS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'checkpoints');
 define('OUTPUTS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'outputs');
+define('SESSIONS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'sessions');
 define('JOBS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'jobs');
 define('LOCKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'locks');
 define('PS_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'ps');
@@ -37,6 +38,28 @@ function default_model_catalog(): array {
 
 function default_model_id(): string {
     return 'gpt-5-mini';
+}
+
+function default_draft_state(): array {
+    $budget = default_budget_config();
+    $model = default_model_id();
+    return [
+        'objective' => '',
+        'constraints' => [],
+        'sessionContext' => '',
+        'executionMode' => 'live',
+        'model' => $model,
+        'summarizerModel' => $model,
+        'reasoningEffort' => 'low',
+        'maxTotalTokens' => $budget['maxTotalTokens'],
+        'maxCostUsd' => $budget['maxCostUsd'],
+        'maxOutputTokens' => $budget['maxOutputTokens'],
+        'researchEnabled' => false,
+        'researchExternalWebAccess' => true,
+        'researchDomains' => [],
+        'vettingEnabled' => true,
+        'updatedAt' => gmdate('c')
+    ];
 }
 
 function default_budget_config(): array {
@@ -114,6 +137,170 @@ function normalize_budget_config(array $config = []): array {
         'maxCostUsd' => max(0.0, round((float)($config['maxCostUsd'] ?? $default['maxCostUsd']), 6)),
         'maxOutputTokens' => max(0, (int)($config['maxOutputTokens'] ?? $default['maxOutputTokens'])),
     ];
+}
+
+function normalize_draft_state(?array $draft): array {
+    $default = default_draft_state();
+    $reasoningEffort = trim((string)($draft['reasoningEffort'] ?? $default['reasoningEffort']));
+    if (!in_array($reasoningEffort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
+        $reasoningEffort = $default['reasoningEffort'];
+    }
+
+    $executionMode = trim((string)($draft['executionMode'] ?? $default['executionMode']));
+    if (!in_array($executionMode, ['live', 'mock'], true)) {
+        $executionMode = $default['executionMode'];
+    }
+
+    return [
+        'objective' => trim((string)($draft['objective'] ?? $default['objective'])),
+        'constraints' => array_values(normalize_string_list($draft['constraints'] ?? $default['constraints'])),
+        'sessionContext' => trim((string)($draft['sessionContext'] ?? $default['sessionContext'])),
+        'executionMode' => $executionMode,
+        'model' => normalize_model_id((string)($draft['model'] ?? $default['model']), $default['model']),
+        'summarizerModel' => normalize_model_id((string)($draft['summarizerModel'] ?? $default['summarizerModel']), (string)($draft['model'] ?? $default['model'])),
+        'reasoningEffort' => $reasoningEffort,
+        'maxTotalTokens' => max(0, (int)($draft['maxTotalTokens'] ?? $default['maxTotalTokens'])),
+        'maxCostUsd' => max(0.0, round((float)($draft['maxCostUsd'] ?? $default['maxCostUsd']), 6)),
+        'maxOutputTokens' => max(0, (int)($draft['maxOutputTokens'] ?? $default['maxOutputTokens'])),
+        'researchEnabled' => coerce_bool($draft['researchEnabled'] ?? $default['researchEnabled'], $default['researchEnabled']),
+        'researchExternalWebAccess' => coerce_bool($draft['researchExternalWebAccess'] ?? $default['researchExternalWebAccess'], $default['researchExternalWebAccess']),
+        'researchDomains' => normalize_allowed_domains($draft['researchDomains'] ?? $default['researchDomains']),
+        'vettingEnabled' => coerce_bool($draft['vettingEnabled'] ?? $default['vettingEnabled'], $default['vettingEnabled']),
+        'updatedAt' => trim((string)($draft['updatedAt'] ?? '')) ?: gmdate('c')
+    ];
+}
+
+function build_draft_from_task(?array $task, array $overrides = [], bool $resetBudget = false): array {
+    $default = default_draft_state();
+    if ($task === null) {
+        return normalize_draft_state(array_merge($default, $overrides));
+    }
+
+    $runtime = is_array($task['runtime'] ?? null) ? $task['runtime'] : [];
+    $budget = $resetBudget
+        ? default_budget_config()
+        : normalize_budget_config(is_array($runtime['budget'] ?? null) ? $runtime['budget'] : []);
+    $research = normalize_research_config(is_array($runtime['research'] ?? null) ? $runtime['research'] : []);
+    $vetting = normalize_vetting_config(is_array($runtime['vetting'] ?? null) ? $runtime['vetting'] : []);
+    $model = normalize_model_id((string)($runtime['model'] ?? $default['model']), $default['model']);
+    $summarizer = is_array($task['summarizer'] ?? null) ? $task['summarizer'] : [];
+
+    $draft = [
+        'objective' => trim((string)($task['objective'] ?? $default['objective'])),
+        'constraints' => array_values(normalize_string_list($task['constraints'] ?? $default['constraints'])),
+        'sessionContext' => trim((string)($task['sessionContext'] ?? $default['sessionContext'])),
+        'executionMode' => trim((string)($runtime['executionMode'] ?? $default['executionMode'])),
+        'model' => $model,
+        'summarizerModel' => normalize_model_id((string)($summarizer['model'] ?? $model), $model),
+        'reasoningEffort' => trim((string)($runtime['reasoningEffort'] ?? $default['reasoningEffort'])),
+        'maxTotalTokens' => $budget['maxTotalTokens'],
+        'maxCostUsd' => $budget['maxCostUsd'],
+        'maxOutputTokens' => $budget['maxOutputTokens'],
+        'researchEnabled' => $research['enabled'],
+        'researchExternalWebAccess' => $research['externalWebAccess'],
+        'researchDomains' => $research['domains'],
+        'vettingEnabled' => $vetting['enabled'],
+        'updatedAt' => gmdate('c')
+    ];
+
+    return normalize_draft_state(array_merge($draft, $overrides));
+}
+
+function truncate_plain_text($value, int $maxLength = 220): string {
+    $text = preg_replace('/\s+/', ' ', trim((string)$value));
+    if ($text === '') {
+        return '';
+    }
+    if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+        if (mb_strlen($text) <= $maxLength) {
+            return $text;
+        }
+        return rtrim(mb_substr($text, 0, max(0, $maxLength - 3))) . '...';
+    }
+    if (strlen($text) <= $maxLength) {
+        return $text;
+    }
+    return rtrim(substr($text, 0, max(0, $maxLength - 3))) . '...';
+}
+
+function build_session_context_summary(array $state): string {
+    $task = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
+    $summary = is_array($state['summary'] ?? null) ? $state['summary'] : null;
+    $usage = normalize_usage_state(is_array($state['usage'] ?? null) ? $state['usage'] : []);
+    $workers = is_array($state['workers'] ?? null) ? $state['workers'] : [];
+    $lines = [];
+
+    if ($task) {
+        $objective = truncate_plain_text($task['objective'] ?? '', 240);
+        if ($objective !== '') {
+            $lines[] = 'Prior objective: ' . $objective;
+        }
+    }
+
+    if ($summary) {
+        $stable = [];
+        foreach (array_slice((array)($summary['stableFindings'] ?? []), 0, 3) as $finding) {
+            $trimmed = truncate_plain_text($finding, 150);
+            if ($trimmed !== '') {
+                $stable[] = $trimmed;
+            }
+        }
+        if ($stable) {
+            $lines[] = 'Stable findings: ' . implode('; ', $stable);
+        }
+
+        $recommended = truncate_plain_text($summary['recommendedNextAction'] ?? '', 180);
+        if ($recommended !== '') {
+            $lines[] = 'Recommended next action: ' . $recommended;
+        }
+
+        $conflicts = [];
+        foreach (array_slice((array)($summary['conflicts'] ?? []), 0, 3) as $conflict) {
+            if (!is_array($conflict)) {
+                continue;
+            }
+            $topic = truncate_plain_text($conflict['topic'] ?? '', 120);
+            if ($topic !== '') {
+                $conflicts[] = $topic;
+            }
+        }
+        if ($conflicts) {
+            $lines[] = 'Open conflicts: ' . implode('; ', $conflicts);
+        }
+    }
+
+    if (!$summary && $workers) {
+        $observations = [];
+        foreach ($workers as $workerId => $checkpoint) {
+            if (!is_array($checkpoint)) {
+                continue;
+            }
+            $observation = truncate_plain_text($checkpoint['observation'] ?? '', 120);
+            if ($observation !== '') {
+                $observations[] = $workerId . ': ' . $observation;
+            }
+            if (count($observations) >= 3) {
+                break;
+            }
+        }
+        if ($observations) {
+            $lines[] = 'Latest lane signals: ' . implode(' | ', $observations);
+        }
+    }
+
+    if (($usage['totalTokens'] ?? 0) > 0 || ($usage['estimatedCostUsd'] ?? 0.0) > 0.0) {
+        $lines[] = sprintf(
+            'Prior usage: %d tokens, approx $%.4f spend.',
+            (int)$usage['totalTokens'],
+            (float)$usage['estimatedCostUsd']
+        );
+    }
+
+    if (!$lines) {
+        $lines[] = 'No prior session context was available.';
+    }
+
+    return implode("\n", array_slice($lines, 0, 5));
 }
 
 function default_research_config(): array {
@@ -372,6 +559,7 @@ function default_loop_state(): array {
 function default_state(): array {
     return [
         'activeTask' => null,
+        'draft' => default_draft_state(),
         'workers' => [],
         'summary' => null,
         'memoryVersion' => 0,
@@ -384,6 +572,7 @@ function default_state(): array {
 function normalize_state(array $state): array {
     $normalized = default_state();
     $normalized['activeTask'] = $state['activeTask'] ?? null;
+    $normalized['draft'] = normalize_draft_state(isset($state['draft']) && is_array($state['draft']) ? $state['draft'] : []);
     $normalized['summary'] = $state['summary'] ?? null;
     $normalized['memoryVersion'] = isset($state['memoryVersion']) ? (int)$state['memoryVersion'] : 0;
     $normalized['usage'] = normalize_usage_state(isset($state['usage']) && is_array($state['usage']) ? $state['usage'] : []);
@@ -414,6 +603,7 @@ function ensure_data_paths(): void {
         TASKS_PATH,
         CHECKPOINTS_PATH,
         OUTPUTS_PATH,
+        SESSIONS_PATH,
         JOBS_PATH,
         LOCKS_PATH,
     ];
@@ -596,6 +786,10 @@ function task_file_path(string $taskId): string {
     return TASKS_PATH . DIRECTORY_SEPARATOR . $taskId . '.json';
 }
 
+function session_archive_file_path(string $archiveId): string {
+    return SESSIONS_PATH . DIRECTORY_SEPARATOR . $archiveId . '.json';
+}
+
 function write_task_snapshot(array $task): void {
     if (empty($task['taskId'])) {
         return;
@@ -604,6 +798,19 @@ function write_task_snapshot(array $task): void {
         task_file_path((string)$task['taskId']),
         json_encode($task, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
     );
+}
+
+function write_session_archive_unlocked(array $archive): string {
+    $taskId = trim((string)($archive['taskId'] ?? 'session'));
+    if ($taskId === '') {
+        $taskId = 'session';
+    }
+    $archiveId = 'session-' . gmdate('Ymd-His') . '-' . preg_replace('/[^A-Za-z0-9_-]+/', '-', $taskId);
+    file_put_contents(
+        session_archive_file_path($archiveId),
+        json_encode($archive, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+    );
+    return $archiveId . '.json';
 }
 
 function json_response($data, int $code = 200): void {

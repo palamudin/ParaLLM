@@ -18,6 +18,8 @@ const MODEL_ORDER = Object.keys(MODEL_CATALOG);
 let latestAuthStatus = { hasKey: false, masked: null, last4: "" };
 let latestLoopActive = false;
 let artifactSelections = { left: "", right: "" };
+let formDirty = false;
+let lastSyncedFormSourceKey = "";
 
 function showMessage(text, isError = false) {
   $("#message").text(text).css("color", isError ? "#ff8d8d" : "#67b0ff");
@@ -30,6 +32,26 @@ function pretty(value) {
 function formatUsd(value) {
   const amount = Number(value || 0);
   return "$" + amount.toFixed(4);
+}
+
+function defaultDraftState() {
+  return {
+    objective: "",
+    constraints: [],
+    sessionContext: "",
+    executionMode: "live",
+    model: "gpt-5-mini",
+    summarizerModel: "gpt-5-mini",
+    reasoningEffort: "low",
+    maxCostUsd: 5.0,
+    maxTotalTokens: 250000,
+    maxOutputTokens: 1200,
+    researchEnabled: false,
+    researchExternalWebAccess: true,
+    researchDomains: [],
+    vettingEnabled: true,
+    updatedAt: ""
+  };
 }
 
 function buildModelOptions(selectedValue) {
@@ -136,6 +158,116 @@ function syncArtifactReview(artifacts) {
 function populateStaticModelSelect(selector, selectedValue) {
   const $select = $(selector);
   $select.html(buildModelOptions(selectedValue));
+}
+
+function buildCommanderFormSource(task, draft) {
+  if (task) {
+    return {
+      sourceKey: [
+        "task",
+        task.taskId || "none",
+        task.objective || "",
+        task.sessionContext || "",
+        JSON.stringify(task.constraints || []),
+        task.runtime?.executionMode || "live",
+        task.runtime?.model || "gpt-5-mini",
+        task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
+        task.runtime?.reasoningEffort || "low",
+        task.runtime?.budget?.maxCostUsd ?? 5.0,
+        task.runtime?.budget?.maxTotalTokens ?? 250000,
+        task.runtime?.budget?.maxOutputTokens ?? 1200,
+        task.runtime?.research?.enabled ? 1 : 0,
+        task.runtime?.research?.externalWebAccess === false ? 0 : 1,
+        JSON.stringify(task.runtime?.research?.domains || []),
+        task.runtime?.vetting?.enabled === false ? 0 : 1
+      ].join("|"),
+      values: {
+        objective: task.objective || "",
+        constraints: task.constraints || [],
+        sessionContext: task.sessionContext || "",
+        executionMode: task.runtime?.executionMode || "live",
+        model: task.runtime?.model || "gpt-5-mini",
+        summarizerModel: task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
+        reasoningEffort: task.runtime?.reasoningEffort || "low",
+        maxCostUsd: task.runtime?.budget?.maxCostUsd ?? 5.0,
+        maxTotalTokens: task.runtime?.budget?.maxTotalTokens ?? 250000,
+        maxOutputTokens: task.runtime?.budget?.maxOutputTokens ?? 1200,
+        researchEnabled: task.runtime?.research?.enabled ? true : false,
+        researchExternalWebAccess: task.runtime?.research?.externalWebAccess === false ? false : true,
+        researchDomains: task.runtime?.research?.domains || [],
+        vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true
+      }
+    };
+  }
+
+  const safeDraft = Object.assign({}, defaultDraftState(), draft || {});
+  return {
+    sourceKey: [
+      "draft",
+      safeDraft.updatedAt || "",
+      safeDraft.objective || "",
+      safeDraft.sessionContext || "",
+      JSON.stringify(safeDraft.constraints || []),
+      safeDraft.executionMode || "live",
+      safeDraft.model || "gpt-5-mini",
+      safeDraft.summarizerModel || "gpt-5-mini",
+      safeDraft.reasoningEffort || "low",
+      safeDraft.maxCostUsd ?? 5.0,
+      safeDraft.maxTotalTokens ?? 250000,
+      safeDraft.maxOutputTokens ?? 1200,
+      safeDraft.researchEnabled ? 1 : 0,
+      safeDraft.researchExternalWebAccess === false ? 0 : 1,
+      JSON.stringify(safeDraft.researchDomains || []),
+      safeDraft.vettingEnabled === false ? 0 : 1
+    ].join("|"),
+    values: safeDraft
+  };
+}
+
+function applyCommanderForm(values) {
+  const safe = Object.assign({}, defaultDraftState(), values || {});
+  $("#sessionContext").val(safe.sessionContext || "");
+  $("#objective").val(safe.objective || "");
+  $("#constraints").val((safe.constraints || []).join("\n"));
+  $("#executionMode").val(safe.executionMode || "live");
+  $("#model").val(safe.model || "gpt-5-mini");
+  $("#summarizerModel").val(safe.summarizerModel || safe.model || "gpt-5-mini");
+  $("#reasoningEffort").val(safe.reasoningEffort || "low");
+  $("#maxCostUsd").val(safe.maxCostUsd ?? 5.0);
+  $("#maxTotalTokens").val(safe.maxTotalTokens ?? 250000);
+  $("#maxOutputTokens").val(safe.maxOutputTokens ?? 1200);
+  $("#researchEnabled").val(safe.researchEnabled ? "1" : "0");
+  $("#researchExternalWebAccess").val(safe.researchExternalWebAccess === false ? "0" : "1");
+  $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
+  $("#researchDomains").val((safe.researchDomains || []).join(", "));
+}
+
+function syncCommanderForm(task, draft, force = false) {
+  const source = buildCommanderFormSource(task, draft);
+  if (!force && formDirty) return;
+  if (!force && source.sourceKey === lastSyncedFormSourceKey) return;
+  applyCommanderForm(source.values);
+  lastSyncedFormSourceKey = source.sourceKey;
+  formDirty = false;
+}
+
+function collectCommanderPayload() {
+  return {
+    sessionContext: $("#sessionContext").val().trim(),
+    objective: $("#objective").val().trim(),
+    constraints: $("#constraints").val().split(/\r?\n/).map(x => x.trim()).filter(Boolean),
+    executionMode: $("#executionMode").val(),
+    model: $("#model").val(),
+    summarizerModel: $("#summarizerModel").val(),
+    reasoningEffort: $("#reasoningEffort").val(),
+    maxCostUsd: parseFloat($("#maxCostUsd").val()) || 0,
+    maxTotalTokens: parseInt($("#maxTotalTokens").val(), 10) || 0,
+    maxOutputTokens: parseInt($("#maxOutputTokens").val(), 10) || 0,
+    researchEnabled: $("#researchEnabled").val(),
+    researchExternalWebAccess: $("#researchExternalWebAccess").val(),
+    vettingEnabled: $("#vettingEnabled").val(),
+    researchDomains: $("#researchDomains").val().trim()
+  };
 }
 
 function updateAuthButtons() {
@@ -282,23 +414,6 @@ function renderWorkerControls(task, loop) {
   $controls.append($summaryCard);
 }
 
-function syncTaskForm(task) {
-  if (!task) return;
-  $("#objective").val(task.objective || "");
-  $("#constraints").val((task.constraints || []).join("\n"));
-  $("#executionMode").val(task.runtime?.executionMode || "live");
-  $("#model").val(task.runtime?.model || "gpt-5-mini");
-  $("#summarizerModel").val(task.summarizer?.model || task.runtime?.model || "gpt-5-mini");
-  $("#reasoningEffort").val(task.runtime?.reasoningEffort || "low");
-  $("#maxCostUsd").val(task.runtime?.budget?.maxCostUsd ?? 1.0);
-  $("#maxTotalTokens").val(task.runtime?.budget?.maxTotalTokens ?? 120000);
-  $("#maxOutputTokens").val(task.runtime?.budget?.maxOutputTokens ?? 1200);
-  $("#researchEnabled").val(task.runtime?.research?.enabled ? "1" : "0");
-  $("#researchExternalWebAccess").val(task.runtime?.research?.externalWebAccess === false ? "0" : "1");
-  $("#vettingEnabled").val(task.runtime?.vetting?.enabled === false ? "0" : "1");
-  $("#researchDomains").val((task.runtime?.research?.domains || []).join(", "));
-}
-
 function applyLoopUi(state) {
   const loop = state.loop || null;
   const task = state.activeTask || null;
@@ -335,6 +450,7 @@ function applyLoopUi(state) {
   $("#runRound").prop("disabled", isActive || !hasTask);
   $("#runLoop").prop("disabled", isActive || !hasTask);
   $("#addAdversarial").prop("disabled", isActive || !hasTask || (workers.length >= 26));
+  $("#resetSession").prop("disabled", isActive);
   $("#resetState").prop("disabled", isActive);
   $("#cancelLoop").prop("disabled", !isActive);
 }
@@ -345,7 +461,7 @@ function refreshState() {
   $.getJSON("api/get_state.php")
     .done(function (data) {
       const task = data.activeTask ? Object.assign({}, data.activeTask, { stateWorkers: data.workers || {} }) : null;
-      syncTaskForm(data.activeTask || null);
+      syncCommanderForm(data.activeTask || null, data.draft || null);
       applyLoopUi(data);
       renderWorkerControls(data.activeTask || null, data.loop || null);
       renderWorkerPanels(task);
@@ -389,12 +505,18 @@ function refreshState() {
     });
 }
 
-function postForm(url, payload, successText) {
+function postForm(url, payload, successText, options = {}) {
   $.post(url, payload)
     .done(function (resp) {
       let out = resp;
       try { out = JSON.parse(resp); } catch (_) {}
+      if (options.clearFormDirty) {
+        formDirty = false;
+      }
       showMessage(successText + (out.message ? " | " + out.message : ""));
+      if (typeof options.onSuccess === "function") {
+        options.onSuccess(out);
+      }
       refreshState();
     })
     .fail(function (xhr) {
@@ -408,44 +530,38 @@ $(function () {
   $("#researchEnabled").val("0");
   $("#researchExternalWebAccess").val("1");
   $("#vettingEnabled").val("1");
+  applyCommanderForm(defaultDraftState());
   refreshState();
   setInterval(refreshState, 2000);
 
-  $("#startTask").on("click", function () {
-    const objective = $("#objective").val().trim();
-    const constraints = $("#constraints").val().split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    const executionMode = $("#executionMode").val();
-    const model = $("#model").val();
-    const summarizerModel = $("#summarizerModel").val();
-    const reasoningEffort = $("#reasoningEffort").val();
-    const maxCostUsd = parseFloat($("#maxCostUsd").val()) || 0;
-    const maxTotalTokens = parseInt($("#maxTotalTokens").val(), 10) || 0;
-    const maxOutputTokens = parseInt($("#maxOutputTokens").val(), 10) || 0;
-    const researchEnabled = $("#researchEnabled").val();
-    const researchExternalWebAccess = $("#researchExternalWebAccess").val();
-    const vettingEnabled = $("#vettingEnabled").val();
-    const researchDomains = $("#researchDomains").val().trim();
+  $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
+    formDirty = true;
+  });
 
-    if (!objective) {
+  $("#startTask").on("click", function () {
+    const payload = collectCommanderPayload();
+
+    if (!payload.objective) {
       showMessage("Objective is required.", true);
       return;
     }
 
     postForm("api/start_task.php", {
-      objective,
-      constraints: JSON.stringify(constraints),
-      executionMode,
-      model,
-      summarizerModel,
-      reasoningEffort,
-      maxCostUsd,
-      maxTotalTokens,
-      maxOutputTokens,
-      researchEnabled,
-      researchExternalWebAccess,
-      vettingEnabled,
-      researchDomains
-    }, "Task started");
+      sessionContext: payload.sessionContext,
+      objective: payload.objective,
+      constraints: JSON.stringify(payload.constraints),
+      executionMode: payload.executionMode,
+      model: payload.model,
+      summarizerModel: payload.summarizerModel,
+      reasoningEffort: payload.reasoningEffort,
+      maxCostUsd: payload.maxCostUsd,
+      maxTotalTokens: payload.maxTotalTokens,
+      maxOutputTokens: payload.maxOutputTokens,
+      researchEnabled: payload.researchEnabled,
+      researchExternalWebAccess: payload.researchExternalWebAccess,
+      vettingEnabled: payload.vettingEnabled,
+      researchDomains: payload.researchDomains
+    }, "Task started", { clearFormDirty: true });
   });
 
   $("#summarize").on("click", function () {
@@ -471,6 +587,11 @@ $(function () {
   });
 
   $("#refresh").on("click", refreshState);
+
+  $("#resetSession").on("click", function () {
+    if (!confirm("Archive the current session and load a fresh draft with short carry-forward context?")) return;
+    postForm("api/reset_session.php", {}, "Session reset", { clearFormDirty: true });
+  });
 
   $("#saveAuth").on("click", function () {
     const apiKey = $("#apiKeyInput").val().trim();
@@ -510,7 +631,7 @@ $(function () {
 
   $("#resetState").on("click", function () {
     if (!confirm("Reset state and clear active task?")) return;
-    postForm("api/reset_state.php", {}, "State reset");
+    postForm("api/reset_state.php", {}, "State reset", { clearFormDirty: true });
   });
 
   $(document).on("click", ".run-target", function () {
