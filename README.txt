@@ -9,8 +9,8 @@ A local prototype scaffold for:
 - Summarizer / canonical memory
 - JSON persistence and event logging
 - Autonomous multi-round execution
-- Cross-process locking between PHP and PowerShell
-- Detached background loop execution through PHP + PowerShell
+- Cross-process locking between PHP, Python, and PowerShell fallback paths
+- Detached background loop execution through PHP
 - Stale-job recovery for interrupted background runs
 - Recent job and artifact history in the UI
 - Per-position model selection
@@ -19,6 +19,7 @@ A local prototype scaffold for:
 - Summarizer evidence vetting over worker research
 - Masked API key management through the UI
 - Persistent commander draft state plus session reset / carry-forward archive support
+- Resident Python runtime service so worker/summarizer logic stays warm between dispatches
 
 Folder target
 -------------
@@ -31,9 +32,10 @@ http://localhost/ai-loop-xampp/
 Requirements
 ------------
 - XAMPP / Apache / PHP enabled
-- Windows PowerShell available
+- Python 3 available locally
+- Windows PowerShell available for fallback and service launching on Windows
 - PHP shell_exec enabled
-- PowerShell execution allowed for local scripts
+- PowerShell execution allowed for local scripts on Windows
 
 If shell_exec is disabled in php.ini
 ------------------------------------
@@ -70,7 +72,8 @@ Main files
 - assets/app.js            frontend logic
 - api/*.php                broker endpoints
 - scripts/loop_runner.php  background loop runner
-- ps/*.ps1                 worker/summarizer scripts
+- runtime/*.py             resident Python runtime service and engine
+- ps/*.ps1                 worker/summarizer fallback scripts
 - data/state.json          canonical state
 - data/sessions/*.json    archived session resets with carry-forward summaries
 - data/events.jsonl        append-only event log
@@ -82,6 +85,10 @@ Current behavior
 Workers support two modes:
 - `mock`: local scaffolded reasoning output
 - `live`: real model calls through the OpenAI Responses API
+
+PHP now dispatches worker and summarizer targets through a resident Python service on `127.0.0.1:8765`.
+That service keeps the runtime warm between calls and writes the same state, checkpoint, output, and step-log artifacts as before.
+If the Python service is unavailable, PHP still falls back to the older PowerShell path so the app stays usable during migration.
 
 When worker research is enabled, worker lanes can use the Responses API `web_search` tool, keep their own research queries and consulted source URLs, and leave evidence ledgers for the summarizer to vet.
 When summarizer vetting is enabled, the summarizer scores the worker claims by support strength instead of only merging prose.
@@ -109,6 +116,10 @@ On April 19, 2026, a widened live `A/B/C` run also completed successfully with:
 - grounded worker research and saved output artifacts in `data/outputs`
 - a total estimated spend that stayed below the configured session cap
 
+On April 19, 2026, the resident Python runtime was also verified with:
+- a mock `A/B/summarizer` pass through the existing `api/run_ps.php` endpoint, returning `backend: python`
+- a live `A/B/summarizer` pass through the Python runtime, which matched the prior behavior by falling back to mock when the Responses API returned `incomplete: max_output_tokens`
+
 That run confirmed:
 - worker `web_search` usage is captured in usage totals and per-target buckets
 - worker checkpoints persist research queries, source URLs, and evidence ledgers
@@ -118,4 +129,4 @@ One real residual caveat remains: OpenAI-owned pricing pages currently show conf
 
 Next sensible step
 ------------------
-Add resume/retry tooling for interrupted jobs, richer side-by-side round inspection, and eventually a bounded multi-job queue instead of a single active background slot.
+Add resume/retry tooling for interrupted jobs, richer side-by-side round inspection, and tighten live prompt/output handling so the Python runtime lands more structured responses before fallback is needed.

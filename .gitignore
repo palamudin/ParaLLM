@@ -7,4 +7,6 @@ data/jobs/
 data/locks/
 data/*.json
 data/*.jsonl
+runtime/__pycache__/
+*.pyc
 *.zip

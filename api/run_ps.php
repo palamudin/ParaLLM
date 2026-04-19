@@ -28,23 +28,27 @@ if ($preflight !== null) {
 }
 
 try {
-    append_step('dispatch', 'Dispatching PowerShell target.', ['target' => $target]);
-    $result = run_powershell_target($target, $state['activeTask']);
-    append_step('dispatch', 'PowerShell target completed.', [
+    append_step('dispatch', 'Dispatching runtime target.', ['target' => $target]);
+    $result = run_dispatch_target($target, $state['activeTask']);
+    append_step('dispatch', 'Runtime target completed.', [
         'target' => $target,
         'outputPreview' => $result['output'],
-        'exitCode' => $result['exitCode']
+        'exitCode' => $result['exitCode'],
+        'backend' => $result['backend'] ?? 'powershell'
     ]);
     json_response([
         'message' => 'Executed ' . $target,
         'target' => $target,
-        'output' => $result['output']
+        'output' => $result['output'],
+        'backend' => $result['backend'] ?? 'powershell'
     ]);
 } catch (Throwable $ex) {
-    append_step('error', 'PowerShell target failed.', [
+    append_step('error', 'Runtime target failed.', [
         'target' => $target,
         'error' => $ex->getMessage()
     ]);
-    $code = stripos($ex->getMessage(), 'Budget limit reached:') === 0 ? 409 : 500;
+    $code = ($ex->getCode() >= 400 && $ex->getCode() < 600)
+        ? (int)$ex->getCode()
+        : (stripos($ex->getMessage(), 'Budget limit reached:') === 0 ? 409 : 500);
     json_response(['message' => $ex->getMessage()], $code);
 }

@@ -173,7 +173,7 @@ function execute_loop_process(array $config): array {
             ];
 
             foreach ($sequence as $target) {
-                $targetResult = run_powershell_target($target, $task);
+                $targetResult = run_dispatch_target($target, $task);
                 $roundResult['targets'][] = $targetResult;
                 $usageSnapshot = read_state()['usage'] ?? default_usage_state();
 

@@ -10,6 +10,7 @@ define('SESSIONS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'sessions');
 define('JOBS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'jobs');
 define('LOCKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'locks');
 define('PS_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'ps');
+define('RUNTIME_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'runtime');
 define('STATE_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'state.json');
 define('EVENTS_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'events.jsonl');
 define('STEPS_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'steps.jsonl');
@@ -117,6 +118,16 @@ function normalize_string_list($value): array {
 }
 
 function normalize_allowed_domains($value): array {
+    if (is_string($value)) {
+        $trimmed = trim($value);
+        if ($trimmed !== '' && str_starts_with($trimmed, '[')) {
+            $decoded = json_decode($trimmed, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        }
+    }
+
     $domains = [];
     foreach (normalize_string_list($value) as $entry) {
         $entry = preg_replace('#^https?://#i', '', trim($entry));
@@ -1146,6 +1157,204 @@ function launch_background_php(string $scriptPath, array $args = []): void {
     }
 }
 
+function launch_background_process(string $executable, array $args = []): void {
+    if (PHP_OS_FAMILY === 'Windows') {
+        $argumentList = $args;
+        $psArgs = implode(', ', array_map(static function (string $value): string {
+            return "'" . str_replace("'", "''", $value) . "'";
+        }, $argumentList));
+
+        $psScript = '$exe=' . "'" . str_replace("'", "''", $executable) . "';" .
+            '$args=@(' . $psArgs . ');' .
+            'Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList $args';
+
+        $cmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' . escapeshellarg($psScript) . ' 2>&1';
+        $output = shell_exec($cmd);
+        if ($output !== null && stripos($output, 'Start-Process') !== false && stripos($output, 'error') !== false) {
+            throw new RuntimeException(trim($output));
+        }
+        return;
+    }
+
+    $command = escapeshellarg($executable);
+    if ($args) {
+        $command .= ' ' . implode(' ', array_map('escapeshellarg', $args));
+    }
+    $command .= ' > /dev/null 2>&1 &';
+    shell_exec($command);
+}
+
+function python_cli_path(): string {
+    $localAppData = getenv('LOCALAPPDATA') ?: '';
+    $home = getenv('HOME') ?: '';
+    $candidates = array_filter([
+        getenv('LOOP_PYTHON_BIN') ?: null,
+        getenv('PYTHON_BIN') ?: null,
+        ROOT_PATH . DIRECTORY_SEPARATOR . '.venv' . DIRECTORY_SEPARATOR . 'Scripts' . DIRECTORY_SEPARATOR . 'python.exe',
+        ROOT_PATH . DIRECTORY_SEPARATOR . '.venv' . DIRECTORY_SEPARATOR . 'bin' . DIRECTORY_SEPARATOR . 'python',
+        $localAppData ? $localAppData . DIRECTORY_SEPARATOR . 'Programs' . DIRECTORY_SEPARATOR . 'Python' . DIRECTORY_SEPARATOR . 'Python312' . DIRECTORY_SEPARATOR . 'python.exe' : null,
+        $localAppData ? $localAppData . DIRECTORY_SEPARATOR . 'Programs' . DIRECTORY_SEPARATOR . 'Python' . DIRECTORY_SEPARATOR . 'Python313' . DIRECTORY_SEPARATOR . 'python.exe' : null,
+        $localAppData ? $localAppData . DIRECTORY_SEPARATOR . 'Programs' . DIRECTORY_SEPARATOR . 'Python' . DIRECTORY_SEPARATOR . 'Python311' . DIRECTORY_SEPARATOR . 'python.exe' : null,
+        $home ? $home . DIRECTORY_SEPARATOR . '.pyenv' . DIRECTORY_SEPARATOR . 'shims' . DIRECTORY_SEPARATOR . 'python3' : null,
+        '/usr/local/bin/python3',
+        '/usr/bin/python3',
+    ], static function ($candidate): bool {
+        return is_string($candidate) && $candidate !== '';
+    });
+
+    foreach ($candidates as $candidate) {
+        if (file_exists($candidate)) {
+            return $candidate;
+        }
+    }
+
+    throw new RuntimeException('Unable to locate a Python executable for the resident runtime.');
+}
+
+function runtime_service_script_path(): string {
+    $path = RUNTIME_PATH . DIRECTORY_SEPARATOR . 'service.py';
+    if (!file_exists($path)) {
+        throw new RuntimeException('Python runtime service script is missing.');
+    }
+    return $path;
+}
+
+function runtime_service_url(): string {
+    $url = trim((string)(getenv('LOOP_RUNTIME_URL') ?: 'http://127.0.0.1:8765'));
+    return rtrim($url, '/');
+}
+
+function runtime_service_request(string $method, string $path, ?array $payload = null, int $timeoutSeconds = 5): array {
+    $url = runtime_service_url() . $path;
+    $headers = [
+        'Accept: application/json',
+    ];
+    $content = '';
+    if ($payload !== null) {
+        $headers[] = 'Content-Type: application/json';
+        $content = json_encode($payload, JSON_UNESCAPED_SLASHES);
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => strtoupper($method),
+            'header' => implode("\r\n", $headers),
+            'content' => $content,
+            'ignore_errors' => true,
+            'timeout' => $timeoutSeconds,
+        ]
+    ]);
+
+    $body = @file_get_contents($url, false, $context);
+    $statusLine = $http_response_header[0] ?? 'HTTP/1.1 500 Runtime Error';
+    $statusCode = 500;
+    if (preg_match('/\s(\d{3})\s/', $statusLine, $matches)) {
+        $statusCode = (int)$matches[1];
+    }
+
+    $decoded = null;
+    if (is_string($body) && trim($body) !== '') {
+        $candidate = json_decode($body, true);
+        if (is_array($candidate)) {
+            $decoded = $candidate;
+        }
+    }
+
+    return [
+        'statusCode' => $statusCode,
+        'body' => is_string($body) ? $body : '',
+        'json' => $decoded
+    ];
+}
+
+function runtime_service_is_healthy(): bool {
+    try {
+        $response = runtime_service_request('GET', '/health', null, 2);
+        return $response['statusCode'] === 200 && is_array($response['json']) && !empty($response['json']['ok']);
+    } catch (Throwable $ex) {
+        return false;
+    }
+}
+
+function launch_background_python_service(): void {
+    $pythonPath = python_cli_path();
+    $scriptPath = runtime_service_script_path();
+    launch_background_process($pythonPath, [
+        $scriptPath,
+        '--root=' . ROOT_PATH,
+        '--host=127.0.0.1',
+        '--port=8765'
+    ]);
+}
+
+function ensure_runtime_service(): void {
+    if (runtime_service_is_healthy()) {
+        return;
+    }
+
+    with_lock(function (): void {
+        if (runtime_service_is_healthy()) {
+            return;
+        }
+        launch_background_python_service();
+        $deadline = microtime(true) + 8.0;
+        do {
+            usleep(200000);
+            if (runtime_service_is_healthy()) {
+                return;
+            }
+        } while (microtime(true) < $deadline);
+
+        throw new RuntimeException('Python runtime service did not become healthy.');
+    }, 15000, 'runtime-service');
+}
+
+function run_python_runtime_target(string $target, ?array $task = null): array {
+    $stateTask = $task;
+    if ($stateTask === null) {
+        $state = read_state();
+        $stateTask = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
+    }
+    if ($stateTask === null) {
+        throw new RuntimeException('No active task.');
+    }
+
+    ensure_runtime_service();
+    $response = runtime_service_request('POST', '/run-target', [
+        'target' => $target,
+        'taskId' => $stateTask['taskId'] ?? null
+    ], 300);
+
+    append_event('runtime_dispatch', [
+        'target' => $target,
+        'backend' => 'python',
+        'statusCode' => $response['statusCode'],
+        'body' => $response['body']
+    ]);
+
+    if ($response['statusCode'] < 200 || $response['statusCode'] >= 300) {
+        $message = is_array($response['json']) && !empty($response['json']['message'])
+            ? (string)$response['json']['message']
+            : ('Python runtime target ' . $target . ' failed.');
+        $code = in_array($response['statusCode'], [400, 409], true) ? $response['statusCode'] : 500;
+        throw new RuntimeException($message, $code);
+    }
+
+    $result = is_array($response['json']) && is_array($response['json']['result'])
+        ? $response['json']['result']
+        : null;
+    if (!$result) {
+        throw new RuntimeException('Python runtime target returned an invalid response.');
+    }
+
+    return [
+        'target' => (string)($result['target'] ?? $target),
+        'output' => (string)($result['output'] ?? ''),
+        'exitCode' => (int)($result['exitCode'] ?? 0),
+        'backend' => 'python'
+    ];
+}
+
 function ps_command(string $scriptName, array $extraArgs = []): string {
     $scriptPath = PS_PATH . DIRECTORY_SEPARATOR . $scriptName;
     if (!file_exists($scriptPath)) {
@@ -1195,4 +1404,16 @@ function run_powershell_target(string $target, ?array $task = null): array {
         'output' => $output,
         'exitCode' => $exitCode
     ];
+}
+
+function run_dispatch_target(string $target, ?array $task = null): array {
+    try {
+        return run_python_runtime_target($target, $task);
+    } catch (Throwable $ex) {
+        append_step('runtime', 'Python runtime target failed; falling back to PowerShell.', [
+            'target' => $target,
+            'error' => $ex->getMessage()
+        ]);
+        return run_powershell_target($target, $task);
+    }
 }

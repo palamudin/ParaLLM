@@ -16,7 +16,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Prototype Constraints
 
-- Local-first on Windows with XAMPP, PHP, PowerShell, HTML, CSS, and JavaScript
+- Local-first on Windows with XAMPP, PHP, HTML, CSS, JavaScript, and now a resident Python runtime
 - No Node requirement for the first prototype
 - Persistence kept in local JSON / JSONL files
 - Every important step should be logged
@@ -29,7 +29,8 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `assets/app.js`: frontend polling and command dispatch
 - `assets/app.css`: local styling
 - `api/*.php`: PHP broker endpoints
-- `ps/*.ps1`: worker and summarizer processes
+- `runtime/*.py`: resident worker / summarizer runtime service
+- `ps/*.ps1`: fallback worker and summarizer scripts retained as a safety net during migration
 - `data/state.json`: canonical state
 - `data/events.jsonl`: low-level event log
 - `data/steps.jsonl`: structured step log for human-readable process trace
@@ -38,7 +39,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `data/outputs/*.json`: dedicated worker and summarizer output artifacts with response metadata for quality review
 - `data/sessions/*.json`: archived session snapshots captured by Reset Session with carry-forward context
 - `data/jobs/*.json`: background loop job metadata and result summaries
-- `data/locks/loop.lock`: cross-process lock directory used by PHP and PowerShell
+- `data/locks/loop.lock`: cross-process lock directory used by PHP, Python, and PowerShell fallback paths
 
 ## Runtime Options
 
@@ -70,7 +71,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Autonomous multi-round execution with configurable round count and delay
 - Cancellation that stops after the current round completes
 - Detached background loop launching through `scripts/loop_runner.php`
-- Shared-state locking between PHP and PowerShell
+- Shared-state locking between PHP and the resident Python runtime, with PowerShell fallback still available
+- Resident Python runtime service on `127.0.0.1:8765` keeps worker/summarizer logic warm between calls instead of spawning a new shell process every step
+- PHP dispatch now prefers the Python runtime and only falls back to PowerShell if the service is unavailable
 - Stale queued/running job recovery based on queue age and heartbeat age
 - Per-position model selection in the UI for workers and summarizer
 - Grounded worker research mode using the OpenAI Responses API `web_search` tool with optional OpenAI-domain allow-lists
@@ -90,6 +93,8 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Optional live model execution with mock fallback still available
 - Verified live smoke run with grounded worker search and summarizer vetting against OpenAI-owned sources on April 18, 2026
 - Verified widened live `A/B/C` run with grounded worker research, live summarizer vetting, and saved output artifacts on April 19, 2026
+- Verified resident Python runtime dispatch on April 19, 2026 with mock `A/B/summarizer` execution through the existing PHP endpoints
+- Verified resident Python runtime live path on April 19, 2026; model calls reached the Python runtime correctly and preserved the existing fallback-to-mock behavior when Responses API output was truncated by `max_output_tokens`
 
 ## Immediate Milestones
 
@@ -100,7 +105,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 5. Add bounded multi-job queueing instead of a single active background job slot
 6. Add richer lane templates so new adversarial workers can be spawned from selectable viewpoints instead of only the next default letter slot
 7. Reconcile conflicting OpenAI-owned pricing statements for web-search content tokens before treating cost estimates as billing-accurate
-8. Replace per-step PowerShell spawning with a resident cross-platform runtime, likely Python, to reduce latency and make Linux deployment cleaner
+8. Tighten live prompt/output handling so the resident Python runtime hits structured-output success more often before needing mock fallback on `max_output_tokens`
 
 ## Notes
 
