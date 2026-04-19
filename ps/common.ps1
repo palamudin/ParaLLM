@@ -108,8 +108,8 @@ function Normalize-ModelId {
 
 function Get-DefaultBudgetConfig {
     return [ordered]@{
-        maxTotalTokens = 120000
-        maxCostUsd = 1.0
+        maxTotalTokens = 250000
+        maxCostUsd = 5.0
         maxOutputTokens = 1200
     }
 }

@@ -41,8 +41,8 @@ function default_model_id(): string {
 
 function default_budget_config(): array {
     return [
-        'maxTotalTokens' => 120000,
-        'maxCostUsd' => 1.00,
+        'maxTotalTokens' => 250000,
+        'maxCostUsd' => 5.00,
         'maxOutputTokens' => 1200,
     ];
 }
