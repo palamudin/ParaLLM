@@ -97,6 +97,11 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Verified resident Python runtime dispatch on April 19, 2026 with mock `A/B/summarizer` execution through the existing PHP endpoints
 - Verified resident Python runtime live path on April 19, 2026; model calls reached the Python runtime correctly and preserved the existing fallback-to-mock behavior when Responses API output was truncated by `max_output_tokens`
 - Verified low-cap resident Python live run on April 19, 2026 with task budget `maxOutputTokens=500`; workers and summarizer still completed live because the runtime elevated to safe structured-output floors (`900` worker, `1400` summarizer) and retried to `1800` where needed
+- Verified dynamic multi-adversarial roster on April 19, 2026:
+  - mock `A/B/C` manual round completed with all 3 workers represented in summary/output artifacts
+  - mock `A/B/C/D` manual round completed with all 4 workers represented in summary/output artifacts
+  - mock `A/B/C/D/E` 2-round background loop completed with all 5 workers represented in summary/output artifacts
+  - live `A/B/C` manual round completed through the resident Python runtime with usage tracked for `A`, `B`, `C`, and `summarizer`
 
 ## Immediate Milestones
 
