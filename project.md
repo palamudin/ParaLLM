@@ -35,6 +35,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `runtime/*.py`: resident worker / summarizer runtime service
 - `scripts/qa_check.py`: reusable QA harness for linting and reversible endpoint smoke checks
 - `scripts/qa_live_check.py`: reusable live QA harness for budget-capped, source-restricted endpoint smoke checks
+- `scripts/quality_benchmark.py`: blind quality benchmark for comparing direct output vs steered output on the same case
 - `data/state.json`: canonical state
 - `data/events.jsonl`: low-level event log
 - `data/steps.jsonl`: structured step log for human-readable process trace
@@ -114,6 +115,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Review should expose the summarizer's current position, why it landed there, and the exact worker lines that shaped that judgment
 - Reusable QA should exist as a first-class path so syntax checks and reversible endpoint smoke tests can be rerun quickly after runtime/UI changes
 - Live QA should stay separate from mock QA so spend-bearing checks remain explicit, budget-capped, and domain-restricted
+- Quality benchmarking should also be first-class so we can test whether steered output is actually better than a direct answer, not just more elaborate
 - Session context is now treated as review/debug data rather than primary user input and has been moved out of the Home surface
 - Fine tuning controls now live in Settings instead of crowding the main conversation surface, and the stored draft now includes worker roster, loop rounds, and loop delay
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
@@ -182,12 +184,18 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - live summarizer instructions now force one directional answer voice that privately pressure-tests itself against the strongest objections
   - quality profiles now retune auto-loop depth in addition to model, reasoning effort, and budget ceilings
   - `Apply Runtime To Current Task` now carries loop depth and delay into the active task as well as the draft
+- Verified steer-vs-direct benchmark harness on April 19, 2026:
+  - a new blind judge path compares a direct baseline answer against the public steered answer on the same prompt
+  - the judge only sees anonymous `Answer A` / `Answer B` slots so it cannot bias toward the known architecture
+  - the benchmark now rejects silent mock-fallback steer runs by default so a broken live path does not masquerade as a bad quality result
+  - repeat trials now aggregate score deltas for decisiveness, tradeoff handling, objection absorption, actionability, single-voice quality, and overall quality
+  - benchmark reports now save locally under `data/benchmarks/`
 
 ## Immediate Milestones
 
 - All eight milestone items from the previous pass are now closed in the product surface or resolved as explicit policy.
 - Pricing policy now uses a conservative `assume_chargeable` stance for web-search-related model tokens, while still acknowledging that OpenAI-owned pages conflicted on April 19, 2026.
-- The next exploration is no longer milestone debt but tuning: calibrate how strongly adversarial objections can narrow, redirect, or reverse the lead answer on difficult prompts without making the public voice collapse into hesitation.
+- The next exploration is no longer milestone debt but tuning: calibrate how strongly adversarial objections can narrow, redirect, or reverse the lead answer on difficult prompts without making the public voice collapse into hesitation, then validate those changes against the blind steer-vs-direct benchmark.
 
 ## Notes
 

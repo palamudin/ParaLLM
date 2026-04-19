@@ -68,6 +68,7 @@ Main files
 - scripts/loop_runner.php  background loop runner
 - scripts/qa_check.py      reusable lint + reversible mock smoke harness
 - scripts/qa_live_check.py live-mode QA smoke with tight budgets and source allow-lists
+- scripts/quality_benchmark.py blind quality benchmark for direct-vs-steered answer comparison
 - runtime/*.py             resident Python runtime service and engine
 - data/state.json          canonical state
 - data/sessions/*.json    archived session resets with carry-forward summaries
@@ -85,6 +86,10 @@ Run the live verification harness when you want a real model smoke:
 
 `python scripts/qa_live_check.py`
 
+Run the quality benchmark when you want to measure whether steered output actually beats a direct answer on the same prompt:
+
+`python scripts/quality_benchmark.py`
+
 What it does:
 - compiles the Python runtime files
 - lints every PHP endpoint and runner script
@@ -100,6 +105,14 @@ What the live harness adds:
 - constrains worker web research to an allow-list of OpenAI-owned domains
 - verifies the worker artifacts stayed on the live path and that their consulted/cited URLs stayed inside the allow-list
 
+What the benchmark adds:
+- generates a direct baseline answer with the same family of answer constraints
+- runs a live steered multi-lane answer on the same case
+- sends both public answers to a blind judge so the scorer does not know which one was steered
+- scores decisiveness, tradeoff handling, objection absorption, actionability, single-voice quality, and overall quality
+- fails fast by default if the supposed steered run silently falls back to mock output
+- supports repeat trials per case and saves aggregate score deltas under `data/benchmarks/`
+
 By default the QA script refreshes the resident Python runtime before the smoke so stale loaded code does not mask backend changes.
 Useful flags:
 - `--skip-smoke`
@@ -113,6 +126,14 @@ Useful live-smoke flags:
 - `--max-cost-usd 0.08`
 - `--max-total-tokens 40000`
 - `--allowed-domains openai.com,platform.openai.com,help.openai.com`
+
+Useful benchmark flags:
+- `--case sensitive-feature-launch`
+- `--case core`
+- `--repeats 3`
+- `--loop-rounds 2`
+- `--keep-artifacts`
+- `--allow-mock-fallback`
 
 Current behavior
 ----------------
