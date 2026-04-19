@@ -13,6 +13,7 @@ $taskId = $state['activeTask']['taskId'] ?? null;
 $jobId = $loop['jobId'] ?? null;
 
 if (($loop['status'] ?? 'idle') === 'queued') {
+    $cancelledQueuedJobs = $taskId ? cancel_queued_background_jobs((string)$taskId, $jobId, 'Cancelled before the queued loop could start.') : 0;
     $state = mutate_state(function (array $state): array {
         return set_loop_state($state, [
             'status' => 'cancelled',
@@ -36,12 +37,14 @@ if (($loop['status'] ?? 'idle') === 'queued') {
 
     append_step('autoloop', 'Queued background loop cancelled before start.', [
         'taskId' => $taskId,
-        'jobId' => $jobId
+        'jobId' => $jobId,
+        'queuedJobsCancelled' => $cancelledQueuedJobs
     ]);
 
-    json_response(['message' => 'Queued loop cancelled before start.']);
+    json_response(['message' => 'Queued loop cancelled before start.', 'queuedJobsCancelled' => $cancelledQueuedJobs]);
 }
 
+$cancelledQueuedJobs = $taskId ? cancel_queued_background_jobs((string)$taskId, $jobId, 'Cancelled because the active loop was stopped.') : 0;
 $state = mutate_state(function (array $state): array {
     return set_loop_state($state, [
         'cancelRequested' => true,
@@ -63,7 +66,8 @@ if ($jobId !== null) {
 append_step('autoloop', 'Cancellation requested for the autonomous loop.', [
     'taskId' => $taskId,
     'jobId' => $jobId,
-    'completedRounds' => current_loop_state($state)['completedRounds']
+    'completedRounds' => current_loop_state($state)['completedRounds'],
+    'queuedJobsCancelled' => $cancelledQueuedJobs
 ]);
 
-json_response(['message' => 'Cancellation requested.']);
+json_response(['message' => 'Cancellation requested.', 'queuedJobsCancelled' => $cancelledQueuedJobs]);

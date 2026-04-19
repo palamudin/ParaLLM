@@ -17,6 +17,7 @@ define('LOCK_TIMEOUT_MS', 15000);
 define('LOCK_STALE_SECONDS', 45);
 define('JOB_QUEUE_STALE_SECONDS', 60);
 define('JOB_RUNNING_STALE_SECONDS', 180);
+define('LOOP_QUEUE_LIMIT', 4);
 
 function default_model_catalog(): array {
     return [
@@ -377,6 +378,24 @@ function build_session_context_summary(array $state): string {
     }
 
     if ($summary) {
+        $frontAnswer = '';
+        if (isset($summary['frontAnswer']) && is_array($summary['frontAnswer'])) {
+            $frontAnswer = truncate_plain_text($summary['frontAnswer']['answer'] ?? '', 220);
+        }
+        if ($frontAnswer !== '') {
+            $lines[] = 'Prior adjudicated answer: ' . $frontAnswer;
+        }
+
+        $opinion = '';
+        if (isset($summary['summarizerOpinion']) && is_array($summary['summarizerOpinion'])) {
+            $opinion = truncate_plain_text($summary['summarizerOpinion']['stance'] ?? '', 170);
+        } elseif (isset($summary['frontAnswer']) && is_array($summary['frontAnswer'])) {
+            $opinion = truncate_plain_text($summary['frontAnswer']['stance'] ?? '', 170);
+        }
+        if ($opinion !== '') {
+            $lines[] = 'Prior summarizer stance: ' . $opinion;
+        }
+
         $stable = [];
         foreach (array_slice((array)($summary['stableFindings'] ?? []), 0, 3) as $finding) {
             $trimmed = truncate_plain_text($finding, 150);
@@ -638,7 +657,7 @@ function find_task_worker(array $task, string $workerId): ?array {
     return null;
 }
 
-function next_adversarial_worker_definition(array $task): ?array {
+function next_adversarial_worker_definition(array $task, ?string $requestedType = null): ?array {
     $defaultModel = normalize_model_id($task['runtime']['model'] ?? ($task['model'] ?? null), default_model_id());
     $existing = [];
     foreach (task_workers($task) as $worker) {
@@ -648,7 +667,15 @@ function next_adversarial_worker_definition(array $task): ?array {
         if (isset($existing[$workerId])) {
             continue;
         }
-        return normalize_worker_definition(['id' => $workerId], $defaultModel);
+        $definition = ['id' => $workerId];
+        $candidateType = strtolower(trim((string)$requestedType));
+        if ($candidateType !== '' && isset(worker_type_catalog()[$candidateType])) {
+            $definition['type'] = $candidateType;
+            $definition['label'] = '';
+            $definition['role'] = '';
+            $definition['focus'] = '';
+        }
+        return normalize_worker_definition($definition, $defaultModel);
     }
     return null;
 }
@@ -952,6 +979,35 @@ function session_archive_file_path(string $archiveId): string {
     return SESSIONS_PATH . DIRECTORY_SEPARATOR . $archiveId . '.json';
 }
 
+function read_json_file_safe(string $path): ?array {
+    if (!is_file($path)) {
+        return null;
+    }
+    $raw = @file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        return null;
+    }
+    if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
+        $raw = substr($raw, 3);
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : null;
+}
+
+function artifact_visibility_policy(): array {
+    return [
+        'publicThread' => 'structured_only',
+        'reviewSurface' => 'raw_output_exception',
+        'exportSurface' => 'raw_output_exception',
+        'rules' => [
+            'Home and canonical memory render only normalized structured outputs and adjudicated answers.',
+            'Raw model text is a review-only exception and is limited to saved output artifacts plus export bundles.',
+            'Carry-forward context, task snapshots, worker checkpoints, and summary state must stay structured.',
+            'When raw output is shown in Review, it is for auditability and replay, not as the canonical source of truth.',
+        ],
+    ];
+}
+
 function write_task_snapshot(array $task): void {
     if (empty($task['taskId'])) {
         return;
@@ -1037,6 +1093,11 @@ function default_job(array $config): array {
         'taskId' => $config['taskId'],
         'mode' => $config['mode'] ?? 'background',
         'status' => $config['status'] ?? 'queued',
+        'queuePosition' => max(0, (int)($config['queuePosition'] ?? 0)),
+        'attempt' => max(1, (int)($config['attempt'] ?? 1)),
+        'resumeOfJobId' => $config['resumeOfJobId'] ?? null,
+        'retryOfJobId' => $config['retryOfJobId'] ?? null,
+        'resumeFromRound' => max(1, (int)($config['resumeFromRound'] ?? 1)),
         'rounds' => (int)$config['rounds'],
         'delayMs' => (int)$config['delayMs'],
         'workerCount' => max(0, (int)($config['workerCount'] ?? 0)),
@@ -1096,6 +1157,215 @@ function parse_job_ts(?string $value): ?int {
     return $ts === false ? null : $ts;
 }
 
+function job_status_is_active(?string $status): bool {
+    return in_array((string)$status, ['queued', 'running'], true);
+}
+
+function job_status_is_terminal(?string $status): bool {
+    return in_array((string)$status, ['completed', 'cancelled', 'error', 'budget_exhausted', 'interrupted'], true);
+}
+
+function job_status_can_resume(?string $status): bool {
+    return in_array((string)$status, ['interrupted'], true);
+}
+
+function job_status_can_retry(?string $status): bool {
+    return in_array((string)$status, ['interrupted', 'error', 'budget_exhausted', 'cancelled', 'completed'], true);
+}
+
+function job_resume_round(array $job): int {
+    $completedRounds = max(0, (int)($job['completedRounds'] ?? 0));
+    return max(1, $completedRounds + 1);
+}
+
+function list_job_files_unlocked(): array {
+    $jobFiles = glob(JOBS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: [];
+    usort($jobFiles, static function (string $a, string $b): int {
+        $timeA = filemtime($a) ?: 0;
+        $timeB = filemtime($b) ?: 0;
+        return $timeA <=> $timeB;
+    });
+    return $jobFiles;
+}
+
+function read_jobs_unlocked(): array {
+    $jobs = [];
+    foreach (list_job_files_unlocked() as $jobFile) {
+        $job = read_json_file_safe($jobFile);
+        if (!is_array($job)) {
+            continue;
+        }
+        $jobs[] = default_job($job);
+    }
+    return $jobs;
+}
+
+function active_background_job_count_unlocked(?string $taskId = null): int {
+    $count = 0;
+    foreach (read_jobs_unlocked() as $job) {
+        if (!job_status_is_active($job['status'] ?? null)) {
+            continue;
+        }
+        if ($taskId !== null && (string)($job['taskId'] ?? '') !== $taskId) {
+            continue;
+        }
+        $count++;
+    }
+    return $count;
+}
+
+function queued_background_jobs_unlocked(?string $taskId = null, ?string $excludeJobId = null): array {
+    $jobs = [];
+    foreach (read_jobs_unlocked() as $job) {
+        if (($job['status'] ?? null) !== 'queued') {
+            continue;
+        }
+        if ($taskId !== null && (string)($job['taskId'] ?? '') !== $taskId) {
+            continue;
+        }
+        if ($excludeJobId !== null && (string)($job['jobId'] ?? '') === $excludeJobId) {
+            continue;
+        }
+        $jobs[] = $job;
+    }
+
+    usort($jobs, static function (array $a, array $b): int {
+        $queueA = (int)($a['queuePosition'] ?? 0);
+        $queueB = (int)($b['queuePosition'] ?? 0);
+        if ($queueA !== $queueB) {
+            return $queueA <=> $queueB;
+        }
+        $timeA = parse_job_ts($a['queuedAt'] ?? null) ?? 0;
+        $timeB = parse_job_ts($b['queuedAt'] ?? null) ?? 0;
+        return $timeA <=> $timeB;
+    });
+
+    return $jobs;
+}
+
+function next_background_queue_position_unlocked(?string $taskId = null): int {
+    $maxPosition = 0;
+    foreach (queued_background_jobs_unlocked($taskId) as $job) {
+        $maxPosition = max($maxPosition, (int)($job['queuePosition'] ?? 0));
+    }
+    return $maxPosition + 1;
+}
+
+function find_next_queued_background_job_unlocked(?string $taskId = null, ?string $excludeJobId = null): ?array {
+    $jobs = queued_background_jobs_unlocked($taskId, $excludeJobId);
+    return $jobs ? $jobs[0] : null;
+}
+
+function cancel_queued_background_jobs(string $taskId, ?string $excludeJobId = null, string $message = 'Cancelled while draining the queue.'): int {
+    return with_lock(function () use ($taskId, $excludeJobId, $message): int {
+        $cancelled = 0;
+        foreach (queued_background_jobs_unlocked($taskId, $excludeJobId) as $job) {
+            write_job_unlocked(array_merge($job, [
+                'status' => 'cancelled',
+                'cancelRequested' => true,
+                'finishedAt' => gmdate('c'),
+                'lastHeartbeatAt' => gmdate('c'),
+                'lastMessage' => $message,
+                'error' => null,
+            ]));
+            $cancelled++;
+        }
+        return $cancelled;
+    });
+}
+
+function read_task_snapshot(string $taskId): ?array {
+    return read_json_file_safe(task_file_path($taskId));
+}
+
+function list_session_archives(int $maxItems = 10): array {
+    $files = glob(SESSIONS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: [];
+    usort($files, static function (string $a, string $b): int {
+        return (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0);
+    });
+    $archives = [];
+    foreach (array_slice($files, 0, max(0, $maxItems)) as $file) {
+        $archive = read_json_file_safe($file);
+        if (!is_array($archive)) {
+            continue;
+        }
+        $carryContext = trim((string)($archive['carryContext'] ?? ''));
+        $archives[] = [
+            'file' => basename($file),
+            'taskId' => $archive['taskId'] ?? null,
+            'archivedAt' => $archive['archivedAt'] ?? gmdate('c', filemtime($file) ?: time()),
+            'reason' => $archive['reason'] ?? null,
+            'carryContextPreview' => truncate_plain_text($carryContext, 180),
+            'hasState' => is_array($archive['state'] ?? null),
+            'size' => filesize($file) ?: 0,
+        ];
+    }
+    return $archives;
+}
+
+function build_artifact_history_entry(string $artifactFile): ?array {
+    $name = basename($artifactFile);
+    if (strpos($name, '_step') === false && strpos($name, '_round') === false) {
+        return null;
+    }
+
+    $entry = [
+        'name' => $name,
+        'path' => $artifactFile,
+        'modifiedAt' => gmdate('c', filemtime($artifactFile) ?: time()),
+        'size' => filesize($artifactFile) ?: 0,
+        'kind' => 'artifact',
+        'taskId' => null,
+        'worker' => null,
+        'roundOrStep' => null,
+        'model' => null,
+        'mode' => null,
+        'responseId' => null,
+        'requestedMaxOutputTokens' => null,
+        'effectiveMaxOutputTokens' => null,
+        'maxOutputTokenAttempts' => [],
+        'recoveredFromIncomplete' => false,
+        'rawOutputAvailable' => false,
+    ];
+
+    if (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)_output\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = $matches[2];
+        $entry['kind'] = 'worker_output';
+        $entry['roundOrStep'] = (int)$matches[3];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)_output\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'summary';
+        $entry['kind'] = 'summary_output';
+        $entry['roundOrStep'] = (int)$matches[2];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = $matches[2];
+        $entry['kind'] = 'worker_step';
+        $entry['roundOrStep'] = (int)$matches[3];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'summary';
+        $entry['kind'] = 'summary_round';
+        $entry['roundOrStep'] = (int)$matches[2];
+    }
+
+    $content = read_json_file_safe($artifactFile);
+    if (is_array($content)) {
+        $responseMeta = is_array($content['responseMeta'] ?? null) ? $content['responseMeta'] : [];
+        $entry['model'] = $content['model'] ?? ($content['modelUsed'] ?? null);
+        $entry['mode'] = $content['mode'] ?? null;
+        $entry['responseId'] = $content['responseId'] ?? null;
+        $entry['requestedMaxOutputTokens'] = isset($responseMeta['requestedMaxOutputTokens']) ? (int)$responseMeta['requestedMaxOutputTokens'] : null;
+        $entry['effectiveMaxOutputTokens'] = isset($responseMeta['effectiveMaxOutputTokens']) ? (int)$responseMeta['effectiveMaxOutputTokens'] : null;
+        $entry['maxOutputTokenAttempts'] = array_values(array_map('intval', is_array($responseMeta['maxOutputTokenAttempts'] ?? null) ? $responseMeta['maxOutputTokenAttempts'] : []));
+        $entry['recoveredFromIncomplete'] = !empty($responseMeta['recoveredFromIncomplete']);
+        $entry['rawOutputAvailable'] = isset($content['rawOutputText']) && trim((string)$content['rawOutputText']) !== '';
+    }
+
+    return $entry;
+}
+
 function recover_loop_state_if_needed(): array {
     return with_lock(function (): array {
         $state = read_state_unlocked();
@@ -1142,11 +1412,11 @@ function recover_loop_state_if_needed(): array {
 
         if ($queueStale || $runStale) {
             $message = $queueStale
-                ? 'Recovered a stale queued background loop.'
-                : 'Recovered a stale running background loop.';
+                ? 'Recovered a stale queued background loop. It can be resumed or retried.'
+                : 'Recovered a stale running background loop. It can be resumed or retried.';
 
             $job = write_job_unlocked(array_merge($job, [
-                'status' => 'error',
+                'status' => 'interrupted',
                 'finishedAt' => gmdate('c'),
                 'lastHeartbeatAt' => gmdate('c'),
                 'lastMessage' => $message,
@@ -1154,7 +1424,7 @@ function recover_loop_state_if_needed(): array {
             ]));
 
             $state = set_loop_state($state, [
-                'status' => 'error',
+                'status' => 'interrupted',
                 'jobId' => $jobId,
                 'mode' => $job['mode'] ?? ($loop['mode'] ?? 'background'),
                 'totalRounds' => (int)($job['rounds'] ?? ($loop['totalRounds'] ?? 0)),
@@ -1185,7 +1455,7 @@ function recover_loop_state_if_needed(): array {
             return $state;
         }
 
-        if (in_array($jobStatus, ['completed', 'cancelled', 'error', 'budget_exhausted'], true) || $status !== $jobStatus) {
+        if (in_array($jobStatus, ['completed', 'cancelled', 'error', 'budget_exhausted', 'interrupted'], true) || $status !== $jobStatus) {
             $state = set_loop_state($state, [
                 'status' => $jobStatus,
                 'jobId' => $jobId,

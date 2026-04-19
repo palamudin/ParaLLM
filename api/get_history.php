@@ -1,45 +1,42 @@
 <?php
 require __DIR__ . '/common.php';
 ensure_data_paths();
+
 $state = try_recover_loop_state_if_needed();
 $recoveryWarning = null;
 if (strpos((string)($state['loop']['lastMessage'] ?? ''), 'Recovery check deferred:') !== false) {
     $recoveryWarning = $state['loop']['lastMessage'];
 }
 
-$maxJobs = 10;
-$maxArtifacts = 20;
+$maxJobs = 12;
+$maxArtifacts = 30;
+$maxRounds = 12;
+$maxSessions = 10;
 
-$readJsonFile = static function (string $path): ?array {
-    if (!file_exists($path)) {
+$taskCache = [];
+$loadTask = static function (?string $taskId) use (&$taskCache): ?array {
+    if (!is_string($taskId) || trim($taskId) === '') {
         return null;
     }
-    $raw = @file_get_contents($path);
-    if ($raw === false || trim($raw) === '') {
-        return null;
+    if (!array_key_exists($taskId, $taskCache)) {
+        $taskCache[$taskId] = read_task_snapshot($taskId);
     }
-    if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
-        $raw = substr($raw, 3);
-    }
-    $decoded = json_decode($raw, true);
-    return is_array($decoded) ? $decoded : null;
+    return $taskCache[$taskId];
 };
 
-$jobFiles = glob(JOBS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: [];
+$jobFiles = list_job_files_unlocked();
 usort($jobFiles, static function (string $a, string $b): int {
-    return filemtime($b) <=> filemtime($a);
+    return (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0);
 });
 
 $jobs = [];
 foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
-    $job = $readJsonFile($jobFile);
-    if (!$job) {
+    $job = read_json_file_safe($jobFile);
+    if (!is_array($job)) {
         continue;
     }
-    $task = null;
-    if (!empty($job['taskId'])) {
-        $task = $readJsonFile(task_file_path((string)$job['taskId']));
-    }
+    $job = default_job($job);
+    $task = $loadTask((string)($job['taskId'] ?? ''));
     $jobs[] = [
         'jobId' => $job['jobId'] ?? null,
         'taskId' => $job['taskId'] ?? null,
@@ -49,6 +46,11 @@ foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
         'workerCount' => isset($job['workerCount']) ? (int)$job['workerCount'] : 0,
         'rounds' => isset($job['rounds']) ? (int)$job['rounds'] : 0,
         'completedRounds' => isset($job['completedRounds']) ? (int)$job['completedRounds'] : 0,
+        'resumeFromRound' => isset($job['resumeFromRound']) ? (int)$job['resumeFromRound'] : 1,
+        'queuePosition' => isset($job['queuePosition']) ? (int)$job['queuePosition'] : 0,
+        'attempt' => isset($job['attempt']) ? (int)$job['attempt'] : 1,
+        'resumeOfJobId' => $job['resumeOfJobId'] ?? null,
+        'retryOfJobId' => $job['retryOfJobId'] ?? null,
         'queuedAt' => $job['queuedAt'] ?? null,
         'startedAt' => $job['startedAt'] ?? null,
         'finishedAt' => $job['finishedAt'] ?? null,
@@ -57,6 +59,9 @@ foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
         'totalTokens' => isset($job['usage']['totalTokens']) ? (int)$job['usage']['totalTokens'] : 0,
         'estimatedCostUsd' => isset($job['usage']['estimatedCostUsd']) ? (float)$job['usage']['estimatedCostUsd'] : 0.0,
         'error' => $job['error'] ?? null,
+        'canResume' => job_status_can_resume($job['status'] ?? null),
+        'canRetry' => job_status_can_retry($job['status'] ?? null),
+        'canCancel' => in_array((string)($job['status'] ?? ''), ['queued', 'interrupted'], true),
     ];
 }
 
@@ -65,56 +70,75 @@ $artifactFiles = array_merge(
     glob(OUTPUTS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: []
 );
 usort($artifactFiles, static function (string $a, string $b): int {
-    return filemtime($b) <=> filemtime($a);
+    return (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0);
 });
 
 $artifacts = [];
+$roundGroups = [];
 foreach ($artifactFiles as $artifactFile) {
-    $name = basename($artifactFile);
-    if (strpos($name, '_step') === false && strpos($name, '_round') === false) {
+    $entry = build_artifact_history_entry($artifactFile);
+    if ($entry === null) {
         continue;
     }
 
-    $entry = [
-        'name' => $name,
-        'modifiedAt' => gmdate('c', filemtime($artifactFile)),
-        'size' => filesize($artifactFile),
-        'kind' => 'artifact',
-        'taskId' => null,
-        'worker' => null,
-        'roundOrStep' => null,
-    ];
+    $artifactOut = $entry;
+    unset($artifactOut['path']);
+    $artifacts[] = $artifactOut;
 
-    if (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)_output\.json$/i', $name, $matches)) {
-        $entry['taskId'] = $matches[1];
-        $entry['worker'] = $matches[2];
-        $entry['kind'] = 'worker_output';
-        $entry['roundOrStep'] = (int)$matches[3];
-    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)_output\.json$/i', $name, $matches)) {
-        $entry['taskId'] = $matches[1];
-        $entry['worker'] = 'summary';
-        $entry['kind'] = 'summary_output';
-        $entry['roundOrStep'] = (int)$matches[2];
-    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)\.json$/i', $name, $matches)) {
-        $entry['taskId'] = $matches[1];
-        $entry['worker'] = $matches[2];
-        $entry['kind'] = 'worker_step';
-        $entry['roundOrStep'] = (int)$matches[3];
-    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)\.json$/i', $name, $matches)) {
-        $entry['taskId'] = $matches[1];
-        $entry['worker'] = 'summary';
-        $entry['kind'] = 'summary_round';
-        $entry['roundOrStep'] = (int)$matches[2];
+    if (
+        isset($entry['taskId'], $entry['roundOrStep'])
+        && in_array((string)$entry['kind'], ['worker_output', 'summary_output'], true)
+    ) {
+        $roundKey = (string)$entry['taskId'] . ':' . (int)$entry['roundOrStep'];
+        if (!isset($roundGroups[$roundKey])) {
+            $task = $loadTask((string)$entry['taskId']);
+            $roundGroups[$roundKey] = [
+                'taskId' => $entry['taskId'],
+                'objective' => $task['objective'] ?? null,
+                'round' => (int)$entry['roundOrStep'],
+                'capturedAt' => $entry['modifiedAt'],
+                'summaryArtifact' => null,
+                'workerArtifacts' => [],
+            ];
+        }
+        if (($entry['kind'] ?? null) === 'summary_output') {
+            $roundGroups[$roundKey]['summaryArtifact'] = $artifactOut;
+        } else {
+            $roundGroups[$roundKey]['workerArtifacts'][] = $artifactOut;
+        }
+        if (strtotime((string)$entry['modifiedAt']) > strtotime((string)$roundGroups[$roundKey]['capturedAt'])) {
+            $roundGroups[$roundKey]['capturedAt'] = $entry['modifiedAt'];
+        }
     }
 
-    $artifacts[] = $entry;
     if (count($artifacts) >= $maxArtifacts) {
         break;
     }
 }
 
+$rounds = array_values($roundGroups);
+usort($rounds, static function (array $a, array $b): int {
+    $timeCompare = strtotime((string)($b['capturedAt'] ?? '')) <=> strtotime((string)($a['capturedAt'] ?? ''));
+    if ($timeCompare !== 0) {
+        return $timeCompare;
+    }
+    return ((int)($b['round'] ?? 0)) <=> ((int)($a['round'] ?? 0));
+});
+$rounds = array_slice($rounds, 0, $maxRounds);
+
+foreach ($rounds as &$roundEntry) {
+    usort($roundEntry['workerArtifacts'], static function (array $a, array $b): int {
+        return strcmp((string)($a['worker'] ?? ''), (string)($b['worker'] ?? ''));
+    });
+}
+unset($roundEntry);
+
 json_response([
     'jobs' => $jobs,
     'artifacts' => $artifacts,
-    'recoveryWarning' => $recoveryWarning
+    'rounds' => $rounds,
+    'sessions' => list_session_archives($maxSessions),
+    'artifactPolicy' => artifact_visibility_policy(),
+    'queueLimit' => LOOP_QUEUE_LIMIT,
+    'recoveryWarning' => $recoveryWarning,
 ]);

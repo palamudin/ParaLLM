@@ -77,7 +77,13 @@ $task = [
         'research' => $research,
         'vetting' => $vetting,
         'pricingSource' => 'https://openai.com/api/pricing',
-        'pricingCheckedAt' => '2026-04-18'
+        'pricingCheckedAt' => '2026-04-19',
+        'pricingSources' => [
+            'https://openai.com/api/pricing/',
+            'https://developers.openai.com/api/docs/pricing'
+        ],
+        'pricingAccuracy' => 'assume_chargeable',
+        'pricingNote' => 'This workspace uses a conservative chargeable-search assumption: web-search-related model tokens are treated as billable and tool calls stay separately priced.'
     ],
     'summarizer' => [
         'id' => 'summarizer',

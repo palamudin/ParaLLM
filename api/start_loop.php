@@ -10,27 +10,35 @@ $state = recover_loop_state_if_needed();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }
-if (loop_is_active($state)) {
-    json_response(['message' => 'The autonomous loop is already active.'], 409);
-}
 
 $task = $state['activeTask'];
-$job = create_loop_job($task, $rounds, $delayMs, 'background');
-$runnerPath = ROOT_PATH . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'loop_runner.php';
+$taskId = (string)($task['taskId'] ?? '');
+$activeBackgroundJobs = with_lock(function () use ($taskId): int {
+    return active_background_job_count_unlocked($taskId);
+});
+if ($activeBackgroundJobs >= LOOP_QUEUE_LIMIT) {
+    json_response(['message' => 'Background loop queue is full. Cancel or finish an existing queued job first.'], 409);
+}
+
+$queuePosition = with_lock(function () use ($taskId): int {
+    return loop_is_active(read_state_unlocked()) ? next_background_queue_position_unlocked($taskId) : 0;
+});
+$job = create_loop_job($task, $rounds, $delayMs, 'background', [
+    'queuePosition' => $queuePosition,
+    'updateLoopState' => !loop_is_active($state),
+    'lastMessage' => $queuePosition > 0 ? 'Queued behind another background loop.' : 'Queued background loop.',
+]);
 
 try {
-    launch_background_php($runnerPath, ['--job-id=' . $job['jobId']]);
-    append_step('autoloop', 'Background loop process launched.', [
-        'taskId' => $task['taskId'],
-        'jobId' => $job['jobId'],
-        'rounds' => $rounds,
-        'delayMs' => $delayMs
-    ]);
+    if ($queuePosition === 0 && !loop_is_active($state)) {
+        launch_loop_job_runner($job, false);
+    }
     json_response([
-        'message' => 'Background loop started.',
+        'message' => $queuePosition > 0 ? 'Background loop queued.' : 'Background loop started.',
         'jobId' => $job['jobId'],
         'rounds' => $rounds,
-        'delayMs' => $delayMs
+        'delayMs' => $delayMs,
+        'queuePosition' => $queuePosition
     ]);
 } catch (Throwable $ex) {
     mutate_state(function (array $state): array {

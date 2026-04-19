@@ -35,6 +35,8 @@ if (!is_array($content)) {
     json_response(['message' => 'Artifact JSON could not be parsed.'], 500);
 }
 
+$responseMeta = is_array($content['responseMeta'] ?? null) ? $content['responseMeta'] : [];
+
 $kind = 'artifact';
 if (isset($content['artifactType']) && is_string($content['artifactType']) && trim($content['artifactType']) !== '') {
     $kind = trim($content['artifactType']);
@@ -59,6 +61,12 @@ json_response([
         'step' => $content['step'] ?? null,
         'round' => $content['round'] ?? null,
         'responseId' => $content['responseId'] ?? null,
+        'requestedMaxOutputTokens' => isset($responseMeta['requestedMaxOutputTokens']) ? (int)$responseMeta['requestedMaxOutputTokens'] : null,
+        'effectiveMaxOutputTokens' => isset($responseMeta['effectiveMaxOutputTokens']) ? (int)$responseMeta['effectiveMaxOutputTokens'] : null,
+        'maxOutputTokenAttempts' => array_values(array_map('intval', is_array($responseMeta['maxOutputTokenAttempts'] ?? null) ? $responseMeta['maxOutputTokenAttempts'] : [])),
+        'recoveredFromIncomplete' => !empty($responseMeta['recoveredFromIncomplete']),
+        'rawOutputAvailable' => isset($content['rawOutputText']) && trim((string)$content['rawOutputText']) !== '',
     ],
+    'policy' => artifact_visibility_policy(),
     'content' => $content,
 ]);

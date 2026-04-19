@@ -22,49 +22,174 @@ function clamp_loop_delay_ms($delayMs): int {
     return $delayMs;
 }
 
-function create_loop_job(array $task, int $rounds, int $delayMs, string $mode = 'background'): array {
+function launch_loop_job_runner(array $job, bool $claimLoopState = true): array {
+    $runnerPath = ROOT_PATH . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'loop_runner.php';
+    if ($claimLoopState) {
+        mutate_state(function (array $state) use ($job): array {
+            return set_loop_state($state, [
+                'status' => 'queued',
+                'jobId' => $job['jobId'],
+                'mode' => $job['mode'] ?? 'background',
+                'totalRounds' => (int)($job['rounds'] ?? 0),
+                'completedRounds' => (int)($job['completedRounds'] ?? 0),
+                'currentRound' => 0,
+                'delayMs' => (int)($job['delayMs'] ?? 0),
+                'cancelRequested' => false,
+                'queuedAt' => $job['queuedAt'] ?? gmdate('c'),
+                'startedAt' => null,
+                'finishedAt' => null,
+                'lastHeartbeatAt' => null,
+                'lastMessage' => $job['lastMessage'] ?? 'Queued background loop.'
+            ]);
+        });
+    }
+
+    launch_background_php($runnerPath, ['--job-id=' . $job['jobId']]);
+    append_step('autoloop', 'Background loop process launched.', [
+        'taskId' => $job['taskId'] ?? null,
+        'jobId' => $job['jobId'],
+        'rounds' => $job['rounds'] ?? 0,
+        'delayMs' => $job['delayMs'] ?? 0,
+        'queuePosition' => $job['queuePosition'] ?? 0
+    ]);
+    return $job;
+}
+
+function create_loop_job(array $task, int $rounds, int $delayMs, string $mode = 'background', array $overrides = []): array {
     $jobId = 'job-' . date('Ymd-His') . '-' . substr(md5(uniqid('', true)), 0, 6);
     $queuedAt = gmdate('c');
+    $queuePosition = max(0, (int)($overrides['queuePosition'] ?? 0));
+    $updateLoopState = array_key_exists('updateLoopState', $overrides) ? (bool)$overrides['updateLoopState'] : true;
+    $queuedMessage = (string)($overrides['lastMessage'] ?? ($queuePosition > 0 ? 'Queued behind another background loop.' : 'Queued background loop.'));
     $job = default_job([
         'jobId' => $jobId,
         'taskId' => $task['taskId'],
         'mode' => $mode,
         'status' => 'queued',
+        'queuePosition' => $queuePosition,
+        'attempt' => max(1, (int)($overrides['attempt'] ?? 1)),
+        'resumeOfJobId' => $overrides['resumeOfJobId'] ?? null,
+        'retryOfJobId' => $overrides['retryOfJobId'] ?? null,
+        'resumeFromRound' => max(1, (int)($overrides['resumeFromRound'] ?? 1)),
         'rounds' => $rounds,
         'delayMs' => $delayMs,
         'workerCount' => count(task_workers($task)),
-        'usage' => default_usage_state(),
+        'usage' => isset($overrides['usage']) && is_array($overrides['usage']) ? $overrides['usage'] : default_usage_state(),
         'queuedAt' => $queuedAt,
-        'lastMessage' => 'Queued background loop.'
+        'lastMessage' => $queuedMessage,
+        'results' => isset($overrides['results']) && is_array($overrides['results']) ? $overrides['results'] : [],
+        'completedRounds' => (int)($overrides['completedRounds'] ?? 0),
+        'error' => $overrides['error'] ?? null,
     ]);
     write_job($job);
 
-    mutate_state(function (array $state) use ($jobId, $rounds, $delayMs, $queuedAt, $mode): array {
-        return set_loop_state($state, [
+    if ($updateLoopState) {
+        mutate_state(function (array $state) use ($jobId, $rounds, $delayMs, $queuedAt, $mode, $queuedMessage, $overrides): array {
+            return set_loop_state($state, [
+                'status' => 'queued',
+                'jobId' => $jobId,
+                'mode' => $mode,
+                'totalRounds' => $rounds,
+                'completedRounds' => (int)($overrides['completedRounds'] ?? 0),
+                'currentRound' => 0,
+                'delayMs' => $delayMs,
+                'cancelRequested' => false,
+                'queuedAt' => $queuedAt,
+                'startedAt' => null,
+                'finishedAt' => null,
+                'lastHeartbeatAt' => null,
+                'lastMessage' => $queuedMessage
+            ]);
+        });
+    }
+
+    append_step('autoloop', $queuePosition > 0 ? 'Background loop queued behind another job.' : 'Background loop queued.', [
+        'taskId' => $task['taskId'],
+        'jobId' => $jobId,
+        'rounds' => $rounds,
+        'delayMs' => $delayMs,
+        'queuePosition' => $queuePosition,
+        'resumeOfJobId' => $job['resumeOfJobId'],
+        'retryOfJobId' => $job['retryOfJobId'],
+        'resumeFromRound' => $job['resumeFromRound']
+    ]);
+
+    return $job;
+}
+
+function promote_next_queued_loop_job(?string $taskId, ?string $finishedJobId = null): ?array {
+    $nextJob = with_lock(function () use ($taskId, $finishedJobId): ?array {
+        $state = read_state_unlocked();
+        $activeTaskId = $state['activeTask']['taskId'] ?? null;
+        if ($taskId === null || !$activeTaskId || $activeTaskId !== $taskId) {
+            return null;
+        }
+
+        $nextJob = find_next_queued_background_job_unlocked($taskId, $finishedJobId);
+        if ($nextJob === null) {
+            return null;
+        }
+
+        $nextJob = write_job_unlocked(array_merge($nextJob, [
             'status' => 'queued',
-            'jobId' => $jobId,
-            'mode' => $mode,
-            'totalRounds' => $rounds,
-            'completedRounds' => 0,
+            'lastHeartbeatAt' => gmdate('c'),
+            'lastMessage' => 'Queued background loop.'
+        ]));
+
+        $state = set_loop_state($state, [
+            'status' => 'queued',
+            'jobId' => $nextJob['jobId'],
+            'mode' => $nextJob['mode'] ?? 'background',
+            'totalRounds' => (int)($nextJob['rounds'] ?? 0),
+            'completedRounds' => (int)($nextJob['completedRounds'] ?? 0),
             'currentRound' => 0,
-            'delayMs' => $delayMs,
+            'delayMs' => (int)($nextJob['delayMs'] ?? 0),
             'cancelRequested' => false,
-            'queuedAt' => $queuedAt,
+            'queuedAt' => $nextJob['queuedAt'] ?? gmdate('c'),
             'startedAt' => null,
             'finishedAt' => null,
             'lastHeartbeatAt' => null,
             'lastMessage' => 'Queued background loop.'
         ]);
+        write_state_unlocked($state);
+        return $nextJob;
     });
 
-    append_step('autoloop', 'Background loop queued.', [
-        'taskId' => $task['taskId'],
-        'jobId' => $jobId,
-        'rounds' => $rounds,
-        'delayMs' => $delayMs
-    ]);
+    if ($nextJob === null) {
+        return null;
+    }
 
-    return $job;
+    try {
+        return launch_loop_job_runner($nextJob, false);
+    } catch (Throwable $ex) {
+        mutate_job($nextJob['jobId'], function (?array $job) use ($ex): array {
+            return default_job(array_merge($job ?? [], [
+                'status' => 'error',
+                'finishedAt' => gmdate('c'),
+                'lastHeartbeatAt' => gmdate('c'),
+                'lastMessage' => 'Queued background launch failed.',
+                'error' => $ex->getMessage()
+            ]));
+        });
+        mutate_state(function (array $state) use ($nextJob, $ex): array {
+            $loop = current_loop_state($state);
+            if (($loop['jobId'] ?? null) === $nextJob['jobId']) {
+                return set_loop_state($state, [
+                    'status' => 'error',
+                    'finishedAt' => gmdate('c'),
+                    'lastHeartbeatAt' => gmdate('c'),
+                    'lastMessage' => 'Queued background launch failed: ' . $ex->getMessage()
+                ]);
+            }
+            return $state;
+        });
+        append_step('error', 'Failed to launch the next queued background loop.', [
+            'taskId' => $nextJob['taskId'] ?? null,
+            'jobId' => $nextJob['jobId'],
+            'error' => $ex->getMessage()
+        ]);
+        return null;
+    }
 }
 
 function execute_loop_process(array $config): array {
@@ -73,11 +198,12 @@ function execute_loop_process(array $config): array {
     $jobId = $config['jobId'] ?? null;
     $mode = $config['mode'] ?? 'sync';
     $taskId = $config['taskId'] ?? null;
-    $results = [];
-    $completedRounds = 0;
+    $startRound = max(1, min($rounds, (int)($config['startRound'] ?? 1)));
+    $results = isset($config['results']) && is_array($config['results']) ? array_values($config['results']) : [];
+    $completedRounds = max(0, (int)($config['completedRounds'] ?? 0));
     $cancelled = false;
 
-    $startPatch = mutate_state(function (array $state) use ($taskId, $jobId, $mode, $rounds, $delayMs): array {
+    $startPatch = mutate_state(function (array $state) use ($taskId, $jobId, $mode, $rounds, $delayMs, $completedRounds, $startRound): array {
         $activeTaskId = $state['activeTask']['taskId'] ?? null;
         if (!$activeTaskId || $activeTaskId !== $taskId) {
             throw new RuntimeException('No active task.');
@@ -89,24 +215,26 @@ function execute_loop_process(array $config): array {
             'jobId' => $jobId,
             'mode' => $mode,
             'totalRounds' => $rounds,
+            'completedRounds' => $completedRounds,
             'delayMs' => $delayMs,
             'startedAt' => $loop['startedAt'] ?: gmdate('c'),
             'finishedAt' => null,
             'lastHeartbeatAt' => gmdate('c'),
-            'lastMessage' => 'Preparing round 1.'
+            'lastMessage' => 'Preparing round ' . $startRound . '.'
         ]);
     });
 
     if ($jobId !== null) {
-        mutate_job($jobId, function (?array $job) use ($rounds, $delayMs, $startPatch): array {
+        mutate_job($jobId, function (?array $job) use ($rounds, $delayMs, $startPatch, $startRound, $completedRounds): array {
             return default_job(array_merge($job ?? [], [
                 'status' => 'running',
                 'rounds' => $rounds,
                 'delayMs' => $delayMs,
+                'completedRounds' => $completedRounds,
                 'startedAt' => current_loop_state($startPatch)['startedAt'],
                 'finishedAt' => null,
                 'lastHeartbeatAt' => gmdate('c'),
-                'lastMessage' => 'Preparing round 1.'
+                'lastMessage' => 'Preparing round ' . $startRound . '.'
             ]));
         });
     }
@@ -120,7 +248,7 @@ function execute_loop_process(array $config): array {
     ]);
 
     try {
-        for ($round = 1; $round <= $rounds; $round++) {
+        for ($round = $startRound; $round <= $rounds; $round++) {
             $snapshot = read_state();
             $currentTaskId = $snapshot['activeTask']['taskId'] ?? null;
             if (!$currentTaskId || $currentTaskId !== $taskId) {
@@ -317,6 +445,10 @@ function execute_loop_process(array $config): array {
             'requestedRounds' => $rounds
         ]);
 
+        if ($jobId !== null && $mode === 'background') {
+            promote_next_queued_loop_job($taskId, $jobId);
+        }
+
         return [
             'message' => $cancelled ? 'Loop cancelled.' : 'Loop completed.',
             'completedRounds' => $completedRounds,
@@ -372,6 +504,10 @@ function execute_loop_process(array $config): array {
             'status' => $finalStatus,
             'error' => $ex->getMessage()
         ]);
+
+        if ($jobId !== null && $mode === 'background') {
+            promote_next_queued_loop_job($taskId, $jobId);
+        }
 
         throw $ex;
     }

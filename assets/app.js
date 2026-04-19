@@ -15,6 +15,7 @@ const MODEL_CATALOG = {
 };
 
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
+const WORKER_SLOT_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WORKER_TYPE_CATALOG = {
   proponent: { label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced" },
   sceptic: { label: "Sceptic", role: "adversarial", focus: "failure modes, downside, hidden coupling, consequences, externalities", temperature: "cool" },
@@ -54,6 +55,61 @@ const WORKER_TEMPERATURE_CATALOG = {
   hot: { label: "Hot" }
 };
 const WORKER_TEMPERATURE_ORDER = Object.keys(WORKER_TEMPERATURE_CATALOG);
+const QUALITY_PROFILE_CATALOG = {
+  low: {
+    label: "Low",
+    eyebrow: "Lean spend",
+    description: "Keeps every lane on a cheap capable model for everyday work without burning budget.",
+    workerModel: "gpt-5-mini",
+    summarizerModel: "gpt-5-mini",
+    reasoningEffort: "low",
+    maxCostUsd: 5,
+    maxTotalTokens: 250000,
+    maxOutputTokens: 1200,
+    loopRounds: 3,
+    loopDelayMs: 1000
+  },
+  mid: {
+    label: "Mid",
+    eyebrow: "Best bang",
+    description: "Lets cheap worker lanes explore while a stronger summarizer shapes the final answer.",
+    workerModel: "gpt-5-mini",
+    summarizerModel: "gpt-5.4-mini",
+    reasoningEffort: "medium",
+    maxCostUsd: 12,
+    maxTotalTokens: 400000,
+    maxOutputTokens: 1800,
+    loopRounds: 4,
+    loopDelayMs: 1000
+  },
+  high: {
+    label: "High",
+    eyebrow: "Sharper debate",
+    description: "Upgrades the adversarial lanes and the final judge for harder prompts and denser steering.",
+    workerModel: "gpt-5.4-mini",
+    summarizerModel: "gpt-5.4",
+    reasoningEffort: "high",
+    maxCostUsd: 30,
+    maxTotalTokens: 800000,
+    maxOutputTokens: 2800,
+    loopRounds: 6,
+    loopDelayMs: 1000
+  },
+  ultra: {
+    label: "Ultra",
+    eyebrow: "Cost wall only",
+    description: "Removes the token wall and leaves spend as the main governor for maximum agentic pressure.",
+    workerModel: "gpt-5.4",
+    summarizerModel: "gpt-5.4",
+    reasoningEffort: "xhigh",
+    maxCostUsd: 75,
+    maxTotalTokens: 0,
+    maxOutputTokens: 4000,
+    loopRounds: 8,
+    loopDelayMs: 1000
+  }
+};
+const QUALITY_PROFILE_ORDER = ["low", "mid", "high", "ultra"];
 let latestAuthStatus = { hasKey: false, masked: null, last4: "" };
 let latestLoopActive = false;
 let artifactSelections = { left: "", right: "" };
@@ -61,12 +117,14 @@ let formDirty = false;
 let lastSyncedFormSourceKey = "";
 let activeView = localStorage.getItem("loopActiveView") || "home";
 let latestState = null;
+let latestHistoryState = null;
 let draftSaveTimer = null;
 let workerControlsSignature = "";
 let debugControlsSignature = "";
 let threadRenderSignature = "";
 let threadRenderTaskId = "";
 let threadInspectorOpen = false;
+let exportPreviewKey = "";
 
 function showMessage(text, isError = false) {
   $("#message").text(text || "").css({
@@ -85,6 +143,11 @@ function formatUsd(value) {
   return "$" + amount.toFixed(4);
 }
 
+function formatUsdBudget(value) {
+  const amount = Number(value || 0);
+  return "$" + amount.toFixed(2);
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -98,6 +161,10 @@ function truncateText(value, maxLength = 220) {
   const text = String(value || "").trim().replace(/\s+/g, " ");
   if (!text) return "";
   return text.length > maxLength ? text.slice(0, Math.max(0, maxLength - 3)).trim() + "..." : text;
+}
+
+function lineAnchorId(ref) {
+  return "line-ref-" + String(ref || "").replace(/[^a-zA-Z0-9_-]+/g, "-");
 }
 
 function defaultDraftState() {
@@ -147,6 +214,10 @@ function buildModelOptions(selectedValue) {
   }).join("");
 }
 
+function modelLabel(modelId) {
+  return MODEL_CATALOG[modelId]?.label || String(modelId || "Model");
+}
+
 function buildArtifactOptions(artifacts, selectedValue) {
   const options = [`<option value="">Select artifact</option>`];
   (artifacts || []).forEach(function (artifact) {
@@ -168,6 +239,73 @@ function pickArtifact(artifacts, preferredKinds, excludeName) {
   }) || null;
 }
 
+function formatInteger(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function nextAvailableWorkerType(task, draft) {
+  const workers = stagedWorkerSource(draft, task);
+  const usedIds = new Set((workers || []).map(function (worker) {
+    return String(worker?.id || "").trim().toUpperCase();
+  }));
+  const slotIndex = WORKER_SLOT_IDS.findIndex(function (workerId) {
+    return !usedIds.has(workerId);
+  });
+  if (slotIndex >= 0 && WORKER_TYPE_ORDER[slotIndex]) {
+    return WORKER_TYPE_ORDER[slotIndex];
+  }
+  return WORKER_TYPE_ORDER[WORKER_TYPE_ORDER.length - 1] || "wildcard";
+}
+
+function renderAddWorkerTypeControl(task, draft, loop) {
+  const $select = $("#addWorkerType");
+  if (!$select.length) return;
+
+  const workers = stagedWorkerSource(draft, task);
+  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const suggestedType = nextAvailableWorkerType(task, draft);
+  const preferredSelection = String($select.data("selectedType") || $select.val() || "").trim();
+  const selectedValue = WORKER_TYPE_CATALOG[preferredSelection] ? preferredSelection : suggestedType;
+
+  $select.html(WORKER_TYPE_ORDER.map(function (typeId) {
+    const selected = typeId === selectedValue ? " selected" : "";
+    const suffix = typeId === suggestedType ? " (Suggested)" : "";
+    return `<option value="${typeId}"${selected}>${WORKER_TYPE_CATALOG[typeId].label}${suffix}</option>`;
+  }).join(""));
+  $select.val(selectedValue);
+  $select.data("selectedType", selectedValue);
+  $select.prop("disabled", isActive || workers.length >= WORKER_SLOT_IDS.length);
+}
+
+function artifactOutputCapParts(artifact) {
+  const requested = Number(artifact?.requestedMaxOutputTokens || 0);
+  const effective = Number(artifact?.effectiveMaxOutputTokens || 0);
+  const attempts = Array.isArray(artifact?.maxOutputTokenAttempts)
+    ? artifact.maxOutputTokenAttempts.map(function (value) { return Number(value || 0); }).filter(Boolean)
+    : [];
+  const parts = [];
+
+  if (requested > 0 || effective > 0) {
+    parts.push("cap " + (requested > 0 ? formatInteger(requested) : "n/a") + " -> " + (effective > 0 ? formatInteger(effective) : "n/a"));
+  }
+  if (attempts.length) {
+    parts.push("attempts " + attempts.map(formatInteger).join(" -> "));
+  }
+  if (artifact?.recoveredFromIncomplete) {
+    parts.push("recovered after max_output_tokens");
+  }
+  if (artifact?.rawOutputAvailable) {
+    parts.push("raw text saved for review");
+  }
+
+  return parts;
+}
+
+function artifactOutputCapSummary(artifact) {
+  const parts = artifactOutputCapParts(artifact);
+  return parts.length ? parts.join(" | ") : "cap not recorded";
+}
+
 function renderArtifactMeta(data) {
   const summary = data?.summary || {};
   const bits = [
@@ -177,7 +315,9 @@ function renderArtifactMeta(data) {
     "task: " + (summary.taskId || "n/a") + " | target: " + (summary.target || "n/a"),
     "mode: " + (summary.mode || "n/a") + " | model: " + (summary.model || "n/a"),
     "step: " + (summary.step ?? "-") + " | round: " + (summary.round ?? "-"),
-    "responseId: " + (summary.responseId || "none")
+    "responseId: " + (summary.responseId || "none"),
+    "output cap: " + artifactOutputCapSummary(summary),
+    "raw output policy: " + (data?.policy?.reviewSurface || "review_only") + " | public thread: " + (data?.policy?.publicThread || "structured_only")
   ];
   return bits.join("\n");
 }
@@ -186,14 +326,14 @@ function renderArtifactContent(data) {
   const content = data?.content || {};
   const sections = [];
 
-  if (content.rawOutputText) {
-    sections.push("Raw Output Text\n" + content.rawOutputText);
-  }
-
   if (Object.prototype.hasOwnProperty.call(content, "output")) {
-    sections.push("Normalized Output\n" + pretty(content.output));
+    sections.push("Canonical Structured Output\n" + pretty(content.output));
   } else {
     sections.push("Artifact Content\n" + pretty(content));
+  }
+
+  if (content.rawOutputText) {
+    sections.push("Review-Only Raw Output\nThis raw text is kept for auditability and replay. The structured output above remains the canonical source of truth.\n\n" + content.rawOutputText);
   }
 
   return sections.join("\n\n");
@@ -348,6 +488,8 @@ function applyCommanderForm(values) {
   $("#researchExternalWebAccess").val(safe.researchExternalWebAccess === false ? "0" : "1");
   $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
   $("#researchDomains").val((safe.researchDomains || []).join(", "));
+  renderQualityProfileCards();
+  renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
 }
 
 function syncCommanderForm(task, draft, force = false) {
@@ -426,12 +568,302 @@ function displayWorkerLabel(worker) {
   return currentLabel || template?.label || String(worker?.id || "Worker");
 }
 
-function buildDraftSavePayload() {
+function buildDraftSavePayload(options = {}) {
   const payload = collectCommanderPayload();
-  const roster = collectVisibleWorkerRoster();
+  const overrideRoster = Array.isArray(options.workerRoster) ? options.workerRoster : null;
+  const roster = overrideRoster && overrideRoster.length
+    ? overrideRoster
+    : collectVisibleWorkerRoster();
   payload.constraints = JSON.stringify(payload.constraints);
   payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
   return payload;
+}
+
+function buildProfileAppliedWorkerRoster(modelId) {
+  const visibleWorkers = collectVisibleWorkerRoster();
+  const baseWorkers = visibleWorkers.length
+    ? visibleWorkers
+    : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
+  return baseWorkers.map(function (worker) {
+    return Object.assign({}, worker, { model: modelId });
+  });
+}
+
+function setVisibleWorkerModels(modelId) {
+  $("#workerControls .worker-model").each(function () {
+    $(this).val(modelId);
+  });
+}
+
+function buildQualityProfileSnapshot() {
+  const payload = collectCommanderPayload();
+  const workerSource = collectVisibleWorkerRoster();
+  const roster = workerSource.length
+    ? workerSource
+    : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
+  return {
+    model: String(payload.model || ""),
+    summarizerModel: String(payload.summarizerModel || payload.model || ""),
+    reasoningEffort: String(payload.reasoningEffort || ""),
+    maxCostUsd: Number(payload.maxCostUsd || 0),
+    maxTotalTokens: Number(payload.maxTotalTokens || 0),
+    maxOutputTokens: Number(payload.maxOutputTokens || 0),
+    loopRounds: Number(payload.loopRounds || 0),
+    loopDelayMs: Number(payload.loopDelayMs || 0),
+    workerModels: roster.map(function (worker) {
+      return String(worker?.model || payload.model || "");
+    })
+  };
+}
+
+function matchesQualityProfile(profileId, snapshot = null) {
+  const profile = QUALITY_PROFILE_CATALOG[profileId];
+  if (!profile) return false;
+  const comparable = snapshot || buildQualityProfileSnapshot();
+  if (comparable.model !== profile.workerModel) return false;
+  if (comparable.summarizerModel !== profile.summarizerModel) return false;
+  if (comparable.reasoningEffort !== profile.reasoningEffort) return false;
+  if (Number(comparable.maxCostUsd) !== Number(profile.maxCostUsd)) return false;
+  if (Number(comparable.maxTotalTokens) !== Number(profile.maxTotalTokens)) return false;
+  if (Number(comparable.maxOutputTokens) !== Number(profile.maxOutputTokens)) return false;
+  if (Number(comparable.loopRounds) !== Number(profile.loopRounds)) return false;
+  if (Number(comparable.loopDelayMs) !== Number(profile.loopDelayMs)) return false;
+  return (comparable.workerModels.length ? comparable.workerModels : [comparable.model]).every(function (modelId) {
+    return modelId === profile.workerModel;
+  });
+}
+
+function detectQualityProfileId(snapshot = null) {
+  const comparable = snapshot || buildQualityProfileSnapshot();
+  return QUALITY_PROFILE_ORDER.find(function (profileId) {
+    return matchesQualityProfile(profileId, comparable);
+  }) || "";
+}
+
+function buildTaskQualityProfileSnapshot(task) {
+  if (!task) return null;
+  const budget = task?.runtime?.budget || {};
+  return {
+    model: String(task?.runtime?.model || "gpt-5-mini"),
+    summarizerModel: String(task?.summarizer?.model || task?.runtime?.model || "gpt-5-mini"),
+    reasoningEffort: String(task?.runtime?.reasoningEffort || "low"),
+    maxCostUsd: Number(budget.maxCostUsd ?? 0),
+    maxTotalTokens: Number(budget.maxTotalTokens ?? 0),
+    maxOutputTokens: Number(budget.maxOutputTokens ?? 0),
+    loopRounds: Number(task?.preferredLoop?.rounds ?? 0),
+    loopDelayMs: Number(task?.preferredLoop?.delayMs ?? 0),
+    workerModels: (task?.workers || []).map(function (worker) {
+      return String(worker?.model || task?.runtime?.model || "gpt-5-mini");
+    })
+  };
+}
+
+function profileDisplayName(profileId) {
+  return QUALITY_PROFILE_CATALOG[profileId]?.label || "Manual";
+}
+
+function formatTokenWall(value) {
+  const amount = Number(value || 0);
+  return amount > 0 ? amount.toLocaleString() + " token wall" : "token wall off";
+}
+
+function runtimeSnapshotsMatch(left, right) {
+  if (!left || !right) return false;
+  if (left.model !== right.model) return false;
+  if (left.summarizerModel !== right.summarizerModel) return false;
+  if (left.reasoningEffort !== right.reasoningEffort) return false;
+  if (Number(left.maxCostUsd) !== Number(right.maxCostUsd)) return false;
+  if (Number(left.maxTotalTokens) !== Number(right.maxTotalTokens)) return false;
+  if (Number(left.maxOutputTokens) !== Number(right.maxOutputTokens)) return false;
+  if (Number(left.loopRounds) !== Number(right.loopRounds)) return false;
+  if (Number(left.loopDelayMs) !== Number(right.loopDelayMs)) return false;
+  const leftModels = (left.workerModels || []).slice().sort();
+  const rightModels = (right.workerModels || []).slice().sort();
+  return JSON.stringify(leftModels) === JSON.stringify(rightModels);
+}
+
+function appendHomeRuntimeBlock($root, label, value, metaLines, warning = false) {
+  const $block = $("<div>").addClass("home-runtime-block");
+  if (warning) $block.addClass("warning");
+  $block.append($("<div>").addClass("home-runtime-label").text(label));
+  $block.append($("<div>").addClass("home-runtime-value").text(value));
+  (metaLines || []).filter(Boolean).forEach(function (line) {
+    $block.append($("<div>").addClass("home-runtime-meta").text(line));
+  });
+  $root.append($block);
+}
+
+function renderHomeRuntimeControls(task, draft, loop) {
+  const $summary = $("#homeRuntimeSummary");
+  const $grid = $("#homeQualityProfiles");
+  const $apply = $("#applyHomeRuntime");
+  if (!$summary.length || !$grid.length || !$apply.length) return;
+
+  const stagedPayload = collectCommanderPayload();
+  const stagedSnapshot = buildQualityProfileSnapshot();
+  const stagedProfileId = detectQualityProfileId(stagedSnapshot);
+  const stagedProfileName = profileDisplayName(stagedProfileId);
+  const activeSnapshot = buildTaskQualityProfileSnapshot(task);
+  const activeProfileId = detectQualityProfileId(activeSnapshot);
+  const activeProfileName = profileDisplayName(activeProfileId);
+  const isLoopActive = loop?.status === "running" || loop?.status === "queued";
+  const hasTask = !!task;
+
+  $summary.empty();
+
+  appendHomeRuntimeBlock(
+    $summary,
+    "Next send",
+    stagedProfileName + " · " + (stagedPayload.executionMode || "live") + " mode",
+    [
+      "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
+      "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+      "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms"
+    ]
+  );
+
+  if (hasTask && activeSnapshot) {
+    appendHomeRuntimeBlock(
+      $summary,
+      "Active task",
+      activeProfileName + " · " + (task?.runtime?.executionMode || "live") + " mode",
+      [
+        "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
+        "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+        "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms"
+      ]
+    );
+
+    appendHomeRuntimeBlock(
+      $summary,
+      runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot) ? "Runtime sync" : "Runtime drift",
+      runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot)
+        ? "Active task already matches the staged template."
+        : "Next send and active task are different.",
+      [
+        runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot)
+          ? "You can keep prompting without touching settings."
+          : "Use Sync Active if you want the current task to adopt the staged profile, loop depth, and budget."
+      ],
+      !runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot)
+    );
+  } else {
+    appendHomeRuntimeBlock(
+      $summary,
+      "Active task",
+      "No active task yet.",
+      ["Send will start a fresh task with the staged profile, roster, and loop settings."]
+    );
+  }
+
+  $grid.empty();
+  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
+    const profile = QUALITY_PROFILE_CATALOG[profileId];
+    const $button = $("<button>")
+      .attr("type", "button")
+      .addClass("quick-profile-chip")
+      .toggleClass("active", stagedProfileId === profileId)
+      .attr("data-profile-id", profileId);
+    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
+    $button.append($("<div>").addClass("quick-profile-title").text(profile.label));
+    $button.append($("<div>").addClass("quick-profile-meta").text(
+      modelLabel(profile.workerModel) + " workers | " +
+      modelLabel(profile.summarizerModel) + " summarizer | " +
+      formatUsdBudget(profile.maxCostUsd)
+    ));
+    $button.append($("<div>").addClass("quick-profile-meta").text(
+      profile.reasoningEffort + " reasoning | " + formatTokenWall(profile.maxTotalTokens) + " | " + Number(profile.loopRounds || 0) + " rounds"
+    ));
+    $grid.append($button);
+  });
+
+  $apply.prop("disabled", isLoopActive || !hasTask);
+  $apply.text(isLoopActive ? "Loop Active" : "Sync Active");
+}
+
+function renderQualityProfileCards() {
+  const $root = $("#qualityProfileCards");
+  const $status = $("#qualityProfileStatus");
+  if (!$root.length || !$status.length) return;
+
+  const snapshot = buildQualityProfileSnapshot();
+  const activeProfileId = detectQualityProfileId(snapshot);
+  const distinctWorkerModels = Array.from(new Set((snapshot.workerModels || []).filter(Boolean)));
+  const workerModelSummary = distinctWorkerModels.length === 1
+    ? modelLabel(distinctWorkerModels[0])
+    : (distinctWorkerModels.length > 1 ? "mixed worker models" : modelLabel(snapshot.model));
+
+  $root.empty();
+  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
+    const profile = QUALITY_PROFILE_CATALOG[profileId];
+    const tokenText = Number(profile.maxTotalTokens) > 0 ? Number(profile.maxTotalTokens).toLocaleString() + " local tokens" : "cost wall only";
+    const $button = $("<button>")
+      .attr("type", "button")
+      .addClass("quality-profile-card")
+      .toggleClass("active", activeProfileId === profileId)
+      .attr("data-profile-id", profileId);
+    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
+    $button.append($("<div>").addClass("quality-profile-title").text(profile.label));
+    $button.append($("<div>").addClass("quality-profile-copy").text(profile.description));
+    $button.append($("<div>").addClass("quality-profile-meta").text(
+      "Workers: " + modelLabel(profile.workerModel) +
+      " | Summarizer: " + modelLabel(profile.summarizerModel) +
+      " | Reasoning: " + profile.reasoningEffort +
+      " | Budget: " + formatUsdBudget(profile.maxCostUsd) +
+      " | " + tokenText +
+      " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
+    ));
+    $root.append($button);
+  });
+
+  if (activeProfileId) {
+    const profile = QUALITY_PROFILE_CATALOG[activeProfileId];
+    $status.text(
+      profile.label +
+      " matches the current runtime template. " +
+      "Workers use " + modelLabel(profile.workerModel) +
+      ", summarizer uses " + modelLabel(profile.summarizerModel) +
+      ", the token wall is " + (profile.maxTotalTokens > 0 ? Number(profile.maxTotalTokens).toLocaleString() : "off") +
+      ", and auto loop depth is " + Number(profile.loopRounds || 0) + " rounds."
+    );
+    return;
+  }
+
+  $status.text(
+    "Manual mix active. Workers are on " + workerModelSummary +
+    ", summarizer is on " + modelLabel(snapshot.summarizerModel) +
+    ", reasoning is " + (snapshot.reasoningEffort || "unset") +
+    ", and auto loop depth is " + Number(snapshot.loopRounds || 0) + " rounds. Click a profile to snap the whole runtime back into a tested template."
+  );
+}
+
+function applyQualityProfile(profileId) {
+  const profile = QUALITY_PROFILE_CATALOG[profileId];
+  if (!profile) return;
+
+  $("#model").val(profile.workerModel);
+  $("#summarizerModel").val(profile.summarizerModel);
+  $("#reasoningEffort").val(profile.reasoningEffort);
+  $("#maxCostUsd").val(profile.maxCostUsd);
+  $("#maxTotalTokens").val(profile.maxTotalTokens);
+  $("#maxOutputTokens").val(profile.maxOutputTokens);
+  $("#loopRounds").val(profile.loopRounds);
+  $("#loopDelayMs").val(profile.loopDelayMs);
+
+  const workerRoster = buildProfileAppliedWorkerRoster(profile.workerModel);
+  setVisibleWorkerModels(profile.workerModel);
+  formDirty = true;
+  renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
+  renderQualityProfileCards();
+
+  postForm("api/save_draft.php", buildDraftSavePayload({ workerRoster }), profile.label + " profile applied", {
+    clearFormDirty: true,
+    onSuccess: function () {
+      workerControlsSignature = "";
+      renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
+      renderQualityProfileCards();
+    }
+  });
 }
 
 function queueDraftSave() {
@@ -482,38 +914,230 @@ function refreshAuth() {
     });
 }
 
-function renderJobs(jobs, recoveryWarning) {
-  const blocks = [];
-  if (recoveryWarning) {
-    blocks.push("Recovery note\n  " + recoveryWarning);
+function applyArtifactSelectionPair(leftArtifact, rightArtifact) {
+  const artifacts = latestHistoryState?.artifacts || [];
+  const names = new Set(artifacts.map(function (artifact) { return artifact.name; }));
+
+  artifactSelections.left = leftArtifact && names.has(leftArtifact) ? leftArtifact : "";
+  artifactSelections.right = rightArtifact && names.has(rightArtifact) ? rightArtifact : "";
+
+  if (!artifactSelections.left) {
+    const fallbackLeft = pickArtifact(artifacts, ["summary_output", "worker_output", "summary_round", "worker_step"], "");
+    artifactSelections.left = fallbackLeft ? fallbackLeft.name : "";
   }
-  if (!jobs || !jobs.length) {
-    blocks.push("No history.");
-    return blocks.join("\n\n");
+  if (!artifactSelections.right || artifactSelections.right === artifactSelections.left) {
+    const fallbackRight = pickArtifact(artifacts, ["worker_output", "summary_output", "worker_step", "summary_round"], artifactSelections.left);
+    artifactSelections.right = fallbackRight ? fallbackRight.name : "";
   }
-  return blocks.concat(jobs.map(function (job) {
-    const title = job.objective || job.taskId || job.jobId || "Unknown job";
-    return [
-      title,
-      "  job: " + (job.jobId || "none"),
-      "  status: " + (job.status || "unknown") + " | rounds: " + (job.completedRounds ?? 0) + "/" + (job.rounds ?? 0) + " | workers: " + (job.workerCount ?? 0),
-      "  tokens: " + (job.totalTokens ?? 0) + " | spend: " + formatUsd(job.estimatedCostUsd || 0),
-      "  mode: " + (job.mode || "background") + " | queued: " + (job.queuedAt || "n/a"),
-      "  finished: " + (job.finishedAt || "n/a"),
-      "  note: " + (job.lastMessage || "none")
-    ].join("\n");
-  })).join("\n\n");
+
+  $("#artifactLeftSelect").html(buildArtifactOptions(artifacts, artifactSelections.left));
+  $("#artifactRightSelect").html(buildArtifactOptions(artifacts, artifactSelections.right));
+
+  loadArtifactPane("Left", artifactSelections.left);
+  loadArtifactPane("Right", artifactSelections.right);
 }
 
-function renderArtifacts(artifacts) {
-  if (!artifacts || !artifacts.length) return "No history.";
-  return artifacts.map(function (artifact) {
-    return [
-      artifact.name || "artifact",
-      "  kind: " + (artifact.kind || "artifact") + " | task: " + (artifact.taskId || "unknown") + " | slot: " + (artifact.worker || "-") + " | step/round: " + (artifact.roundOrStep ?? "-"),
-      "  modified: " + (artifact.modifiedAt || "n/a") + " | bytes: " + (artifact.size ?? 0)
-    ].join("\n");
-  }).join("\n\n");
+function renderJobHistory(jobs, recoveryWarning, queueLimit) {
+  const sections = [];
+
+  if (recoveryWarning) {
+    sections.push(`
+      <article class="history-card warning">
+        <div class="history-title">Recovery note</div>
+        <div class="history-meta">${escapeHtml(recoveryWarning)}</div>
+      </article>
+    `);
+  }
+
+  sections.push(`
+    <article class="history-card">
+      <div class="history-title">Queue policy</div>
+      <div class="history-meta">Background loops can queue up to ${formatInteger(queueLimit || 0)} jobs. Interrupted jobs can resume from the next unfinished round, while retry starts a fresh attempt.</div>
+    </article>
+  `);
+
+  if (!jobs || !jobs.length) {
+    sections.push(`<div class="review-empty">No recent jobs yet.</div>`);
+    return `<div class="history-stack">${sections.join("")}</div>`;
+  }
+
+  jobs.forEach(function (job) {
+    const title = truncateText(job.objective || job.taskId || job.jobId || "Unknown job", 140);
+    const metaLines = [
+      "Status: " + (job.status || "unknown") + " | rounds " + formatInteger(job.completedRounds || 0) + "/" + formatInteger(job.rounds || 0) + " | workers " + formatInteger(job.workerCount || 0),
+      "Attempt " + formatInteger(job.attempt || 1) + " | tokens " + formatInteger(job.totalTokens || 0) + " | spend " + formatUsd(job.estimatedCostUsd || 0),
+      "Queued " + (job.queuedAt || "n/a") + " | started " + (job.startedAt || "n/a") + " | finished " + (job.finishedAt || "n/a")
+    ];
+
+    if (Number(job.queuePosition || 0) > 0) {
+      metaLines.push("Queue position: " + formatInteger(job.queuePosition));
+    }
+    if (job.resumeOfJobId) {
+      metaLines.push("Resume of: " + job.resumeOfJobId + " | resumed from round " + formatInteger(job.resumeFromRound || 1));
+    } else if (job.retryOfJobId) {
+      metaLines.push("Retry of: " + job.retryOfJobId);
+    } else if (job.canResume) {
+      metaLines.push("Resume point: round " + formatInteger(job.resumeFromRound || 1));
+    }
+    if (job.lastMessage) {
+      metaLines.push("Note: " + job.lastMessage);
+    }
+    if (job.error) {
+      metaLines.push("Error: " + job.error);
+    }
+
+    const actions = [];
+    if (job.canResume) {
+      actions.push(`<button type="button" class="manage-job" data-job-id="${escapeHtml(job.jobId || "")}" data-action="resume">Resume</button>`);
+    }
+    if (job.canRetry) {
+      actions.push(`<button type="button" class="manage-job" data-job-id="${escapeHtml(job.jobId || "")}" data-action="retry">Retry</button>`);
+    }
+    if (job.canCancel) {
+      actions.push(`<button type="button" class="manage-job danger" data-job-id="${escapeHtml(job.jobId || "")}" data-action="cancel">Cancel</button>`);
+    }
+
+    sections.push(`
+      <article class="history-card${["interrupted", "error", "budget_exhausted"].includes(String(job.status || "")) ? " warning" : ""}">
+        <div class="history-head">
+          <div class="history-title">${escapeHtml(title)}</div>
+          <div class="history-title">${escapeHtml(job.jobId || "job")}</div>
+        </div>
+        <div class="history-meta">${escapeHtml(metaLines.join("\n"))}</div>
+        ${actions.length ? `<div class="history-actions">${actions.join("")}</div>` : ""}
+      </article>
+    `);
+  });
+
+  return `<div class="history-stack">${sections.join("")}</div>`;
+}
+
+function renderRoundHistory(rounds) {
+  if (!rounds || !rounds.length) {
+    return `<div class="review-empty">No round history yet.</div>`;
+  }
+
+  const summaryByTaskRound = {};
+  (rounds || []).forEach(function (roundEntry) {
+    if (roundEntry?.summaryArtifact?.name) {
+      summaryByTaskRound[String(roundEntry.taskId || "") + ":" + String(roundEntry.round || "")] = roundEntry.summaryArtifact;
+    }
+  });
+
+  return `
+    <div class="round-history-stack">
+      ${rounds.map(function (roundEntry) {
+        const summaryArtifact = roundEntry.summaryArtifact || null;
+        const previousSummary = summaryByTaskRound[String(roundEntry.taskId || "") + ":" + String(Number(roundEntry.round || 0) - 1)] || null;
+        const primaryWorker = Array.isArray(roundEntry.workerArtifacts) && roundEntry.workerArtifacts.length ? roundEntry.workerArtifacts[0] : null;
+        const topActions = [];
+
+        if (summaryArtifact && primaryWorker) {
+          topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(primaryWorker.name)}">Summary vs lane</button>`);
+        }
+        if (summaryArtifact && previousSummary) {
+          topActions.push(`<button type="button" class="load-round-compare" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(previousSummary.name)}">Summary vs previous</button>`);
+        }
+        if (summaryArtifact) {
+          topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(primaryWorker?.name || summaryArtifact.name)}">Load in compare view</button>`);
+        }
+
+        return `
+          <article class="round-history-card">
+            <div class="round-history-head">
+              <div class="round-history-title">Round ${escapeHtml(String(roundEntry.round || 0))}</div>
+              <div class="round-history-title">${escapeHtml(roundEntry.taskId || "task")}</div>
+            </div>
+            <div class="round-history-meta">${escapeHtml(truncateText(roundEntry.objective || "No objective recorded.", 180))}</div>
+            <div class="round-history-meta">${escapeHtml("Captured " + (roundEntry.capturedAt || "n/a") + (summaryArtifact ? " | summary " + summaryArtifact.name + " | " + artifactOutputCapSummary(summaryArtifact) : ""))}</div>
+            ${topActions.length ? `<div class="round-history-actions">${topActions.join("")}</div>` : ""}
+            <div class="round-history-workers">
+              ${(roundEntry.workerArtifacts || []).map(function (artifact) {
+                return `
+                  <div class="round-worker-row">
+                    <div>
+                      <div class="history-title">${escapeHtml((artifact.worker || "worker") + " | " + (artifact.model || "model n/a"))}</div>
+                      <div class="round-worker-meta">${escapeHtml((artifact.name || "artifact") + " | " + artifactOutputCapSummary(artifact))}</div>
+                    </div>
+                    ${summaryArtifact ? `<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(artifact.name)}">Compare vs summary</button>` : ""}
+                  </div>
+                `;
+              }).join("") || `<div class="review-empty small">No worker output artifacts were captured for this round.</div>`}
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderSessionArchives(sessions) {
+  if (!sessions || !sessions.length) {
+    return `<div class="review-empty">No session archives yet.</div>`;
+  }
+
+  return `
+    <div class="session-archive-stack">
+      ${sessions.map(function (session) {
+        return `
+          <article class="session-archive-card">
+            <div class="session-archive-head">
+              <div class="session-archive-title">${escapeHtml(session.file || "archive")}</div>
+              <div class="session-archive-title">${escapeHtml(session.taskId || "no task")}</div>
+            </div>
+            <div class="session-archive-meta">${escapeHtml("Archived " + (session.archivedAt || "n/a") + " | reason " + (session.reason || "unspecified"))}</div>
+            <div class="session-archive-meta">${escapeHtml(session.carryContextPreview || "No carry-forward preview.")}</div>
+            <div class="session-archive-actions">
+              <button type="button" class="export-archive" data-archive-file="${escapeHtml(session.file || "")}">Preview export</button>
+              <button type="button" class="replay-session" data-archive-file="${escapeHtml(session.file || "")}">Replay</button>
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderArtifactPolicy(policy) {
+  if (!policy || typeof policy !== "object") {
+    return `<div class="review-empty">No policy data.</div>`;
+  }
+
+  return `
+    <div class="history-stack">
+      <article class="policy-card">
+        <div class="history-title">Surface policy</div>
+        <div class="policy-copy">${escapeHtml("Public thread: " + (policy.publicThread || "structured_only"))}</div>
+        <div class="policy-copy">${escapeHtml("Review: " + (policy.reviewSurface || "raw_output_exception"))}</div>
+        <div class="policy-copy">${escapeHtml("Export: " + (policy.exportSurface || "raw_output_exception"))}</div>
+      </article>
+      ${(policy.rules || []).map(function (rule) {
+        return `
+          <article class="policy-card">
+            <div class="policy-copy">${escapeHtml(rule)}</div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function loadExportPreview(archiveFile = "") {
+  const requestKey = archiveFile ? "archive:" + archiveFile : "current";
+  exportPreviewKey = requestKey;
+  $("#exportPreview").text("Loading export preview...");
+
+  const params = archiveFile ? { archiveFile } : {};
+  $.getJSON("api/export_session.php", params)
+    .done(function (data) {
+      if (exportPreviewKey !== requestKey) return;
+      $("#exportPreview").text(pretty(data));
+    })
+    .fail(function (xhr) {
+      if (exportPreviewKey !== requestKey) return;
+      $("#exportPreview").text("Export preview failed.\n\n" + (xhr.responseText || "Unknown error"));
+      showMessage("Export preview failed: " + extractErrorMessage(xhr), true);
+    });
 }
 
 function renderWorkerPanels(task) {
@@ -750,7 +1374,7 @@ function renderPlainTextBlock(text) {
   return `<div class="message-body-plain">${escapeHtml(normalized)}</div>`;
 }
 
-function buildAgentReplyText(summary) {
+function buildLegacyAgentReplyText(summary) {
   if (!summary) return "";
   const paragraphs = [];
   const stableFindings = (summary.stableFindings || []).filter(Boolean);
@@ -774,6 +1398,14 @@ function buildAgentReplyText(summary) {
   }
 
   return paragraphs.join("\n\n").trim();
+}
+
+function buildAgentReplyText(summary) {
+  const directAnswer = String(summary?.frontAnswer?.answer || "").trim();
+  if (directAnswer) {
+    return directAnswer;
+  }
+  return buildLegacyAgentReplyText(summary);
 }
 
 function buildWorkerInspector(checkpoints) {
@@ -817,6 +1449,258 @@ function buildWorkerInspector(checkpoints) {
   `;
 }
 
+function buildFallbackLineCatalog(task, workerState) {
+  const catalog = [];
+  const orderedFields = [
+    ["benefits", "benefit"],
+    ["detriments", "risk"],
+    ["requiredCircumstances", "requirement"],
+    ["invalidatingCircumstances", "invalidator"],
+    ["immediateConsequences", "immediate_consequence"],
+    ["downstreamConsequences", "downstream_consequence"],
+    ["uncertainty", "uncertainty"],
+    ["reversalConditions", "reversal_condition"],
+    ["evidenceGaps", "evidence_gap"]
+  ];
+
+  (task?.workers || []).forEach(function (worker) {
+    const checkpoint = workerState?.[worker.id];
+    if (!checkpoint) return;
+    let added = 0;
+
+    function appendLine(refSuffix, kind, text, sourceUrls, supportLevel) {
+      if (added >= 14) return;
+      const content = truncateText(text, 300);
+      if (!content) return;
+      catalog.push({
+        ref: worker.id + "." + refSuffix,
+        workerId: worker.id,
+        label: checkpoint.label || worker.label || displayWorkerLabel(worker),
+        role: checkpoint.role || worker.role || "",
+        step: Number(checkpoint.step || 0),
+        kind: kind,
+        text: content,
+        supportLevel: truncateText(supportLevel, 32),
+        sourceUrls: Array.isArray(sourceUrls) ? sourceUrls.filter(Boolean).slice(0, 8) : []
+      });
+      added += 1;
+    }
+
+    appendLine("observation", "observation", checkpoint.observation, [], "");
+    (checkpoint.evidenceLedger || []).forEach(function (entry, index) {
+      const claim = truncateText(entry?.claim || "", 220);
+      const note = truncateText(entry?.note || "", 140);
+      const combined = note ? (claim ? claim + " Evidence note: " + note : note) : claim;
+      appendLine("evidenceLedger[" + index + "]", "evidence", combined, entry?.sourceUrls || [], entry?.supportLevel || "");
+    });
+    orderedFields.forEach(function (fieldPair) {
+      const fieldName = fieldPair[0];
+      const kind = fieldPair[1];
+      (checkpoint[fieldName] || []).forEach(function (item, index) {
+        appendLine(fieldName + "[" + index + "]", kind, item, [], "");
+      });
+    });
+    (checkpoint.urlCitations || []).slice(0, 2).forEach(function (url, index) {
+      appendLine("urlCitations[" + index + "]", "citation", url, [url], "cited");
+    });
+    appendLine("requestToPeer", "peer_steer", checkpoint.requestToPeer, [], "");
+  });
+
+  return catalog;
+}
+
+function getSummaryLineCatalog(summary, task, workerState) {
+  const catalog = Array.isArray(summary?.lineCatalog) && summary.lineCatalog.length
+    ? summary.lineCatalog
+    : buildFallbackLineCatalog(task, workerState);
+  const lineMap = {};
+  catalog.forEach(function (entry) {
+    if (entry?.ref) {
+      lineMap[entry.ref] = entry;
+    }
+  });
+  return { catalog, lineMap };
+}
+
+function renderReviewSourceUrls(urls) {
+  const list = (urls || []).filter(Boolean);
+  if (!list.length) return "";
+  return `
+    <div class="review-source-list">
+      ${list.map(function (url) {
+        return `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderReviewBlock(label, text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return "";
+  return `
+    <div class="review-block">
+      <div class="review-block-label">${escapeHtml(label)}</div>
+      <div class="review-block-text">${escapeHtml(normalized)}</div>
+    </div>
+  `;
+}
+
+function renderReviewLineSnippet(ref, entry) {
+  if (!entry) {
+    return `
+      <div class="review-line-snippet missing">
+        <div class="review-line-ref-row">
+          <span class="line-ref-chip missing">${escapeHtml(ref)}</span>
+        </div>
+        <div class="review-line-text">Referenced line is not available in the current catalog.</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="review-line-snippet">
+      <div class="review-line-ref-row">
+        <a class="line-ref-chip" href="#${escapeHtml(lineAnchorId(ref))}">${escapeHtml(ref)}</a>
+        ${entry.supportLevel ? `<span class="review-line-badge">${escapeHtml(entry.supportLevel)}</span>` : ""}
+        <span class="review-line-meta">${escapeHtml((entry.label || entry.workerId || "line") + " | step " + (entry.step ?? 0))}</span>
+      </div>
+      <div class="review-line-text">${escapeHtml(entry.text || "")}</div>
+      ${renderReviewSourceUrls(entry.sourceUrls || [])}
+    </div>
+  `;
+}
+
+function renderTraceLineSet(label, refs, lineMap, emptyText) {
+  if (!refs || !refs.length) {
+    return `
+      <div class="review-trace-column">
+        <div class="review-block-label">${escapeHtml(label)}</div>
+        <div class="review-empty small">${escapeHtml(emptyText)}</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="review-trace-column">
+      <div class="review-block-label">${escapeHtml(label)}</div>
+      <div class="review-line-snippet-list">
+        ${refs.map(function (ref) {
+          return renderReviewLineSnippet(ref, lineMap[ref] || null);
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderSummaryOpinion(summary) {
+  if (!summary) {
+    return `<div class="review-empty">No summary yet.</div>`;
+  }
+  const frontAnswer = summary.frontAnswer || {};
+  const opinion = summary.summarizerOpinion || {};
+  const blocks = [
+    renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary)),
+    renderReviewBlock("Lead direction", frontAnswer.leadDirection || frontAnswer.stance || ""),
+    renderReviewBlock("Absorbed adversarial pressure", frontAnswer.adversarialPressure || ""),
+    renderReviewBlock("Current stance", opinion.stance || frontAnswer.stance || ""),
+    renderReviewBlock("Why it landed here", opinion.because || ""),
+    renderReviewBlock("Integration mode", opinion.integrationMode || ""),
+    renderReviewBlock("Uncertainty", opinion.uncertainty || frontAnswer.confidenceNote || ""),
+    renderReviewBlock("Recommended next action", summary.recommendedNextAction || ""),
+    renderReviewBlock("Vetting note", summary.vettingSummary || "")
+  ].filter(Boolean);
+  return blocks.length ? `<div class="review-stack">${blocks.join("")}</div>` : `<div class="review-empty">No summary yet.</div>`;
+}
+
+function renderSummaryTrace(summary, task, workerState) {
+  if (!summary) {
+    return `<div class="review-empty">No adjudication trace yet.</div>`;
+  }
+  const reviewTrace = Array.isArray(summary.reviewTrace) ? summary.reviewTrace : [];
+  if (!reviewTrace.length) {
+    return `<div class="review-empty">No adjudication trace yet.</div>`;
+  }
+  const lineMap = getSummaryLineCatalog(summary, task, workerState).lineMap;
+  return `
+    <div class="review-trace-list">
+      ${reviewTrace.map(function (entry, index) {
+        return `
+          <details class="review-trace-item"${index === 0 ? " open" : ""}>
+            <summary>
+              <span>${escapeHtml(entry.topic || "Untitled topic")}</span>
+              <span class="review-trace-summary">${escapeHtml(entry.judgment || "")}</span>
+            </summary>
+            <div class="review-trace-body">
+              ${renderReviewBlock("Judgment", entry.judgment || "")}
+              ${renderReviewBlock("Because", entry.because || "")}
+              <div class="review-trace-columns">
+                ${renderTraceLineSet("Supporting lines", entry.supportingLineRefs || [], lineMap, "No supporting line refs were cited.")}
+                ${renderTraceLineSet("Challenging lines", entry.challengingLineRefs || [], lineMap, "No challenging line refs were cited.")}
+              </div>
+              ${(entry.openQuestions || []).length ? renderReviewBlock("Open questions", (entry.openQuestions || []).join("\n")) : ""}
+            </div>
+          </details>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderSummaryLineCatalog(summary, task, workerState) {
+  const lineCatalog = getSummaryLineCatalog(summary, task, workerState).catalog;
+  if (!lineCatalog.length) {
+    return `<div class="review-empty">No review lines yet.</div>`;
+  }
+  const groups = {};
+  lineCatalog.forEach(function (entry) {
+    const workerId = entry.workerId || "?";
+    if (!groups[workerId]) {
+      groups[workerId] = {
+        workerId: workerId,
+        label: entry.label || workerId,
+        role: entry.role || "",
+        entries: []
+      };
+    }
+    groups[workerId].entries.push(entry);
+  });
+  const orderedWorkerIds = Object.keys(groups).sort();
+  return `
+    <div class="line-catalog-list">
+      ${orderedWorkerIds.map(function (workerId, index) {
+        const group = groups[workerId];
+        return `
+          <details class="line-catalog-worker"${index === 0 ? " open" : ""}>
+            <summary>
+              <span>${escapeHtml(group.label)}</span>
+              <span class="review-trace-summary">${escapeHtml((group.role || "lane") + " | " + group.entries.length + " lines")}</span>
+            </summary>
+            <div class="line-catalog-grid">
+              ${group.entries.map(function (entry) {
+                return `
+                  <article class="review-line-card" id="${escapeHtml(lineAnchorId(entry.ref))}">
+                    <div class="review-line-ref-row">
+                      <span class="line-ref-chip">${escapeHtml(entry.ref)}</span>
+                      ${entry.supportLevel ? `<span class="review-line-badge">${escapeHtml(entry.supportLevel)}</span>` : ""}
+                      <span class="review-line-meta">${escapeHtml((entry.kind || "line") + " | step " + (entry.step ?? 0))}</span>
+                    </div>
+                    <div class="review-line-text">${escapeHtml(entry.text || "")}</div>
+                    ${renderReviewSourceUrls(entry.sourceUrls || [])}
+                  </article>
+                `;
+              }).join("")}
+            </div>
+          </details>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderSummaryReview(summary, task, workerState) {
+  $("#summaryOpinion").html(renderSummaryOpinion(summary));
+  $("#summaryTrace").html(renderSummaryTrace(summary, task, workerState));
+  $("#summaryLineCatalog").html(renderSummaryLineCatalog(summary, task, workerState));
+}
+
 function buildConversationRenderSignature(task, summary, workerState) {
   if (!task) return "empty";
 
@@ -837,6 +1721,7 @@ function buildConversationRenderSignature(task, summary, workerState) {
     executionMode: task.runtime?.executionMode || "",
     summary: summary ? {
       round: summary.round || 0,
+      frontAnswer: summary.frontAnswer || null,
       stableFindings: summary.stableFindings || [],
       conflicts: summary.conflicts || [],
       recommendedNextAction: summary.recommendedNextAction || "",
@@ -849,11 +1734,12 @@ function buildConversationRenderSignature(task, summary, workerState) {
 
 function buildThreadMessage(options) {
   const sections = (options.sections || []).join("");
+  const tag = String(options.tag || "").trim();
   return `
     <article class="thread-message ${escapeHtml(options.kind || "")} ${escapeHtml(options.variant || "")}">
       <div class="message-meta">
         <div class="message-author">${escapeHtml(options.author || "Message")}</div>
-        <div class="message-tag">${escapeHtml(options.tag || "")}</div>
+        ${tag ? `<div class="message-tag">${escapeHtml(tag)}</div>` : ""}
       </div>
       ${sections}
     </article>
@@ -872,7 +1758,7 @@ function legacyRenderConversationThreadUnused(task, summary, workerState, loop) 
       <div class="empty-thread">
         <div>
           <div class="empty-thread-title">No active task yet.</div>
-          <div class="empty-thread-copy">Send a prompt below. Proponent and Sceptic are staged already, and the Agent will answer once the lanes finish.</div>
+          <div class="empty-thread-copy">Send a prompt below. The assistant will answer here, and the internal lane trace will stay in Review.</div>
         </div>
       </div>
     `);
@@ -1019,7 +1905,7 @@ function renderConversationThread(task, summary, workerState, loop) {
       <div class="empty-thread">
         <div>
           <div class="empty-thread-title">No active task yet.</div>
-          <div class="empty-thread-copy">Send a prompt below. Proponent and Sceptic are staged already, and the Agent will answer once the lanes finish.</div>
+          <div class="empty-thread-copy">Send a prompt below. The assistant will answer here, and the internal lane trace will stay in Review.</div>
         </div>
       </div>
     `);
@@ -1047,7 +1933,6 @@ function renderConversationThread(task, summary, workerState, loop) {
   messages.push(buildThreadMessage({
     kind: "commander",
     author: "You",
-    tag: task.runtime?.executionMode === "live" ? "Live session" : "Mock session",
     sections: [
       renderPlainTextBlock(task.objective || "")
     ]
@@ -1064,34 +1949,21 @@ function renderConversationThread(task, summary, workerState, loop) {
       return a.worker.id.localeCompare(b.worker.id);
     });
 
-  const missingWorkers = (task.workers || []).filter(function (worker) {
-    return !workerState?.[worker.id];
-  });
-
   if (summary) {
     messages.push(buildThreadMessage({
       kind: "summary",
-      author: "Agent",
-      tag: "Multistream summary | memory " + ($("#memoryVersion").text() || "0"),
+      author: "Assistant",
       sections: [
-        buildWorkerInspector(checkpoints),
         renderPlainTextBlock(buildAgentReplyText(summary))
       ]
     }));
   } else {
-    const completedCount = checkpoints.filter(function (entry) {
-      return !!entry.checkpoint;
-    }).length;
-    const waitingText = missingWorkers.length
-      ? completedCount + " of " + (task.workers || []).length + " lanes have checked in. The summarizer will reply here once the remaining lanes finish: " + missingWorkers.map(function (worker) { return worker.id; }).join(", ") + "."
-      : "All lanes have checked in. The summarizer is composing the main answer now.";
+    const waitingText = "Thinking through the prompt and shaping a final answer.";
 
     messages.push(buildThreadMessage({
       kind: "summary",
-      author: "Agent",
-      tag: loop?.status || "idle",
+      author: "Assistant",
       sections: [
-        buildWorkerInspector(checkpoints),
         renderPlainTextBlock(waitingText)
       ]
     }));
@@ -1122,9 +1994,15 @@ function applyLoopUi(state) {
   const summaryReady = allWorkerCheckpointsReady(task, state.workers || {});
   const stagedMode = state.draft?.executionMode || task?.runtime?.executionMode || "live";
   const activeMode = task?.runtime?.executionMode || "none";
+  const stagedSnapshot = buildQualityProfileSnapshot();
+  const activeSnapshot = buildTaskQualityProfileSnapshot(task);
+  const stagedProfileName = profileDisplayName(detectQualityProfileId(stagedSnapshot));
+  const activeProfileName = profileDisplayName(detectQualityProfileId(activeSnapshot));
+  const headerProfileName = hasTask ? activeProfileName : stagedProfileName;
 
   $("#taskId").text(task?.taskId || "none");
   $("#headerTaskId").text(task?.taskId || "none");
+  $("#headerProfile").text(headerProfileName);
   $("#memoryVersion").text(state.memoryVersion ?? 0);
   $("#workerCount").text(workers.length || 0);
   $("#headerWorkerCount").text(workers.length || 0);
@@ -1135,12 +2013,12 @@ function applyLoopUi(state) {
   $("#loopNote").text(
     loop?.lastMessage ||
     (!hasTask
-      ? "Press Send to start the configured roster and loop automatically. Next send is staged for " + stagedMode + " mode."
+      ? "Press Send to start the configured roster and loop automatically. Next send is staged for the " + stagedProfileName + " profile in " + stagedMode + " mode."
       : (
-      "Active task is running in " + activeMode + " mode. " +
+      "Active task is running the " + activeProfileName + " profile in " + activeMode + " mode. " +
       (research.enabled ? "Workers can run grounded web research" : "Workers are running without web research") +
       " and the summarizer " + (vetting.enabled === false ? "merges only." : "acts as the evidence vetter.") +
-      " Next send is staged for " + stagedMode + " mode."
+      " Next send is staged for the " + stagedProfileName + " profile in " + stagedMode + " mode."
     ))
   );
   $("#usageTokens").text((usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0));
@@ -1170,10 +2048,14 @@ function refreshState() {
       const task = data.activeTask ? Object.assign({}, data.activeTask, { stateWorkers: data.workers || {} }) : null;
       syncCommanderForm(data.activeTask || null, data.draft || null);
       applyLoopUi(data);
+      renderAddWorkerTypeControl(data.activeTask || null, data.draft || null, data.loop || null);
       renderHomeWorkerControls(data.activeTask || null, data.draft || null, data.loop || null);
+      renderHomeRuntimeControls(data.activeTask || null, data.draft || null, data.loop || null);
+      renderQualityProfileCards();
       renderDebugTargetControls(data.activeTask || null, data.loop || null, data.workers || {});
       renderRosterPanels(task, data.draft || null);
       renderConversationThread(data.activeTask || null, data.summary || null, data.workers || {}, data.loop || null);
+      renderSummaryReview(data.summary || null, data.activeTask || null, data.workers || {});
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,
@@ -1206,11 +2088,15 @@ function refreshState() {
 
   $.getJSON("api/get_history.php")
     .done(function (data) {
-      $("#historyJobs").text(renderJobs(data.jobs || [], data.recoveryWarning || null));
-      $("#historyArtifacts").text(renderArtifacts(data.artifacts || []));
+      latestHistoryState = data;
+      $("#jobHistory").html(renderJobHistory(data.jobs || [], data.recoveryWarning || null, data.queueLimit || 0));
+      $("#roundHistory").html(renderRoundHistory(data.rounds || []));
+      $("#sessionArchives").html(renderSessionArchives(data.sessions || []));
+      $("#artifactPolicy").html(renderArtifactPolicy(data.artifactPolicy || null));
       syncArtifactReview(data.artifacts || []);
     })
     .fail(function (xhr) {
+      latestHistoryState = null;
       showMessage("History load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 }
@@ -1244,6 +2130,24 @@ function postForm(url, payload, successText, options = {}) {
     });
 }
 
+function applyCurrentRuntimeSettings(successText = "Current task runtime updated") {
+  postForm("api/apply_runtime_models.php", {
+    model: $("#model").val(),
+    summarizerModel: $("#summarizerModel").val(),
+    reasoningEffort: $("#reasoningEffort").val(),
+    maxCostUsd: $("#maxCostUsd").val(),
+    maxTotalTokens: $("#maxTotalTokens").val(),
+    maxOutputTokens: $("#maxOutputTokens").val(),
+    loopRounds: $("#loopRounds").val(),
+    loopDelayMs: $("#loopDelayMs").val()
+  }, successText, {
+    onSuccess: function () {
+      workerControlsSignature = "";
+      debugControlsSignature = "";
+    }
+  });
+}
+
 function setActiveView(viewName) {
   activeView = viewName;
   localStorage.setItem("loopActiveView", viewName);
@@ -1258,6 +2162,7 @@ $(function () {
   $("#researchExternalWebAccess").val("1");
   $("#vettingEnabled").val("1");
   applyCommanderForm(defaultDraftState());
+  renderAddWorkerTypeControl(null, defaultDraftState(), null);
   setActiveView(activeView);
   refreshState();
   setInterval(refreshState, 2000);
@@ -1268,6 +2173,8 @@ $(function () {
 
   $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
     formDirty = true;
+    renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
+    renderQualityProfileCards();
     queueDraftSave();
   });
 
@@ -1334,6 +2241,10 @@ $(function () {
     }
   });
 
+  $("#addWorkerType").on("change", function () {
+    $(this).data("selectedType", $(this).val());
+  });
+
   $("#summarize").on("click", function () {
     postForm("api/run_target.php", { target: "summarizer" }, "Summarizer ran");
   });
@@ -1349,24 +2260,27 @@ $(function () {
   });
 
   $("#addAdversarial").on("click", function () {
-    postForm("api/add_adversarial.php", {}, "Worker added", {
+    postForm("api/add_adversarial.php", {
+      type: $("#addWorkerType").val()
+    }, "Worker added", {
       onSuccess: function () {
         workerControlsSignature = "";
         debugControlsSignature = "";
+        $("#addWorkerType").removeData("selectedType");
       }
     });
   });
 
   $("#applyCurrentModels").on("click", function () {
-    postForm("api/apply_runtime_models.php", {
-      model: $("#model").val(),
-      summarizerModel: $("#summarizerModel").val()
-    }, "Current task models updated", {
-      onSuccess: function () {
-        workerControlsSignature = "";
-        debugControlsSignature = "";
-      }
-    });
+    applyCurrentRuntimeSettings("Current task runtime updated");
+  });
+
+  $("#applyHomeRuntime").on("click", function () {
+    applyCurrentRuntimeSettings("Active task synced to staged runtime");
+  });
+
+  $(document).on("click", ".quality-profile-card, .quick-profile-chip", function () {
+    applyQualityProfile(String($(this).data("profileId") || ""));
   });
 
   $("#cancelLoop").on("click", function () {
@@ -1443,6 +2357,8 @@ $(function () {
     const $card = $(this).closest(".workercontrol");
     const workerId = String($card.data("workerId") || "").trim();
     if (!workerId) return;
+    renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
+    renderQualityProfileCards();
     postForm("api/update_worker.php", {
       workerId,
       type: $card.find(".worker-type").val(),
@@ -1470,6 +2386,49 @@ $(function () {
 
   $(document).on("toggle", ".lane-inspector", function () {
     threadInspectorOpen = $(this).prop("open");
+  });
+
+  $("#exportCurrentSession").on("click", function () {
+    loadExportPreview("");
+  });
+
+  $(document).on("click", ".load-artifact-pair, .load-round-compare", function () {
+    applyArtifactSelectionPair(
+      String($(this).data("left") || ""),
+      String($(this).data("right") || "")
+    );
+  });
+
+  $(document).on("click", ".export-archive", function () {
+    loadExportPreview(String($(this).data("archiveFile") || ""));
+  });
+
+  $(document).on("click", ".replay-session", function () {
+    const archiveFile = String($(this).data("archiveFile") || "").trim();
+    if (!archiveFile) return;
+    if (!confirm("Replay " + archiveFile + " into the active workspace?")) return;
+    postForm("api/replay_session.php", { archiveFile }, "Archived session replayed", {
+      clearFormDirty: true,
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+      }
+    });
+  });
+
+  $(document).on("click", ".manage-job", function () {
+    const action = String($(this).data("action") || "").trim();
+    const jobId = String($(this).data("jobId") || "").trim();
+    if (!action || !jobId) return;
+    const successText = action === "resume"
+      ? "Interrupted loop resumed"
+      : (action === "retry" ? "Loop queued for retry" : "Job cancelled");
+    postForm("api/manage_job.php", { action, jobId }, successText, {
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+      }
+    });
   });
 
   $("#artifactLeftSelect").on("change", function () {

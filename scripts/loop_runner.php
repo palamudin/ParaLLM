@@ -35,7 +35,10 @@ try {
         'taskId' => $job['taskId'],
         'mode' => 'background',
         'rounds' => $job['rounds'],
-        'delayMs' => $job['delayMs']
+        'delayMs' => $job['delayMs'],
+        'startRound' => $job['resumeFromRound'] ?? 1,
+        'results' => $job['results'] ?? [],
+        'completedRounds' => $job['completedRounds'] ?? 0
     ]);
     exit(0);
 } catch (Throwable $ex) {

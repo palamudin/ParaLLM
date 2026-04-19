@@ -7,9 +7,10 @@ if (loop_is_active($state)) {
     json_response(['message' => 'The autonomous loop is active. Cancel it before changing the worker roster.'], 409);
 }
 
+$requestedType = trim((string)post_value('type', ''));
 $activeTask = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
 $draft = normalize_draft_state(isset($state['draft']) && is_array($state['draft']) ? $state['draft'] : []);
-$worker = next_adversarial_worker_definition($activeTask ?: $draft);
+$worker = next_adversarial_worker_definition($activeTask ?: $draft, $requestedType !== '' ? $requestedType : null);
 if ($worker === null) {
     json_response(['message' => 'All available adversarial worker slots are already in use.'], 409);
 }

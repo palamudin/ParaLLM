@@ -64,6 +64,10 @@
             <span id="headerTaskId" class="workspace-pill-value">none</span>
           </div>
           <div class="workspace-pill">
+            <span class="workspace-pill-label">Profile</span>
+            <span id="headerProfile" class="workspace-pill-value">Low</span>
+          </div>
+          <div class="workspace-pill">
             <span class="workspace-pill-label">Loop</span>
             <span id="headerLoopStatus" class="workspace-pill-value">idle</span>
           </div>
@@ -83,14 +87,14 @@
               <div>
                 <div class="panel-kicker">Chat / responses</div>
                 <h3>Agent</h3>
-                <p>You talk once, the lanes investigate, and the summarizer answers back as the multistream agent.</p>
+                <p>Send one prompt and read one answer. Internal adversarial review still happens, but the front reply stays in a single assistant voice.</p>
               </div>
             </div>
 
             <div id="conversationThread" class="conversation-thread">
               <div class="empty-thread">
                 <div class="empty-thread-title">No active task yet.</div>
-                <div class="empty-thread-copy">Send a prompt below. Proponent and Sceptic are already staged, and extra lanes can be added from the side rail.</div>
+                <div class="empty-thread-copy">Send a prompt below. The assistant will answer here, and the internal lane trace will stay in Review.</div>
               </div>
             </div>
 
@@ -111,10 +115,27 @@
             <section class="panel rail-panel">
               <div class="panel-head compact">
                 <div>
+                  <div class="panel-kicker">Runtime</div>
+                  <h3>Quick profile</h3>
+                </div>
+                <button id="applyHomeRuntime">Sync Active</button>
+              </div>
+              <div id="homeRuntimeSummary" class="home-runtime-summary">
+                <div class="home-runtime-empty">Loading runtime profile...</div>
+              </div>
+              <div id="homeQualityProfiles" class="home-quality-grid"></div>
+            </section>
+
+            <section class="panel rail-panel">
+              <div class="panel-head compact">
+                <div>
                   <div class="panel-kicker">Lane roster</div>
                   <h3>Workers</h3>
                 </div>
-                <button id="addAdversarial">+ Add</button>
+                <div class="composer-actions">
+                  <select id="addWorkerType"></select>
+                  <button id="addAdversarial">+ Add</button>
+                </div>
               </div>
               <div id="loopNote" class="loop-note">These lanes auto-run when you press Send. More lanes narrow each perspective instead of making each worker carry the full burden.</div>
               <div id="workerControls" class="workercontrols">No active task.</div>
@@ -174,6 +195,17 @@
               <textarea id="constraints" rows="5" placeholder="Keep workers independent until checkpoint&#10;Preserve contradictions"></textarea>
             </div>
 
+            <div class="form-section quality-profile-section">
+              <div class="quality-profile-head">
+                <div>
+                  <label>Reasoning profile</label>
+                  <div id="qualityProfileStatus" class="fieldnote">Profiles retune models, reasoning effort, auto-loop depth, and spend ceilings without making people hand-tune every lane.</div>
+                </div>
+              </div>
+              <div id="qualityProfileCards" class="quality-profile-grid"></div>
+              <div class="fieldnote">Profiles change worker default model, summarizer model, reasoning effort, auto-loop depth, session cost cap, local token cap, and per-call output cap. Research and vetting still stay manual.</div>
+            </div>
+
             <div class="settings-grid">
               <div>
                 <label for="executionMode">Execution mode</label>
@@ -183,7 +215,7 @@
                 </select>
               </div>
               <div>
-                <label for="model">Default worker model</label>
+                <label for="model">Worker default model</label>
                 <select id="model"></select>
               </div>
               <div>
@@ -194,9 +226,9 @@
 
             <div class="form-section">
               <div class="composer-footer">
-                <div class="composer-hint">These model dropdowns set the next task by default. Use the button to push them onto the current active task too.</div>
+                <div class="composer-hint">Profiles are the fast path. These knobs are still here when you want to fine-tune the current template before the next send.</div>
                 <div class="composer-actions">
-                  <button id="applyCurrentModels">Apply Models To Current Task</button>
+                  <button id="applyCurrentModels">Apply Runtime To Current Task</button>
                 </div>
               </div>
             </div>
@@ -333,10 +365,30 @@
               <div class="panel-head compact">
                 <div>
                   <div class="panel-kicker">Review</div>
-                  <h3>Summary snapshot</h3>
+                  <h3>Summarizer position</h3>
                 </div>
               </div>
-              <pre id="summary">No data.</pre>
+              <div id="summaryOpinion" class="review-empty">No summary yet.</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Position trace</h3>
+                </div>
+              </div>
+              <div id="summaryTrace" class="review-empty">No adjudication trace yet.</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Evidence lines</h3>
+                </div>
+              </div>
+              <div id="summaryLineCatalog" class="review-empty">No review lines yet.</div>
             </section>
 
             <section class="panel">
@@ -356,17 +408,58 @@
                   <h3>Recent jobs</h3>
                 </div>
               </div>
-              <pre id="historyJobs">No history.</pre>
+              <div id="jobHistory" class="review-empty">No history.</div>
             </section>
 
             <section class="panel">
               <div class="panel-head compact">
                 <div>
                   <div class="panel-kicker">Review</div>
-                  <h3>Recent artifacts</h3>
+                  <h3>Round history</h3>
                 </div>
               </div>
-              <pre id="historyArtifacts">No history.</pre>
+              <div id="roundHistory" class="review-empty">No round history yet.</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Raw summary JSON</h3>
+                </div>
+              </div>
+              <pre id="summary">No data.</pre>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Session archives</h3>
+                </div>
+              </div>
+              <div id="sessionArchives" class="review-empty">No archives yet.</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Artifact policy</h3>
+                </div>
+              </div>
+              <div id="artifactPolicy" class="review-empty">No policy data.</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Export preview</h3>
+                </div>
+                <button id="exportCurrentSession">Export Current</button>
+              </div>
+              <pre id="exportPreview">No export loaded.</pre>
             </section>
           </div>
 

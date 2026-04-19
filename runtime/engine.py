@@ -547,6 +547,179 @@ def normalize_evidence_verdicts(verdicts: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def normalize_line_ref_list(refs: Any) -> List[str]:
+    normalized: List[str] = []
+    seen: Dict[str, bool] = {}
+    for entry in normalize_string_array_preserve_items(refs):
+        candidate = str(entry).strip()
+        if candidate and candidate not in seen:
+            seen[candidate] = True
+            normalized.append(candidate)
+    return normalized
+
+
+def build_legacy_front_answer(summary: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    summary = summary or {}
+    stable_findings = limit_string_list(summary.get("stableFindings", []), 3, 220)
+    conflict_topics: List[str] = []
+    for conflict in summary.get("conflicts", []) if isinstance(summary.get("conflicts"), list) else []:
+        if not isinstance(conflict, dict):
+            continue
+        topic = truncate_text(conflict.get("topic", ""), 180)
+        if topic:
+            conflict_topics.append(topic)
+    recommended_next_action = truncate_text(summary.get("recommendedNextAction", ""), 260)
+    confidence_note = truncate_text(summary.get("vettingSummary", ""), 240)
+    paragraphs: List[str] = []
+    if stable_findings:
+        paragraphs.append(" ".join(stable_findings))
+    if conflict_topics:
+        paragraphs.append("Remaining disagreement: " + "; ".join(conflict_topics) + ".")
+    if recommended_next_action:
+        paragraphs.append("Next step: " + recommended_next_action)
+    stance = stable_findings[0] if stable_findings else (recommended_next_action or confidence_note)
+    answer = "\n\n".join(paragraphs).strip() or stance
+    return {
+        "answer": answer or "No adjudicated answer was captured.",
+        "stance": stance or "No adjudicated stance was captured.",
+        "confidenceNote": confidence_note,
+    }
+
+
+def normalize_front_answer(front_answer: Any, fallback_summary: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    fallback_summary = fallback_summary or {}
+    normalized = build_legacy_front_answer(fallback_summary)
+    fallback_pressure = ""
+    for conflict in fallback_summary.get("conflicts", []) if isinstance(fallback_summary.get("conflicts"), list) else []:
+        if isinstance(conflict, dict):
+            topic = truncate_text(conflict.get("topic", ""), 220)
+            if topic:
+                fallback_pressure = f"The strongest shaping objection was around {topic}."
+                break
+    if not fallback_pressure:
+        for item in normalize_string_array_preserve_items(fallback_summary.get("claimsNeedingVerification", [])):
+            item_text = truncate_text(item, 220)
+            if item_text:
+                fallback_pressure = item_text
+                break
+    normalized["leadDirection"] = truncate_text(normalized.get("stance", ""), 260) or "No explicit lead direction was captured."
+    normalized["adversarialPressure"] = fallback_pressure or "No strong adversarial pressure was captured."
+    if isinstance(front_answer, dict):
+        answer = truncate_text(front_answer.get("answer", ""), 3200)
+        stance = truncate_text(front_answer.get("stance", ""), 260)
+        confidence_note = truncate_text(front_answer.get("confidenceNote", ""), 260)
+        lead_direction = truncate_text(front_answer.get("leadDirection", ""), 260)
+        adversarial_pressure = truncate_text(front_answer.get("adversarialPressure", ""), 320)
+        if answer:
+            normalized["answer"] = answer
+        if stance:
+            normalized["stance"] = stance
+        if confidence_note or normalized["confidenceNote"] == "":
+            normalized["confidenceNote"] = confidence_note
+        if lead_direction:
+            normalized["leadDirection"] = lead_direction
+        if adversarial_pressure:
+            normalized["adversarialPressure"] = adversarial_pressure
+    if not normalized["answer"]:
+        normalized["answer"] = normalized["stance"] or "No adjudicated answer was captured."
+    if not normalized["stance"]:
+        normalized["stance"] = truncate_text(normalized["answer"], 260) or "No adjudicated stance was captured."
+    if not normalized["leadDirection"]:
+        normalized["leadDirection"] = normalized["stance"] or "No explicit lead direction was captured."
+    if not normalized["adversarialPressure"]:
+        normalized["adversarialPressure"] = "No strong adversarial pressure was captured."
+    return normalized
+
+
+def normalize_summarizer_opinion(opinion: Any, fallback_summary: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    fallback_summary = fallback_summary or {}
+    fallback_front_answer = normalize_front_answer(fallback_summary.get("frontAnswer"), fallback_summary)
+    fallback_uncertainty = ""
+    for item in normalize_string_array_preserve_items(fallback_summary.get("claimsNeedingVerification", [])):
+        fallback_uncertainty = truncate_text(item, 240)
+        if fallback_uncertainty:
+            break
+    if not fallback_uncertainty:
+        for item in normalize_string_array_preserve_items(fallback_summary.get("conditionalTruths", [])):
+            fallback_uncertainty = truncate_text(item, 240)
+            if fallback_uncertainty:
+                break
+    normalized = {
+        "stance": truncate_text(fallback_front_answer.get("stance", ""), 260) or "No explicit opinion was captured.",
+        "because": truncate_text(fallback_summary.get("vettingSummary", ""), 320) or "This view reflects the strongest evidence that survived the lane disagreement.",
+        "uncertainty": fallback_uncertainty or "This position should stay revisable as stronger evidence appears.",
+        "integrationMode": "Start with one lead answer, then let the strongest objections narrow, condition, redirect, or overturn it before it reaches the user.",
+    }
+    if isinstance(opinion, dict):
+        stance = truncate_text(opinion.get("stance", ""), 260)
+        because = truncate_text(opinion.get("because", ""), 360)
+        uncertainty = truncate_text(opinion.get("uncertainty", ""), 260)
+        integration_mode = truncate_text(opinion.get("integrationMode", ""), 260)
+        if stance:
+            normalized["stance"] = stance
+        if because:
+            normalized["because"] = because
+        if uncertainty:
+            normalized["uncertainty"] = uncertainty
+        if integration_mode:
+            normalized["integrationMode"] = integration_mode
+    return normalized
+
+
+def normalize_review_trace(review_trace: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(review_trace, list):
+        return normalized
+    for entry in review_trace:
+        if not isinstance(entry, dict):
+            continue
+        topic = truncate_text(entry.get("topic", ""), 180)
+        judgment = truncate_text(entry.get("judgment", ""), 260)
+        because = truncate_text(entry.get("because", ""), 360)
+        if not topic or not judgment:
+            continue
+        normalized.append(
+            {
+                "topic": topic,
+                "judgment": judgment,
+                "because": because,
+                "supportingLineRefs": normalize_line_ref_list(entry.get("supportingLineRefs", [])),
+                "challengingLineRefs": normalize_line_ref_list(entry.get("challengingLineRefs", [])),
+                "openQuestions": limit_string_list(entry.get("openQuestions", []), 3, 220),
+            }
+        )
+    return normalized
+
+
+def normalize_summary_line_catalog(catalog: Any) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    if not isinstance(catalog, list):
+        return normalized
+    seen: Dict[str, bool] = {}
+    for entry in catalog:
+        if not isinstance(entry, dict):
+            continue
+        ref = str(entry.get("ref", "")).strip()
+        text = truncate_text(entry.get("text", ""), 320)
+        if not ref or not text or ref in seen:
+            continue
+        seen[ref] = True
+        normalized.append(
+            {
+                "ref": ref,
+                "workerId": str(entry.get("workerId", "")).strip().upper(),
+                "label": truncate_text(entry.get("label", ""), 120),
+                "role": truncate_text(entry.get("role", ""), 40),
+                "step": max(0, int(entry.get("step", 0) or 0)),
+                "kind": truncate_text(entry.get("kind", ""), 60),
+                "text": text,
+                "supportLevel": truncate_text(entry.get("supportLevel", ""), 32),
+                "sourceUrls": limit_url_list(entry.get("sourceUrls", []), 8),
+            }
+        )
+    return normalized
+
+
 @dataclass
 class OpenAIResult:
     parsed: Dict[str, Any]
@@ -1331,7 +1504,8 @@ class LoopRuntime:
         peer_targets = [item["id"] for item in task_workers(task) if item["id"] != worker["id"]]
         peer_text = "\n".join(f"{item['from']}: {item['message']}" for item in peer_messages) if peer_messages else "No peer steer received yet."
         session_context = str(task.get("sessionContext", "")).strip()
-        summary_text = json.dumps(prior_summary, ensure_ascii=False, indent=2) if prior_summary else "none"
+        summary_projection = self.project_prior_summary_for_worker(prior_summary)
+        summary_text = json.dumps(summary_projection, ensure_ascii=False, indent=2) if summary_projection else "none"
         instructions = (
             f"You are {worker['label']} in a sparse multi-lane reasoning loop.\n"
             f"Worker type: {worker.get('type', 'custom')}.\n"
@@ -1346,6 +1520,8 @@ class LoopRuntime:
             "Limit evidenceLedger to 2 concrete claims.\n"
             "Keep requestToPeer to 1 short sentence.\n"
             "Preserve disagreement rather than smoothing it away.\n"
+            "Your checkpoint is steering pressure for a later lead answer; do not try to sound like the final user-facing assistant.\n"
+            "Push, qualify, or defend from your lane, but do not narrate the whole system.\n"
             "Do not reveal hidden chain-of-thought.\n"
             f"Set workerId to {worker['id']}, label to {worker['label']}, role to {worker['role']}, focus to {worker['focus']}, modelUsed to {runtime['model']}, and step to {step_number}.\n"
             f"requestTargets must only contain peers from this list: {', '.join(peer_targets)}.\n"
@@ -1429,6 +1605,29 @@ class LoopRuntime:
             },
         }
 
+    def project_prior_summary_for_worker(self, prior_summary: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(prior_summary, dict):
+            return {}
+        review_trace = normalize_review_trace(prior_summary.get("reviewTrace", []))
+        return {
+            "taskId": str(prior_summary.get("taskId", "")),
+            "round": int(prior_summary.get("round", 0) or 0),
+            "frontAnswer": normalize_front_answer(prior_summary.get("frontAnswer"), prior_summary),
+            "summarizerOpinion": normalize_summarizer_opinion(prior_summary.get("summarizerOpinion"), prior_summary),
+            "stableFindings": limit_string_list(prior_summary.get("stableFindings", []), 3, 220),
+            "conditionalTruths": limit_string_list(prior_summary.get("conditionalTruths", []), 3, 220),
+            "claimsNeedingVerification": limit_string_list(prior_summary.get("claimsNeedingVerification", []), 3, 220),
+            "reviewTrace": [
+                {
+                    "topic": truncate_text(item.get("topic", ""), 180),
+                    "judgment": truncate_text(item.get("judgment", ""), 220),
+                }
+                for item in review_trace[:2]
+            ],
+            "recommendedNextAction": truncate_text(prior_summary.get("recommendedNextAction", ""), 220),
+            "vettingSummary": truncate_text(prior_summary.get("vettingSummary", ""), 220),
+        }
+
     def project_worker_roster_for_summary(self, workers: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         return [
             {
@@ -1493,12 +1692,88 @@ class LoopRuntime:
                 projected.append(checkpoint)
         return projected
 
+    def build_summary_line_catalog(self, worker_state: Dict[str, Any], workers: List[Dict[str, str]], max_items_per_worker: int = 14) -> List[Dict[str, Any]]:
+        catalog: List[Dict[str, Any]] = []
+        ordered_fields = [
+            ("benefits", "benefit"),
+            ("detriments", "risk"),
+            ("requiredCircumstances", "requirement"),
+            ("invalidatingCircumstances", "invalidator"),
+            ("immediateConsequences", "immediate_consequence"),
+            ("downstreamConsequences", "downstream_consequence"),
+            ("uncertainty", "uncertainty"),
+            ("reversalConditions", "reversal_condition"),
+            ("evidenceGaps", "evidence_gap"),
+        ]
+
+        for worker in workers:
+            checkpoint = self.project_worker_checkpoint_for_summary(worker_state.get(worker["id"]))
+            if checkpoint is None:
+                continue
+            worker_id = str(checkpoint.get("workerId", worker["id"]))
+            label = str(checkpoint.get("label", worker.get("label", worker_id)))
+            role = str(checkpoint.get("role", worker.get("role", "")))
+            step = int(checkpoint.get("step", 0) or 0)
+            added = 0
+
+            def append_line(ref_suffix: str, kind: str, text: Any, source_urls: Optional[List[str]] = None, support_level: str = "") -> None:
+                nonlocal added
+                if added >= max_items_per_worker:
+                    return
+                content = truncate_text(text, 300)
+                if not content:
+                    return
+                catalog.append(
+                    {
+                        "ref": f"{worker_id}.{ref_suffix}",
+                        "workerId": worker_id,
+                        "label": label,
+                        "role": role,
+                        "step": step,
+                        "kind": kind,
+                        "text": content,
+                        "supportLevel": support_level,
+                        "sourceUrls": limit_url_list(source_urls or [], 8),
+                    }
+                )
+                added += 1
+
+            append_line("observation", "observation", checkpoint.get("observation", ""))
+
+            for index, entry in enumerate(checkpoint.get("evidenceLedger", []) if isinstance(checkpoint.get("evidenceLedger"), list) else []):
+                if not isinstance(entry, dict):
+                    continue
+                claim = truncate_text(entry.get("claim", ""), 220)
+                note = truncate_text(entry.get("note", ""), 140)
+                combined = claim
+                if note:
+                    combined = f"{claim} Evidence note: {note}" if claim else note
+                append_line(
+                    f"evidenceLedger[{index}]",
+                    "evidence",
+                    combined,
+                    entry.get("sourceUrls", []),
+                    str(entry.get("supportLevel", "")).strip(),
+                )
+
+            for field_name, kind in ordered_fields:
+                for index, item in enumerate(checkpoint.get(field_name, []) if isinstance(checkpoint.get(field_name), list) else []):
+                    append_line(f"{field_name}[{index}]", kind, item)
+
+            for index, url in enumerate(checkpoint.get("urlCitations", [])[:2] if isinstance(checkpoint.get("urlCitations"), list) else []):
+                append_line(f"urlCitations[{index}]", "citation", url, [url], "cited")
+
+            append_line("requestToPeer", "peer_steer", checkpoint.get("requestToPeer", ""))
+
+        return normalize_summary_line_catalog(catalog)
+
     def new_mock_summary(
         self,
         task: Dict[str, Any],
         workers: List[Dict[str, str]],
         worker_state: Dict[str, Any],
         vetting_config: Dict[str, Any],
+        line_catalog: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         round_number = 0
         for worker in workers:
@@ -1507,8 +1782,25 @@ class LoopRuntime:
                 round_number = max(round_number, int(checkpoint.get("step", 0) or 0))
         packets = self.expand_peer_steer_packets(task, {"workers": worker_state})
         conflicts: List[Dict[str, Any]] = []
+        review_trace: List[Dict[str, Any]] = []
         primary = next((worker for worker in workers if worker["id"] == "A"), workers[0] if workers else None)
         challengers = [worker for worker in workers if worker["id"] != "A"][:3]
+
+        def pick_refs(worker_id: str, prefixes: List[str], limit: int = 3) -> List[str]:
+            refs: List[str] = []
+            for entry in line_catalog:
+                if str(entry.get("workerId", "")) != worker_id:
+                    continue
+                ref = str(entry.get("ref", ""))
+                if not ref:
+                    continue
+                if not any(ref.startswith(f"{worker_id}.{prefix}") for prefix in prefixes):
+                    continue
+                refs.append(ref)
+                if len(refs) >= limit:
+                    break
+            return refs
+
         for challenger in challengers:
             conflicts.append(
                 {
@@ -1525,9 +1817,41 @@ class LoopRuntime:
                     ],
                 }
             )
+            review_trace.append(
+                {
+                    "topic": truncate_text(challenger["focus"], 180),
+                    "judgment": f"My current view keeps the design, but only if the answer absorbs the objection around {challenger['focus']}.",
+                    "because": "The positive case is still useful, but the adversarial line identifies a condition that should shape the final wording rather than sit beside it as a recap.",
+                    "supportingLineRefs": pick_refs(primary["id"], ["observation", "benefits", "evidenceLedger"], 3) if primary else [],
+                    "challengingLineRefs": pick_refs(challenger["id"], ["detriments", "uncertainty", "evidenceLedger", "evidenceGaps"], 3),
+                    "openQuestions": ["Which retained risk needs to be surfaced directly in the public answer?"],
+                }
+            )
+        front_answer_text = (
+            "My current answer is to keep one clear lead voice in the front chat and let the adversarial lanes sharpen it behind the scenes.\n\n"
+            "The answer should not read like a recap of a debate. It should read like one mind reached a view, then let the strongest objections narrow, qualify, or reverse weak parts before speaking."
+        )
         return {
             "taskId": task["taskId"],
             "round": round_number,
+            "frontAnswer": {
+                "answer": front_answer_text,
+                "stance": "The public answer should be a shaped judgment, not a recap of the internal lanes.",
+                "leadDirection": "Answer in one voice with one directional thesis, then pressure-test it privately before it reaches the user.",
+                "adversarialPressure": "The strongest shaping pressure is that adversarial reasoning should tighten the answer without taking over the public voice.",
+                "confidenceNote": (
+                    "This is a mock adjudication based on checkpoint structure, so the reasoning shape is stronger than the factual validation."
+                    if vetting_config["enabled"]
+                    else "Vetting is disabled here, so this opinion is structurally useful but weakly evidenced."
+                ),
+            },
+            "summarizerOpinion": {
+                "stance": "I would keep the single-voice chat illusion and move process transparency into review surfaces.",
+                "because": "The strongest combined signal is that the user wants a normal answer up front while still preserving the adversarial pressure and audit trail for review.",
+                "uncertainty": "The review depth should stay adjustable so the trace remains useful instead of becoming noise.",
+                "integrationMode": "Start with a lead answer, then let the strongest objections narrow, condition, redirect, or overturn it before the final wording is shown.",
+            },
+            "reviewTrace": review_trace,
             "stableFindings": [
                 "Structured checkpoints let many lanes disagree without losing continuity.",
                 "Budget ceilings are mandatory once multiple model-backed lanes are active.",
@@ -1578,6 +1902,9 @@ class LoopRuntime:
             "required": [
                 "taskId",
                 "round",
+                "frontAnswer",
+                "summarizerOpinion",
+                "reviewTrace",
                 "stableFindings",
                 "conflicts",
                 "conditionalTruths",
@@ -1592,6 +1919,45 @@ class LoopRuntime:
             "properties": {
                 "taskId": {"type": "string"},
                 "round": {"type": "integer"},
+                "frontAnswer": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["answer", "stance", "leadDirection", "adversarialPressure", "confidenceNote"],
+                    "properties": {
+                        "answer": {"type": "string"},
+                        "stance": {"type": "string"},
+                        "leadDirection": {"type": "string"},
+                        "adversarialPressure": {"type": "string"},
+                        "confidenceNote": {"type": "string"},
+                    },
+                },
+                "summarizerOpinion": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["stance", "because", "uncertainty", "integrationMode"],
+                    "properties": {
+                        "stance": {"type": "string"},
+                        "because": {"type": "string"},
+                        "uncertainty": {"type": "string"},
+                        "integrationMode": {"type": "string"},
+                    },
+                },
+                "reviewTrace": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["topic", "judgment", "because", "supportingLineRefs", "challengingLineRefs", "openQuestions"],
+                        "properties": {
+                            "topic": {"type": "string"},
+                            "judgment": {"type": "string"},
+                            "because": {"type": "string"},
+                            "supportingLineRefs": {"type": "array", "items": {"type": "string"}},
+                            "challengingLineRefs": {"type": "array", "items": {"type": "string"}},
+                            "openQuestions": {"type": "array", "items": {"type": "string"}},
+                        },
+                    },
+                },
                 "stableFindings": {"type": "array", "items": {"type": "string"}},
                 "conflicts": {
                     "type": "array",
@@ -1670,28 +2036,47 @@ class LoopRuntime:
         worker_state: Dict[str, Any],
         runtime: Dict[str, Any],
         vetting_config: Dict[str, Any],
+        line_catalog: List[Dict[str, Any]],
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         instructions = (
             "You are the summarizer in a sparse multi-lane reasoning loop.\n"
-            "Merge all worker checkpoints into a structured summary.\n"
+            "Merge all worker checkpoints into a structured adjudication.\n"
             "Act as the evidence vetter for the shared memory.\n"
             "Preserve disagreements and conditional truths.\n"
             "Do not erase contradictions.\n"
             "Judge worker claims using the evidence they provide.\n"
-            "Prefer evidence already cited by workers instead of restating every detail.\n"
+            "Form an opinion from the worker evidence and arguments instead of narrating the process.\n"
+            "Treat the public answer as a lead thought, not a consensus blend.\n"
+            "First decide what you would say if you had to answer alone.\n"
+            "Then let the strongest adversarial lines narrow, qualify, redirect, or overturn that lead thought.\n"
+            "Use adversarial pressure to improve the answer, not to speak directly through it.\n"
+            "frontAnswer.answer must read like a normal single-assistant reply to the user.\n"
+            "frontAnswer.answer should feel more reasonable because it privately absorbed objections, not because it publicly recaps them.\n"
+            "Prefer a decisive but conditional answer over a timid laundry list of caveats.\n"
+            "Do not mention workers, lanes, adversaries, or hidden process inside frontAnswer.answer unless the user explicitly asked for process detail.\n"
+            "frontAnswer.stance should capture your current view in one sentence.\n"
+            "frontAnswer.leadDirection should state the answer's leading direction before pressure-testing refined it.\n"
+            "frontAnswer.adversarialPressure should name the strongest internal objection that changed or constrained the answer.\n"
+            "summarizerOpinion is review-facing and may speak in the first person.\n"
+            "summarizerOpinion.integrationMode should explain how the strongest objections changed the lead direction.\n"
+            "reviewTrace is for review operations, not for the public answer.\n"
+            "Every reviewTrace line ref must come from the supplied line catalog exactly as written.\n"
             "Do not upgrade weak evidence into a supported fact.\n"
             "Do not do new research.\n"
             "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
+            "Keep frontAnswer.answer to at most 3 short paragraphs.\n"
+            "Keep reviewTrace to at most 4 items.\n"
             "Keep stableFindings, conditionalTruths, and claimsNeedingVerification to at most 3 items each.\n"
             "Keep conflicts to at most 2 topics and evidenceVerdicts to at most 3 claims.\n"
-            "Keep vettingSummary and recommendedNextAction brief.\n"
+            "Keep vettingSummary, recommendedNextAction, and frontAnswer.confidenceNote brief.\n"
             "Return JSON only that matches the schema exactly."
         )
         input_text = (
             f"Task brief:\n{json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)}\n\n"
             f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
             f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
-            f"Worker checkpoint digests:\n{json.dumps(self.project_worker_state_for_summary(worker_state, workers), ensure_ascii=False, indent=2)}"
+            f"Worker checkpoint digests:\n{json.dumps(self.project_worker_state_for_summary(worker_state, workers), ensure_ascii=False, indent=2)}\n\n"
+            f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
         result = self.invoke_openai_json(
             api_key=api_key,
@@ -1744,12 +2129,20 @@ class LoopRuntime:
         checkpoint["updatedAt"] = utc_now()
         return checkpoint
 
-    def normalize_summary(self, summary: Dict[str, Any]) -> Dict[str, Any]:
+    def normalize_summary(self, summary: Dict[str, Any], line_catalog: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        summary["frontAnswer"] = normalize_front_answer(summary.get("frontAnswer"), summary)
+        summary["summarizerOpinion"] = normalize_summarizer_opinion(summary.get("summarizerOpinion"), summary)
+        summary["reviewTrace"] = normalize_review_trace(summary.get("reviewTrace", []))
         summary["stableFindings"] = normalize_string_array_preserve_items(summary.get("stableFindings", []))
         summary["conditionalTruths"] = normalize_string_array_preserve_items(summary.get("conditionalTruths", []))
         summary["claimsNeedingVerification"] = normalize_string_array_preserve_items(summary.get("claimsNeedingVerification", []))
         summary["sourceWorkers"] = normalize_worker_id_list(summary.get("sourceWorkers", []))
         summary["evidenceVerdicts"] = normalize_evidence_verdicts(summary.get("evidenceVerdicts", []))
+        summary["lineCatalog"] = normalize_summary_line_catalog(line_catalog if line_catalog is not None else summary.get("lineCatalog", []))
+        valid_refs = {entry.get("ref", "") for entry in summary["lineCatalog"] if isinstance(entry, dict)}
+        for entry in summary["reviewTrace"]:
+            entry["supportingLineRefs"] = [ref for ref in entry.get("supportingLineRefs", []) if ref in valid_refs]
+            entry["challengingLineRefs"] = [ref for ref in entry.get("challengingLineRefs", []) if ref in valid_refs]
         summary["mergedAt"] = summary.get("mergedAt") or utc_now()
         return summary
 
@@ -1967,6 +2360,7 @@ class LoopRuntime:
         summary_config = summarizer_config(task)
         runtime = self.get_task_runtime(task, summary_config["model"])
         vetting_config = self.get_vetting_config(task)
+        line_catalog = self.build_summary_line_catalog(worker_state, workers)
         summary: Optional[Dict[str, Any]] = None
         response_id: Optional[str] = None
         response: Optional[Dict[str, Any]] = None
@@ -1983,7 +2377,7 @@ class LoopRuntime:
             if api_key:
                 try:
                     self.assert_budget_available("summarizer", task)
-                    summary, response_id, response, call_meta = self.new_live_summary(api_key, task, workers, worker_state, runtime, vetting_config)
+                    summary, response_id, response, call_meta = self.new_live_summary(api_key, task, workers, worker_state, runtime, vetting_config, line_catalog)
                     usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:
@@ -2019,8 +2413,8 @@ class LoopRuntime:
             else:
                 self.append_step("summarizer", "No API key found; falling back to mock.", {"taskId": task["taskId"]})
         if summary is None:
-            summary = self.new_mock_summary(task, workers, worker_state, vetting_config)
-        summary = self.normalize_summary(summary)
+            summary = self.new_mock_summary(task, workers, worker_state, vetting_config, line_catalog)
+        summary = self.normalize_summary(summary, line_catalog)
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             current["summary"] = summary
             current["memoryVersion"] = int(current.get("memoryVersion", 0) or 0) + 1
