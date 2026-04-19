@@ -20,9 +20,14 @@ let latestLoopActive = false;
 let artifactSelections = { left: "", right: "" };
 let formDirty = false;
 let lastSyncedFormSourceKey = "";
+let activeView = localStorage.getItem("loopActiveView") || "home";
 
 function showMessage(text, isError = false) {
-  $("#message").text(text).css("color", isError ? "#ff8d8d" : "#67b0ff");
+  $("#message").text(text || "").css({
+    color: isError ? "#fecaca" : "#8ce7ff",
+    borderColor: isError ? "rgba(248, 113, 113, 0.28)" : "rgba(76, 201, 240, 0.22)",
+    background: isError ? "rgba(61, 25, 25, 0.76)" : "rgba(14, 33, 50, 0.76)"
+  });
 }
 
 function pretty(value) {
@@ -32,6 +37,21 @@ function pretty(value) {
 function formatUsd(value) {
   const amount = Number(value || 0);
   return "$" + amount.toFixed(4);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function truncateText(value, maxLength = 220) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) return "";
+  return text.length > maxLength ? text.slice(0, Math.max(0, maxLength - 3)).trim() + "..." : text;
 }
 
 function defaultDraftState() {
@@ -156,8 +176,7 @@ function syncArtifactReview(artifacts) {
 }
 
 function populateStaticModelSelect(selector, selectedValue) {
-  const $select = $(selector);
-  $select.html(buildModelOptions(selectedValue));
+  $(selector).html(buildModelOptions(selectedValue));
 }
 
 function buildCommanderFormSource(task, draft) {
@@ -224,6 +243,15 @@ function buildCommanderFormSource(task, draft) {
   };
 }
 
+function renderComposerContextPreview(sessionContext, constraints) {
+  const contextText = truncateText(sessionContext, 220) || "No carry-forward context.";
+  const constraintText = constraints && constraints.length
+    ? constraints.slice(0, 3).join(" · ")
+    : "No constraints configured.";
+  $("#sessionContextPreview").text(contextText);
+  $("#constraintsPreview").text(truncateText(constraintText, 220));
+}
+
 function applyCommanderForm(values) {
   const safe = Object.assign({}, defaultDraftState(), values || {});
   $("#sessionContext").val(safe.sessionContext || "");
@@ -240,6 +268,7 @@ function applyCommanderForm(values) {
   $("#researchExternalWebAccess").val(safe.researchExternalWebAccess === false ? "0" : "1");
   $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
   $("#researchDomains").val((safe.researchDomains || []).join(", "));
+  renderComposerContextPreview(safe.sessionContext || "", safe.constraints || []);
 }
 
 function syncCommanderForm(task, draft, force = false) {
@@ -255,7 +284,7 @@ function collectCommanderPayload() {
   return {
     sessionContext: $("#sessionContext").val().trim(),
     objective: $("#objective").val().trim(),
-    constraints: $("#constraints").val().split(/\r?\n/).map(x => x.trim()).filter(Boolean),
+    constraints: $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean),
     executionMode: $("#executionMode").val(),
     model: $("#model").val(),
     summarizerModel: $("#summarizerModel").val(),
@@ -285,7 +314,7 @@ function renderAuthStatus(data) {
   $("#apiKeyMasked").text(latestAuthStatus.masked || "none");
   $("#apiKeyStatus").text(
     latestAuthStatus.hasKey
-      ? "Stored in Auth.txt. Only the last 4 characters are shown."
+      ? "Stored locally. Only the last 4 characters are shown in the UI."
       : "No key stored. Live mode needs a key."
   );
   updateAuthButtons();
@@ -318,9 +347,7 @@ function renderJobs(jobs, recoveryWarning) {
     return [
       title,
       "  job: " + (job.jobId || "none"),
-      "  status: " + (job.status || "unknown") +
-        " | rounds: " + (job.completedRounds ?? 0) + "/" + (job.rounds ?? 0) +
-        " | workers: " + (job.workerCount ?? 0),
+      "  status: " + (job.status || "unknown") + " | rounds: " + (job.completedRounds ?? 0) + "/" + (job.rounds ?? 0) + " | workers: " + (job.workerCount ?? 0),
       "  tokens: " + (job.totalTokens ?? 0) + " | spend: " + formatUsd(job.estimatedCostUsd || 0),
       "  mode: " + (job.mode || "background") + " | queued: " + (job.queuedAt || "n/a"),
       "  finished: " + (job.finishedAt || "n/a"),
@@ -334,10 +361,7 @@ function renderArtifacts(artifacts) {
   return artifacts.map(function (artifact) {
     return [
       artifact.name || "artifact",
-      "  kind: " + (artifact.kind || "artifact") +
-        " | task: " + (artifact.taskId || "unknown") +
-        " | slot: " + (artifact.worker || "-") +
-        " | step/round: " + (artifact.roundOrStep ?? "-"),
+      "  kind: " + (artifact.kind || "artifact") + " | task: " + (artifact.taskId || "unknown") + " | slot: " + (artifact.worker || "-") + " | step/round: " + (artifact.roundOrStep ?? "-"),
       "  modified: " + (artifact.modifiedAt || "n/a") + " | bytes: " + (artifact.size ?? 0)
     ].join("\n");
   }).join("\n\n");
@@ -348,18 +372,25 @@ function renderWorkerPanels(task) {
   $grid.empty();
 
   if (!task || !task.workers || !task.workers.length) {
-    $grid.append($("<div>").addClass("panel").append($("<pre>").text("No active task.")));
+    $grid.append($("<div>").addClass("lane-card-empty").text("No active task."));
     return;
   }
 
   const workerState = task.stateWorkers || {};
   task.workers.forEach(function (worker) {
     const checkpoint = workerState[worker.id] || null;
-    const $panel = $("<div>").addClass("panel workerpanel");
-    $panel.append($("<h2>").text(worker.label + " - " + worker.role));
-    $panel.append($("<div>").addClass("worker-meta").text("focus: " + worker.focus + " | model: " + worker.model));
-    $panel.append($("<pre>").text(checkpoint ? pretty(checkpoint) : "No data."));
-    $grid.append($panel);
+    const $card = $("<div>").addClass("lane-card");
+    const $head = $("<div>").addClass("lane-card-head");
+    $head.append($("<div>").addClass("lane-card-title").text(worker.label + " · " + worker.role));
+    $head.append($("<div>").addClass("lane-card-step").text(checkpoint ? "step " + (checkpoint.step || 0) : "waiting"));
+    $card.append($head);
+    $card.append($("<div>").addClass("lane-card-focus").text(worker.focus + " | model: " + worker.model));
+    $card.append($("<div>").addClass("lane-card-copy").text(
+      checkpoint
+        ? truncateText(checkpoint.observation || checkpoint.requestToPeer || "Checkpoint available.", 220)
+        : "No checkpoint yet."
+    ));
+    $grid.append($card);
   });
 }
 
@@ -382,28 +413,18 @@ function renderWorkerControls(task, loop, stateWorkers) {
 
   const isActive = loop?.status === "running" || loop?.status === "queued";
   const summaryReady = allWorkerCheckpointsReady(task, stateWorkers || {});
+
   task.workers.forEach(function (worker) {
     const $card = $("<div>").addClass("workercontrol");
-    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + worker.label));
+    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + worker.label));
     $card.append($("<div>").addClass("workercontrol-meta").text(worker.role + " | " + worker.focus));
 
     const $row = $("<div>").addClass("inlineform");
-    const $select = $("<select>")
-      .addClass("position-model")
-      .attr("data-position", worker.id)
-      .html(buildModelOptions(worker.model));
-    const $save = $("<button>")
-      .addClass("save-model")
-      .attr("data-position", worker.id)
-      .prop("disabled", isActive)
-      .text("Save Model");
-    const $run = $("<button>")
-      .addClass("run-target")
-      .attr("data-target", worker.id)
-      .prop("disabled", isActive)
-      .text("Run " + worker.id);
-
-    $row.append($select, $save, $run);
+    $row.append(
+      $("<select>").addClass("position-model").attr("data-position", worker.id).html(buildModelOptions(worker.model)),
+      $("<button>").addClass("save-model").attr("data-position", worker.id).prop("disabled", isActive).text("Save Model"),
+      $("<button>").addClass("run-target").attr("data-target", worker.id).prop("disabled", isActive).text("Run " + worker.id)
+    );
     $card.append($row);
     $controls.append($card);
   });
@@ -417,6 +438,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
       ? (vettingEnabled ? "Canonical merge lane | evidence vetter" : "Canonical merge lane")
       : "Canonical merge lane | waiting for all worker checkpoints"
   ));
+
   const $summaryRow = $("<div>").addClass("inlineform");
   $summaryRow.append(
     $("<select>").addClass("position-model").attr("data-position", "summarizer").html(buildModelOptions(summarizerModel)),
@@ -425,6 +447,136 @@ function renderWorkerControls(task, loop, stateWorkers) {
   );
   $summaryCard.append($summaryRow);
   $controls.append($summaryCard);
+}
+
+function renderListSection(label, items) {
+  const normalized = (items || []).filter(Boolean);
+  if (!normalized.length) return "";
+  const htmlItems = normalized.map(function (item) {
+    return "<li>" + escapeHtml(item) + "</li>";
+  }).join("");
+  return `
+    <div class="message-block">
+      <div class="message-block-label">${escapeHtml(label)}</div>
+      <ul class="message-list">${htmlItems}</ul>
+    </div>
+  `;
+}
+
+function renderTextSection(label, text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return "";
+  return `
+    <div class="message-block">
+      <div class="message-block-label">${escapeHtml(label)}</div>
+      <div class="message-text">${escapeHtml(normalized)}</div>
+    </div>
+  `;
+}
+
+function buildThreadMessage(options) {
+  const sections = (options.sections || []).join("");
+  return `
+    <article class="thread-message ${escapeHtml(options.kind || "")} ${escapeHtml(options.variant || "")}">
+      <div class="message-meta">
+        <div class="message-author">${escapeHtml(options.author || "Message")}</div>
+        <div class="message-tag">${escapeHtml(options.tag || "")}</div>
+      </div>
+      ${sections}
+    </article>
+  `;
+}
+
+function renderConversationThread(task, summary, workerState, loop) {
+  const $thread = $("#conversationThread");
+
+  if (!task) {
+    $thread.html(`
+      <div class="empty-thread">
+        <div>
+          <div class="empty-thread-title">No active task yet.</div>
+          <div class="empty-thread-copy">Start a task from the composer below. Settings and debug stay out of the way until you need them.</div>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  const messages = [];
+  messages.push(buildThreadMessage({
+    kind: "commander",
+    author: "Commander",
+    tag: task.runtime?.executionMode === "live" ? "Live session" : "Mock session",
+    sections: [
+      renderTextSection("Prompt", task.objective || ""),
+      renderTextSection("Session context", task.sessionContext || ""),
+      renderListSection("Constraints", task.constraints || [])
+    ]
+  }));
+
+  const checkpoints = (task.workers || [])
+    .map(function (worker) {
+      return { worker, checkpoint: workerState?.[worker.id] || null };
+    })
+    .sort(function (a, b) {
+      const stepA = a.checkpoint?.step || 0;
+      const stepB = b.checkpoint?.step || 0;
+      if (stepA !== stepB) return stepA - stepB;
+      return a.worker.id.localeCompare(b.worker.id);
+    });
+
+  checkpoints.forEach(function (entry) {
+    if (!entry.checkpoint) return;
+    const checkpoint = entry.checkpoint;
+    messages.push(buildThreadMessage({
+      kind: "worker",
+      variant: entry.worker.role === "utility" ? "utility" : "adversarial",
+      author: entry.worker.label,
+      tag: entry.worker.focus,
+      sections: [
+        renderTextSection("Observation", checkpoint.observation || ""),
+        renderListSection("Benefits", (checkpoint.benefits || []).slice(0, 3)),
+        renderListSection("Detriments", (checkpoint.detriments || []).slice(0, 3)),
+        renderTextSection("Request to peers", checkpoint.requestToPeer || "")
+      ]
+    }));
+  });
+
+  const missingWorkers = (task.workers || []).filter(function (worker) {
+    return !workerState?.[worker.id];
+  });
+
+  if (missingWorkers.length) {
+    messages.push(buildThreadMessage({
+      kind: "summary",
+      author: "Runtime",
+      tag: loop?.status || "idle",
+      sections: [
+        renderTextSection("Waiting on lanes", missingWorkers.map(function (worker) { return worker.id; }).join(", "))
+      ]
+    }));
+  }
+
+  if (summary) {
+    const conflictTopics = (summary.conflicts || []).map(function (conflict) {
+      return conflict?.topic;
+    }).filter(Boolean);
+
+    messages.push(buildThreadMessage({
+      kind: "summary",
+      author: "Summarizer",
+      tag: "Memory version " + ($("#memoryVersion").text() || "0"),
+      sections: [
+        renderListSection("Stable findings", summary.stableFindings || []),
+        renderListSection("Open conflicts", conflictTopics),
+        renderTextSection("Recommended next action", summary.recommendedNextAction || ""),
+        renderTextSection("Vetting summary", summary.vettingSummary || "")
+      ]
+    }));
+  }
+
+  $thread.html(messages.join(""));
+  $thread.scrollTop($thread[0].scrollHeight);
 }
 
 function applyLoopUi(state) {
@@ -440,18 +592,21 @@ function applyLoopUi(state) {
   const summaryReady = allWorkerCheckpointsReady(task, state.workers || {});
 
   $("#taskId").text(task?.taskId || "none");
+  $("#headerTaskId").text(task?.taskId || "none");
   $("#memoryVersion").text(state.memoryVersion ?? 0);
+  $("#workerCount").text(workers.length || 0);
+  $("#headerWorkerCount").text(workers.length || 0);
   $("#loopJobId").text(loop?.jobId || "none");
   $("#loopStatus").text(loop?.status || "idle");
+  $("#headerLoopStatus").text(loop?.status || "idle");
   $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
   $("#loopNote").text(
     loop?.lastMessage ||
-      (
-        (research.enabled ? "Workers can run grounded web research" : "Workers are running without web research") +
-        " and the summarizer " + (vetting.enabled === false ? "merges only." : "acts as the evidence vetter.")
-      )
+    (
+      (research.enabled ? "Workers can run grounded web research" : "Workers are running without web research") +
+      " and the summarizer " + (vetting.enabled === false ? "merges only." : "acts as the evidence vetter.")
+    )
   );
-  $("#workerCount").text(workers.length || 0);
   $("#usageTokens").text((usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0));
   $("#usageWebSearchCalls").text(usage.webSearchCalls ?? 0);
   $("#usageCost").text(formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0));
@@ -463,7 +618,7 @@ function applyLoopUi(state) {
   $("#summarize").prop("disabled", isActive || !hasTask || !summaryReady);
   $("#runRound").prop("disabled", isActive || !hasTask);
   $("#runLoop").prop("disabled", isActive || !hasTask);
-  $("#addAdversarial").prop("disabled", isActive || !hasTask || (workers.length >= 26));
+  $("#addAdversarial").prop("disabled", isActive || !hasTask || workers.length >= 26);
   $("#resetSession").prop("disabled", isActive);
   $("#resetState").prop("disabled", isActive);
   $("#cancelLoop").prop("disabled", !isActive);
@@ -479,6 +634,7 @@ function refreshState() {
       applyLoopUi(data);
       renderWorkerControls(data.activeTask || null, data.loop || null, data.workers || {});
       renderWorkerPanels(task);
+      renderConversationThread(data.activeTask || null, data.summary || null, data.workers || {}, data.loop || null);
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,
@@ -489,7 +645,7 @@ function refreshState() {
       }));
     })
     .fail(function (xhr) {
-      showMessage("State load failed: " + xhr.responseText, true);
+      showMessage("State load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 
   $.get("api/get_events.php")
@@ -497,7 +653,7 @@ function refreshState() {
       $("#events").text(data || "No events.");
     })
     .fail(function (xhr) {
-      showMessage("Event load failed: " + xhr.responseText, true);
+      showMessage("Event load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 
   $.get("api/get_steps.php")
@@ -505,7 +661,7 @@ function refreshState() {
       $("#steps").text(data || "No steps.");
     })
     .fail(function (xhr) {
-      showMessage("Step load failed: " + xhr.responseText, true);
+      showMessage("Step load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 
   $.getJSON("api/get_history.php")
@@ -515,8 +671,18 @@ function refreshState() {
       syncArtifactReview(data.artifacts || []);
     })
     .fail(function (xhr) {
-      showMessage("History load failed: " + xhr.responseText, true);
+      showMessage("History load failed: " + (xhr.responseText || "Unknown error"), true);
     });
+}
+
+function extractErrorMessage(xhr) {
+  try {
+    const parsed = JSON.parse(xhr.responseText);
+    if (parsed && parsed.message) {
+      return parsed.message;
+    }
+  } catch (_) {}
+  return xhr.responseText || "Request failed.";
 }
 
 function postForm(url, payload, successText, options = {}) {
@@ -534,8 +700,15 @@ function postForm(url, payload, successText, options = {}) {
       refreshState();
     })
     .fail(function (xhr) {
-      showMessage("Request failed: " + xhr.responseText, true);
+      showMessage(extractErrorMessage(xhr), true);
     });
+}
+
+function setActiveView(viewName) {
+  activeView = viewName;
+  localStorage.setItem("loopActiveView", viewName);
+  $(".nav-btn").removeClass("active").filter(`[data-view="${viewName}"]`).addClass("active");
+  $(".workspace-view").removeClass("active").filter(`[data-view="${viewName}"]`).addClass("active");
 }
 
 $(function () {
@@ -545,11 +718,17 @@ $(function () {
   $("#researchExternalWebAccess").val("1");
   $("#vettingEnabled").val("1");
   applyCommanderForm(defaultDraftState());
+  setActiveView(activeView);
   refreshState();
   setInterval(refreshState, 2000);
 
+  $(".nav-btn").on("click", function () {
+    setActiveView($(this).data("view"));
+  });
+
   $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
     formDirty = true;
+    renderComposerContextPreview($("#sessionContext").val().trim(), $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean));
   });
 
   $("#startTask").on("click", function () {
@@ -575,7 +754,12 @@ $(function () {
       researchExternalWebAccess: payload.researchExternalWebAccess,
       vettingEnabled: payload.vettingEnabled,
       researchDomains: payload.researchDomains
-    }, "Task started", { clearFormDirty: true });
+    }, "Task started", {
+      clearFormDirty: true,
+      onSuccess: function () {
+        setActiveView("home");
+      }
+    });
   });
 
   $("#summarize").on("click", function () {
@@ -604,7 +788,12 @@ $(function () {
 
   $("#resetSession").on("click", function () {
     if (!confirm("Archive the current session and load a fresh draft with short carry-forward context?")) return;
-    postForm("api/reset_session.php", {}, "Session reset", { clearFormDirty: true });
+    postForm("api/reset_session.php", {}, "Session reset", {
+      clearFormDirty: true,
+      onSuccess: function () {
+        setActiveView("home");
+      }
+    });
   });
 
   $("#saveAuth").on("click", function () {
@@ -623,7 +812,7 @@ $(function () {
         refreshState();
       })
       .fail(function (xhr) {
-        showMessage("API key update failed: " + xhr.responseText, true);
+        showMessage("API key update failed: " + extractErrorMessage(xhr), true);
       });
   });
 
@@ -639,7 +828,7 @@ $(function () {
         refreshState();
       })
       .fail(function (xhr) {
-        showMessage("API key clear failed: " + xhr.responseText, true);
+        showMessage("API key clear failed: " + extractErrorMessage(xhr), true);
       });
   });
 

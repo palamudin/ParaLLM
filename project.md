@@ -79,6 +79,8 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Each worker and summarizer run now saves a dedicated output artifact so quality can be inspected separately from canonical state
 - Artifact Review UI supports side-by-side inspection of saved checkpoints and output artifacts
 - URL/source normalization now drops malformed non-URL entries and canonicalizes saved source links in fresh artifacts
+- Sidebar workspace shell now splits `Home`, `Settings`, `Debug`, and `Review`, with a chat-first center pane and the API key moved into Settings / Integrations
+- Fine tuning controls now live in Settings instead of crowding the main conversation surface
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
 - Masked API key management in the top bar for local test-key swapping
@@ -98,6 +100,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 5. Add bounded multi-job queueing instead of a single active background job slot
 6. Add richer lane templates so new adversarial workers can be spawned from selectable viewpoints instead of only the next default letter slot
 7. Reconcile conflicting OpenAI-owned pricing statements for web-search content tokens before treating cost estimates as billing-accurate
+8. Replace per-step PowerShell spawning with a resident cross-platform runtime, likely Python, to reduce latency and make Linux deployment cleaner
 
 ## Notes
 

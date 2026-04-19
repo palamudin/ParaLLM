@@ -8,216 +8,387 @@
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 </head>
 <body>
-  <div class="wrap">
-    <header class="topbar">
-      <div>
-        <h1>AI Loop Prototype</h1>
-        <p>Commander -> Multi-lane workers -> Summarizer</p>
-      </div>
-      <div class="topside">
-        <div class="statusbox">
-          <div><strong>Task:</strong> <span id="taskId">none</span></div>
-          <div><strong>Memory Version:</strong> <span id="memoryVersion">0</span></div>
-          <div><strong>Workers:</strong> <span id="workerCount">0</span></div>
-          <div><strong>Loop Job:</strong> <span id="loopJobId">none</span></div>
-          <div><strong>Loop Status:</strong> <span id="loopStatus">idle</span></div>
-          <div><strong>Loop Progress:</strong> <span id="loopProgress">0 / 0</span></div>
-          <div><strong>Session Tokens:</strong> <span id="usageTokens">0 / 0</span></div>
-          <div><strong>Web Search Calls:</strong> <span id="usageWebSearchCalls">0</span></div>
-          <div><strong>Estimated Spend:</strong> <span id="usageCost">$0.0000 / $0.0000</span></div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">L</div>
+        <div>
+          <div class="brand-overline">Local multi-lane runtime</div>
+          <h1>AI Loop</h1>
+          <p>Parallel lanes, sparse sharing, vetted memory.</p>
         </div>
-        <div class="authbox">
-          <div class="authbox-header">
-            <strong>API Key</strong>
-            <span id="apiKeyMasked" class="secretmask">none</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-btn active" data-view="home">Home</button>
+        <button class="nav-btn" data-view="settings">Settings</button>
+        <button class="nav-btn" data-view="debug">Debug</button>
+        <button class="nav-btn" data-view="review">Review</button>
+      </nav>
+
+      <div class="sidebar-card">
+        <div class="sidebar-card-label">Current task</div>
+        <div id="taskId" class="sidebar-card-value">none</div>
+        <div class="sidebar-card-note">Memory version <span id="memoryVersion">0</span> · Workers <span id="workerCount">0</span></div>
+      </div>
+
+      <div class="sidebar-card">
+        <div class="sidebar-card-label">Loop runtime</div>
+        <div class="sidebar-stack">
+          <div>Job <span id="loopJobId">none</span></div>
+          <div>Status <span id="loopStatus">idle</span></div>
+          <div>Progress <span id="loopProgress">0 / 0</span></div>
+        </div>
+      </div>
+
+      <div class="sidebar-card">
+        <div class="sidebar-card-label">Usage</div>
+        <div class="sidebar-stack">
+          <div>Tokens <span id="usageTokens">0 / 0</span></div>
+          <div>Web search <span id="usageWebSearchCalls">0</span></div>
+          <div>Approx spend <span id="usageCost">$0.0000 / $0.0000</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="workspace-heading">
+          <div class="workspace-overline">Agentic workspace</div>
+          <h2>Commander Chat</h2>
+          <p>Home is for prompting and reading lane output. Settings holds integrations and fine tuning. Debug stays out of the way until you need it.</p>
+        </div>
+        <div class="workspace-pill-row">
+          <div class="workspace-pill">
+            <span class="workspace-pill-label">Task</span>
+            <span id="headerTaskId" class="workspace-pill-value">none</span>
           </div>
-          <div id="apiKeyStatus" class="authbox-note">No key stored. Live mode needs a key.</div>
-          <div class="authrow">
-            <input id="apiKeyInput" type="password" placeholder="Paste key to set or replace" autocomplete="off" spellcheck="false" />
-            <button id="saveAuth">Save Key</button>
-            <button id="clearAuth" class="danger">Clear</button>
+          <div class="workspace-pill">
+            <span class="workspace-pill-label">Loop</span>
+            <span id="headerLoopStatus" class="workspace-pill-value">idle</span>
+          </div>
+          <div class="workspace-pill">
+            <span class="workspace-pill-label">Workers</span>
+            <span id="headerWorkerCount" class="workspace-pill-value">0</span>
           </div>
         </div>
-      </div>
-    </header>
+      </header>
 
-    <section class="panel commander">
-      <h2>Commander Input</h2>
-      <label for="sessionContext">Session Context</label>
-      <textarea id="sessionContext" rows="4" placeholder="Short carry-forward context from a previous session will appear here after Reset Session."></textarea>
-      <label for="objective">Objective</label>
-      <textarea id="objective" rows="5" placeholder="Enter task/objective here..."></textarea>
-      <label for="constraints">Constraints (one per line)</label>
-      <textarea id="constraints" rows="4" placeholder="Keep workers independent until checkpoint&#10;Preserve contradictions"></textarea>
+      <div id="message" class="notice-banner" aria-live="polite"></div>
 
-      <div class="configgrid">
-        <div>
-          <label for="executionMode">Execution Mode</label>
-          <select id="executionMode">
-            <option value="live" selected>Live API</option>
-            <option value="mock">Mock</option>
-          </select>
-        </div>
-        <div>
-          <label for="model">Default Worker Model</label>
-          <select id="model"></select>
-        </div>
-        <div>
-          <label for="summarizerModel">Summarizer Model</label>
-          <select id="summarizerModel"></select>
-        </div>
-      </div>
+      <section class="workspace-view active" data-view="home">
+        <div class="home-layout">
+          <section class="panel chat-panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-kicker">Chat / responses</div>
+                <h3>Conversation</h3>
+                <p>Commander prompt, lane replies, and the latest canonical merge.</p>
+              </div>
+            </div>
 
-      <div class="configgrid">
-        <div>
-          <label for="reasoningEffort">Reasoning</label>
-          <select id="reasoningEffort">
-            <option value="none">none</option>
-            <option value="low" selected>low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="xhigh">xhigh</option>
-          </select>
-        </div>
-        <div>
-          <label for="maxCostUsd">Session Budget USD</label>
-          <input id="maxCostUsd" type="number" min="0" step="0.01" value="5.00" />
-        </div>
-        <div>
-          <label for="maxTotalTokens">Session Token Cap (Local)</label>
-          <input id="maxTotalTokens" type="number" min="0" step="1000" value="250000" />
-        </div>
-      </div>
+            <div id="conversationThread" class="conversation-thread">
+              <div class="empty-thread">
+                <div class="empty-thread-title">No active task yet.</div>
+                <div class="empty-thread-copy">Start a task from the composer below. Settings and debug stay off to the side until you need them.</div>
+              </div>
+            </div>
 
-      <div class="configgrid">
-        <div>
-          <label for="maxOutputTokens">Max Output Tokens / Call</label>
-          <input id="maxOutputTokens" type="number" min="0" step="50" value="1200" />
+            <div class="composer-shell">
+              <div class="composer-context-row">
+                <div class="context-chip">
+                  <div class="context-chip-label">Session context</div>
+                  <div id="sessionContextPreview" class="context-chip-value">No carry-forward context.</div>
+                </div>
+                <div class="context-chip">
+                  <div class="context-chip-label">Constraints</div>
+                  <div id="constraintsPreview" class="context-chip-value">No constraints configured.</div>
+                </div>
+              </div>
+
+              <label for="objective">Commander prompt</label>
+              <textarea id="objective" rows="5" placeholder="Describe what you want the lane stack to investigate, build, or write..."></textarea>
+
+              <div class="composer-footer">
+                <div class="composer-hint">Fine tuning, integrations, and domain constraints are tucked into Settings.</div>
+                <div class="composer-actions">
+                  <button id="refresh">Refresh</button>
+                  <button id="resetSession">Reset Session</button>
+                  <button id="startTask">Start Task</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <aside class="home-rail">
+            <section class="panel rail-panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Run controls</div>
+                  <h3>Operations</h3>
+                </div>
+              </div>
+              <div id="loopNote" class="loop-note">Autonomous mode runs all configured workers and then summarizes.</div>
+              <div class="action-grid">
+                <button id="runRound">Run Round</button>
+                <button id="runLoop">Run Auto Loop</button>
+                <button id="summarize">Summarize</button>
+                <button id="addAdversarial">Add Adversarial</button>
+                <button id="cancelLoop" class="danger">Cancel Loop</button>
+                <button id="resetState" class="danger">Reset State</button>
+              </div>
+            </section>
+
+            <section class="panel rail-panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Lane controls</div>
+                  <h3>Per-position models</h3>
+                </div>
+              </div>
+              <div id="workerControls" class="workercontrols">No active task.</div>
+            </section>
+
+            <section class="panel rail-panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Lane snapshots</div>
+                  <h3>Latest checkpoints</h3>
+                </div>
+              </div>
+              <div id="workerGrid" class="lane-stack">
+                <div class="lane-card-empty">No active task.</div>
+              </div>
+            </section>
+          </aside>
         </div>
-        <div>
-          <label for="loopRounds">Auto Loop Rounds</label>
-          <input id="loopRounds" type="number" min="1" max="12" value="3" />
+      </section>
+
+      <section class="workspace-view" data-view="settings">
+        <div class="settings-layout">
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-kicker">Settings / integrations</div>
+                <h3>API key management</h3>
+                <p>Keep secrets out of the main workspace and swap test keys here.</p>
+              </div>
+            </div>
+
+            <div class="integration-card">
+              <div class="integration-header">
+                <strong>OpenAI API key</strong>
+                <span id="apiKeyMasked" class="secretmask">none</span>
+              </div>
+              <div id="apiKeyStatus" class="integration-note">No key stored. Live mode needs a key.</div>
+              <div class="integration-row">
+                <input id="apiKeyInput" type="password" placeholder="Paste key to set or replace" autocomplete="off" spellcheck="false" />
+                <button id="saveAuth">Save Key</button>
+                <button id="clearAuth" class="danger">Clear</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-kicker">Settings / fine tuning</div>
+                <h3>Runtime controls</h3>
+                <p>Budgets, model choices, research policy, and carry-forward context all live here.</p>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <label for="sessionContext">Session context</label>
+              <textarea id="sessionContext" rows="5" placeholder="Short carry-forward context from a previous session will appear here after Reset Session."></textarea>
+            </div>
+
+            <div class="form-section">
+              <label for="constraints">Constraints</label>
+              <textarea id="constraints" rows="5" placeholder="Keep workers independent until checkpoint&#10;Preserve contradictions"></textarea>
+            </div>
+
+            <div class="settings-grid">
+              <div>
+                <label for="executionMode">Execution mode</label>
+                <select id="executionMode">
+                  <option value="live" selected>Live API</option>
+                  <option value="mock">Mock</option>
+                </select>
+              </div>
+              <div>
+                <label for="model">Default worker model</label>
+                <select id="model"></select>
+              </div>
+              <div>
+                <label for="summarizerModel">Summarizer model</label>
+                <select id="summarizerModel"></select>
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <div>
+                <label for="reasoningEffort">Reasoning</label>
+                <select id="reasoningEffort">
+                  <option value="none">none</option>
+                  <option value="low" selected>low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                </select>
+              </div>
+              <div>
+                <label for="maxCostUsd">Session budget USD</label>
+                <input id="maxCostUsd" type="number" min="0" step="0.01" value="5.00" />
+              </div>
+              <div>
+                <label for="maxTotalTokens">Session token cap (local)</label>
+                <input id="maxTotalTokens" type="number" min="0" step="1000" value="250000" />
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <div>
+                <label for="maxOutputTokens">Max output tokens / call</label>
+                <input id="maxOutputTokens" type="number" min="0" step="50" value="1200" />
+              </div>
+              <div>
+                <label for="loopRounds">Auto loop rounds</label>
+                <input id="loopRounds" type="number" min="1" max="12" value="3" />
+              </div>
+              <div>
+                <label for="loopDelayMs">Delay between rounds (ms)</label>
+                <input id="loopDelayMs" type="number" min="0" max="10000" value="1000" />
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <div>
+                <label for="researchEnabled">Worker research</label>
+                <select id="researchEnabled">
+                  <option value="0">Disabled</option>
+                  <option value="1">Web Search</option>
+                </select>
+              </div>
+              <div>
+                <label for="researchExternalWebAccess">Live web access</label>
+                <select id="researchExternalWebAccess">
+                  <option value="1">Live</option>
+                  <option value="0">Cached / Indexed Only</option>
+                </select>
+              </div>
+              <div>
+                <label for="vettingEnabled">Summarizer vetting</label>
+                <select id="vettingEnabled">
+                  <option value="1">Enabled</option>
+                  <option value="0">Disabled</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <label for="researchDomains">Research domain allowlist</label>
+              <input id="researchDomains" type="text" placeholder="Optional, comma-separated domains like openai.com, platform.openai.com" />
+              <div class="fieldnote">Workers can search broadly or be constrained to specific domains. The summarizer vets the worker evidence without doing its own web research.</div>
+            </div>
+          </section>
         </div>
-        <div>
-          <label for="loopDelayMs">Delay Between Rounds (ms)</label>
-          <input id="loopDelayMs" type="number" min="0" max="10000" value="1000" />
+      </section>
+
+      <section class="workspace-view" data-view="debug">
+        <div class="debug-layout">
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Settings / debug logs</div>
+                <h3>Step log</h3>
+              </div>
+            </div>
+            <pre id="steps">No data.</pre>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Settings / debug logs</div>
+                <h3>Event log</h3>
+              </div>
+            </div>
+            <pre id="events">No data.</pre>
+          </section>
         </div>
-      </div>
+      </section>
 
-      <div class="configgrid">
-        <div>
-          <label for="researchEnabled">Worker Research</label>
-          <select id="researchEnabled">
-            <option value="0">Disabled</option>
-            <option value="1">Web Search</option>
-          </select>
+      <section class="workspace-view" data-view="review">
+        <div class="review-layout">
+          <div class="review-grid">
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Summary snapshot</h3>
+                </div>
+              </div>
+              <pre id="summary">No data.</pre>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Canonical memory</h3>
+                </div>
+              </div>
+              <pre id="memory">No data.</pre>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Recent jobs</h3>
+                </div>
+              </div>
+              <pre id="historyJobs">No history.</pre>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Review</div>
+                  <h3>Recent artifacts</h3>
+                </div>
+              </div>
+              <pre id="historyArtifacts">No history.</pre>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-kicker">Review</div>
+                <h3>Artifact review</h3>
+                <p>Compare normalized output and raw response text side by side.</p>
+              </div>
+            </div>
+            <div class="artifact-review-grid">
+              <div class="artifact-pane">
+                <label for="artifactLeftSelect">Left artifact</label>
+                <select id="artifactLeftSelect"></select>
+                <div id="artifactLeftMeta" class="artifact-meta">No artifact selected.</div>
+                <pre id="artifactLeftContent">No artifact selected.</pre>
+              </div>
+              <div class="artifact-pane">
+                <label for="artifactRightSelect">Right artifact</label>
+                <select id="artifactRightSelect"></select>
+                <div id="artifactRightMeta" class="artifact-meta">No artifact selected.</div>
+                <pre id="artifactRightContent">No artifact selected.</pre>
+              </div>
+            </div>
+          </section>
         </div>
-        <div>
-          <label for="researchExternalWebAccess">Live Web Access</label>
-          <select id="researchExternalWebAccess">
-            <option value="1">Live</option>
-            <option value="0">Cached / Indexed Only</option>
-          </select>
-        </div>
-        <div>
-          <label for="vettingEnabled">Summarizer Vetting</label>
-          <select id="vettingEnabled">
-            <option value="1">Enabled</option>
-            <option value="0">Disabled</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="configgrid">
-        <div class="stack-full">
-          <label for="researchDomains">Research Domain Allowlist</label>
-          <input id="researchDomains" type="text" placeholder="Optional, comma-separated domains like openai.com, platform.openai.com" />
-          <div class="fieldnote">Workers can search broadly or be constrained to specific domains. The summarizer vets the worker evidence without doing its own web research.</div>
-        </div>
-      </div>
-
-      <div class="configgrid">
-        <div class="stack-full">
-          <label for="loopNote">Loop Notes</label>
-          <div id="loopNote">Autonomous mode runs all configured workers and then summarizes.</div>
-        </div>
-      </div>
-
-      <div class="btnrow">
-        <button id="startTask">Start Task</button>
-        <button id="summarize">Summarize</button>
-        <button id="runRound">Run Round</button>
-        <button id="runLoop">Run Auto Loop</button>
-        <button id="addAdversarial">Add Adversarial</button>
-        <button id="cancelLoop" class="danger">Cancel Loop</button>
-        <button id="refresh">Refresh</button>
-        <button id="resetSession">Reset Session</button>
-        <button id="resetState" class="danger">Reset State</button>
-      </div>
-      <div id="message"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Worker Controls</h2>
-      <div id="workerControls" class="workercontrols">No active task.</div>
-    </section>
-
-    <section class="panel">
-      <h2>Workers</h2>
-      <div id="workerGrid" class="grid2">
-        <div class="panel"><pre>No active task.</pre></div>
-      </div>
-    </section>
-
-    <section class="grid2">
-      <div class="panel">
-        <h2>Summary</h2>
-        <pre id="summary">No data.</pre>
-      </div>
-      <div class="panel">
-        <h2>Canonical Memory</h2>
-        <pre id="memory">No data.</pre>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Event Log</h2>
-      <pre id="events">No data.</pre>
-    </section>
-
-    <section class="panel">
-      <h2>Step Log</h2>
-      <pre id="steps">No data.</pre>
-    </section>
-
-    <section class="grid2">
-      <div class="panel">
-        <h2>Recent Jobs</h2>
-        <pre id="historyJobs">No history.</pre>
-      </div>
-      <div class="panel">
-        <h2>Recent Artifacts</h2>
-        <pre id="historyArtifacts">No history.</pre>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Artifact Review</h2>
-      <div class="artifact-review-grid">
-        <div class="artifact-pane">
-          <label for="artifactLeftSelect">Left Artifact</label>
-          <select id="artifactLeftSelect"></select>
-          <div id="artifactLeftMeta" class="artifact-meta">No artifact selected.</div>
-          <pre id="artifactLeftContent">No artifact selected.</pre>
-        </div>
-        <div class="artifact-pane">
-          <label for="artifactRightSelect">Right Artifact</label>
-          <select id="artifactRightSelect"></select>
-          <div id="artifactRightMeta" class="artifact-meta">No artifact selected.</div>
-          <pre id="artifactRightContent">No artifact selected.</pre>
-        </div>
-      </div>
-    </section>
+      </section>
+    </main>
   </div>
 
   <script src="assets/app.js"></script>
