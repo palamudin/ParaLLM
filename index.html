@@ -95,17 +95,6 @@
             </div>
 
             <div class="composer-shell">
-              <div class="composer-context-row">
-                <div class="context-chip">
-                  <div class="context-chip-label">Session context</div>
-                  <div id="sessionContextPreview" class="context-chip-value">No carry-forward context.</div>
-                </div>
-                <div class="context-chip">
-                  <div class="context-chip-label">Constraints</div>
-                  <div id="constraintsPreview" class="context-chip-value">No constraints configured.</div>
-                </div>
-              </div>
-
               <label for="objective">Commander prompt</label>
               <textarea id="objective" rows="5" placeholder="Describe what you want the lane stack to investigate, build, or write..."></textarea>
 
@@ -176,13 +165,8 @@
               <div>
                 <div class="panel-kicker">Settings / fine tuning</div>
                 <h3>Runtime controls</h3>
-                <p>Budgets, model choices, loop depth, research policy, and carry-forward context all live here.</p>
+                <p>Budgets, model choices, loop depth, and research policy live here.</p>
               </div>
-            </div>
-
-            <div class="form-section">
-              <label for="sessionContext">Session context</label>
-              <textarea id="sessionContext" rows="5" placeholder="Short carry-forward context from a previous session will appear here after Reset Session."></textarea>
             </div>
 
             <div class="form-section">
@@ -288,6 +272,18 @@
 
       <section class="workspace-view" data-view="debug">
         <div class="debug-layout">
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Debug / review context</div>
+                <h3>Session context</h3>
+              </div>
+            </div>
+            <label for="sessionContext">Carry-forward memory</label>
+            <textarea id="sessionContext" rows="8" placeholder="Short carry-forward context from a previous session will appear here after Reset Session."></textarea>
+            <div class="fieldnote">This is review context for the runtime, not something the main user flow needs to see in Home.</div>
+          </section>
+
           <section class="panel">
             <div class="panel-head compact">
               <div>

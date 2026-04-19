@@ -62,8 +62,8 @@ Main flow
    use the per-worker controls to choose directive, temperature, and model
 4. Press `Send`.
 5. The app creates a task from the staged roster and automatically queues the configured loop.
-6. Read the lane back-and-forth and the final Agent reply in Home.
-7. Use `Debug` only when you want manual controls such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, `Cancel Loop`, or `Reset State`.
+6. Read the final Agent reply in Home. Lane inspection is collapsed by default and can be expanded above the answer if you want to review the worker internals.
+7. Use `Debug` for manual controls such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, `Cancel Loop`, or `Reset State`, and for reviewing/editing carry-forward `Session Context`.
 8. Use `Review` for memory, jobs, artifacts, and side-by-side output inspection.
 
 Main files
@@ -103,6 +103,8 @@ The Artifact Review section can load those saved artifacts side by side and show
 Fresh artifacts now normalize and dedupe source URLs more aggressively so malformed non-URL strings do not pollute research-source lists.
 The commander form is now draft-backed, so refresh polling no longer overwrites in-progress edits.
 The stored draft now also carries the worker roster plus loop rounds and delay, so a page refresh does not wipe the staged lanes.
+Home chat polling now preserves scroll position and lane-inspector expansion state instead of snapping back to the bottom on every refresh.
+The Home thread is intentionally simplified: it shows the prompt and the summarizer's response in a more standard agent-chat style, while lane inspection stays collapsed unless explicitly opened.
 `Reset Session` writes an archive file under `data/sessions`, clears the active task, and preloads a short carry-forward summary into the `Session Context` field for the next task.
 The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
 `Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.
@@ -126,12 +128,14 @@ On April 19, 2026, the resident Python runtime was also verified with:
 - a mock `A/B/summarizer` pass through the existing `api/run_ps.php` endpoint, returning `backend: python`
 - a live `A/B/summarizer` pass through the Python runtime, which matched the prior behavior by falling back to mock when the Responses API returned `incomplete: max_output_tokens`
 - a later live `A/B/summarizer` pass with `maxOutputTokens=500`, which still completed live because the runtime lifted the effective caps and retried where needed
+- a final release-validation pass through the send-style task + background-loop flow, where both a mock smoke and a live smoke completed end to end with a saved summary artifact
 
 That run confirmed:
 - worker `web_search` usage is captured in usage totals and per-target buckets
 - worker checkpoints persist research queries, source URLs, and evidence ledgers
 - summarizer checkpoints persist evidence verdicts and preserved conflicts
 - output-token recovery metadata is preserved in step logs and output artifacts
+- the default chat path of `start_task` plus `start_loop` still works after the Home/Debug split and thread-renderer cleanup
 
 One real residual caveat remains: OpenAI-owned pricing pages currently show conflicting statements about whether web-search content tokens are billed at model rates or free, so the prototype should still treat web-search spend as an estimate rather than invoice-accurate truth until that conflict is reconciled.
 

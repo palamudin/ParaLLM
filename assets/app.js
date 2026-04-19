@@ -64,6 +64,9 @@ let latestState = null;
 let draftSaveTimer = null;
 let workerControlsSignature = "";
 let debugControlsSignature = "";
+let threadRenderSignature = "";
+let threadRenderTaskId = "";
+let threadInspectorOpen = false;
 
 function showMessage(text, isError = false) {
   $("#message").text(text || "").css({
@@ -345,7 +348,6 @@ function applyCommanderForm(values) {
   $("#researchExternalWebAccess").val(safe.researchExternalWebAccess === false ? "0" : "1");
   $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
   $("#researchDomains").val((safe.researchDomains || []).join(", "));
-  renderComposerContextPreview(safe.sessionContext || "", safe.constraints || []);
 }
 
 function syncCommanderForm(task, draft, force = false) {
@@ -805,7 +807,7 @@ function buildWorkerInspector(checkpoints) {
   }).join("");
 
   return `
-    <details class="lane-inspector">
+    <details class="lane-inspector"${threadInspectorOpen ? " open" : ""}>
       <summary>Inspect worker lanes (${entries.length})</summary>
       <div class="lane-inspector-note">Internal lane output is hidden by default so the main answer stays readable.</div>
       <div class="lane-inspector-grid">
@@ -813,6 +815,36 @@ function buildWorkerInspector(checkpoints) {
       </div>
     </details>
   `;
+}
+
+function buildConversationRenderSignature(task, summary, workerState) {
+  if (!task) return "empty";
+
+  const workerSignature = (task.workers || []).map(function (worker) {
+    const checkpoint = workerState?.[worker.id] || null;
+    return {
+      id: worker.id,
+      step: checkpoint?.step || 0,
+      observation: checkpoint?.observation || "",
+      requestToPeer: checkpoint?.requestToPeer || "",
+      confidence: checkpoint?.confidence ?? null
+    };
+  });
+
+  return JSON.stringify({
+    taskId: task.taskId || "",
+    objective: task.objective || "",
+    executionMode: task.runtime?.executionMode || "",
+    summary: summary ? {
+      round: summary.round || 0,
+      stableFindings: summary.stableFindings || [],
+      conflicts: summary.conflicts || [],
+      recommendedNextAction: summary.recommendedNextAction || "",
+      vettingSummary: summary.vettingSummary || "",
+      claimsNeedingVerification: summary.claimsNeedingVerification || []
+    } : null,
+    workers: workerSignature
+  });
 }
 
 function buildThreadMessage(options) {
@@ -828,10 +860,14 @@ function buildThreadMessage(options) {
   `;
 }
 
-function renderConversationThread(task, summary, workerState, loop) {
+function legacyRenderConversationThreadUnused(task, summary, workerState, loop) {
   const $thread = $("#conversationThread");
+  const threadNode = $thread[0];
 
   if (!task) {
+    threadRenderSignature = "empty";
+    threadRenderTaskId = "";
+    threadInspectorOpen = false;
     $thread.html(`
       <div class="empty-thread">
         <div>
@@ -920,7 +956,7 @@ function renderConversationThread(task, summary, workerState, loop) {
   $thread.scrollTop($thread[0].scrollHeight);
 }
 
-function applyLoopUi(state) {
+function legacyApplyLoopUiUnused(state) {
   const loop = state.loop || null;
   const task = state.activeTask || null;
   const hasTask = !!task;
@@ -973,8 +1009,12 @@ function applyLoopUi(state) {
 
 function renderConversationThread(task, summary, workerState, loop) {
   const $thread = $("#conversationThread");
+  const threadNode = $thread[0];
 
   if (!task) {
+    threadRenderSignature = "empty";
+    threadRenderTaskId = "";
+    threadInspectorOpen = false;
     $thread.html(`
       <div class="empty-thread">
         <div>
@@ -986,15 +1026,30 @@ function renderConversationThread(task, summary, workerState, loop) {
     return;
   }
 
+  const nextTaskId = String(task.taskId || "");
+  if (threadRenderTaskId !== nextTaskId) {
+    threadRenderTaskId = nextTaskId;
+    threadRenderSignature = "";
+    threadInspectorOpen = false;
+  }
+
+  const signature = buildConversationRenderSignature(task, summary, workerState);
+  if (signature === threadRenderSignature) {
+    return;
+  }
+
+  const previousScrollTop = threadNode ? $thread.scrollTop() : 0;
+  const wasNearBottom = threadNode
+    ? (threadNode.scrollHeight - (previousScrollTop + threadNode.clientHeight)) < 48
+    : true;
+
   const messages = [];
   messages.push(buildThreadMessage({
     kind: "commander",
     author: "You",
     tag: task.runtime?.executionMode === "live" ? "Live session" : "Mock session",
     sections: [
-      renderPlainTextBlock(task.objective || ""),
-      renderTextSection("Session context", task.sessionContext || ""),
-      renderListSection("Constraints", task.constraints || [])
+      renderPlainTextBlock(task.objective || "")
     ]
   }));
 
@@ -1019,9 +1074,8 @@ function renderConversationThread(task, summary, workerState, loop) {
       author: "Agent",
       tag: "Multistream summary | memory " + ($("#memoryVersion").text() || "0"),
       sections: [
-        renderPlainTextBlock(buildAgentReplyText(summary)),
         buildWorkerInspector(checkpoints),
-        renderListSection("Still worth verifying", (summary.claimsNeedingVerification || []).slice(0, 3))
+        renderPlainTextBlock(buildAgentReplyText(summary))
       ]
     }));
   } else {
@@ -1037,14 +1091,19 @@ function renderConversationThread(task, summary, workerState, loop) {
       author: "Agent",
       tag: loop?.status || "idle",
       sections: [
-        renderPlainTextBlock(waitingText),
-        buildWorkerInspector(checkpoints)
+        buildWorkerInspector(checkpoints),
+        renderPlainTextBlock(waitingText)
       ]
     }));
   }
 
   $thread.html(messages.join(""));
-  $thread.scrollTop($thread[0].scrollHeight);
+  threadRenderSignature = signature;
+  if (!threadNode || wasNearBottom) {
+    $thread.scrollTop($thread[0].scrollHeight);
+  } else {
+    $thread.scrollTop(previousScrollTop);
+  }
 }
 
 function applyLoopUi(state) {
@@ -1209,7 +1268,6 @@ $(function () {
 
   $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
     formDirty = true;
-    renderComposerContextPreview($("#sessionContext").val().trim(), $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean));
     queueDraftSave();
   });
 
@@ -1408,6 +1466,10 @@ $(function () {
     const positionId = $(this).data("position");
     const model = $(this).val();
     postForm("api/set_worker_model.php", { positionId, model }, "Model updated");
+  });
+
+  $(document).on("toggle", ".lane-inspector", function () {
+    threadInspectorOpen = $(this).prop("open");
   });
 
   $("#artifactLeftSelect").on("change", function () {

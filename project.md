@@ -67,9 +67,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 ## Current POC Features
 
 - Dynamic worker roster starting with `Proponent` and `Sceptic`, with bounded adversarial expansion through additional lettered lanes
-- Commander form now includes a `Session Context` field for short carry-forward memory between sessions
+- Session context remains available for short carry-forward memory between sessions, but it now lives under `Debug` instead of the main Home flow
 - Home is now chat-first: the main workflow is prompt plus `Send`, and that single action creates a task and kicks off the configured loop automatically
 - The Home composer is now draft-first instead of active-task-first, so a stale task no longer overwrites the next-send `live` / `mock` setting after refresh
+- Home chat polling now preserves scroll position and lane-inspector expansion state instead of snapping back to the bottom on every refresh
 - Manual operations such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, and `Reset State` now live under `Debug` instead of cluttering the main conversation flow
 - Worker side controls now expose directive, temperature, and per-worker model selectors directly in the home rail, plus a `+ Add` lane button for on-demand adversarial expansion
 - Home-side worker roster edits now stage the next send without mutating the currently displayed active task
@@ -93,6 +94,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - URL/source normalization now drops malformed non-URL entries and canonicalizes saved source links in fresh artifacts
 - Sidebar workspace shell now splits `Home`, `Settings`, `Debug`, and `Review`, with a chat-first center pane and the API key moved into Settings / Integrations
 - The main thread now renders the Agent answer in a simpler chat format while worker lanes stay collapsed behind an `Inspect worker lanes` disclosure by default
+- Session context is now treated as review/debug data rather than primary user input and has been moved out of the Home surface
 - Fine tuning controls now live in Settings instead of crowding the main conversation surface, and the stored draft now includes worker roster, loop rounds, and loop delay
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
@@ -120,6 +122,14 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - with an older mock task still active, the rendered Settings form now keeps the persisted draft's `executionMode=live`
   - a fresh manual live smoke task (`t-20260419-082140-1a296c`) completed through the resident Python runtime instead of falling back to mock
   - a second manual live task (`t-20260419-082140-4e6764`) confirmed the current project/key also has live access to `gpt-5.4-mini` and `gpt-5.4`
+- Verified thread-behavior cleanup on April 19, 2026:
+  - Home no longer forces the chat viewport to the bottom on every polling refresh
+  - the lane inspector stays expanded while the displayed thread content is unchanged
+  - lane inspection is now presented above the final Agent answer for users who want to review the internal lanes
+- Verified release-validation send flow on April 19, 2026:
+  - mock `start_task` plus `start_loop` smoke completed end to end with summary output saved
+  - live `start_task` plus `start_loop` smoke completed end to end through the resident Python runtime
+  - the live release-validation smoke used `6,422` total tokens for an estimated `$0.006562`
 
 ## Immediate Milestones
 
