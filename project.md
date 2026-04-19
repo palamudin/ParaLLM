@@ -74,6 +74,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Shared-state locking between PHP and the resident Python runtime, with PowerShell fallback still available
 - Resident Python runtime service on `127.0.0.1:8765` keeps worker/summarizer logic warm between calls instead of spawning a new shell process every step
 - PHP dispatch now prefers the Python runtime and only falls back to PowerShell if the service is unavailable
+- Live Python dispatch now applies target-aware structured-output token floors and a single retry on `incomplete: max_output_tokens`, while still recording the user-requested cap for auditability
 - Stale queued/running job recovery based on queue age and heartbeat age
 - Per-position model selection in the UI for workers and summarizer
 - Grounded worker research mode using the OpenAI Responses API `web_search` tool with optional OpenAI-domain allow-lists
@@ -95,6 +96,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Verified widened live `A/B/C` run with grounded worker research, live summarizer vetting, and saved output artifacts on April 19, 2026
 - Verified resident Python runtime dispatch on April 19, 2026 with mock `A/B/summarizer` execution through the existing PHP endpoints
 - Verified resident Python runtime live path on April 19, 2026; model calls reached the Python runtime correctly and preserved the existing fallback-to-mock behavior when Responses API output was truncated by `max_output_tokens`
+- Verified low-cap resident Python live run on April 19, 2026 with task budget `maxOutputTokens=500`; workers and summarizer still completed live because the runtime elevated to safe structured-output floors (`900` worker, `1400` summarizer) and retried to `1800` where needed
 
 ## Immediate Milestones
 
@@ -105,7 +107,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 5. Add bounded multi-job queueing instead of a single active background job slot
 6. Add richer lane templates so new adversarial workers can be spawned from selectable viewpoints instead of only the next default letter slot
 7. Reconcile conflicting OpenAI-owned pricing statements for web-search content tokens before treating cost estimates as billing-accurate
-8. Tighten live prompt/output handling so the resident Python runtime hits structured-output success more often before needing mock fallback on `max_output_tokens`
+8. Surface the effective vs requested output-token cap directly in the UI, not just the saved artifacts and step log
 
 ## Notes
 

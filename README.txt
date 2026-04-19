@@ -89,6 +89,11 @@ Workers support two modes:
 PHP now dispatches worker and summarizer targets through a resident Python service on `127.0.0.1:8765`.
 That service keeps the runtime warm between calls and writes the same state, checkpoint, output, and step-log artifacts as before.
 If the Python service is unavailable, PHP still falls back to the older PowerShell path so the app stays usable during migration.
+For live structured outputs, the Python runtime now treats very low `maxOutputTokens` values as a requested cap, not a trap:
+- workers start with a safe floor of `900`
+- summarizer starts with a safe floor of `1400`
+- one retry is allowed at a higher cap if the Responses API returns `incomplete: max_output_tokens`
+- requested and effective caps are both logged in `steps.jsonl` and saved output artifacts
 
 When worker research is enabled, worker lanes can use the Responses API `web_search` tool, keep their own research queries and consulted source URLs, and leave evidence ledgers for the summarizer to vet.
 When summarizer vetting is enabled, the summarizer scores the worker claims by support strength instead of only merging prose.
@@ -119,11 +124,13 @@ On April 19, 2026, a widened live `A/B/C` run also completed successfully with:
 On April 19, 2026, the resident Python runtime was also verified with:
 - a mock `A/B/summarizer` pass through the existing `api/run_ps.php` endpoint, returning `backend: python`
 - a live `A/B/summarizer` pass through the Python runtime, which matched the prior behavior by falling back to mock when the Responses API returned `incomplete: max_output_tokens`
+- a later live `A/B/summarizer` pass with `maxOutputTokens=500`, which still completed live because the runtime lifted the effective caps and retried where needed
 
 That run confirmed:
 - worker `web_search` usage is captured in usage totals and per-target buckets
 - worker checkpoints persist research queries, source URLs, and evidence ledgers
 - summarizer checkpoints persist evidence verdicts and preserved conflicts
+- output-token recovery metadata is preserved in step logs and output artifacts
 
 One real residual caveat remains: OpenAI-owned pricing pages currently show conflicting statements about whether web-search content tokens are billed at model rates or free, so the prototype should still treat web-search spend as an estimate rather than invoice-accurate truth until that conflict is reconciled.
 

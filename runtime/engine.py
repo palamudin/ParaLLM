@@ -497,6 +497,10 @@ class OpenAIResult:
     web_search_queries: List[str]
     web_search_sources: List[str]
     url_citations: List[str]
+    requested_max_output_tokens: int
+    effective_max_output_tokens: int
+    attempts: List[int]
+    recovered_from_incomplete: bool
 
 
 class LoopRuntime:
@@ -806,11 +810,11 @@ class LoopRuntime:
         with self.with_lock():
             state = self.read_state_unlocked()
             usage = normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
-            usage["byTarget"] = usage.get("byTarget", {})
-            usage["byModel"] = usage.get("byModel", {})
+            existing_by_target = usage.get("byTarget", {}) if isinstance(usage.get("byTarget"), dict) else {}
+            existing_by_model = usage.get("byModel", {}) if isinstance(usage.get("byModel"), dict) else {}
             usage = self.merge_usage_bucket(usage, delta, model, response_id)
-            usage["byTarget"] = usage.get("byTarget", {})
-            usage["byModel"] = usage.get("byModel", {})
+            usage["byTarget"] = existing_by_target
+            usage["byModel"] = existing_by_model
             usage["byTarget"][target] = self.merge_usage_bucket(usage["byTarget"].get(target), delta, model, response_id)
             usage["byModel"][model] = self.merge_usage_bucket(usage["byModel"].get(model), delta, model, response_id)
             state["usage"] = usage
@@ -849,69 +853,135 @@ class LoopRuntime:
         schema_name: str,
         schema: Dict[str, Any],
         max_output_tokens: int = 0,
+        target_kind: str = "generic",
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         include: Optional[List[str]] = None,
     ) -> OpenAIResult:
-        body: Dict[str, Any] = {
-            "model": model,
-            "instructions": instructions,
-            "input": input_text,
-            "reasoning": {"effort": reasoning_effort},
-            "text": {
-                "verbosity": "low",
-                "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
-            },
-        }
-        if max_output_tokens > 0:
-            body["max_output_tokens"] = max_output_tokens
-        if tools:
-            body["tools"] = tools
-        if tool_choice is not None:
-            body["tool_choice"] = tool_choice
-        if include:
-            body["include"] = include
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=180) as handle:
-                response = json.loads(handle.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            body_text = error.read().decode("utf-8", errors="replace")
-            raise RuntimeErrorWithCode(f"OpenAI API request failed: HTTP {error.code} | {body_text}", 500)
-        except Exception as error:
-            raise RuntimeErrorWithCode(f"OpenAI API request failed: {error}", 500)
-        if isinstance(response.get("error"), dict):
-            raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
-        output_text = self.get_response_output_text(response)
-        incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
-        if not output_text:
-            if response.get("status") == "incomplete" and incomplete_details.get("reason"):
-                raise RuntimeErrorWithCode(f"Model response incomplete: {incomplete_details['reason']}", 500)
-            raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
-        if response.get("status") == "incomplete" and incomplete_details.get("reason"):
-            raise RuntimeErrorWithCode(f"Model response incomplete: {incomplete_details['reason']}", 500)
-        try:
-            parsed = json.loads(output_text)
-        except json.JSONDecodeError as error:
-            if response.get("status") == "incomplete" and incomplete_details.get("reason"):
-                raise RuntimeErrorWithCode(f"Model response incomplete: {incomplete_details['reason']}", 500)
-            raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
-        if not isinstance(parsed, dict):
-            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
-        return OpenAIResult(
-            parsed=parsed,
-            response=response,
-            response_id=str(response.get("id", "")),
-            output_text=output_text,
-            web_search_queries=normalize_string_array_preserve_items(self.get_response_web_search_queries(response)),
-            web_search_sources=normalize_url_array_values(self.get_response_web_search_sources(response)),
-            url_citations=normalize_url_array_values(self.get_response_url_citations(response)),
-        )
+        attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+        last_error: Optional[RuntimeErrorWithCode] = None
+        recovered_from_incomplete = False
+
+        for index, effective_tokens in enumerate(attempts):
+            body: Dict[str, Any] = {
+                "model": model,
+                "instructions": instructions,
+                "input": input_text,
+                "reasoning": {"effort": reasoning_effort},
+                "text": {
+                    "verbosity": "low",
+                    "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
+                },
+            }
+            if effective_tokens > 0:
+                body["max_output_tokens"] = effective_tokens
+            if tools:
+                body["tools"] = tools
+            if tool_choice is not None:
+                body["tool_choice"] = tool_choice
+            if include:
+                body["include"] = include
+
+            request = urllib.request.Request(
+                "https://api.openai.com/v1/responses",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=180) as handle:
+                    response = json.loads(handle.read().decode("utf-8"))
+            except urllib.error.HTTPError as error:
+                body_text = error.read().decode("utf-8", errors="replace")
+                raise RuntimeErrorWithCode(f"OpenAI API request failed: HTTP {error.code} | {body_text}", 500)
+            except Exception as error:
+                raise RuntimeErrorWithCode(f"OpenAI API request failed: {error}", 500)
+
+            if isinstance(response.get("error"), dict):
+                raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+
+            incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
+            incomplete_reason = str(incomplete_details.get("reason", "")).strip()
+            if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
+                recovered_from_incomplete = True
+                last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
+                continue
+
+            output_text = self.get_response_output_text(response)
+            if not output_text:
+                if response.get("status") == "incomplete" and incomplete_reason:
+                    detail = f"Model response incomplete: {incomplete_reason}"
+                    if incomplete_reason == "max_output_tokens":
+                        detail += f" after attempts {attempts}"
+                    raise RuntimeErrorWithCode(detail, 500)
+                raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
+
+            if response.get("status") == "incomplete" and incomplete_reason:
+                detail = f"Model response incomplete: {incomplete_reason}"
+                if incomplete_reason == "max_output_tokens":
+                    detail += f" after attempts {attempts}"
+                raise RuntimeErrorWithCode(detail, 500)
+
+            try:
+                parsed = json.loads(output_text)
+            except json.JSONDecodeError as error:
+                if response.get("status") == "incomplete" and incomplete_reason:
+                    detail = f"Model response incomplete: {incomplete_reason}"
+                    if incomplete_reason == "max_output_tokens":
+                        detail += f" after attempts {attempts}"
+                    raise RuntimeErrorWithCode(detail, 500)
+                raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
+
+            if not isinstance(parsed, dict):
+                raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+
+            return OpenAIResult(
+                parsed=parsed,
+                response=response,
+                response_id=str(response.get("id", "")),
+                output_text=output_text,
+                web_search_queries=normalize_string_array_preserve_items(self.get_response_web_search_queries(response)),
+                web_search_sources=normalize_url_array_values(self.get_response_web_search_sources(response)),
+                url_citations=normalize_url_array_values(self.get_response_url_citations(response)),
+                requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                effective_max_output_tokens=effective_tokens,
+                attempts=attempts,
+                recovered_from_incomplete=recovered_from_incomplete,
+            )
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeErrorWithCode("Model response did not produce a usable structured output.", 500)
+
+    def build_output_token_attempts(self, requested_max_output_tokens: int, target_kind: str) -> List[int]:
+        requested = max(0, int(requested_max_output_tokens or 0))
+        kind = target_kind.strip().lower()
+        if kind == "worker":
+            floor = 900
+            retry_floor = 1800
+            hard_ceiling = 4000
+        elif kind == "summarizer":
+            floor = 1400
+            retry_floor = 2800
+            hard_ceiling = 6000
+        else:
+            floor = 900
+            retry_floor = 1800
+            hard_ceiling = 4000
+
+        initial = max(requested, floor)
+        attempts = [initial]
+
+        retry_candidate = max(initial * 2, retry_floor)
+        retry_candidate = min(retry_candidate, max(initial, hard_ceiling))
+        if retry_candidate > initial:
+            attempts.append(retry_candidate)
+
+        deduped: List[int] = []
+        for value in attempts:
+            if value not in deduped:
+                deduped.append(value)
+        return deduped
 
     def get_default_request_targets(self, task: Dict[str, Any], current_worker_id: str) -> List[str]:
         peer_ids = [worker["id"] for worker in task_workers(task) if worker["id"] != current_worker_id]
@@ -1185,7 +1255,7 @@ class LoopRuntime:
         prior_summary: Optional[Dict[str, Any]],
         prior_memory_version: int,
         peer_messages: List[Dict[str, str]],
-    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         peer_targets = [item["id"] for item in task_workers(task) if item["id"] != worker["id"]]
         peer_text = "\n".join(f"{item['from']}: {item['message']}" for item in peer_messages) if peer_messages else "No peer steer received yet."
         session_context = str(task.get("sessionContext", "")).strip()
@@ -1196,6 +1266,11 @@ class LoopRuntime:
             f"Your special focus is: {worker['focus']}.\n"
             "Return JSON only that matches the schema exactly.\n"
             "Be concise but specific.\n"
+            "Keep observation to 2 short sentences maximum.\n"
+            "For each array field, return at most 3 items.\n"
+            "Keep each string item compact, ideally under 18 words.\n"
+            "Limit evidenceLedger to 2 concrete claims.\n"
+            "Keep requestToPeer to 1 short sentence.\n"
             "Preserve disagreement rather than smoothing it away.\n"
             "Do not reveal hidden chain-of-thought.\n"
             f"Set workerId to {worker['id']}, label to {worker['label']}, role to {worker['role']}, focus to {worker['focus']}, modelUsed to {runtime['model']}, and step to {step_number}.\n"
@@ -1238,6 +1313,7 @@ class LoopRuntime:
             schema_name=f"worker_{worker['id'].lower()}_checkpoint",
             schema=self.worker_schema(),
             max_output_tokens=int(runtime["maxOutputTokens"]),
+            target_kind="worker",
             tools=tools,
             tool_choice=tool_choice,
             include=include,
@@ -1254,7 +1330,13 @@ class LoopRuntime:
         parsed["evidenceLedger"] = normalize_evidence_ledger(parsed.get("evidenceLedger", []))
         parsed["evidenceGaps"] = normalize_string_array_preserve_items(parsed.get("evidenceGaps", []))
         parsed["updatedAt"] = utc_now()
-        return parsed, result.response_id, result.response
+        call_meta = {
+            "requestedMaxOutputTokens": result.requested_max_output_tokens,
+            "effectiveMaxOutputTokens": result.effective_max_output_tokens,
+            "attempts": result.attempts,
+            "recoveredFromIncomplete": result.recovered_from_incomplete,
+        }
+        return parsed, result.response_id, result.response, call_meta
 
     def project_task_for_summary(self, task: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self.get_task_runtime(task)
@@ -1512,7 +1594,7 @@ class LoopRuntime:
         worker_state: Dict[str, Any],
         runtime: Dict[str, Any],
         vetting_config: Dict[str, Any],
-    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         instructions = (
             "You are the summarizer in a sparse multi-lane reasoning loop.\n"
             "Merge all worker checkpoints into a structured summary.\n"
@@ -1524,6 +1606,9 @@ class LoopRuntime:
             "Do not upgrade weak evidence into a supported fact.\n"
             "Do not do new research.\n"
             "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
+            "Keep stableFindings, conditionalTruths, and claimsNeedingVerification to at most 3 items each.\n"
+            "Keep conflicts to at most 2 topics and evidenceVerdicts to at most 3 claims.\n"
+            "Keep vettingSummary and recommendedNextAction brief.\n"
             "Return JSON only that matches the schema exactly."
         )
         input_text = (
@@ -1541,12 +1626,19 @@ class LoopRuntime:
             schema_name="loop_summary_multi",
             schema=self.summary_schema(),
             max_output_tokens=int(runtime["maxOutputTokens"]),
+            target_kind="summarizer",
         )
         parsed = dict(result.parsed)
         parsed["evidenceVerdicts"] = normalize_evidence_verdicts(parsed.get("evidenceVerdicts", []))
         parsed["claimsNeedingVerification"] = normalize_string_array_preserve_items(parsed.get("claimsNeedingVerification", []))
         parsed["mergedAt"] = utc_now()
-        return parsed, result.response_id, result.response
+        call_meta = {
+            "requestedMaxOutputTokens": result.requested_max_output_tokens,
+            "effectiveMaxOutputTokens": result.effective_max_output_tokens,
+            "attempts": result.attempts,
+            "recoveredFromIncomplete": result.recovered_from_incomplete,
+        }
+        return parsed, result.response_id, result.response, call_meta
 
     def normalize_checkpoint(self, task: Dict[str, Any], worker_id: str, worker: Dict[str, str], runtime: Dict[str, Any], checkpoint: Dict[str, Any], step_number: int) -> Dict[str, Any]:
         checkpoint["step"] = step_number
@@ -1635,13 +1727,19 @@ class LoopRuntime:
         response_id: Optional[str] = None
         response: Optional[Dict[str, Any]] = None
         usage_snapshot: Optional[Dict[str, Any]] = None
+        call_meta: Dict[str, Any] = {
+            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "effectiveMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
+            "recoveredFromIncomplete": False,
+        }
         mode_used = "mock"
         if runtime["executionMode"] == "live":
             api_key = self.get_api_key()
             if api_key:
                 try:
                     self.assert_budget_available(worker_id, task)
-                    checkpoint, response_id, response = self.new_live_checkpoint(
+                    checkpoint, response_id, response, call_meta = self.new_live_checkpoint(
                         api_key,
                         task,
                         worker,
@@ -1666,7 +1764,14 @@ class LoopRuntime:
                     self.append_step(
                         f"worker_{worker_id}",
                         "Live API call failed; falling back to mock.",
-                        {"taskId": task["taskId"], "workerId": worker_id, "step": step_number, "model": runtime["model"], "error": str(error)},
+                        {
+                            "taskId": task["taskId"],
+                            "workerId": worker_id,
+                            "step": step_number,
+                            "model": runtime["model"],
+                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+                            "error": str(error),
+                        },
                     )
             else:
                 self.append_step(
@@ -1701,6 +1806,10 @@ class LoopRuntime:
                 "webSearchQueries": normalize_string_array_preserve_items(self.get_response_web_search_queries(response)),
                 "webSearchSources": normalize_url_array_values(self.get_response_web_search_sources(response)),
                 "urlCitations": normalize_url_array_values(self.get_response_url_citations(response)),
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
             }
             if response
             else None,
@@ -1736,6 +1845,10 @@ class LoopRuntime:
                 "researchMode": checkpoint.get("researchMode"),
                 "researchSourceCount": len(checkpoint.get("researchSources", [])),
                 "responseId": response_id,
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "totalTokens": int(budget_totals.get("totalTokens", 0)),
                 "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
                 "checkpointFile": history_cp.name,
@@ -1768,13 +1881,19 @@ class LoopRuntime:
         response_id: Optional[str] = None
         response: Optional[Dict[str, Any]] = None
         usage_snapshot: Optional[Dict[str, Any]] = None
+        call_meta: Dict[str, Any] = {
+            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "effectiveMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
+            "recoveredFromIncomplete": False,
+        }
         mode_used = "mock"
         if runtime["executionMode"] == "live":
             api_key = self.get_api_key()
             if api_key:
                 try:
                     self.assert_budget_available("summarizer", task)
-                    summary, response_id, response = self.new_live_summary(api_key, task, workers, worker_state, runtime, vetting_config)
+                    summary, response_id, response, call_meta = self.new_live_summary(api_key, task, workers, worker_state, runtime, vetting_config)
                     usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:
@@ -1788,7 +1907,12 @@ class LoopRuntime:
                     self.append_step(
                         "summarizer",
                         "Live API call failed; falling back to mock.",
-                        {"taskId": task["taskId"], "model": runtime["model"], "error": str(error)},
+                        {
+                            "taskId": task["taskId"],
+                            "model": runtime["model"],
+                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+                            "error": str(error),
+                        },
                     )
             else:
                 self.append_step("summarizer", "No API key found; falling back to mock.", {"taskId": task["taskId"]})
@@ -1813,7 +1937,14 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
-            "responseMeta": {"status": str(response.get("status", "completed")), "usageDelta": self.get_response_usage_delta(response, runtime["model"])} if response else None,
+            "responseMeta": {
+                "status": str(response.get("status", "completed")),
+                "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+            } if response else None,
             "output": summary,
         }
         _, history_output = self.write_output_artifact(
@@ -1844,6 +1975,10 @@ class LoopRuntime:
                 "responseId": response_id,
                 "workerCount": len(workers),
                 "vettingEnabled": bool(vetting_config["enabled"]),
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "totalTokens": int(budget_totals.get("totalTokens", 0)),
                 "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
                 "checkpointFile": history_summary.name,
