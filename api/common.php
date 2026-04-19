@@ -538,6 +538,43 @@ function summarizer_config(array $task): array {
     ];
 }
 
+function missing_worker_checkpoints(?array $task, array $workerState): array {
+    if (!$task) {
+        return [];
+    }
+
+    $missing = [];
+    foreach (task_workers($task) as $worker) {
+        $workerId = (string)($worker['id'] ?? '');
+        if ($workerId === '') {
+            continue;
+        }
+        if (!array_key_exists($workerId, $workerState) || $workerState[$workerId] === null) {
+            $missing[] = $workerId;
+        }
+    }
+
+    return $missing;
+}
+
+function target_dispatch_preflight(string $target, array $state): ?array {
+    $task = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
+    $workerState = is_array($state['workers'] ?? null) ? $state['workers'] : [];
+
+    if ($target === 'summarizer') {
+        $missing = missing_worker_checkpoints($task, $workerState);
+        if ($missing) {
+            return [
+                'code' => 409,
+                'message' => 'Summarizer is not ready yet. Run worker checkpoint(s) first: ' . implode(', ', $missing) . '.',
+                'missingWorkers' => $missing
+            ];
+        }
+    }
+
+    return null;
+}
+
 function default_loop_state(): array {
     return [
         'status' => 'idle',

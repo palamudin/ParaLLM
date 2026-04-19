@@ -363,7 +363,15 @@ function renderWorkerPanels(task) {
   });
 }
 
-function renderWorkerControls(task, loop) {
+function allWorkerCheckpointsReady(task, stateWorkers) {
+  const workers = task?.workers || [];
+  if (!workers.length) return false;
+  return workers.every(function (worker) {
+    return !!stateWorkers?.[worker.id];
+  });
+}
+
+function renderWorkerControls(task, loop, stateWorkers) {
   const $controls = $("#workerControls");
   $controls.empty();
 
@@ -373,6 +381,7 @@ function renderWorkerControls(task, loop) {
   }
 
   const isActive = loop?.status === "running" || loop?.status === "queued";
+  const summaryReady = allWorkerCheckpointsReady(task, stateWorkers || {});
   task.workers.forEach(function (worker) {
     const $card = $("<div>").addClass("workercontrol");
     $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + worker.label));
@@ -403,12 +412,16 @@ function renderWorkerControls(task, loop) {
   const vettingEnabled = !!task.runtime?.vetting?.enabled;
   const $summaryCard = $("<div>").addClass("workercontrol");
   $summaryCard.append($("<div>").addClass("workercontrol-title").text("Summarizer"));
-  $summaryCard.append($("<div>").addClass("workercontrol-meta").text(vettingEnabled ? "Canonical merge lane | evidence vetter" : "Canonical merge lane"));
+  $summaryCard.append($("<div>").addClass("workercontrol-meta").text(
+    summaryReady
+      ? (vettingEnabled ? "Canonical merge lane | evidence vetter" : "Canonical merge lane")
+      : "Canonical merge lane | waiting for all worker checkpoints"
+  ));
   const $summaryRow = $("<div>").addClass("inlineform");
   $summaryRow.append(
     $("<select>").addClass("position-model").attr("data-position", "summarizer").html(buildModelOptions(summarizerModel)),
     $("<button>").addClass("save-model").attr("data-position", "summarizer").prop("disabled", isActive).text("Save Model"),
-    $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive).text("Summarize")
+    $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize")
   );
   $summaryCard.append($summaryRow);
   $controls.append($summaryCard);
@@ -424,6 +437,7 @@ function applyLoopUi(state) {
   const budget = task?.runtime?.budget || {};
   const research = task?.runtime?.research || {};
   const vetting = task?.runtime?.vetting || {};
+  const summaryReady = allWorkerCheckpointsReady(task, state.workers || {});
 
   $("#taskId").text(task?.taskId || "none");
   $("#memoryVersion").text(state.memoryVersion ?? 0);
@@ -446,7 +460,7 @@ function applyLoopUi(state) {
   updateAuthButtons();
 
   $("#startTask").prop("disabled", isActive);
-  $("#summarize").prop("disabled", isActive || !hasTask);
+  $("#summarize").prop("disabled", isActive || !hasTask || !summaryReady);
   $("#runRound").prop("disabled", isActive || !hasTask);
   $("#runLoop").prop("disabled", isActive || !hasTask);
   $("#addAdversarial").prop("disabled", isActive || !hasTask || (workers.length >= 26));
@@ -463,7 +477,7 @@ function refreshState() {
       const task = data.activeTask ? Object.assign({}, data.activeTask, { stateWorkers: data.workers || {} }) : null;
       syncCommanderForm(data.activeTask || null, data.draft || null);
       applyLoopUi(data);
-      renderWorkerControls(data.activeTask || null, data.loop || null);
+      renderWorkerControls(data.activeTask || null, data.loop || null, data.workers || {});
       renderWorkerPanels(task);
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({

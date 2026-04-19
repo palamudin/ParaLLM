@@ -14,6 +14,19 @@ if (!is_valid_target($target, $state['activeTask'])) {
     json_response(['message' => 'Invalid target.'], 400);
 }
 
+$preflight = target_dispatch_preflight($target, $state);
+if ($preflight !== null) {
+    append_step('dispatch', 'PowerShell target blocked by preflight check.', [
+        'target' => $target,
+        'message' => $preflight['message'],
+        'missingWorkers' => $preflight['missingWorkers'] ?? []
+    ]);
+    json_response([
+        'message' => $preflight['message'],
+        'missingWorkers' => $preflight['missingWorkers'] ?? []
+    ], (int)($preflight['code'] ?? 409));
+}
+
 try {
     append_step('dispatch', 'Dispatching PowerShell target.', ['target' => $target]);
     $result = run_powershell_target($target, $state['activeTask']);
