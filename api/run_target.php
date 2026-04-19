@@ -16,7 +16,7 @@ if (!is_valid_target($target, $state['activeTask'])) {
 
 $preflight = target_dispatch_preflight($target, $state);
 if ($preflight !== null) {
-    append_step('dispatch', 'PowerShell target blocked by preflight check.', [
+    append_step('dispatch', 'Manual runtime target blocked by preflight check.', [
         'target' => $target,
         'message' => $preflight['message'],
         'missingWorkers' => $preflight['missingWorkers'] ?? []
@@ -34,13 +34,13 @@ try {
         'target' => $target,
         'outputPreview' => $result['output'],
         'exitCode' => $result['exitCode'],
-        'backend' => $result['backend'] ?? 'powershell'
+        'backend' => $result['backend'] ?? 'python'
     ]);
     json_response([
         'message' => 'Executed ' . $target,
         'target' => $target,
         'output' => $result['output'],
-        'backend' => $result['backend'] ?? 'powershell'
+        'backend' => $result['backend'] ?? 'python'
     ]);
 } catch (Throwable $ex) {
     append_step('error', 'Runtime target failed.', [

@@ -9,7 +9,7 @@ A local prototype scaffold for:
 - Summarizer / canonical memory
 - JSON persistence and event logging
 - Autonomous multi-round execution
-- Cross-process locking between PHP, Python, and PowerShell fallback paths
+- Cross-process locking between PHP and the resident Python runtime
 - Detached background loop execution through PHP
 - Stale-job recovery for interrupted background runs
 - Recent job and artifact history in the UI
@@ -34,21 +34,12 @@ Requirements
 ------------
 - XAMPP / Apache / PHP enabled
 - Python 3 available locally
-- Windows PowerShell available for fallback and service launching on Windows
-- PHP shell_exec enabled
-- PowerShell execution allowed for local scripts on Windows
+- PHP process launching functions available locally
 
-If shell_exec is disabled in php.ini
-------------------------------------
+If process launching is disabled in php.ini
+------------------------------------------
 Check php.ini for disable_functions.
-If shell_exec is listed there, remove it and restart Apache.
-
-Execution policy note
----------------------
-PHP runs PowerShell using:
--ExecutionPolicy Bypass
-
-This is prototype scaffolding, not hardened production design.
+If functions like `shell_exec` or `popen` are listed there, remove them and restart Apache.
 
 Main flow
 ---------
@@ -73,7 +64,6 @@ Main files
 - api/*.php                broker endpoints
 - scripts/loop_runner.php  background loop runner
 - runtime/*.py             resident Python runtime service and engine
-- ps/*.ps1                 worker/summarizer fallback scripts
 - data/state.json          canonical state
 - data/sessions/*.json    archived session resets with carry-forward summaries
 - data/events.jsonl        append-only event log
@@ -88,7 +78,7 @@ Workers support two modes:
 
 PHP now dispatches worker and summarizer targets through a resident Python service on `127.0.0.1:8765`.
 That service keeps the runtime warm between calls and writes the same state, checkpoint, output, and step-log artifacts as before.
-If the Python service is unavailable, PHP still falls back to the older PowerShell path so the app stays usable during migration.
+On Windows, detached background launches now use `cmd /c start` instead of a PowerShell shim, so the runtime no longer depends on `.ps1` worker scripts.
 For live structured outputs, the Python runtime now treats very low `maxOutputTokens` values as a requested cap, not a trap:
 - workers start with a safe floor of `900`
 - summarizer starts with a safe floor of `1400`
@@ -106,7 +96,7 @@ The stored draft now also carries the worker roster plus loop rounds and delay, 
 Home chat polling now preserves scroll position and lane-inspector expansion state instead of snapping back to the bottom on every refresh.
 The Home thread is intentionally simplified: it shows the prompt and the summarizer's response in a more standard agent-chat style, while lane inspection stays collapsed unless explicitly opened.
 `Reset Session` writes an archive file under `data/sessions`, clears the active task, and preloads a short carry-forward summary into the `Session Context` field for the next task.
-The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
+The backend also uses a shared lock so PHP and the resident Python runtime do not trample the same state file.
 `Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.
 If a queued or running background job goes stale, polling endpoints will mark it as recovered, move it to `error`, and append a recovery entry to the step log.
 History polling is read-mostly and stays available even if a recovery check has to be deferred briefly because the loop lock is busy.
@@ -125,10 +115,12 @@ On April 19, 2026, a widened live `A/B/C` run also completed successfully with:
 - a total estimated spend that stayed below the configured session cap
 
 On April 19, 2026, the resident Python runtime was also verified with:
-- a mock `A/B/summarizer` pass through the existing `api/run_ps.php` endpoint, returning `backend: python`
+- a mock `A/B/summarizer` pass through the manual runtime endpoint, returning `backend: python`
 - a live `A/B/summarizer` pass through the Python runtime, which matched the prior behavior by falling back to mock when the Responses API returned `incomplete: max_output_tokens`
 - a later live `A/B/summarizer` pass with `maxOutputTokens=500`, which still completed live because the runtime lifted the effective caps and retried where needed
 - a final release-validation pass through the send-style task + background-loop flow, where both a mock smoke and a live smoke completed end to end with a saved summary artifact
+- a PowerShell-removal pass where manual dispatch and background launches still completed with the Python runtime as the only worker backend
+- after intentionally killing the resident Python service, both manual dispatch and a 1-round live background loop successfully relaunched it
 
 That run confirmed:
 - worker `web_search` usage is captured in usage totals and per-target buckets
@@ -136,6 +128,7 @@ That run confirmed:
 - summarizer checkpoints persist evidence verdicts and preserved conflicts
 - output-token recovery metadata is preserved in step logs and output artifacts
 - the default chat path of `start_task` plus `start_loop` still works after the Home/Debug split and thread-renderer cleanup
+- worker dispatch no longer depends on legacy PowerShell scripts or fallback paths
 
 One real residual caveat remains: OpenAI-owned pricing pages currently show conflicting statements about whether web-search content tokens are billed at model rates or free, so the prototype should still treat web-search spend as an estimate rather than invoice-accurate truth until that conflict is reconciled.
 

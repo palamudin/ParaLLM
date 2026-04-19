@@ -9,7 +9,6 @@ define('OUTPUTS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'outputs');
 define('SESSIONS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'sessions');
 define('JOBS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'jobs');
 define('LOCKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'locks');
-define('PS_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'ps');
 define('RUNTIME_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'runtime');
 define('STATE_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'state.json');
 define('EVENTS_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'events.jsonl');
@@ -1012,24 +1011,6 @@ function is_valid_target(string $target, ?array $task): bool {
     return in_array($target, available_targets($task), true);
 }
 
-function resolve_target_spec(string $target, ?array $task): array {
-    if ($target === 'summarizer') {
-        return [
-            'script' => 'summarizer.ps1',
-            'args' => []
-        ];
-    }
-
-    if (!$task || !find_task_worker($task, $target)) {
-        throw new RuntimeException('Invalid target.');
-    }
-
-    return [
-        'script' => 'worker.ps1',
-        'args' => ['-WorkerId', $target]
-    ];
-}
-
 function job_file_path(string $jobId): string {
     return JOBS_PATH . DIRECTORY_SEPARATOR . $jobId . '.json';
 }
@@ -1256,47 +1237,28 @@ function php_cli_path(): string {
 
 function launch_background_php(string $scriptPath, array $args = []): void {
     $phpPath = php_cli_path();
-    $argumentList = array_merge([$scriptPath], $args);
-    $psArgs = implode(', ', array_map(static function (string $value): string {
-        return "'" . str_replace("'", "''", $value) . "'";
-    }, $argumentList));
+    launch_background_process($phpPath, array_merge([$scriptPath], $args));
+}
 
-    $psScript = '$php=' . "'" . str_replace("'", "''", $phpPath) . "';" .
-        '$args=@(' . $psArgs . ');' .
-        'Start-Process -WindowStyle Hidden -FilePath $php -ArgumentList $args';
-
-    $cmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' . escapeshellarg($psScript) . ' 2>&1';
-    $output = shell_exec($cmd);
-    if ($output !== null && stripos($output, 'Start-Process') !== false && stripos($output, 'error') !== false) {
-        throw new RuntimeException(trim($output));
-    }
+function build_shell_command(string $executable, array $args = []): string {
+    $parts = array_merge([$executable], array_map(static function ($arg): string {
+        return (string)$arg;
+    }, $args));
+    return implode(' ', array_map('escapeshellarg', $parts));
 }
 
 function launch_background_process(string $executable, array $args = []): void {
+    $command = build_shell_command($executable, $args);
     if (PHP_OS_FAMILY === 'Windows') {
-        $argumentList = $args;
-        $psArgs = implode(', ', array_map(static function (string $value): string {
-            return "'" . str_replace("'", "''", $value) . "'";
-        }, $argumentList));
-
-        $psScript = '$exe=' . "'" . str_replace("'", "''", $executable) . "';" .
-            '$args=@(' . $psArgs . ');' .
-            'Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList $args';
-
-        $cmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ' . escapeshellarg($psScript) . ' 2>&1';
-        $output = shell_exec($cmd);
-        if ($output !== null && stripos($output, 'Start-Process') !== false && stripos($output, 'error') !== false) {
-            throw new RuntimeException(trim($output));
+        $handle = @popen('cmd.exe /d /c start "" /b ' . $command . ' >NUL 2>NUL', 'r');
+        if (!is_resource($handle)) {
+            throw new RuntimeException('Failed to launch background process.');
         }
+        pclose($handle);
         return;
     }
 
-    $command = escapeshellarg($executable);
-    if ($args) {
-        $command .= ' ' . implode(' ', array_map('escapeshellarg', $args));
-    }
-    $command .= ' > /dev/null 2>&1 &';
-    shell_exec($command);
+    shell_exec($command . ' > /dev/null 2>&1 &');
 }
 
 function python_cli_path(): string {
@@ -1470,65 +1432,6 @@ function run_python_runtime_target(string $target, ?array $task = null): array {
     ];
 }
 
-function ps_command(string $scriptName, array $extraArgs = []): string {
-    $scriptPath = PS_PATH . DIRECTORY_SEPARATOR . $scriptName;
-    if (!file_exists($scriptPath)) {
-        throw new RuntimeException('Script not found: ' . $scriptName);
-    }
-    $parts = [
-        'powershell.exe',
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', $scriptPath,
-        '-RootPath', ROOT_PATH
-    ];
-    foreach ($extraArgs as $arg) {
-        $parts[] = (string)$arg;
-    }
-    $escaped = array_map('escapeshellarg', $parts);
-    return implode(' ', $escaped) . ' 2>&1';
-}
-
-function run_powershell_target(string $target, ?array $task = null): array {
-    $stateTask = $task;
-    if ($stateTask === null) {
-        $state = read_state();
-        $stateTask = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
-    }
-
-    $spec = resolve_target_spec($target, $stateTask);
-    $cmd = ps_command($spec['script'], $spec['args']);
-    $lines = [];
-    $exitCode = 0;
-    exec($cmd, $lines, $exitCode);
-    $output = trim(implode(PHP_EOL, $lines));
-
-    append_event('powershell_run', [
-        'target' => $target,
-        'script' => $spec['script'],
-        'exitCode' => $exitCode,
-        'output' => $output
-    ]);
-
-    if ($exitCode !== 0) {
-        throw new RuntimeException($output !== '' ? $output : ('Target ' . $target . ' failed.'));
-    }
-
-    return [
-        'target' => $target,
-        'output' => $output,
-        'exitCode' => $exitCode
-    ];
-}
-
 function run_dispatch_target(string $target, ?array $task = null): array {
-    try {
-        return run_python_runtime_target($target, $task);
-    } catch (Throwable $ex) {
-        append_step('runtime', 'Python runtime target failed; falling back to PowerShell.', [
-            'target' => $target,
-            'error' => $ex->getMessage()
-        ]);
-        return run_powershell_target($target, $task);
-    }
+    return run_python_runtime_target($target, $task);
 }

@@ -30,7 +30,6 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `assets/app.css`: local styling
 - `api/*.php`: PHP broker endpoints
 - `runtime/*.py`: resident worker / summarizer runtime service
-- `ps/*.ps1`: fallback worker and summarizer scripts retained as a safety net during migration
 - `data/state.json`: canonical state
 - `data/events.jsonl`: low-level event log
 - `data/steps.jsonl`: structured step log for human-readable process trace
@@ -39,7 +38,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `data/outputs/*.json`: dedicated worker and summarizer output artifacts with response metadata for quality review
 - `data/sessions/*.json`: archived session snapshots captured by Reset Session with carry-forward context
 - `data/jobs/*.json`: background loop job metadata and result summaries
-- `data/locks/loop.lock`: cross-process lock directory used by PHP, Python, and PowerShell fallback paths
+- `data/locks/loop.lock`: cross-process lock directory used by PHP and the resident Python runtime
 
 ## Runtime Options
 
@@ -79,9 +78,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Autonomous multi-round execution with configurable round count and delay
 - Cancellation that stops after the current round completes
 - Detached background loop launching through `scripts/loop_runner.php`
-- Shared-state locking between PHP and the resident Python runtime, with PowerShell fallback still available
+- Shared-state locking between PHP and the resident Python runtime
 - Resident Python runtime service on `127.0.0.1:8765` keeps worker/summarizer logic warm between calls instead of spawning a new shell process every step
-- PHP dispatch now prefers the Python runtime and only falls back to PowerShell if the service is unavailable
+- PHP dispatch now runs exclusively through the resident Python runtime
+- Windows background launches now use a detached `cmd /c start` path instead of a PowerShell shim
 - Live Python dispatch now applies target-aware structured-output token floors and a single retry on `incomplete: max_output_tokens`, while still recording the user-requested cap for auditability
 - Stale queued/running job recovery based on queue age and heartbeat age
 - Per-position model selection in the UI for workers and summarizer
@@ -130,6 +130,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - mock `start_task` plus `start_loop` smoke completed end to end with summary output saved
   - live `start_task` plus `start_loop` smoke completed end to end through the resident Python runtime
   - the live release-validation smoke used `6,422` total tokens for an estimated `$0.006562`
+- Verified PowerShell removal on April 19, 2026:
+  - manual target dispatch now uses `api/run_target.php` instead of the old `api/run_ps.php`
+  - background loop launch and Python service startup still work without any `.ps1` worker scripts in the repo
+  - after killing the resident Python service, both manual dispatch and a 1-round background live loop successfully relaunched it
 
 ## Immediate Milestones
 

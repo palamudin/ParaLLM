@@ -1335,7 +1335,7 @@ $(function () {
   });
 
   $("#summarize").on("click", function () {
-    postForm("api/run_ps.php", { target: "summarizer" }, "Summarizer ran");
+    postForm("api/run_target.php", { target: "summarizer" }, "Summarizer ran");
   });
 
   $("#runRound").on("click", function () {
@@ -1436,7 +1436,7 @@ $(function () {
 
   $(document).on("click", ".run-target", function () {
     const target = $(this).data("target");
-    postForm("api/run_ps.php", { target }, "Target ran");
+    postForm("api/run_target.php", { target }, "Target ran");
   });
 
   $(document).on("change", ".worker-type, .worker-temperature, .worker-model", function () {
