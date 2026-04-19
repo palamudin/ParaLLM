@@ -81,6 +81,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - UI history panels for recent jobs and checkpoint artifacts
 - Optional live model execution with mock fallback still available
 - Verified live smoke run with grounded worker search and summarizer vetting against OpenAI-owned sources on April 18, 2026
+- Verified widened live `A/B/C` run with grounded worker research, live summarizer vetting, and saved output artifacts on April 19, 2026
 
 ## Immediate Milestones
 

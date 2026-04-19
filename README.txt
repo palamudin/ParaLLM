@@ -95,6 +95,11 @@ On April 18, 2026, the prototype was smoke-tested live with:
 - summarizer evidence vetting enabled
 - `gpt-5-mini` for workers and summarizer
 
+On April 19, 2026, a widened live `A/B/C` run also completed successfully with:
+- three live worker lanes plus a live summarizer
+- grounded worker research and saved output artifacts in `data/outputs`
+- a total estimated spend that stayed below the configured session cap
+
 That run confirmed:
 - worker `web_search` usage is captured in usage totals and per-target buckets
 - worker checkpoints persist research queries, source URLs, and evidence ledgers
