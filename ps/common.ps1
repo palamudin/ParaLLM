@@ -45,6 +45,11 @@ function Get-TasksPath {
     return (Join-Path $Root 'data\tasks')
 }
 
+function Get-OutputsPath {
+    param([string]$Root)
+    return (Join-Path $Root 'data\outputs')
+}
+
 function Get-TaskFilePath {
     param(
         [string]$Root,
@@ -573,6 +578,7 @@ function Ensure-DataPaths {
     $paths = @(
         (Get-DataPath -Root $Root),
         (Join-Path $Root 'data\tasks'),
+        (Get-OutputsPath -Root $Root),
         (Join-Path $Root 'data\checkpoints'),
         (Join-Path $Root 'data\jobs'),
         (Get-LocksPath -Root $Root)
@@ -1502,7 +1508,29 @@ function Invoke-OpenAIJson {
     }
 
     $body = $bodyObject | ConvertTo-Json -Depth 25
-    $response = Invoke-RestMethod -Method Post -Uri 'https://api.openai.com/v1/responses' -Headers $headers -ContentType 'application/json' -Body $body
+    try {
+        $response = Invoke-RestMethod -Method Post -Uri 'https://api.openai.com/v1/responses' -Headers $headers -ContentType 'application/json' -Body $body
+    } catch {
+        $apiError = $_.Exception.Message
+        $responseBody = $null
+        if ($_.Exception.Response) {
+            try {
+                $stream = $_.Exception.Response.GetResponseStream()
+                if ($stream) {
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $responseBody = $reader.ReadToEnd()
+                    $reader.Dispose()
+                    $stream.Dispose()
+                }
+            } catch {}
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($responseBody)) {
+            throw ('OpenAI API request failed: ' + $apiError + ' | ' + $responseBody)
+        }
+
+        throw ('OpenAI API request failed: ' + $apiError)
+    }
     if ($null -ne $response.error) {
         throw ('Model response error: ' + ($response.error | ConvertTo-Json -Depth 10))
     }

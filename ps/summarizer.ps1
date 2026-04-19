@@ -52,6 +52,164 @@ function Normalize-EvidenceVerdicts {
     return $normalized
 }
 
+function Truncate-TextValue {
+    param(
+        [object]$Value,
+        [int]$MaxLength = 320
+    )
+
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return ''
+    }
+    if ($text.Length -le $MaxLength) {
+        return $text
+    }
+    return ($text.Substring(0, [Math]::Max(0, $MaxLength - 3)) + '...')
+}
+
+function Limit-StringList {
+    param(
+        [object]$Value,
+        [int]$MaxItems = 8,
+        [int]$MaxLength = 220
+    )
+
+    $items = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @(Normalize-StringArrayPreserveItems -Value $Value | Select-Object -First $MaxItems)) {
+        $trimmed = Truncate-TextValue -Value $entry -MaxLength $MaxLength
+        if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+            $items.Add($trimmed)
+        }
+    }
+    return ,([string[]]$items.ToArray())
+}
+
+function Limit-UrlList {
+    param(
+        [object]$Value,
+        [int]$MaxItems = 10
+    )
+
+    $items = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @(Normalize-UrlList -Urls $Value | Select-Object -First $MaxItems)) {
+        $trimmed = ([string]$entry).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+            $items.Add($trimmed)
+        }
+    }
+    return ,([string[]]$items.ToArray())
+}
+
+function Project-TaskForSummary {
+    param([hashtable]$Task)
+
+    $runtime = Get-TaskRuntime -Task $Task
+    $budget = Get-BudgetConfig -Task $Task
+    $research = Get-ResearchConfig -Task $Task
+    $vetting = Get-VettingConfig -Task $Task
+
+    return [ordered]@{
+        taskId = [string]$Task['taskId']
+        objective = Truncate-TextValue -Value $Task['objective'] -MaxLength 800
+        constraints = @(Limit-StringList -Value $Task['constraints'] -MaxItems 12 -MaxLength 240)
+        syncPolicy = if (Test-ObjectKey -Value $Task -Key 'syncPolicy') { ConvertTo-HashtableCompat -Value $Task['syncPolicy'] } else { @{} }
+        runtime = [ordered]@{
+            executionMode = [string]$runtime['executionMode']
+            reasoningEffort = [string]$runtime['reasoningEffort']
+            budget = $budget
+            research = $research
+            vetting = $vetting
+        }
+    }
+}
+
+function Project-WorkerRosterForSummary {
+    param([array]$Workers)
+
+    $projected = New-Object System.Collections.ArrayList
+    foreach ($worker in @($Workers)) {
+        [void]$projected.Add([ordered]@{
+            id = [string]$worker['id']
+            label = [string]$worker['label']
+            role = [string]$worker['role']
+            focus = Truncate-TextValue -Value $worker['focus'] -MaxLength 180
+            model = [string]$worker['model']
+        })
+    }
+    return $projected
+}
+
+function Project-WorkerCheckpointForSummary {
+    param([object]$Checkpoint)
+
+    $value = ConvertTo-HashtableCompat -Value $Checkpoint
+    if ($null -eq $value -or -not ($value -is [System.Collections.IDictionary])) {
+        return $null
+    }
+
+    $ledger = New-Object System.Collections.ArrayList
+    foreach ($entry in @($value['evidenceLedger'] | Select-Object -First 6)) {
+        $entryValue = ConvertTo-HashtableCompat -Value $entry
+        if ($null -eq $entryValue -or -not ($entryValue -is [System.Collections.IDictionary])) {
+            continue
+        }
+
+        [void]$ledger.Add([ordered]@{
+            claim = Truncate-TextValue -Value $entryValue['claim'] -MaxLength 260
+            supportLevel = [string]$entryValue['supportLevel']
+            sourceUrls = @(Limit-UrlList -Value $entryValue['sourceUrls'] -MaxItems 6)
+            note = Truncate-TextValue -Value $entryValue['note'] -MaxLength 220
+        })
+    }
+
+    return [ordered]@{
+        workerId = [string]$value['workerId']
+        label = [string]$value['label']
+        role = [string]$value['role']
+        focus = Truncate-TextValue -Value $value['focus'] -MaxLength 180
+        step = if (Test-ObjectKey -Value $value -Key 'step') { [int]$value['step'] } else { 0 }
+        observation = Truncate-TextValue -Value $value['observation'] -MaxLength 420
+        benefits = @(Limit-StringList -Value $value['benefits'] -MaxItems 4 -MaxLength 180)
+        detriments = @(Limit-StringList -Value $value['detriments'] -MaxItems 4 -MaxLength 180)
+        requiredCircumstances = @(Limit-StringList -Value $value['requiredCircumstances'] -MaxItems 4 -MaxLength 180)
+        invalidatingCircumstances = @(Limit-StringList -Value $value['invalidatingCircumstances'] -MaxItems 4 -MaxLength 180)
+        immediateConsequences = @(Limit-StringList -Value $value['immediateConsequences'] -MaxItems 4 -MaxLength 180)
+        downstreamConsequences = @(Limit-StringList -Value $value['downstreamConsequences'] -MaxItems 4 -MaxLength 180)
+        uncertainty = @(Limit-StringList -Value $value['uncertainty'] -MaxItems 4 -MaxLength 180)
+        reversalConditions = @(Limit-StringList -Value $value['reversalConditions'] -MaxItems 4 -MaxLength 180)
+        researchMode = [string]$value['researchMode']
+        researchQueries = @(Limit-StringList -Value $value['researchQueries'] -MaxItems 6 -MaxLength 180)
+        researchSources = @(Limit-UrlList -Value $value['researchSources'] -MaxItems 10)
+        urlCitations = @(Limit-UrlList -Value $value['urlCitations'] -MaxItems 10)
+        evidenceLedger = $ledger
+        evidenceGaps = @(Limit-StringList -Value $value['evidenceGaps'] -MaxItems 6 -MaxLength 180)
+        confidence = if (Test-ObjectKey -Value $value -Key 'confidence') { [double]$value['confidence'] } else { 0.0 }
+        requestToPeer = Truncate-TextValue -Value $value['requestToPeer'] -MaxLength 220
+        requestTargets = @(Normalize-WorkerIdList -Ids $value['requestTargets'])
+        sharedMemorySeen = if (Test-ObjectKey -Value $value -Key 'sharedMemorySeen') { ConvertTo-HashtableCompat -Value $value['sharedMemorySeen'] } else { @{} }
+    }
+}
+
+function Project-WorkerStateForSummary {
+    param(
+        [hashtable]$WorkerState,
+        [array]$Workers
+    )
+
+    $projected = New-Object System.Collections.ArrayList
+    foreach ($worker in @($Workers)) {
+        if (-not $WorkerState.ContainsKey($worker['id'])) {
+            continue
+        }
+        $checkpoint = Project-WorkerCheckpointForSummary -Checkpoint $WorkerState[$worker['id']]
+        if ($null -ne $checkpoint) {
+            [void]$projected.Add($checkpoint)
+        }
+    }
+    return $projected
+}
+
 function New-MockSummary {
     param(
         [hashtable]$Task,
@@ -232,23 +390,29 @@ Act as the evidence vetter for the shared memory.
 Preserve disagreements and conditional truths.
 Do not erase contradictions.
 Judge worker claims using the evidence they provide.
+Prefer evidence already cited by workers instead of restating every detail.
 Do not upgrade weak evidence into a supported fact.
+Do not do new research.
 If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.
 Return JSON only that matches the schema exactly.
 "@
 
+    $taskProjection = Project-TaskForSummary -Task $Task
+    $rosterProjection = Project-WorkerRosterForSummary -Workers $Workers
+    $workerProjection = Project-WorkerStateForSummary -WorkerState $WorkerState -Workers $Workers
+
     $inputText = @"
-Task:
-$(($Task | ConvertTo-Json -Depth 20))
+Task brief:
+$(($taskProjection | ConvertTo-Json -Depth 12))
 
 Worker lineup:
-$(($Workers | ConvertTo-Json -Depth 10))
+$(($rosterProjection | ConvertTo-Json -Depth 10))
 
 Vetting enabled:
 $($VettingConfig['enabled'])
 
-Worker checkpoints:
-$(($WorkerState | ConvertTo-Json -Depth 20))
+Worker checkpoint digests:
+$(($workerProjection | ConvertTo-Json -Depth 14))
 "@
 
     $result = Invoke-OpenAIJson -ApiKey $ApiKey -Model $Runtime['model'] -ReasoningEffort $Runtime['reasoningEffort'] -Instructions $instructions -InputText $inputText -SchemaName 'loop_summary_multi' -Schema $schema -MaxOutputTokens ([int]$Runtime['maxOutputTokens'])
@@ -285,6 +449,7 @@ $runtime = Get-TaskRuntime -Task $task -ModelOverride $summaryConfig['model']
 $vettingConfig = Get-VettingConfig -Task $task
 $summary = $null
 $responseId = $null
+$response = $null
 $usageSnapshot = $null
 $modeUsed = 'mock'
 
@@ -296,7 +461,8 @@ if ($runtime['executionMode'] -eq 'live') {
             $liveResult = New-LiveSummary -ApiKey $apiKey -Task $task -Workers $workers -WorkerState $workerState -Runtime $runtime -VettingConfig $vettingConfig
             $summary = $liveResult['summary']
             $responseId = $liveResult['responseId']
-            $usageSnapshot = Update-UsageTracking -Root $RootPath -Target 'summarizer' -TaskId ([string]$task['taskId']) -Model $runtime['model'] -ResponseId $responseId -Response $liveResult['response']
+            $response = $liveResult['response']
+            $usageSnapshot = Update-UsageTracking -Root $RootPath -Target 'summarizer' -TaskId ([string]$task['taskId']) -Model $runtime['model'] -ResponseId $responseId -Response $response
             $modeUsed = 'live'
         } catch {
             if ($_.Exception.Message -like 'Budget limit reached:*') {
@@ -336,11 +502,38 @@ $state['summary'] = $summary
 $state['memoryVersion'] = [int]$state['memoryVersion'] + 1
 Write-State -Root $RootPath -State $state
 
-$summaryJson = $summary | ConvertTo-Json -Depth 20
+$summaryJson = (Normalize-SummaryStateValue -Summary $summary) | ConvertTo-Json -Depth 20
 $summaryPath = Join-Path $RootPath ("data\checkpoints\{0}_summary.json" -f $task['taskId'])
 $historySummaryPath = Join-Path $RootPath ("data\checkpoints\{0}_summary_round{1:D3}.json" -f $task['taskId'], [int]$summary['round'])
 Write-Utf8NoBom -Path $summaryPath -Value $summaryJson
 Write-Utf8NoBom -Path $historySummaryPath -Value $summaryJson
+
+$summaryOutputArtifact = [ordered]@{
+    taskId = [string]$task['taskId']
+    artifactType = 'summary_output'
+    target = 'summarizer'
+    label = [string]$summaryConfig['label']
+    mode = $modeUsed
+    model = [string]$runtime['model']
+    round = [int]$summary['round']
+    capturedAt = (Get-Date).ToUniversalTime().ToString('o')
+    responseId = $responseId
+    rawOutputText = if ($null -ne $response) { Get-ResponseOutputText -Response $response } else { $null }
+    responseMeta = if ($null -ne $response) {
+        [ordered]@{
+            status = if ($null -ne $response.status) { [string]$response.status } else { 'completed' }
+            usageDelta = Get-ResponseUsageDelta -Response $response -Model $runtime['model']
+        }
+    } else {
+        $null
+    }
+    output = Normalize-SummaryStateValue -Summary $summary
+}
+$summaryOutputJson = $summaryOutputArtifact | ConvertTo-Json -Depth 25
+$latestSummaryOutputPath = Join-Path (Get-OutputsPath -Root $RootPath) ("{0}_summary_output.json" -f $task['taskId'])
+$historySummaryOutputPath = Join-Path (Get-OutputsPath -Root $RootPath) ("{0}_summary_round{1:D3}_output.json" -f $task['taskId'], [int]$summary['round'])
+Write-Utf8NoBom -Path $latestSummaryOutputPath -Value $summaryOutputJson
+Write-Utf8NoBom -Path $historySummaryOutputPath -Value $summaryOutputJson
 
 Add-Event -Root $RootPath -Type 'summary_written' -Payload @{
     taskId = $task['taskId']
@@ -363,6 +556,7 @@ Add-Step -Root $RootPath -Stage 'summarizer' -Message 'Summarizer merged worker 
     totalTokens = if ($budgetTotals) { [int]$budgetTotals['totalTokens'] } else { 0 }
     estimatedCostUsd = if ($budgetTotals) { [double]$budgetTotals['estimatedCostUsd'] } else { 0.0 }
     checkpointFile = [System.IO.Path]::GetFileName($historySummaryPath)
+    outputFile = [System.IO.Path]::GetFileName($historySummaryOutputPath)
 }
 
 Write-Output 'Summary written.'

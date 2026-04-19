@@ -399,6 +399,7 @@ if ($state['workers'].ContainsKey($workerId) -and $null -ne $state['workers'][$w
 $peerMessages = @(Get-PeerSteerMessages -State $state -Task $task -WorkerId $workerId)
 $checkpoint = $null
 $responseId = $null
+$response = $null
 $usageSnapshot = $null
 $modeUsed = 'mock'
 
@@ -410,7 +411,8 @@ if ($runtime['executionMode'] -eq 'live') {
             $liveResult = New-LiveCheckpoint -ApiKey $apiKey -Task $task -Worker $worker -Runtime $runtime -ResearchConfig $researchConfig -StepNumber $stepNumber -Constraints $constraints -PriorSummary $priorSummary -PriorMemoryVersion $priorMemoryVersion -PeerMessages $peerMessages
             $checkpoint = $liveResult['checkpoint']
             $responseId = $liveResult['responseId']
-            $usageSnapshot = Update-UsageTracking -Root $RootPath -Target $workerId -TaskId ([string]$task['taskId']) -Model $runtime['model'] -ResponseId $responseId -Response $liveResult['response']
+            $response = $liveResult['response']
+            $usageSnapshot = Update-UsageTracking -Root $RootPath -Target $workerId -TaskId ([string]$task['taskId']) -Model $runtime['model'] -ResponseId $responseId -Response $response
             $modeUsed = 'live'
         } catch {
             if ($_.Exception.Message -like 'Budget limit reached:*') {
@@ -476,6 +478,36 @@ $historyCpPath = Join-Path $RootPath ("data\checkpoints\{0}_{1}_step{2:D3}.json"
 Write-Utf8NoBom -Path $latestCpPath -Value $checkpointJson
 Write-Utf8NoBom -Path $historyCpPath -Value $checkpointJson
 
+$outputArtifact = [ordered]@{
+    taskId = [string]$task['taskId']
+    artifactType = 'worker_output'
+    target = $workerId
+    label = [string]$worker['label']
+    mode = $modeUsed
+    model = [string]$runtime['model']
+    step = $stepNumber
+    capturedAt = (Get-Date).ToUniversalTime().ToString('o')
+    responseId = $responseId
+    rawOutputText = if ($null -ne $response) { Get-ResponseOutputText -Response $response } else { $null }
+    responseMeta = if ($null -ne $response) {
+        [ordered]@{
+            status = if ($null -ne $response.status) { [string]$response.status } else { 'completed' }
+            usageDelta = Get-ResponseUsageDelta -Response $response -Model $runtime['model']
+            webSearchQueries = ConvertTo-JsonArray -Value @(Get-ResponseWebSearchQueries -Response $response)
+            webSearchSources = ConvertTo-JsonArray -Value @(Get-ResponseWebSearchSources -Response $response)
+            urlCitations = ConvertTo-JsonArray -Value @(Get-ResponseUrlCitations -Response $response)
+        }
+    } else {
+        $null
+    }
+    output = Normalize-CheckpointStateValue -Checkpoint $checkpoint
+}
+$outputArtifactJson = $outputArtifact | ConvertTo-Json -Depth 25
+$latestOutputPath = Join-Path (Get-OutputsPath -Root $RootPath) ("{0}_{1}_output.json" -f $task['taskId'], $workerId)
+$historyOutputPath = Join-Path (Get-OutputsPath -Root $RootPath) ("{0}_{1}_step{2:D3}_output.json" -f $task['taskId'], $workerId, $stepNumber)
+Write-Utf8NoBom -Path $latestOutputPath -Value $outputArtifactJson
+Write-Utf8NoBom -Path $historyOutputPath -Value $outputArtifactJson
+
 Add-Event -Root $RootPath -Type 'worker_checkpoint' -Payload @{
     worker = $workerId
     label = $worker['label']
@@ -499,6 +531,7 @@ Add-Step -Root $RootPath -Stage ('worker_' + $workerId) -Message ($worker['label
     totalTokens = if ($budgetTotals) { [int]$budgetTotals['totalTokens'] } else { 0 }
     estimatedCostUsd = if ($budgetTotals) { [double]$budgetTotals['estimatedCostUsd'] } else { 0.0 }
     checkpointFile = [System.IO.Path]::GetFileName($historyCpPath)
+    outputFile = [System.IO.Path]::GetFileName($historyOutputPath)
 }
 
 Write-Output ($worker['label'] + ' checkpoint written.')

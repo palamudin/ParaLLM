@@ -35,6 +35,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `data/steps.jsonl`: structured step log for human-readable process trace
 - `data/tasks/*.json`: task snapshots
 - `data/checkpoints/*.json`: worker and summary checkpoints
+- `data/outputs/*.json`: dedicated worker and summarizer output artifacts with response metadata for quality review
 - `data/jobs/*.json`: background loop job metadata and result summaries
 - `data/locks/loop.lock`: cross-process lock directory used by PHP and PowerShell
 
@@ -72,6 +73,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Grounded worker research mode using the OpenAI Responses API `web_search` tool with optional OpenAI-domain allow-lists
 - Worker checkpoints now carry evidence ledgers, research queries, consulted source URLs, and evidence gaps
 - Summarizer now acts as a vetter, preserving conflicts while scoring supported, mixed, weak, or disputed claims
+- Each worker and summarizer run now saves a dedicated output artifact so quality can be inspected separately from canonical state
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
 - Masked API key management in the top bar for local test-key swapping

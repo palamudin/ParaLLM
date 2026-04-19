@@ -5,6 +5,7 @@ define('ROOT_PATH', dirname(__DIR__));
 define('DATA_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'data');
 define('TASKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'tasks');
 define('CHECKPOINTS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'checkpoints');
+define('OUTPUTS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'outputs');
 define('JOBS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'jobs');
 define('LOCKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'locks');
 define('PS_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'ps');
@@ -412,6 +413,7 @@ function ensure_data_paths(): void {
         DATA_PATH,
         TASKS_PATH,
         CHECKPOINTS_PATH,
+        OUTPUTS_PATH,
         JOBS_PATH,
         LOCKS_PATH,
     ];

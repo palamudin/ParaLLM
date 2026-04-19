@@ -1,5 +1,6 @@
 Auth.txt
 data/checkpoints/
+data/outputs/
 data/tasks/
 data/jobs/
 data/locks/

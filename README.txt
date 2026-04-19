@@ -69,6 +69,7 @@ Main files
 - ps/*.ps1                 worker/summarizer scripts
 - data/state.json          canonical state
 - data/events.jsonl        append-only event log
+- data/outputs/*.json      dedicated saved worker/summarizer outputs for inspection
 - data/jobs/*.json         background job metadata
 
 Current behavior
@@ -80,6 +81,7 @@ Workers support two modes:
 When worker research is enabled, worker lanes can use the Responses API `web_search` tool, keep their own research queries and consulted source URLs, and leave evidence ledgers for the summarizer to vet.
 When summarizer vetting is enabled, the summarizer scores the worker claims by support strength instead of only merging prose.
 The loop preserves contradictions, step logs, and per-round checkpoint files.
+Each worker and summarizer run also writes a dedicated output artifact so you can inspect returned content and response metadata without diffing canonical state.
 The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
 `Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.
 If a queued or running background job goes stale, polling endpoints will mark it as recovered, move it to `error`, and append a recovery entry to the step log.

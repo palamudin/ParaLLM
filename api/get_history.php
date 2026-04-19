@@ -60,7 +60,10 @@ foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
     ];
 }
 
-$artifactFiles = glob(CHECKPOINTS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: [];
+$artifactFiles = array_merge(
+    glob(CHECKPOINTS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: [],
+    glob(OUTPUTS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: []
+);
 usort($artifactFiles, static function (string $a, string $b): int {
     return filemtime($b) <=> filemtime($a);
 });
@@ -82,7 +85,17 @@ foreach ($artifactFiles as $artifactFile) {
         'roundOrStep' => null,
     ];
 
-    if (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)\.json$/i', $name, $matches)) {
+    if (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)_output\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = $matches[2];
+        $entry['kind'] = 'worker_output';
+        $entry['roundOrStep'] = (int)$matches[3];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)_output\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'summary';
+        $entry['kind'] = 'summary_output';
+        $entry['roundOrStep'] = (int)$matches[2];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = $matches[2];
         $entry['kind'] = 'worker_step';
