@@ -15,12 +15,55 @@ const MODEL_CATALOG = {
 };
 
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
+const WORKER_TYPE_CATALOG = {
+  proponent: { label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced" },
+  sceptic: { label: "Sceptic", role: "adversarial", focus: "failure modes, downside, hidden coupling, consequences, externalities", temperature: "cool" },
+  economist: { label: "Economist", role: "adversarial", focus: "cost ceilings, burn rate, return on effort, economic drag", temperature: "cool" },
+  security: { label: "Security", role: "adversarial", focus: "security abuse, privilege escalation, hostile actors", temperature: "hot" },
+  reliability: { label: "Reliability", role: "adversarial", focus: "reliability collapse, uptime loss, brittle dependencies", temperature: "cool" },
+  concurrency: { label: "Concurrency", role: "adversarial", focus: "concurrency races, lock contention, timing faults", temperature: "hot" },
+  data: { label: "Data Integrity", role: "adversarial", focus: "data integrity, corruption, replay hazards", temperature: "cool" },
+  compliance: { label: "Compliance", role: "adversarial", focus: "compliance, policy drift, governance gaps", temperature: "balanced" },
+  user: { label: "User Advocate", role: "adversarial", focus: "user confusion, adoption friction, trust loss", temperature: "balanced" },
+  performance: { label: "Performance", role: "adversarial", focus: "performance cliffs, hot paths, slow feedback", temperature: "hot" },
+  observability: { label: "Observability", role: "adversarial", focus: "observability blind spots, missing traces, opaque failures", temperature: "cool" },
+  scalability: { label: "Scalability", role: "adversarial", focus: "scalability failure, fan-out load, resource exhaustion", temperature: "hot" },
+  recovery: { label: "Recovery", role: "adversarial", focus: "recovery posture, rollback gaps, broken resumes", temperature: "cool" },
+  integration: { label: "Integrations", role: "adversarial", focus: "integration mismatch, boundary contracts, interoperability", temperature: "balanced" },
+  abuse: { label: "Abuse Cases", role: "adversarial", focus: "abuse cases, spam, malicious automation", temperature: "hot" },
+  latency: { label: "Latency", role: "adversarial", focus: "latency budgets, throughput realism, field conditions", temperature: "balanced" },
+  incentives: { label: "Incentives", role: "adversarial", focus: "incentive mismatch, local maxima, misuse of metrics", temperature: "balanced" },
+  scope: { label: "Scope Control", role: "adversarial", focus: "scope creep, hidden complexity, disguised expansions", temperature: "cool" },
+  maintainability: { label: "Maintainability", role: "adversarial", focus: "maintainability drag, operator toil, handoff risk", temperature: "cool" },
+  edge: { label: "Edge Cases", role: "adversarial", focus: "edge cases, chaos inputs, pathological sequences", temperature: "hot" },
+  human: { label: "Human Factors", role: "adversarial", focus: "human factors, fatigue, procedural mistakes", temperature: "balanced" },
+  portability: { label: "Portability", role: "adversarial", focus: "vendor lock-in, portability loss, external dependence", temperature: "cool" },
+  privacy: { label: "Privacy", role: "adversarial", focus: "privacy leakage, retention risk, oversharing", temperature: "cool" },
+  product: { label: "Product Strategy", role: "adversarial", focus: "product mismatch, weak demand signal, false confidence", temperature: "balanced" },
+  governance: { label: "Governance", role: "adversarial", focus: "decision paralysis, review bottlenecks, process drag", temperature: "cool" },
+  wildcard: { label: "Wildcard", role: "adversarial", focus: "wildcard attack surfaces, overlooked weirdness, novel failure", temperature: "hot" }
+};
+const WORKER_TYPE_ORDER = [
+  "proponent", "sceptic", "economist", "security", "reliability", "concurrency", "data", "compliance", "user",
+  "performance", "observability", "scalability", "recovery", "integration", "abuse", "latency", "incentives",
+  "scope", "maintainability", "edge", "human", "portability", "privacy", "product", "governance", "wildcard"
+];
+const WORKER_TEMPERATURE_CATALOG = {
+  cool: { label: "Cool" },
+  balanced: { label: "Balanced" },
+  hot: { label: "Hot" }
+};
+const WORKER_TEMPERATURE_ORDER = Object.keys(WORKER_TEMPERATURE_CATALOG);
 let latestAuthStatus = { hasKey: false, masked: null, last4: "" };
 let latestLoopActive = false;
 let artifactSelections = { left: "", right: "" };
 let formDirty = false;
 let lastSyncedFormSourceKey = "";
 let activeView = localStorage.getItem("loopActiveView") || "home";
+let latestState = null;
+let draftSaveTimer = null;
+let workerControlsSignature = "";
+let debugControlsSignature = "";
 
 function showMessage(text, isError = false) {
   $("#message").text(text || "").css({
@@ -70,8 +113,28 @@ function defaultDraftState() {
     researchExternalWebAccess: true,
     researchDomains: [],
     vettingEnabled: true,
+    loopRounds: 3,
+    loopDelayMs: 1000,
+    workers: [
+      { id: "A", type: "proponent", label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced", model: "gpt-5-mini" },
+      { id: "B", type: "sceptic", label: "Sceptic", role: "adversarial", focus: "failure modes, downside, hidden coupling, consequences, externalities", temperature: "cool", model: "gpt-5-mini" }
+    ],
     updatedAt: ""
   };
+}
+
+function buildWorkerTypeOptions(selectedValue) {
+  return WORKER_TYPE_ORDER.map(function (id) {
+    const selected = id === selectedValue ? " selected" : "";
+    return `<option value="${id}"${selected}>${WORKER_TYPE_CATALOG[id].label}</option>`;
+  }).join("");
+}
+
+function buildWorkerTemperatureOptions(selectedValue) {
+  return WORKER_TEMPERATURE_ORDER.map(function (id) {
+    const selected = id === selectedValue ? " selected" : "";
+    return `<option value="${id}"${selected}>${WORKER_TEMPERATURE_CATALOG[id].label}</option>`;
+  }).join("");
 }
 
 function buildModelOptions(selectedValue) {
@@ -198,7 +261,10 @@ function buildCommanderFormSource(task, draft) {
         task.runtime?.research?.enabled ? 1 : 0,
         task.runtime?.research?.externalWebAccess === false ? 0 : 1,
         JSON.stringify(task.runtime?.research?.domains || []),
-        task.runtime?.vetting?.enabled === false ? 0 : 1
+        task.runtime?.vetting?.enabled === false ? 0 : 1,
+        task.preferredLoop?.rounds ?? 3,
+        task.preferredLoop?.delayMs ?? 1000,
+        JSON.stringify(task.workers || [])
       ].join("|"),
       values: {
         objective: task.objective || "",
@@ -214,7 +280,10 @@ function buildCommanderFormSource(task, draft) {
         researchEnabled: task.runtime?.research?.enabled ? true : false,
         researchExternalWebAccess: task.runtime?.research?.externalWebAccess === false ? false : true,
         researchDomains: task.runtime?.research?.domains || [],
-        vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true
+        vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true,
+        loopRounds: task.preferredLoop?.rounds ?? 3,
+        loopDelayMs: task.preferredLoop?.delayMs ?? 1000,
+        workers: task.workers || []
       }
     };
   }
@@ -237,7 +306,10 @@ function buildCommanderFormSource(task, draft) {
       safeDraft.researchEnabled ? 1 : 0,
       safeDraft.researchExternalWebAccess === false ? 0 : 1,
       JSON.stringify(safeDraft.researchDomains || []),
-      safeDraft.vettingEnabled === false ? 0 : 1
+      safeDraft.vettingEnabled === false ? 0 : 1,
+      safeDraft.loopRounds ?? 3,
+      safeDraft.loopDelayMs ?? 1000,
+      JSON.stringify(safeDraft.workers || [])
     ].join("|"),
     values: safeDraft
   };
@@ -264,6 +336,8 @@ function applyCommanderForm(values) {
   $("#maxCostUsd").val(safe.maxCostUsd ?? 5.0);
   $("#maxTotalTokens").val(safe.maxTotalTokens ?? 250000);
   $("#maxOutputTokens").val(safe.maxOutputTokens ?? 1200);
+  $("#loopRounds").val(safe.loopRounds ?? 3);
+  $("#loopDelayMs").val(safe.loopDelayMs ?? 1000);
   $("#researchEnabled").val(safe.researchEnabled ? "1" : "0");
   $("#researchExternalWebAccess").val(safe.researchExternalWebAccess === false ? "0" : "1");
   $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
@@ -292,11 +366,71 @@ function collectCommanderPayload() {
     maxCostUsd: parseFloat($("#maxCostUsd").val()) || 0,
     maxTotalTokens: parseInt($("#maxTotalTokens").val(), 10) || 0,
     maxOutputTokens: parseInt($("#maxOutputTokens").val(), 10) || 0,
+    loopRounds: parseInt($("#loopRounds").val(), 10) || 1,
+    loopDelayMs: parseInt($("#loopDelayMs").val(), 10) || 0,
     researchEnabled: $("#researchEnabled").val(),
     researchExternalWebAccess: $("#researchExternalWebAccess").val(),
     vettingEnabled: $("#vettingEnabled").val(),
     researchDomains: $("#researchDomains").val().trim()
   };
+}
+
+function activeWorkerSource(task, draft) {
+  if (task && Array.isArray(task.workers) && task.workers.length) {
+    return task.workers;
+  }
+  return Array.isArray(draft?.workers) && draft.workers.length ? draft.workers : defaultDraftState().workers;
+}
+
+function collectVisibleWorkerRoster() {
+  const workers = [];
+  $("#workerControls .workercontrol").each(function () {
+    const $card = $(this);
+    const id = String($card.data("workerId") || "").trim();
+    if (!id) return;
+    const fallback = WORKER_TYPE_CATALOG[$card.find(".worker-type").val()] || WORKER_TYPE_CATALOG.sceptic;
+    workers.push({
+      id,
+      type: $card.find(".worker-type").val(),
+      temperature: $card.find(".worker-temperature").val(),
+      model: $card.find(".worker-model").val(),
+      label: fallback.label,
+      role: fallback.role,
+      focus: fallback.focus
+    });
+  });
+  return workers;
+}
+
+function displayWorkerLabel(worker) {
+  const template = WORKER_TYPE_CATALOG[worker?.type];
+  const currentLabel = String(worker?.label || "").trim();
+  if (template && (!currentLabel || /^Worker [A-Z]$/i.test(currentLabel))) {
+    return template.label;
+  }
+  return currentLabel || template?.label || String(worker?.id || "Worker");
+}
+
+function buildDraftSavePayload() {
+  const payload = collectCommanderPayload();
+  const roster = collectVisibleWorkerRoster();
+  payload.constraints = JSON.stringify(payload.constraints);
+  payload.workers = JSON.stringify(roster.length ? roster : activeWorkerSource(latestState?.activeTask || null, latestState?.draft || defaultDraftState()));
+  return payload;
+}
+
+function queueDraftSave() {
+  clearTimeout(draftSaveTimer);
+  draftSaveTimer = setTimeout(function () {
+    $.post("api/save_draft.php", buildDraftSavePayload()).fail(function (xhr) {
+      showMessage("Draft save failed: " + extractErrorMessage(xhr), true);
+    });
+  }, 350);
+}
+
+function hasFocusWithin(selector) {
+  const active = document.activeElement;
+  return !!active && $(active).closest(selector).length > 0;
 }
 
 function updateAuthButtons() {
@@ -416,7 +550,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
 
   task.workers.forEach(function (worker) {
     const $card = $("<div>").addClass("workercontrol");
-    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + worker.label));
+    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + displayWorkerLabel(worker)));
     $card.append($("<div>").addClass("workercontrol-meta").text(worker.role + " | " + worker.focus));
 
     const $row = $("<div>").addClass("inlineform");
@@ -447,6 +581,126 @@ function renderWorkerControls(task, loop, stateWorkers) {
   );
   $summaryCard.append($summaryRow);
   $controls.append($summaryCard);
+}
+
+function renderHomeWorkerControls(task, draft, loop) {
+  const $controls = $("#workerControls");
+  const workers = activeWorkerSource(task, draft);
+  const signature = JSON.stringify({
+    mode: task ? "task" : "draft",
+    workers,
+    loopStatus: loop?.status || "idle"
+  });
+  if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
+  workerControlsSignature = signature;
+  $controls.empty();
+
+  if (!workers.length) {
+    $controls.append($("<div>").addClass("workercontrol").text("No workers configured."));
+    return;
+  }
+
+  const isActive = loop?.status === "running" || loop?.status === "queued";
+  workers.forEach(function (worker) {
+    const $card = $("<div>").addClass("workercontrol").attr("data-worker-id", worker.id);
+    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + displayWorkerLabel(worker)));
+    $card.append($("<div>").addClass("workercontrol-meta").text(worker.role + " | " + worker.focus));
+
+    const $typeRow = $("<div>").addClass("workercontrol-field");
+    $typeRow.append($("<label>").text("Directive"));
+    $typeRow.append(
+      $("<select>").addClass("worker-type").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildWorkerTypeOptions(worker.type || "sceptic"))
+    );
+    $card.append($typeRow);
+
+    const $temperatureRow = $("<div>").addClass("workercontrol-field");
+    $temperatureRow.append($("<label>").text("Temperature"));
+    $temperatureRow.append(
+      $("<select>").addClass("worker-temperature").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildWorkerTemperatureOptions(worker.temperature || "balanced"))
+    );
+    $card.append($temperatureRow);
+
+    const $modelRow = $("<div>").addClass("workercontrol-field");
+    $modelRow.append($("<label>").text("Model"));
+    $modelRow.append(
+      $("<select>").addClass("worker-model").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildModelOptions(worker.model))
+    );
+    $card.append($modelRow);
+
+    $controls.append($card);
+  });
+}
+
+function renderDebugTargetControls(task, loop, stateWorkers) {
+  const $controls = $("#debugTargetControls");
+  const signature = JSON.stringify({
+    taskId: task?.taskId || "",
+    workers: task?.workers || [],
+    loopStatus: loop?.status || "idle",
+    summaryReady: allWorkerCheckpointsReady(task, stateWorkers || {})
+  });
+  if (signature === debugControlsSignature || hasFocusWithin("#debugTargetControls")) return;
+  debugControlsSignature = signature;
+  $controls.empty();
+
+  if (!task || !task.workers || !task.workers.length) {
+    $controls.append($("<div>").addClass("workercontrol").text("No active task."));
+    return;
+  }
+
+  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const summaryReady = allWorkerCheckpointsReady(task, stateWorkers || {});
+  task.workers.forEach(function (worker) {
+    const checkpoint = stateWorkers?.[worker.id] || null;
+    const $card = $("<div>").addClass("workercontrol");
+    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + worker.label));
+    $card.append($("<div>").addClass("workercontrol-meta").text((checkpoint ? "step " + (checkpoint.step || 0) : "no checkpoint") + " | " + worker.model));
+    $card.append(
+      $("<div>").addClass("inlineform").append(
+        $("<button>").addClass("run-target").attr("data-target", worker.id).prop("disabled", isActive).text("Run " + worker.id)
+      )
+    );
+    $controls.append($card);
+  });
+
+  const summarizerModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
+  const $summaryCard = $("<div>").addClass("workercontrol");
+  $summaryCard.append($("<div>").addClass("workercontrol-title").text("Summarizer"));
+  $summaryCard.append($("<div>").addClass("workercontrol-meta").text((summaryReady ? "ready" : "waiting on workers") + " | " + summarizerModel));
+  $summaryCard.append(
+    $("<div>").addClass("inlineform").append(
+      $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize")
+    )
+  );
+  $controls.append($summaryCard);
+}
+
+function renderRosterPanels(task, draft) {
+  const $grid = $("#workerGrid");
+  $grid.empty();
+
+  const workers = activeWorkerSource(task, draft);
+  if (!workers.length) {
+    $grid.append($("<div>").addClass("lane-card-empty").text("No workers configured."));
+    return;
+  }
+
+  const workerState = task?.stateWorkers || {};
+  workers.forEach(function (worker) {
+    const checkpoint = workerState[worker.id] || null;
+    const $card = $("<div>").addClass("lane-card");
+    const $head = $("<div>").addClass("lane-card-head");
+    $head.append($("<div>").addClass("lane-card-title").text(displayWorkerLabel(worker) + " · " + (worker.type || worker.role)));
+    $head.append($("<div>").addClass("lane-card-step").text(checkpoint ? "step " + (checkpoint.step || 0) : (task ? "waiting" : "ready")));
+    $card.append($head);
+    $card.append($("<div>").addClass("lane-card-focus").text(worker.focus + " | " + (worker.temperature || "balanced") + " | model: " + worker.model));
+    $card.append($("<div>").addClass("lane-card-copy").text(
+      checkpoint
+        ? truncateText(checkpoint.observation || checkpoint.requestToPeer || "Checkpoint available.", 220)
+        : (task ? "No checkpoint yet." : "Staged and ready for the next send.")
+    ));
+    $grid.append($card);
+  });
 }
 
 function renderListSection(label, items) {
@@ -495,7 +749,7 @@ function renderConversationThread(task, summary, workerState, loop) {
       <div class="empty-thread">
         <div>
           <div class="empty-thread-title">No active task yet.</div>
-          <div class="empty-thread-copy">Start a task from the composer below. Settings and debug stay out of the way until you need them.</div>
+          <div class="empty-thread-copy">Send a prompt below. Proponent and Sceptic are staged already, and the Agent will answer once the lanes finish.</div>
         </div>
       </div>
     `);
@@ -505,7 +759,7 @@ function renderConversationThread(task, summary, workerState, loop) {
   const messages = [];
   messages.push(buildThreadMessage({
     kind: "commander",
-    author: "Commander",
+    author: "You",
     tag: task.runtime?.executionMode === "live" ? "Live session" : "Mock session",
     sections: [
       renderTextSection("Prompt", task.objective || ""),
@@ -531,7 +785,7 @@ function renderConversationThread(task, summary, workerState, loop) {
     messages.push(buildThreadMessage({
       kind: "worker",
       variant: entry.worker.role === "utility" ? "utility" : "adversarial",
-      author: entry.worker.label,
+      author: displayWorkerLabel(entry.worker),
       tag: entry.worker.focus,
       sections: [
         renderTextSection("Observation", checkpoint.observation || ""),
@@ -564,8 +818,8 @@ function renderConversationThread(task, summary, workerState, loop) {
 
     messages.push(buildThreadMessage({
       kind: "summary",
-      author: "Summarizer",
-      tag: "Memory version " + ($("#memoryVersion").text() || "0"),
+      author: "Agent",
+      tag: "Multistream summary · memory " + ($("#memoryVersion").text() || "0"),
       sections: [
         renderListSection("Stable findings", summary.stableFindings || []),
         renderListSection("Open conflicts", conflictTopics),
@@ -584,9 +838,12 @@ function applyLoopUi(state) {
   const task = state.activeTask || null;
   const hasTask = !!task;
   const isActive = loop?.status === "running" || loop?.status === "queued";
-  const workers = task?.workers || [];
+  const workers = activeWorkerSource(task, state.draft || null);
   const usage = state.usage || {};
-  const budget = task?.runtime?.budget || {};
+  const budget = task?.runtime?.budget || {
+    maxTotalTokens: state.draft?.maxTotalTokens ?? 0,
+    maxCostUsd: state.draft?.maxCostUsd ?? 0
+  };
   const research = task?.runtime?.research || {};
   const vetting = task?.runtime?.vetting || {};
   const summaryReady = allWorkerCheckpointsReady(task, state.workers || {});
@@ -602,10 +859,12 @@ function applyLoopUi(state) {
   $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
   $("#loopNote").text(
     loop?.lastMessage ||
-    (
+    (!hasTask
+      ? "Press Send to start the configured roster and loop automatically."
+      : (
       (research.enabled ? "Workers can run grounded web research" : "Workers are running without web research") +
       " and the summarizer " + (vetting.enabled === false ? "merges only." : "acts as the evidence vetter.")
-    )
+    ))
   );
   $("#usageTokens").text((usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0));
   $("#usageWebSearchCalls").text(usage.webSearchCalls ?? 0);
@@ -614,11 +873,11 @@ function applyLoopUi(state) {
   latestLoopActive = isActive;
   updateAuthButtons();
 
-  $("#startTask").prop("disabled", isActive);
+  $("#sendPrompt").prop("disabled", isActive);
   $("#summarize").prop("disabled", isActive || !hasTask || !summaryReady);
   $("#runRound").prop("disabled", isActive || !hasTask);
   $("#runLoop").prop("disabled", isActive || !hasTask);
-  $("#addAdversarial").prop("disabled", isActive || !hasTask || workers.length >= 26);
+  $("#addAdversarial").prop("disabled", isActive || workers.length >= 26);
   $("#applyCurrentModels").prop("disabled", isActive || !hasTask);
   $("#resetSession").prop("disabled", isActive);
   $("#resetState").prop("disabled", isActive);
@@ -630,15 +889,18 @@ function refreshState() {
 
   $.getJSON("api/get_state.php")
     .done(function (data) {
+      latestState = data;
       const task = data.activeTask ? Object.assign({}, data.activeTask, { stateWorkers: data.workers || {} }) : null;
       syncCommanderForm(data.activeTask || null, data.draft || null);
       applyLoopUi(data);
-      renderWorkerControls(data.activeTask || null, data.loop || null, data.workers || {});
-      renderWorkerPanels(task);
+      renderHomeWorkerControls(data.activeTask || null, data.draft || null, data.loop || null);
+      renderDebugTargetControls(data.activeTask || null, data.loop || null, data.workers || {});
+      renderRosterPanels(task, data.draft || null);
       renderConversationThread(data.activeTask || null, data.summary || null, data.workers || {}, data.loop || null);
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,
+        draft: data.draft,
         usage: data.usage,
         loop: data.loop,
         memoryVersion: data.memoryVersion,
@@ -727,20 +989,23 @@ $(function () {
     setActiveView($(this).data("view"));
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
     formDirty = true;
     renderComposerContextPreview($("#sessionContext").val().trim(), $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean));
+    queueDraftSave();
   });
 
-  $("#startTask").on("click", function () {
+  $("#sendPrompt").on("click", function () {
     const payload = collectCommanderPayload();
+    const visibleWorkers = collectVisibleWorkerRoster();
+    const workers = visibleWorkers.length ? visibleWorkers : activeWorkerSource(latestState?.activeTask || null, latestState?.draft || defaultDraftState());
 
     if (!payload.objective) {
       showMessage("Objective is required.", true);
       return;
     }
 
-    postForm("api/start_task.php", {
+    const startPayload = {
       sessionContext: payload.sessionContext,
       objective: payload.objective,
       constraints: JSON.stringify(payload.constraints),
@@ -751,16 +1016,46 @@ $(function () {
       maxCostUsd: payload.maxCostUsd,
       maxTotalTokens: payload.maxTotalTokens,
       maxOutputTokens: payload.maxOutputTokens,
+      loopRounds: payload.loopRounds,
+      loopDelayMs: payload.loopDelayMs,
       researchEnabled: payload.researchEnabled,
       researchExternalWebAccess: payload.researchExternalWebAccess,
       vettingEnabled: payload.vettingEnabled,
-      researchDomains: payload.researchDomains
-    }, "Task started", {
-      clearFormDirty: true,
-      onSuccess: function () {
-        setActiveView("home");
-      }
-    });
+      researchDomains: payload.researchDomains,
+      workers: JSON.stringify(workers)
+    };
+
+    $.post("api/start_task.php", startPayload)
+      .done(function (resp) {
+        let out = resp;
+        try { out = JSON.parse(resp); } catch (_) {}
+        $.post("api/start_loop.php", { rounds: payload.loopRounds, delayMs: payload.loopDelayMs })
+          .done(function (loopResp) {
+            let loopOut = loopResp;
+            try { loopOut = JSON.parse(loopResp); } catch (_) {}
+            formDirty = false;
+            workerControlsSignature = "";
+            debugControlsSignature = "";
+            showMessage("Agent loop queued" + (loopOut.message ? " | " + loopOut.message : ""));
+            setActiveView("home");
+            refreshState();
+          })
+          .fail(function (xhr) {
+            formDirty = false;
+            showMessage("Task started but loop failed to queue: " + extractErrorMessage(xhr), true);
+            refreshState();
+          });
+      })
+      .fail(function (xhr) {
+        showMessage(extractErrorMessage(xhr), true);
+      });
+  });
+
+  $("#objective").on("keydown", function (event) {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      $("#sendPrompt").trigger("click");
+    }
   });
 
   $("#summarize").on("click", function () {
@@ -778,14 +1073,24 @@ $(function () {
   });
 
   $("#addAdversarial").on("click", function () {
-    postForm("api/add_adversarial.php", {}, "Adversarial worker added");
+    postForm("api/add_adversarial.php", {}, "Worker added", {
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+      }
+    });
   });
 
   $("#applyCurrentModels").on("click", function () {
     postForm("api/apply_runtime_models.php", {
       model: $("#model").val(),
       summarizerModel: $("#summarizerModel").val()
-    }, "Current task models updated");
+    }, "Current task models updated", {
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+      }
+    });
   });
 
   $("#cancelLoop").on("click", function () {
@@ -799,6 +1104,8 @@ $(function () {
     postForm("api/reset_session.php", {}, "Session reset", {
       clearFormDirty: true,
       onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
         setActiveView("home");
       }
     });
@@ -842,12 +1149,35 @@ $(function () {
 
   $("#resetState").on("click", function () {
     if (!confirm("Reset state and clear active task?")) return;
-    postForm("api/reset_state.php", {}, "State reset", { clearFormDirty: true });
+    postForm("api/reset_state.php", {}, "State reset", {
+      clearFormDirty: true,
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+      }
+    });
   });
 
   $(document).on("click", ".run-target", function () {
     const target = $(this).data("target");
     postForm("api/run_ps.php", { target }, "Target ran");
+  });
+
+  $(document).on("change", ".worker-type, .worker-temperature, .worker-model", function () {
+    const $card = $(this).closest(".workercontrol");
+    const workerId = String($card.data("workerId") || "").trim();
+    if (!workerId) return;
+    postForm("api/update_worker.php", {
+      workerId,
+      type: $card.find(".worker-type").val(),
+      temperature: $card.find(".worker-temperature").val(),
+      model: $card.find(".worker-model").val()
+    }, "Worker updated", {
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+      }
+    });
   });
 
   $(document).on("click", ".save-model", function () {

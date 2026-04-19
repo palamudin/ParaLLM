@@ -82,15 +82,15 @@
             <div class="panel-head">
               <div>
                 <div class="panel-kicker">Chat / responses</div>
-                <h3>Conversation</h3>
-                <p>Commander prompt, lane replies, and the latest canonical merge.</p>
+                <h3>Agent</h3>
+                <p>You talk once, the lanes investigate, and the summarizer answers back as the multistream agent.</p>
               </div>
             </div>
 
             <div id="conversationThread" class="conversation-thread">
               <div class="empty-thread">
                 <div class="empty-thread-title">No active task yet.</div>
-                <div class="empty-thread-copy">Start a task from the composer below. Settings and debug stay off to the side until you need them.</div>
+                <div class="empty-thread-copy">Send a prompt below. Proponent and Sceptic are already staged, and extra lanes can be added from the side rail.</div>
               </div>
             </div>
 
@@ -110,11 +110,9 @@
               <textarea id="objective" rows="5" placeholder="Describe what you want the lane stack to investigate, build, or write..."></textarea>
 
               <div class="composer-footer">
-                <div class="composer-hint">Fine tuning, integrations, and domain constraints are tucked into Settings.</div>
+                <div class="composer-hint">Settings stores fine tuning, integrations, loop count, and research policy. Debug keeps the manual controls out of the main flow.</div>
                 <div class="composer-actions">
-                  <button id="refresh">Refresh</button>
-                  <button id="resetSession">Reset Session</button>
-                  <button id="startTask">Start Task</button>
+                  <button id="sendPrompt">Send</button>
                 </div>
               </div>
             </div>
@@ -124,28 +122,12 @@
             <section class="panel rail-panel">
               <div class="panel-head compact">
                 <div>
-                  <div class="panel-kicker">Run controls</div>
-                  <h3>Operations</h3>
+                  <div class="panel-kicker">Lane roster</div>
+                  <h3>Workers</h3>
                 </div>
+                <button id="addAdversarial">+ Add</button>
               </div>
-              <div id="loopNote" class="loop-note">Autonomous mode runs all configured workers and then summarizes.</div>
-              <div class="action-grid">
-                <button id="runRound">Run Round</button>
-                <button id="runLoop">Run Auto Loop</button>
-                <button id="summarize">Summarize</button>
-                <button id="addAdversarial">Add Adversarial</button>
-                <button id="cancelLoop" class="danger">Cancel Loop</button>
-                <button id="resetState" class="danger">Reset State</button>
-              </div>
-            </section>
-
-            <section class="panel rail-panel">
-              <div class="panel-head compact">
-                <div>
-                  <div class="panel-kicker">Lane controls</div>
-                  <h3>Per-position models</h3>
-                </div>
-              </div>
+              <div id="loopNote" class="loop-note">These lanes auto-run when you press Send. More lanes narrow each perspective instead of making each worker carry the full burden.</div>
               <div id="workerControls" class="workercontrols">No active task.</div>
             </section>
 
@@ -194,7 +176,7 @@
               <div>
                 <div class="panel-kicker">Settings / fine tuning</div>
                 <h3>Runtime controls</h3>
-                <p>Budgets, model choices, research policy, and carry-forward context all live here.</p>
+                <p>Budgets, model choices, loop depth, research policy, and carry-forward context all live here.</p>
               </div>
             </div>
 
@@ -306,6 +288,26 @@
 
       <section class="workspace-view" data-view="debug">
         <div class="debug-layout">
+          <section class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Debug / controls</div>
+                <h3>Operations</h3>
+              </div>
+            </div>
+            <div class="action-grid">
+              <button id="refresh">Refresh</button>
+              <button id="resetSession">Reset Session</button>
+              <button id="runRound">Run Round</button>
+              <button id="runLoop">Run Auto Loop</button>
+              <button id="summarize">Summarize</button>
+              <button id="cancelLoop" class="danger">Cancel Loop</button>
+              <button id="resetState" class="danger">Reset State</button>
+            </div>
+            <div class="fieldnote">Home should only need a prompt and Send. These controls stay here for QA, debugging, and manual intervention.</div>
+            <div id="debugTargetControls" class="workercontrols">No active task.</div>
+          </section>
+
           <section class="panel">
             <div class="panel-head compact">
               <div>

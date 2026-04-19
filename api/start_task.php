@@ -1,5 +1,6 @@
 <?php
 require __DIR__ . '/common.php';
+require __DIR__ . '/loop_runtime.php';
 ensure_data_paths();
 
 $state = recover_loop_state_if_needed();
@@ -17,6 +18,10 @@ $sessionContext = trim((string)post_value('sessionContext', ''));
 $constraintsRaw = post_value('constraints', '[]');
 $constraints = json_decode((string)$constraintsRaw, true);
 if (!is_array($constraints)) $constraints = [];
+
+$workersRaw = post_value('workers', '[]');
+$workersInput = json_decode((string)$workersRaw, true);
+if (!is_array($workersInput)) $workersInput = [];
 
 $executionMode = trim((string)post_value('executionMode', 'live'));
 if (!in_array($executionMode, ['live', 'mock'], true)) {
@@ -47,8 +52,14 @@ $vetting = normalize_vetting_config([
     'enabled' => post_value('vettingEnabled', default_vetting_config()['enabled']),
 ]);
 
+$preferredLoop = normalize_loop_preferences([
+    'rounds' => post_int_value('loopRounds', default_loop_preferences()['rounds']),
+    'delayMs' => post_int_value('loopDelayMs', default_loop_preferences()['delayMs']),
+]);
+
 $workers = task_workers([
-    'runtime' => ['model' => $model]
+    'runtime' => ['model' => $model],
+    'workers' => $workersInput,
 ]);
 
 $taskId = 't-' . date('Ymd-His') . '-' . substr(md5(uniqid('', true)), 0, 6);
@@ -78,6 +89,7 @@ $task = [
         'shareOnBlocker' => true,
         'shareEverySteps' => 3
     ],
+    'preferredLoop' => $preferredLoop,
     'workers' => $workers
 ];
 
@@ -99,6 +111,7 @@ append_step('task', 'Created a new task and reset worker memory.', [
     'constraintCount' => count($constraints),
     'hasSessionContext' => $sessionContext !== '',
     'runtime' => $task['runtime'],
+    'preferredLoop' => $preferredLoop,
     'syncPolicy' => $task['syncPolicy'],
     'workerCount' => count($workers),
     'summarizerModel' => $summarizerModel

@@ -4,8 +4,8 @@ AI Loop Prototype for XAMPP / Windows
 What this is
 ------------
 A local prototype scaffold for:
-- Commander input
-- Dynamic worker lanes that start with A/B and can expand with more adversarial viewpoints
+- Chat-first commander input where `Send` creates a task and kicks off the configured loop automatically
+- Dynamic worker lanes that start with Proponent / Sceptic and can expand with more adversarial viewpoints
 - Summarizer / canonical memory
 - JSON persistence and event logging
 - Autonomous multi-round execution
@@ -14,6 +14,7 @@ A local prototype scaffold for:
 - Stale-job recovery for interrupted background runs
 - Recent job and artifact history in the UI
 - Per-position model selection
+- Per-worker directive and temperature controls
 - Session token / spend tracking with budget limits
 - Optional grounded worker research with web-search controls
 - Summarizer evidence vetting over worker research
@@ -51,21 +52,19 @@ This is prototype scaffolding, not hardened production design.
 
 Main flow
 ---------
-1. Enter objective + constraints.
-2. Optionally keep or edit the `Session Context` field if you are carrying forward a prior session.
-3. Set or swap the API key in the top bar if you want to use `Live API`.
-4. Choose `Mock` or `Live API`, the default worker model, summarizer model, and reasoning effort.
-4a. If a task is already active, use `Apply Models To Current Task` in Settings to push the selected worker default onto all current worker lanes and update the summarizer model too.
-5. Choose whether workers may use grounded web search, whether the summarizer should vet evidence, and optionally set a domain allow-list.
-6. Adjust the session budget if you want tighter spend control.
-7. Click Start Task.
-8. Either click `Run Round` for one cycle or `Run Auto Loop` to queue a detached background run.
-9. Use `Add Adversarial` to grow the worker roster with another viewpoint lane.
-10. Use `Reset Session` to archive the current run, clear the active task, and load a fresh draft with a short carry-forward context summary.
-11. Use `Cancel Loop` to stop after the current round.
-12. Watch worker panels, summary, event log, step log, spend counters, web-search-call count, and loop status update while the background job progresses.
-13. Use the Recent Jobs and Recent Artifacts panels to review prior runs and per-round checkpoints.
-14. Use Artifact Review to load any saved checkpoint or output artifact into side-by-side panes for quality comparison.
+1. Open Home and type the prompt you want the lanes to investigate.
+2. Optionally tweak Settings first:
+   API key lives in `Settings / Integrations`.
+   Fine tuning, budgets, loop rounds, and research policy live in `Settings / Fine Tuning`.
+3. Review the worker rail on Home:
+   it starts with `Proponent` and `Sceptic`
+   use `+ Add` to grow the adversarial roster
+   use the per-worker controls to choose directive, temperature, and model
+4. Press `Send`.
+5. The app creates a task from the staged roster and automatically queues the configured loop.
+6. Read the lane back-and-forth and the final Agent reply in Home.
+7. Use `Debug` only when you want manual controls such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, `Cancel Loop`, or `Reset State`.
+8. Use `Review` for memory, jobs, artifacts, and side-by-side output inspection.
 
 Main files
 ----------
@@ -103,6 +102,7 @@ Each worker and summarizer run also writes a dedicated output artifact so you ca
 The Artifact Review section can load those saved artifacts side by side and show both raw response text and normalized output.
 Fresh artifacts now normalize and dedupe source URLs more aggressively so malformed non-URL strings do not pollute research-source lists.
 The commander form is now draft-backed, so refresh polling no longer overwrites in-progress edits.
+The stored draft now also carries the worker roster plus loop rounds and delay, so a page refresh does not wipe the staged lanes.
 `Reset Session` writes an archive file under `data/sessions`, clears the active task, and preloads a short carry-forward summary into the `Session Context` field for the next task.
 The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
 `Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.

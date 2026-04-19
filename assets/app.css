@@ -310,6 +310,10 @@ textarea {
   margin-bottom: 12px;
 }
 
+.panel-head.compact button {
+  flex: 0 0 auto;
+}
+
 .panel-head h3 {
   font-size: 24px;
 }
@@ -513,6 +517,12 @@ textarea {
   flex-wrap: wrap;
 }
 
+#sendPrompt {
+  min-width: 128px;
+  border-color: rgba(76, 201, 240, 0.34);
+  background: linear-gradient(180deg, rgba(36, 95, 121, 0.98), rgba(19, 63, 86, 0.96));
+}
+
 .action-grid {
   margin-top: 14px;
 }
@@ -551,6 +561,10 @@ textarea {
   background: rgba(15, 31, 46, 0.82);
 }
 
+.workercontrol + .workercontrol {
+  margin-top: 0;
+}
+
 .workercontrol-title {
   font-weight: 700;
 }
@@ -560,6 +574,22 @@ textarea {
   margin-top: 4px;
   font-size: 13px;
   line-height: 1.4;
+}
+
+.workercontrol-field {
+  margin-top: 12px;
+}
+
+.workercontrol-field label {
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#debugTargetControls {
+  margin-top: 16px;
 }
 
 .lane-stack {

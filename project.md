@@ -46,12 +46,14 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Execution mode: `live` or `mock`
 - Default low-cost recommendation: `gpt-5-mini`
 - Per-position model selection for each worker lane and the summarizer
+- Per-worker directive selection with named lane personas such as `Proponent`, `Sceptic`, `Security`, and other focused adversaries
+- Per-worker temperature qualifiers so each lane can stay cool, balanced, or hot while preserving its own point of view
 - Reasoning effort can be tuned per task
 - Optional grounded worker research with `web_search`, live-web toggle, and domain allow-lists
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
 - API key can be managed locally through the UI and is only displayed as a masked last-4 preview
-- Form draft state is persisted locally so edits do not get stomped by polling refreshes
+- Form draft state is persisted locally so edits, roster changes, and loop settings do not get stomped by polling refreshes
 - Secrets stay in `Auth.txt` locally and should never be logged
 
 ## Sync Model
@@ -64,8 +66,11 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Current POC Features
 
-- Dynamic worker roster starting with `A` and `B`, with bounded adversarial expansion through additional lettered lanes
+- Dynamic worker roster starting with `Proponent` and `Sceptic`, with bounded adversarial expansion through additional lettered lanes
 - Commander form now includes a `Session Context` field for short carry-forward memory between sessions
+- Home is now chat-first: the main workflow is prompt plus `Send`, and that single action creates a task and kicks off the configured loop automatically
+- Manual operations such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, and `Reset State` now live under `Debug` instead of cluttering the main conversation flow
+- Worker side controls now expose directive, temperature, and per-worker model selectors directly in the home rail, plus a `+ Add` lane button for on-demand adversarial expansion
 - Manual single-target execution for any configured worker lane and the summarizer
 - Manual single-round execution
 - Autonomous multi-round execution with configurable round count and delay
@@ -85,7 +90,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Artifact Review UI supports side-by-side inspection of saved checkpoints and output artifacts
 - URL/source normalization now drops malformed non-URL entries and canonicalizes saved source links in fresh artifacts
 - Sidebar workspace shell now splits `Home`, `Settings`, `Debug`, and `Review`, with a chat-first center pane and the API key moved into Settings / Integrations
-- Fine tuning controls now live in Settings instead of crowding the main conversation surface
+- Fine tuning controls now live in Settings instead of crowding the main conversation surface, and the stored draft now includes worker roster, loop rounds, and loop delay
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
 - Masked API key management in the top bar for local test-key swapping
@@ -103,6 +108,11 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - mock `A/B/C/D` manual round completed with all 4 workers represented in summary/output artifacts
   - mock `A/B/C/D/E` 2-round background loop completed with all 5 workers represented in summary/output artifacts
   - live `A/B/C` manual round completed through the resident Python runtime with usage tracked for `A`, `B`, `C`, and `summarizer`
+- Verified chat-first send flow on April 19, 2026:
+  - draft settings and worker roster can be saved before a task exists
+  - `+ Add` works without an active task and grows the stored roster
+  - worker directive / temperature / model changes persist through the new roster endpoints
+  - `Send` creates a task from the staged roster and immediately starts the configured loop
 
 ## Immediate Milestones
 

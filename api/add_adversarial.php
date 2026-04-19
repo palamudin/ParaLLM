@@ -3,41 +3,54 @@ require __DIR__ . '/common.php';
 ensure_data_paths();
 
 $state = recover_loop_state_if_needed();
-if (empty($state['activeTask']) || !is_array($state['activeTask'])) {
-    json_response(['message' => 'No active task. Start one first.'], 400);
-}
 if (loop_is_active($state)) {
     json_response(['message' => 'The autonomous loop is active. Cancel it before changing the worker roster.'], 409);
 }
 
-$task = $state['activeTask'];
-$worker = next_adversarial_worker_definition($task);
+$activeTask = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
+$draft = normalize_draft_state(isset($state['draft']) && is_array($state['draft']) ? $state['draft'] : []);
+$worker = next_adversarial_worker_definition($activeTask ?: $draft);
 if ($worker === null) {
     json_response(['message' => 'All available adversarial worker slots are already in use.'], 409);
 }
 
 $updatedState = mutate_state(function (array $state) use ($worker): array {
-    if (!is_array($state['activeTask'] ?? null)) {
-        throw new RuntimeException('No active task.');
-    }
-    $task = $state['activeTask'];
-    $workers = task_workers($task);
-    $workers[] = $worker;
-    $task['workers'] = $workers;
-    $state['activeTask'] = $task;
+    $draft = normalize_draft_state(isset($state['draft']) && is_array($state['draft']) ? $state['draft'] : []);
+    $draftWorkers = task_workers([
+        'runtime' => ['model' => $draft['model']],
+        'workers' => $draft['workers'],
+    ]);
+    $draftWorkers[] = $worker;
+    $draft['workers'] = task_workers([
+        'runtime' => ['model' => $draft['model']],
+        'workers' => $draftWorkers,
+    ]);
+    $state['draft'] = $draft;
 
-    $workerMap = is_array($state['workers'] ?? null) ? $state['workers'] : [];
-    $workerMap[$worker['id']] = null;
-    ksort($workerMap);
-    $state['workers'] = $workerMap;
+    if (is_array($state['activeTask'] ?? null)) {
+        $task = $state['activeTask'];
+        $workers = task_workers($task);
+        $workers[] = $worker;
+        $task['workers'] = task_workers(array_merge($task, ['workers' => $workers]));
+        $state['activeTask'] = $task;
+
+        $workerMap = is_array($state['workers'] ?? null) ? $state['workers'] : [];
+        $workerMap[$worker['id']] = null;
+        ksort($workerMap);
+        $state['workers'] = $workerMap;
+    }
     return $state;
 });
 
-write_task_snapshot($updatedState['activeTask']);
+if (is_array($updatedState['activeTask'] ?? null)) {
+    write_task_snapshot($updatedState['activeTask']);
+}
 append_step('worker_roster', 'Added a new adversarial worker slot.', [
     'taskId' => $updatedState['activeTask']['taskId'] ?? null,
     'workerId' => $worker['id'],
     'label' => $worker['label'],
+    'type' => $worker['type'] ?? null,
+    'temperature' => $worker['temperature'] ?? null,
     'model' => $worker['model']
 ]);
 

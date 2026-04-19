@@ -41,9 +41,121 @@ function default_model_id(): string {
     return 'gpt-5-mini';
 }
 
+function default_loop_preferences(): array {
+    return [
+        'rounds' => 3,
+        'delayMs' => 1000,
+    ];
+}
+
+function normalize_loop_preferences(array $config = []): array {
+    $default = default_loop_preferences();
+    $rounds = (int)($config['rounds'] ?? $default['rounds']);
+    $delayMs = (int)($config['delayMs'] ?? $default['delayMs']);
+    return [
+        'rounds' => max(1, min(12, $rounds)),
+        'delayMs' => max(0, min(10000, $delayMs)),
+    ];
+}
+
+function worker_temperature_catalog(): array {
+    return [
+        'cool' => ['label' => 'Cool', 'instruction' => 'deliberate, restrained, careful under pressure'],
+        'balanced' => ['label' => 'Balanced', 'instruction' => 'practical, even-tempered, evidence-first'],
+        'hot' => ['label' => 'Hot', 'instruction' => 'provocative, forceful, aggressively pressure-testing'],
+    ];
+}
+
+function normalize_worker_temperature($value, string $fallback = 'balanced'): string {
+    $catalog = worker_temperature_catalog();
+    $candidate = strtolower(trim((string)$value));
+    if (isset($catalog[$candidate])) {
+        return $candidate;
+    }
+    return isset($catalog[$fallback]) ? $fallback : 'balanced';
+}
+
+function worker_type_catalog(): array {
+    return [
+        'proponent' => ['label' => 'Proponent', 'role' => 'utility', 'focus' => 'benefits, feasibility, leverage, momentum, practical execution', 'temperature' => 'balanced'],
+        'sceptic' => ['label' => 'Sceptic', 'role' => 'adversarial', 'focus' => 'failure modes, downside, hidden coupling, consequences, externalities', 'temperature' => 'cool'],
+        'economist' => ['label' => 'Economist', 'role' => 'adversarial', 'focus' => 'cost ceilings, burn rate, return on effort, economic drag', 'temperature' => 'cool'],
+        'security' => ['label' => 'Security', 'role' => 'adversarial', 'focus' => 'security abuse, privilege escalation, hostile actors', 'temperature' => 'hot'],
+        'reliability' => ['label' => 'Reliability', 'role' => 'adversarial', 'focus' => 'reliability collapse, uptime loss, brittle dependencies', 'temperature' => 'cool'],
+        'concurrency' => ['label' => 'Concurrency', 'role' => 'adversarial', 'focus' => 'concurrency races, lock contention, timing faults', 'temperature' => 'hot'],
+        'data' => ['label' => 'Data Integrity', 'role' => 'adversarial', 'focus' => 'data integrity, corruption, replay hazards', 'temperature' => 'cool'],
+        'compliance' => ['label' => 'Compliance', 'role' => 'adversarial', 'focus' => 'compliance, policy drift, governance gaps', 'temperature' => 'balanced'],
+        'user' => ['label' => 'User Advocate', 'role' => 'adversarial', 'focus' => 'user confusion, adoption friction, trust loss', 'temperature' => 'balanced'],
+        'performance' => ['label' => 'Performance', 'role' => 'adversarial', 'focus' => 'performance cliffs, hot paths, slow feedback', 'temperature' => 'hot'],
+        'observability' => ['label' => 'Observability', 'role' => 'adversarial', 'focus' => 'observability blind spots, missing traces, opaque failures', 'temperature' => 'cool'],
+        'scalability' => ['label' => 'Scalability', 'role' => 'adversarial', 'focus' => 'scalability failure, fan-out load, resource exhaustion', 'temperature' => 'hot'],
+        'recovery' => ['label' => 'Recovery', 'role' => 'adversarial', 'focus' => 'recovery posture, rollback gaps, broken resumes', 'temperature' => 'cool'],
+        'integration' => ['label' => 'Integrations', 'role' => 'adversarial', 'focus' => 'integration mismatch, boundary contracts, interoperability', 'temperature' => 'balanced'],
+        'abuse' => ['label' => 'Abuse Cases', 'role' => 'adversarial', 'focus' => 'abuse cases, spam, malicious automation', 'temperature' => 'hot'],
+        'latency' => ['label' => 'Latency', 'role' => 'adversarial', 'focus' => 'latency budgets, throughput realism, field conditions', 'temperature' => 'balanced'],
+        'incentives' => ['label' => 'Incentives', 'role' => 'adversarial', 'focus' => 'incentive mismatch, local maxima, misuse of metrics', 'temperature' => 'balanced'],
+        'scope' => ['label' => 'Scope Control', 'role' => 'adversarial', 'focus' => 'scope creep, hidden complexity, disguised expansions', 'temperature' => 'cool'],
+        'maintainability' => ['label' => 'Maintainability', 'role' => 'adversarial', 'focus' => 'maintainability drag, operator toil, handoff risk', 'temperature' => 'cool'],
+        'edge' => ['label' => 'Edge Cases', 'role' => 'adversarial', 'focus' => 'edge cases, chaos inputs, pathological sequences', 'temperature' => 'hot'],
+        'human' => ['label' => 'Human Factors', 'role' => 'adversarial', 'focus' => 'human factors, fatigue, procedural mistakes', 'temperature' => 'balanced'],
+        'portability' => ['label' => 'Portability', 'role' => 'adversarial', 'focus' => 'vendor lock-in, portability loss, external dependence', 'temperature' => 'cool'],
+        'privacy' => ['label' => 'Privacy', 'role' => 'adversarial', 'focus' => 'privacy leakage, retention risk, oversharing', 'temperature' => 'cool'],
+        'product' => ['label' => 'Product Strategy', 'role' => 'adversarial', 'focus' => 'product mismatch, weak demand signal, false confidence', 'temperature' => 'balanced'],
+        'governance' => ['label' => 'Governance', 'role' => 'adversarial', 'focus' => 'decision paralysis, review bottlenecks, process drag', 'temperature' => 'cool'],
+        'wildcard' => ['label' => 'Wildcard', 'role' => 'adversarial', 'focus' => 'wildcard attack surfaces, overlooked weirdness, novel failure', 'temperature' => 'hot'],
+    ];
+}
+
+function default_worker_type_sequence(): array {
+    return [
+        'proponent',
+        'sceptic',
+        'economist',
+        'security',
+        'reliability',
+        'concurrency',
+        'data',
+        'compliance',
+        'user',
+        'performance',
+        'observability',
+        'scalability',
+        'recovery',
+        'integration',
+        'abuse',
+        'latency',
+        'incentives',
+        'scope',
+        'maintainability',
+        'edge',
+        'human',
+        'portability',
+        'privacy',
+        'product',
+        'governance',
+        'wildcard',
+    ];
+}
+
+function worker_slot_ids(): array {
+    return range('A', 'Z');
+}
+
+function default_worker_type_for_slot(string $workerId): string {
+    $workerId = strtoupper(trim($workerId));
+    $slots = worker_slot_ids();
+    $index = array_search($workerId, $slots, true);
+    $sequence = default_worker_type_sequence();
+    if ($index === false || !isset($sequence[$index])) {
+        return 'wildcard';
+    }
+    return $sequence[$index];
+}
+
 function default_draft_state(): array {
     $budget = default_budget_config();
     $model = default_model_id();
+    $loop = default_loop_preferences();
     return [
         'objective' => '',
         'constraints' => [],
@@ -59,6 +171,9 @@ function default_draft_state(): array {
         'researchExternalWebAccess' => true,
         'researchDomains' => [],
         'vettingEnabled' => true,
+        'loopRounds' => $loop['rounds'],
+        'loopDelayMs' => $loop['delayMs'],
+        'workers' => array_slice(worker_catalog($model), 0, 2),
         'updatedAt' => gmdate('c')
     ];
 }
@@ -152,6 +267,10 @@ function normalize_budget_config(array $config = []): array {
 
 function normalize_draft_state(?array $draft): array {
     $default = default_draft_state();
+    $loop = normalize_loop_preferences([
+        'rounds' => $draft['loopRounds'] ?? $default['loopRounds'],
+        'delayMs' => $draft['loopDelayMs'] ?? $default['loopDelayMs'],
+    ]);
     $reasoningEffort = trim((string)($draft['reasoningEffort'] ?? $default['reasoningEffort']));
     if (!in_array($reasoningEffort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
         $reasoningEffort = $default['reasoningEffort'];
@@ -177,6 +296,12 @@ function normalize_draft_state(?array $draft): array {
         'researchExternalWebAccess' => coerce_bool($draft['researchExternalWebAccess'] ?? $default['researchExternalWebAccess'], $default['researchExternalWebAccess']),
         'researchDomains' => normalize_allowed_domains($draft['researchDomains'] ?? $default['researchDomains']),
         'vettingEnabled' => coerce_bool($draft['vettingEnabled'] ?? $default['vettingEnabled'], $default['vettingEnabled']),
+        'loopRounds' => $loop['rounds'],
+        'loopDelayMs' => $loop['delayMs'],
+        'workers' => task_workers([
+            'runtime' => ['model' => normalize_model_id((string)($draft['model'] ?? $default['model']), $default['model'])],
+            'workers' => $draft['workers'] ?? $default['workers'],
+        ]),
         'updatedAt' => trim((string)($draft['updatedAt'] ?? '')) ?: gmdate('c')
     ];
 }
@@ -195,6 +320,7 @@ function build_draft_from_task(?array $task, array $overrides = [], bool $resetB
     $vetting = normalize_vetting_config(is_array($runtime['vetting'] ?? null) ? $runtime['vetting'] : []);
     $model = normalize_model_id((string)($runtime['model'] ?? $default['model']), $default['model']);
     $summarizer = is_array($task['summarizer'] ?? null) ? $task['summarizer'] : [];
+    $loopPrefs = normalize_loop_preferences(is_array($task['preferredLoop'] ?? null) ? $task['preferredLoop'] : []);
 
     $draft = [
         'objective' => trim((string)($task['objective'] ?? $default['objective'])),
@@ -211,6 +337,9 @@ function build_draft_from_task(?array $task, array $overrides = [], bool $resetB
         'researchExternalWebAccess' => $research['externalWebAccess'],
         'researchDomains' => $research['domains'],
         'vettingEnabled' => $vetting['enabled'],
+        'loopRounds' => $loopPrefs['rounds'],
+        'loopDelayMs' => $loopPrefs['delayMs'],
+        'workers' => task_workers($task),
         'updatedAt' => gmdate('c')
     ];
 
@@ -426,35 +555,12 @@ function normalize_usage_state(?array $usage): array {
     return $normalized;
 }
 
-function worker_catalog(): array {
-    return [
-        ['id' => 'A', 'label' => 'Worker A', 'role' => 'utility', 'focus' => 'benefits, feasibility, leverage, momentum'],
-        ['id' => 'B', 'label' => 'Worker B', 'role' => 'adversarial', 'focus' => 'systemic failure, coupling, downside, hidden risk'],
-        ['id' => 'C', 'label' => 'Worker C', 'role' => 'adversarial', 'focus' => 'cost ceilings, burn rate, economic drag'],
-        ['id' => 'D', 'label' => 'Worker D', 'role' => 'adversarial', 'focus' => 'security abuse, privilege escalation, hostile actors'],
-        ['id' => 'E', 'label' => 'Worker E', 'role' => 'adversarial', 'focus' => 'reliability collapse, uptime loss, brittle dependencies'],
-        ['id' => 'F', 'label' => 'Worker F', 'role' => 'adversarial', 'focus' => 'concurrency races, lock contention, timing faults'],
-        ['id' => 'G', 'label' => 'Worker G', 'role' => 'adversarial', 'focus' => 'data integrity, corruption, replay hazards'],
-        ['id' => 'H', 'label' => 'Worker H', 'role' => 'adversarial', 'focus' => 'compliance, policy drift, governance gaps'],
-        ['id' => 'I', 'label' => 'Worker I', 'role' => 'adversarial', 'focus' => 'user confusion, adoption friction, trust loss'],
-        ['id' => 'J', 'label' => 'Worker J', 'role' => 'adversarial', 'focus' => 'performance cliffs, hot paths, slow feedback'],
-        ['id' => 'K', 'label' => 'Worker K', 'role' => 'adversarial', 'focus' => 'observability blind spots, missing traces, opaque failures'],
-        ['id' => 'L', 'label' => 'Worker L', 'role' => 'adversarial', 'focus' => 'scalability failure, fan-out load, resource exhaustion'],
-        ['id' => 'M', 'label' => 'Worker M', 'role' => 'adversarial', 'focus' => 'recovery posture, rollback gaps, broken resumes'],
-        ['id' => 'N', 'label' => 'Worker N', 'role' => 'adversarial', 'focus' => 'integration mismatch, boundary contracts, interoperability'],
-        ['id' => 'O', 'label' => 'Worker O', 'role' => 'adversarial', 'focus' => 'abuse cases, spam, malicious automation'],
-        ['id' => 'P', 'label' => 'Worker P', 'role' => 'adversarial', 'focus' => 'latency budgets, throughput realism, field conditions'],
-        ['id' => 'Q', 'label' => 'Worker Q', 'role' => 'adversarial', 'focus' => 'incentive mismatch, local maxima, misuse of metrics'],
-        ['id' => 'R', 'label' => 'Worker R', 'role' => 'adversarial', 'focus' => 'scope creep, hidden complexity, disguised expansions'],
-        ['id' => 'S', 'label' => 'Worker S', 'role' => 'adversarial', 'focus' => 'maintainability drag, operator toil, handoff risk'],
-        ['id' => 'T', 'label' => 'Worker T', 'role' => 'adversarial', 'focus' => 'edge cases, chaos inputs, pathological sequences'],
-        ['id' => 'U', 'label' => 'Worker U', 'role' => 'adversarial', 'focus' => 'human factors, fatigue, procedural mistakes'],
-        ['id' => 'V', 'label' => 'Worker V', 'role' => 'adversarial', 'focus' => 'vendor lock-in, portability loss, external dependence'],
-        ['id' => 'W', 'label' => 'Worker W', 'role' => 'adversarial', 'focus' => 'privacy leakage, retention risk, oversharing'],
-        ['id' => 'X', 'label' => 'Worker X', 'role' => 'adversarial', 'focus' => 'product mismatch, weak demand signal, false confidence'],
-        ['id' => 'Y', 'label' => 'Worker Y', 'role' => 'adversarial', 'focus' => 'decision paralysis, review bottlenecks, process drag'],
-        ['id' => 'Z', 'label' => 'Worker Z', 'role' => 'adversarial', 'focus' => 'wildcard attack surfaces, overlooked weirdness, novel failure'],
-    ];
+function worker_catalog(?string $defaultModel = null): array {
+    $workers = [];
+    foreach (worker_slot_ids() as $workerId) {
+        $workers[] = normalize_worker_definition(['id' => $workerId], $defaultModel);
+    }
+    return $workers;
 }
 
 function normalize_worker_definition(array $worker, ?string $defaultModel = null): array {
@@ -463,18 +569,27 @@ function normalize_worker_definition(array $worker, ?string $defaultModel = null
         throw new InvalidArgumentException('Worker ids must be single uppercase letters.');
     }
 
-    $catalogMap = [];
-    foreach (worker_catalog() as $entry) {
-        $catalogMap[$entry['id']] = $entry;
+    $typeCatalog = worker_type_catalog();
+    $defaultType = default_worker_type_for_slot($workerId);
+    $type = strtolower(trim((string)($worker['type'] ?? $defaultType)));
+    if (!isset($typeCatalog[$type])) {
+        $type = $defaultType;
     }
-    $catalogWorker = $catalogMap[$workerId] ?? ['id' => $workerId, 'label' => 'Worker ' . $workerId, 'role' => 'adversarial', 'focus' => 'general adversarial review'];
+    $catalogWorker = $typeCatalog[$type] ?? $typeCatalog[$defaultType] ?? [
+        'label' => 'Worker ' . $workerId,
+        'role' => 'adversarial',
+        'focus' => 'general adversarial review',
+        'temperature' => 'balanced',
+    ];
     $fallbackModel = $defaultModel !== null ? $defaultModel : default_model_id();
 
     return [
         'id' => $workerId,
+        'type' => $type,
         'label' => trim((string)($worker['label'] ?? $catalogWorker['label'])) ?: $catalogWorker['label'],
         'role' => trim((string)($worker['role'] ?? $catalogWorker['role'])) ?: $catalogWorker['role'],
         'focus' => trim((string)($worker['focus'] ?? $catalogWorker['focus'])) ?: $catalogWorker['focus'],
+        'temperature' => normalize_worker_temperature($worker['temperature'] ?? $catalogWorker['temperature'] ?? 'balanced', (string)($catalogWorker['temperature'] ?? 'balanced')),
         'model' => normalize_model_id($worker['model'] ?? null, $fallbackModel),
     ];
 }
@@ -525,16 +640,16 @@ function find_task_worker(array $task, string $workerId): ?array {
 }
 
 function next_adversarial_worker_definition(array $task): ?array {
-    $defaultModel = normalize_model_id($task['runtime']['model'] ?? null, default_model_id());
+    $defaultModel = normalize_model_id($task['runtime']['model'] ?? ($task['model'] ?? null), default_model_id());
     $existing = [];
     foreach (task_workers($task) as $worker) {
         $existing[(string)$worker['id']] = true;
     }
-    foreach (worker_catalog() as $worker) {
-        if ($worker['id'] === 'A' || isset($existing[$worker['id']])) {
+    foreach (worker_slot_ids() as $workerId) {
+        if (isset($existing[$workerId])) {
             continue;
         }
-        return normalize_worker_definition($worker, $defaultModel);
+        return normalize_worker_definition(['id' => $workerId], $defaultModel);
     }
     return null;
 }
