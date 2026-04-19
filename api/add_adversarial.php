@@ -26,25 +26,8 @@ $updatedState = mutate_state(function (array $state) use ($worker): array {
         'workers' => $draftWorkers,
     ]);
     $state['draft'] = $draft;
-
-    if (is_array($state['activeTask'] ?? null)) {
-        $task = $state['activeTask'];
-        $workers = task_workers($task);
-        $workers[] = $worker;
-        $task['workers'] = task_workers(array_merge($task, ['workers' => $workers]));
-        $state['activeTask'] = $task;
-
-        $workerMap = is_array($state['workers'] ?? null) ? $state['workers'] : [];
-        $workerMap[$worker['id']] = null;
-        ksort($workerMap);
-        $state['workers'] = $workerMap;
-    }
     return $state;
 });
-
-if (is_array($updatedState['activeTask'] ?? null)) {
-    write_task_snapshot($updatedState['activeTask']);
-}
 append_step('worker_roster', 'Added a new adversarial worker slot.', [
     'taskId' => $updatedState['activeTask']['taskId'] ?? null,
     'workerId' => $worker['id'],

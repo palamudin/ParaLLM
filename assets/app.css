@@ -422,6 +422,13 @@ textarea {
   word-break: break-word;
 }
 
+.message-body-plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.65;
+  color: var(--text);
+}
+
 .message-block + .message-block {
   margin-top: 12px;
 }
@@ -442,6 +449,88 @@ textarea {
 
 .message-list li + li {
   margin-top: 4px;
+}
+
+.lane-inspector {
+  margin-top: 14px;
+  border: 1px solid rgba(128, 186, 224, 0.16);
+  border-radius: 18px;
+  background: rgba(9, 19, 29, 0.72);
+  overflow: hidden;
+}
+
+.lane-inspector summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted-strong);
+}
+
+.lane-inspector summary::-webkit-details-marker {
+  display: none;
+}
+
+.lane-inspector summary::after {
+  content: "+";
+  float: right;
+  color: var(--accent);
+}
+
+.lane-inspector[open] summary::after {
+  content: "-";
+}
+
+.lane-inspector-note {
+  padding: 0 14px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.lane-inspector-grid {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.lane-inspector-card {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(128, 186, 224, 0.14);
+  background: rgba(15, 31, 46, 0.82);
+}
+
+.lane-inspector-card.utility {
+  border-color: rgba(74, 222, 128, 0.24);
+}
+
+.lane-inspector-card.adversarial {
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+.lane-inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lane-inspector-title {
+  font-weight: 700;
+}
+
+.lane-inspector-tag,
+.lane-inspector-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lane-inspector-copy {
+  margin-top: 8px;
+  color: var(--muted-strong);
+  line-height: 1.55;
 }
 
 .composer-shell {

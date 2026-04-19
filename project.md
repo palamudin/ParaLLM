@@ -69,8 +69,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Dynamic worker roster starting with `Proponent` and `Sceptic`, with bounded adversarial expansion through additional lettered lanes
 - Commander form now includes a `Session Context` field for short carry-forward memory between sessions
 - Home is now chat-first: the main workflow is prompt plus `Send`, and that single action creates a task and kicks off the configured loop automatically
+- The Home composer is now draft-first instead of active-task-first, so a stale task no longer overwrites the next-send `live` / `mock` setting after refresh
 - Manual operations such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, and `Reset State` now live under `Debug` instead of cluttering the main conversation flow
 - Worker side controls now expose directive, temperature, and per-worker model selectors directly in the home rail, plus a `+ Add` lane button for on-demand adversarial expansion
+- Home-side worker roster edits now stage the next send without mutating the currently displayed active task
 - Manual single-target execution for any configured worker lane and the summarizer
 - Manual single-round execution
 - Autonomous multi-round execution with configurable round count and delay
@@ -90,6 +92,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Artifact Review UI supports side-by-side inspection of saved checkpoints and output artifacts
 - URL/source normalization now drops malformed non-URL entries and canonicalizes saved source links in fresh artifacts
 - Sidebar workspace shell now splits `Home`, `Settings`, `Debug`, and `Review`, with a chat-first center pane and the API key moved into Settings / Integrations
+- The main thread now renders the Agent answer in a simpler chat format while worker lanes stay collapsed behind an `Inspect worker lanes` disclosure by default
 - Fine tuning controls now live in Settings instead of crowding the main conversation surface, and the stored draft now includes worker roster, loop rounds, and loop delay
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
@@ -113,6 +116,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - `+ Add` works without an active task and grows the stored roster
   - worker directive / temperature / model changes persist through the new roster endpoints
   - `Send` creates a task from the staged roster and immediately starts the configured loop
+- Verified live-mode refresh fix on April 19, 2026:
+  - with an older mock task still active, the rendered Settings form now keeps the persisted draft's `executionMode=live`
+  - a fresh manual live smoke task (`t-20260419-082140-1a296c`) completed through the resident Python runtime instead of falling back to mock
+  - a second manual live task (`t-20260419-082140-4e6764`) confirmed the current project/key also has live access to `gpt-5.4-mini` and `gpt-5.4`
 
 ## Immediate Milestones
 

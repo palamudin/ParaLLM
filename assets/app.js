@@ -243,6 +243,34 @@ function populateStaticModelSelect(selector, selectedValue) {
 }
 
 function buildCommanderFormSource(task, draft) {
+  if (draft && typeof draft === "object") {
+    const safeDraft = Object.assign({}, defaultDraftState(), draft || {});
+    return {
+      sourceKey: [
+        "draft",
+        safeDraft.updatedAt || "",
+        safeDraft.objective || "",
+        safeDraft.sessionContext || "",
+        JSON.stringify(safeDraft.constraints || []),
+        safeDraft.executionMode || "live",
+        safeDraft.model || "gpt-5-mini",
+        safeDraft.summarizerModel || "gpt-5-mini",
+        safeDraft.reasoningEffort || "low",
+        safeDraft.maxCostUsd ?? 5.0,
+        safeDraft.maxTotalTokens ?? 250000,
+        safeDraft.maxOutputTokens ?? 1200,
+        safeDraft.researchEnabled ? 1 : 0,
+        safeDraft.researchExternalWebAccess === false ? 0 : 1,
+        JSON.stringify(safeDraft.researchDomains || []),
+        safeDraft.vettingEnabled === false ? 0 : 1,
+        safeDraft.loopRounds ?? 3,
+        safeDraft.loopDelayMs ?? 1000,
+        JSON.stringify(safeDraft.workers || [])
+      ].join("|"),
+      values: safeDraft
+    };
+  }
+
   if (task) {
     return {
       sourceKey: [
@@ -287,32 +315,7 @@ function buildCommanderFormSource(task, draft) {
       }
     };
   }
-
-  const safeDraft = Object.assign({}, defaultDraftState(), draft || {});
-  return {
-    sourceKey: [
-      "draft",
-      safeDraft.updatedAt || "",
-      safeDraft.objective || "",
-      safeDraft.sessionContext || "",
-      JSON.stringify(safeDraft.constraints || []),
-      safeDraft.executionMode || "live",
-      safeDraft.model || "gpt-5-mini",
-      safeDraft.summarizerModel || "gpt-5-mini",
-      safeDraft.reasoningEffort || "low",
-      safeDraft.maxCostUsd ?? 5.0,
-      safeDraft.maxTotalTokens ?? 250000,
-      safeDraft.maxOutputTokens ?? 1200,
-      safeDraft.researchEnabled ? 1 : 0,
-      safeDraft.researchExternalWebAccess === false ? 0 : 1,
-      JSON.stringify(safeDraft.researchDomains || []),
-      safeDraft.vettingEnabled === false ? 0 : 1,
-      safeDraft.loopRounds ?? 3,
-      safeDraft.loopDelayMs ?? 1000,
-      JSON.stringify(safeDraft.workers || [])
-    ].join("|"),
-    values: safeDraft
-  };
+  return buildCommanderFormSource(null, defaultDraftState());
 }
 
 function renderComposerContextPreview(sessionContext, constraints) {
@@ -382,6 +385,16 @@ function activeWorkerSource(task, draft) {
   return Array.isArray(draft?.workers) && draft.workers.length ? draft.workers : defaultDraftState().workers;
 }
 
+function stagedWorkerSource(draft, task) {
+  if (Array.isArray(draft?.workers) && draft.workers.length) {
+    return draft.workers;
+  }
+  if (task && Array.isArray(task.workers) && task.workers.length) {
+    return task.workers;
+  }
+  return defaultDraftState().workers;
+}
+
 function collectVisibleWorkerRoster() {
   const workers = [];
   $("#workerControls .workercontrol").each(function () {
@@ -415,7 +428,7 @@ function buildDraftSavePayload() {
   const payload = collectCommanderPayload();
   const roster = collectVisibleWorkerRoster();
   payload.constraints = JSON.stringify(payload.constraints);
-  payload.workers = JSON.stringify(roster.length ? roster : activeWorkerSource(latestState?.activeTask || null, latestState?.draft || defaultDraftState()));
+  payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
   return payload;
 }
 
@@ -585,9 +598,9 @@ function renderWorkerControls(task, loop, stateWorkers) {
 
 function renderHomeWorkerControls(task, draft, loop) {
   const $controls = $("#workerControls");
-  const workers = activeWorkerSource(task, draft);
+  const workers = stagedWorkerSource(draft, task);
   const signature = JSON.stringify({
-    mode: task ? "task" : "draft",
+    mode: "draft",
     workers,
     loopStatus: loop?.status || "idle"
   });
@@ -679,7 +692,8 @@ function renderRosterPanels(task, draft) {
   const $grid = $("#workerGrid");
   $grid.empty();
 
-  const workers = activeWorkerSource(task, draft);
+  const hasActiveWorkers = !!(task && Array.isArray(task.workers) && task.workers.length);
+  const workers = hasActiveWorkers ? task.workers : stagedWorkerSource(draft, task);
   if (!workers.length) {
     $grid.append($("<div>").addClass("lane-card-empty").text("No workers configured."));
     return;
@@ -697,7 +711,7 @@ function renderRosterPanels(task, draft) {
     $card.append($("<div>").addClass("lane-card-copy").text(
       checkpoint
         ? truncateText(checkpoint.observation || checkpoint.requestToPeer || "Checkpoint available.", 220)
-        : (task ? "No checkpoint yet." : "Staged and ready for the next send.")
+        : (hasActiveWorkers ? "No checkpoint yet." : "Staged and ready for the next send.")
     ));
     $grid.append($card);
   });
@@ -725,6 +739,79 @@ function renderTextSection(label, text) {
       <div class="message-block-label">${escapeHtml(label)}</div>
       <div class="message-text">${escapeHtml(normalized)}</div>
     </div>
+  `;
+}
+
+function renderPlainTextBlock(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return "";
+  return `<div class="message-body-plain">${escapeHtml(normalized)}</div>`;
+}
+
+function buildAgentReplyText(summary) {
+  if (!summary) return "";
+  const paragraphs = [];
+  const stableFindings = (summary.stableFindings || []).filter(Boolean);
+  if (stableFindings.length) {
+    paragraphs.push(stableFindings.join(" "));
+  }
+
+  const conflictTopics = (summary.conflicts || []).map(function (conflict) {
+    return conflict?.topic;
+  }).filter(Boolean);
+  if (conflictTopics.length) {
+    paragraphs.push("Remaining disagreement: " + conflictTopics.join("; ") + ".");
+  }
+
+  if (summary.recommendedNextAction) {
+    paragraphs.push("Next step: " + summary.recommendedNextAction);
+  }
+
+  if (summary.vettingSummary) {
+    paragraphs.push("Confidence note: " + summary.vettingSummary);
+  }
+
+  return paragraphs.join("\n\n").trim();
+}
+
+function buildWorkerInspector(checkpoints) {
+  const entries = (checkpoints || []).filter(function (entry) {
+    return !!entry?.checkpoint;
+  });
+  if (!entries.length) return "";
+
+  const cards = entries.map(function (entry) {
+    const checkpoint = entry.checkpoint || {};
+    const insights = [];
+    if (checkpoint.observation) {
+      insights.push(truncateText(checkpoint.observation, 220));
+    }
+    if (checkpoint.requestToPeer) {
+      insights.push("Peer steer: " + truncateText(checkpoint.requestToPeer, 180));
+    }
+    const confidence = checkpoint.confidence != null && !Number.isNaN(Number(checkpoint.confidence))
+      ? "Confidence " + Math.round(Number(checkpoint.confidence) * 100) + "%"
+      : "Checkpoint captured";
+    return `
+      <div class="lane-inspector-card ${escapeHtml(entry.worker.role || "")}">
+        <div class="lane-inspector-head">
+          <div class="lane-inspector-title">${escapeHtml(displayWorkerLabel(entry.worker))}</div>
+          <div class="lane-inspector-tag">${escapeHtml(confidence)}</div>
+        </div>
+        <div class="lane-inspector-meta">${escapeHtml((entry.worker.type || entry.worker.role || "lane") + " | " + (entry.worker.model || "model n/a"))}</div>
+        <div class="lane-inspector-copy">${escapeHtml(insights.join(" "))}</div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <details class="lane-inspector">
+      <summary>Inspect worker lanes (${entries.length})</summary>
+      <div class="lane-inspector-note">Internal lane output is hidden by default so the main answer stays readable.</div>
+      <div class="lane-inspector-grid">
+        ${cards}
+      </div>
+    </details>
   `;
 }
 
@@ -884,6 +971,137 @@ function applyLoopUi(state) {
   $("#cancelLoop").prop("disabled", !isActive);
 }
 
+function renderConversationThread(task, summary, workerState, loop) {
+  const $thread = $("#conversationThread");
+
+  if (!task) {
+    $thread.html(`
+      <div class="empty-thread">
+        <div>
+          <div class="empty-thread-title">No active task yet.</div>
+          <div class="empty-thread-copy">Send a prompt below. Proponent and Sceptic are staged already, and the Agent will answer once the lanes finish.</div>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  const messages = [];
+  messages.push(buildThreadMessage({
+    kind: "commander",
+    author: "You",
+    tag: task.runtime?.executionMode === "live" ? "Live session" : "Mock session",
+    sections: [
+      renderPlainTextBlock(task.objective || ""),
+      renderTextSection("Session context", task.sessionContext || ""),
+      renderListSection("Constraints", task.constraints || [])
+    ]
+  }));
+
+  const checkpoints = (task.workers || [])
+    .map(function (worker) {
+      return { worker, checkpoint: workerState?.[worker.id] || null };
+    })
+    .sort(function (a, b) {
+      const stepA = a.checkpoint?.step || 0;
+      const stepB = b.checkpoint?.step || 0;
+      if (stepA !== stepB) return stepA - stepB;
+      return a.worker.id.localeCompare(b.worker.id);
+    });
+
+  const missingWorkers = (task.workers || []).filter(function (worker) {
+    return !workerState?.[worker.id];
+  });
+
+  if (summary) {
+    messages.push(buildThreadMessage({
+      kind: "summary",
+      author: "Agent",
+      tag: "Multistream summary | memory " + ($("#memoryVersion").text() || "0"),
+      sections: [
+        renderPlainTextBlock(buildAgentReplyText(summary)),
+        buildWorkerInspector(checkpoints),
+        renderListSection("Still worth verifying", (summary.claimsNeedingVerification || []).slice(0, 3))
+      ]
+    }));
+  } else {
+    const completedCount = checkpoints.filter(function (entry) {
+      return !!entry.checkpoint;
+    }).length;
+    const waitingText = missingWorkers.length
+      ? completedCount + " of " + (task.workers || []).length + " lanes have checked in. The summarizer will reply here once the remaining lanes finish: " + missingWorkers.map(function (worker) { return worker.id; }).join(", ") + "."
+      : "All lanes have checked in. The summarizer is composing the main answer now.";
+
+    messages.push(buildThreadMessage({
+      kind: "summary",
+      author: "Agent",
+      tag: loop?.status || "idle",
+      sections: [
+        renderPlainTextBlock(waitingText),
+        buildWorkerInspector(checkpoints)
+      ]
+    }));
+  }
+
+  $thread.html(messages.join(""));
+  $thread.scrollTop($thread[0].scrollHeight);
+}
+
+function applyLoopUi(state) {
+  const loop = state.loop || null;
+  const task = state.activeTask || null;
+  const hasTask = !!task;
+  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const workers = activeWorkerSource(task, state.draft || null);
+  const usage = state.usage || {};
+  const budget = task?.runtime?.budget || {
+    maxTotalTokens: state.draft?.maxTotalTokens ?? 0,
+    maxCostUsd: state.draft?.maxCostUsd ?? 0
+  };
+  const research = task?.runtime?.research || {};
+  const vetting = task?.runtime?.vetting || {};
+  const summaryReady = allWorkerCheckpointsReady(task, state.workers || {});
+  const stagedMode = state.draft?.executionMode || task?.runtime?.executionMode || "live";
+  const activeMode = task?.runtime?.executionMode || "none";
+
+  $("#taskId").text(task?.taskId || "none");
+  $("#headerTaskId").text(task?.taskId || "none");
+  $("#memoryVersion").text(state.memoryVersion ?? 0);
+  $("#workerCount").text(workers.length || 0);
+  $("#headerWorkerCount").text(workers.length || 0);
+  $("#loopJobId").text(loop?.jobId || "none");
+  $("#loopStatus").text(loop?.status || "idle");
+  $("#headerLoopStatus").text(loop?.status || "idle");
+  $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
+  $("#loopNote").text(
+    loop?.lastMessage ||
+    (!hasTask
+      ? "Press Send to start the configured roster and loop automatically. Next send is staged for " + stagedMode + " mode."
+      : (
+      "Active task is running in " + activeMode + " mode. " +
+      (research.enabled ? "Workers can run grounded web research" : "Workers are running without web research") +
+      " and the summarizer " + (vetting.enabled === false ? "merges only." : "acts as the evidence vetter.") +
+      " Next send is staged for " + stagedMode + " mode."
+    ))
+  );
+  $("#usageTokens").text((usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0));
+  $("#usageWebSearchCalls").text(usage.webSearchCalls ?? 0);
+  $("#usageCost").text(formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0));
+
+  latestLoopActive = isActive;
+  updateAuthButtons();
+
+  $("#sendPrompt").prop("disabled", isActive);
+  $("#summarize").prop("disabled", isActive || !hasTask || !summaryReady);
+  $("#runRound").prop("disabled", isActive || !hasTask);
+  $("#runLoop").prop("disabled", isActive || !hasTask);
+  $("#addAdversarial").prop("disabled", isActive || workers.length >= 26);
+  $("#applyCurrentModels").prop("disabled", isActive || !hasTask);
+  $("#resetSession").prop("disabled", isActive);
+  $("#resetState").prop("disabled", isActive);
+  $("#cancelLoop").prop("disabled", !isActive);
+}
+
 function refreshState() {
   refreshAuth();
 
@@ -998,7 +1216,7 @@ $(function () {
   $("#sendPrompt").on("click", function () {
     const payload = collectCommanderPayload();
     const visibleWorkers = collectVisibleWorkerRoster();
-    const workers = visibleWorkers.length ? visibleWorkers : activeWorkerSource(latestState?.activeTask || null, latestState?.draft || defaultDraftState());
+    const workers = visibleWorkers.length ? visibleWorkers : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
 
     if (!payload.objective) {
       showMessage("Objective is required.", true);

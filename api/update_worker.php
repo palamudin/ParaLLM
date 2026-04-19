@@ -62,23 +62,11 @@ $updatedState = mutate_state(function (array $state) use ($workerId, $type, $tem
     $draft['workers'] = $apply($draftWorkers, $draft['model']);
     $state['draft'] = $draft;
 
-    if (is_array($state['activeTask'] ?? null)) {
-        $task = $state['activeTask'];
-        $defaultModel = normalize_model_id($task['runtime']['model'] ?? $draft['model'], $draft['model']);
-        $task['workers'] = $apply(task_workers($task), $defaultModel);
-        $state['activeTask'] = $task;
-    }
-
     return $state;
 });
 
-$task = is_array($updatedState['activeTask'] ?? null) ? $updatedState['activeTask'] : null;
-if ($task) {
-    write_task_snapshot($task);
-}
-
 $worker = null;
-$sourceWorkers = $task ? task_workers($task) : ($updatedState['draft']['workers'] ?? []);
+$sourceWorkers = $updatedState['draft']['workers'] ?? [];
 foreach ($sourceWorkers as $candidate) {
     if (($candidate['id'] ?? null) === $workerId) {
         $worker = $candidate;
@@ -87,7 +75,7 @@ foreach ($sourceWorkers as $candidate) {
 }
 
 append_step('worker_roster', 'Updated worker configuration.', [
-    'taskId' => $task['taskId'] ?? null,
+    'taskId' => $updatedState['activeTask']['taskId'] ?? null,
     'workerId' => $workerId,
     'type' => $worker['type'] ?? null,
     'temperature' => $worker['temperature'] ?? null,

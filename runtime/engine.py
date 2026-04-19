@@ -902,6 +902,19 @@ class LoopRuntime:
         if status["exceeded"]:
             raise RuntimeErrorWithCode(f"Budget limit reached: {status['message']}", 409)
 
+    def should_fallback_to_mock(self, error: RuntimeErrorWithCode) -> bool:
+        message = str(error).lower()
+        fatal_markers = (
+            "model_not_found",
+            "does not have access to model",
+            "http 401",
+            "http 403",
+            "incorrect api key",
+            "invalid_api_key",
+            "organization not found",
+        )
+        return not any(marker in message for marker in fatal_markers)
+
     def invoke_openai_json(
         self,
         api_key: str,
@@ -1824,6 +1837,20 @@ class LoopRuntime:
                             {"taskId": task["taskId"], "workerId": worker_id, "model": runtime["model"], "error": str(error)},
                         )
                         raise
+                    if not self.should_fallback_to_mock(error):
+                        self.append_step(
+                            f"worker_{worker_id}",
+                            "Live API call failed and was not downgraded to mock.",
+                            {
+                                "taskId": task["taskId"],
+                                "workerId": worker_id,
+                                "step": step_number,
+                                "model": runtime["model"],
+                                "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+                                "error": str(error),
+                            },
+                        )
+                        raise RuntimeErrorWithCode(f"Live run failed for {worker['label']}: {error}", error.status_code)
                     self.append_step(
                         f"worker_{worker_id}",
                         "Live API call failed; falling back to mock.",
@@ -1967,6 +1994,18 @@ class LoopRuntime:
                             {"taskId": task["taskId"], "model": runtime["model"], "error": str(error)},
                         )
                         raise
+                    if not self.should_fallback_to_mock(error):
+                        self.append_step(
+                            "summarizer",
+                            "Live API call failed and was not downgraded to mock.",
+                            {
+                                "taskId": task["taskId"],
+                                "model": runtime["model"],
+                                "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+                                "error": str(error),
+                            },
+                        )
+                        raise RuntimeErrorWithCode(f"Live run failed for summarizer: {error}", error.status_code)
                     self.append_step(
                         "summarizer",
                         "Live API call failed; falling back to mock.",
