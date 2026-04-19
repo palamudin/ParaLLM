@@ -74,6 +74,8 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Worker checkpoints now carry evidence ledgers, research queries, consulted source URLs, and evidence gaps
 - Summarizer now acts as a vetter, preserving conflicts while scoring supported, mixed, weak, or disputed claims
 - Each worker and summarizer run now saves a dedicated output artifact so quality can be inspected separately from canonical state
+- Artifact Review UI supports side-by-side inspection of saved checkpoints and output artifacts
+- URL/source normalization now drops malformed non-URL entries and canonicalizes saved source links in fresh artifacts
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
 - Masked API key management in the top bar for local test-key swapping

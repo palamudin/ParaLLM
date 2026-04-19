@@ -242,6 +242,47 @@ function ConvertTo-JsonArray {
     return ,$list
 }
 
+function Normalize-CanonicalUrl {
+    param([string]$Url)
+
+    $candidate = ([string]$Url).Trim()
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return $null
+    }
+
+    $candidate = $candidate.Trim('"', "'", '`')
+    $candidate = $candidate.Trim()
+    $candidate = $candidate -replace '[\uFFFD]+$', ''
+    $candidate = $candidate -replace '(?i)(%EF%BF%BD)+$', ''
+    $candidate = $candidate -replace '[\.,;\)\]\}>]+$', ''
+
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$uri)) {
+        return $null
+    }
+    if ($uri.Scheme -notin @('http', 'https')) {
+        return $null
+    }
+    if ([string]::IsNullOrWhiteSpace($uri.Host)) {
+        return $null
+    }
+
+    $builder = New-Object System.UriBuilder($uri)
+    $builder.Scheme = $uri.Scheme.ToLowerInvariant()
+    $builder.Host = $uri.Host.ToLowerInvariant()
+    if (($builder.Scheme -eq 'https' -and $builder.Port -eq 443) -or ($builder.Scheme -eq 'http' -and $builder.Port -eq 80)) {
+        $builder.Port = -1
+    }
+    $builder.Fragment = ''
+
+    $path = $builder.Path
+    if (-not [string]::IsNullOrWhiteSpace($path) -and $path.Length -gt 1) {
+        $builder.Path = $path.TrimEnd('/')
+    }
+
+    return $builder.Uri.AbsoluteUri
+}
+
 function Normalize-UrlArrayValues {
     param([object]$Value)
 
@@ -255,15 +296,18 @@ function Normalize-UrlArrayValues {
             }
         }
     } elseif ($Value -is [string]) {
-        $matches = [System.Text.RegularExpressions.Regex]::Matches($Value, 'https?://\S+')
+        $matches = [System.Text.RegularExpressions.Regex]::Matches($Value, 'https?://[^\s"''<>()]+')
         if ($matches.Count -gt 0) {
             foreach ($match in $matches) {
-                $urls.Add($match.Value.Trim())
+                $normalized = Normalize-CanonicalUrl -Url $match.Value
+                if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+                    $urls.Add($normalized)
+                }
             }
         } else {
-            $trimmed = $Value.Trim()
-            if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
-                $urls.Add($trimmed)
+            $normalized = Normalize-CanonicalUrl -Url $Value
+            if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+                $urls.Add($normalized)
             }
         }
     }

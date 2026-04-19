@@ -354,7 +354,7 @@ Produce a checkpoint from your assigned viewpoint.
     $parsed['urlCitations'] = @(Normalize-UrlList -Urls $result['urlCitations'])
     $parsed['researchMode'] = if ($parsed['researchSources'].Count -gt 0 -or $parsed['researchQueries'].Count -gt 0) { 'web_search' } elseif ($ResearchConfig['enabled']) { 'research_requested_no_sources' } else { 'model_only' }
     $parsed['evidenceLedger'] = @(Normalize-EvidenceLedger -Ledger $parsed['evidenceLedger'])
-    $parsed['evidenceGaps'] = @(Normalize-StringList -Value $parsed['evidenceGaps'])
+    $parsed['evidenceGaps'] = @(Normalize-StringArrayPreserveItems -Value $parsed['evidenceGaps'])
     $parsed['updatedAt'] = (Get-Date).ToUniversalTime().ToString('o')
     return @{
         checkpoint = $parsed
@@ -493,9 +493,9 @@ $outputArtifact = [ordered]@{
         [ordered]@{
             status = if ($null -ne $response.status) { [string]$response.status } else { 'completed' }
             usageDelta = Get-ResponseUsageDelta -Response $response -Model $runtime['model']
-            webSearchQueries = ConvertTo-JsonArray -Value @(Get-ResponseWebSearchQueries -Response $response)
-            webSearchSources = ConvertTo-JsonArray -Value @(Get-ResponseWebSearchSources -Response $response)
-            urlCitations = ConvertTo-JsonArray -Value @(Get-ResponseUrlCitations -Response $response)
+            webSearchQueries = ConvertTo-JsonArray -Value (Normalize-StringArrayPreserveItems -Value (Get-ResponseWebSearchQueries -Response $response))
+            webSearchSources = ConvertTo-JsonArray -Value @(Normalize-UrlList -Urls (Get-ResponseWebSearchSources -Response $response))
+            urlCitations = ConvertTo-JsonArray -Value @(Normalize-UrlList -Urls (Get-ResponseUrlCitations -Response $response))
         }
     } else {
         $null

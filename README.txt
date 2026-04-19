@@ -59,6 +59,7 @@ Main flow
 9. Use `Cancel Loop` to stop after the current round.
 10. Watch worker panels, summary, event log, step log, spend counters, web-search-call count, and loop status update while the background job progresses.
 11. Use the Recent Jobs and Recent Artifacts panels to review prior runs and per-round checkpoints.
+12. Use Artifact Review to load any saved checkpoint or output artifact into side-by-side panes for quality comparison.
 
 Main files
 ----------
@@ -82,6 +83,8 @@ When worker research is enabled, worker lanes can use the Responses API `web_sea
 When summarizer vetting is enabled, the summarizer scores the worker claims by support strength instead of only merging prose.
 The loop preserves contradictions, step logs, and per-round checkpoint files.
 Each worker and summarizer run also writes a dedicated output artifact so you can inspect returned content and response metadata without diffing canonical state.
+The Artifact Review section can load those saved artifacts side by side and show both raw response text and normalized output.
+Fresh artifacts now normalize and dedupe source URLs more aggressively so malformed non-URL strings do not pollute research-source lists.
 The backend also uses a shared lock so PHP and PowerShell do not trample the same state file.
 `Run Auto Loop` now returns quickly and a detached background runner continues the work while the UI polls state.
 If a queued or running background job goes stale, polling endpoints will mark it as recovered, move it to `error`, and append a recovery entry to the step log.

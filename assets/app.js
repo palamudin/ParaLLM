@@ -17,6 +17,7 @@ const MODEL_CATALOG = {
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
 let latestAuthStatus = { hasKey: false, masked: null, last4: "" };
 let latestLoopActive = false;
+let artifactSelections = { left: "", right: "" };
 
 function showMessage(text, isError = false) {
   $("#message").text(text).css("color", isError ? "#ff8d8d" : "#67b0ff");
@@ -36,6 +37,100 @@ function buildModelOptions(selectedValue) {
     const selected = id === selectedValue ? " selected" : "";
     return `<option value="${id}"${selected}>${MODEL_CATALOG[id].label}</option>`;
   }).join("");
+}
+
+function buildArtifactOptions(artifacts, selectedValue) {
+  const options = [`<option value="">Select artifact</option>`];
+  (artifacts || []).forEach(function (artifact) {
+    const selected = artifact.name === selectedValue ? " selected" : "";
+    const kind = artifact.kind || "artifact";
+    options.push(`<option value="${artifact.name}"${selected}>${artifact.name} [${kind}]</option>`);
+  });
+  return options.join("");
+}
+
+function pickArtifact(artifacts, preferredKinds, excludeName) {
+  const list = artifacts || [];
+  const preferred = list.find(function (artifact) {
+    return (!excludeName || artifact.name !== excludeName) && preferredKinds.includes(artifact.kind);
+  });
+  if (preferred) return preferred;
+  return list.find(function (artifact) {
+    return !excludeName || artifact.name !== excludeName;
+  }) || null;
+}
+
+function renderArtifactMeta(data) {
+  const summary = data?.summary || {};
+  const bits = [
+    data?.name || "artifact",
+    "kind: " + (data?.kind || "artifact") + " | storage: " + (data?.storage || "unknown"),
+    "modified: " + (data?.modifiedAt || "n/a") + " | bytes: " + (data?.size ?? 0),
+    "task: " + (summary.taskId || "n/a") + " | target: " + (summary.target || "n/a"),
+    "mode: " + (summary.mode || "n/a") + " | model: " + (summary.model || "n/a"),
+    "step: " + (summary.step ?? "-") + " | round: " + (summary.round ?? "-"),
+    "responseId: " + (summary.responseId || "none")
+  ];
+  return bits.join("\n");
+}
+
+function renderArtifactContent(data) {
+  const content = data?.content || {};
+  const sections = [];
+
+  if (content.rawOutputText) {
+    sections.push("Raw Output Text\n" + content.rawOutputText);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(content, "output")) {
+    sections.push("Normalized Output\n" + pretty(content.output));
+  } else {
+    sections.push("Artifact Content\n" + pretty(content));
+  }
+
+  return sections.join("\n\n");
+}
+
+function setArtifactPane(side, metaText, contentText) {
+  $("#artifact" + side + "Meta").text(metaText);
+  $("#artifact" + side + "Content").text(contentText);
+}
+
+function loadArtifactPane(side, artifactName) {
+  if (!artifactName) {
+    setArtifactPane(side, "No artifact selected.", "No artifact selected.");
+    return;
+  }
+
+  $.getJSON("api/get_artifact.php", { name: artifactName })
+    .done(function (data) {
+      if (artifactSelections[side.toLowerCase()] !== artifactName) return;
+      setArtifactPane(side, renderArtifactMeta(data), renderArtifactContent(data));
+    })
+    .fail(function (xhr) {
+      setArtifactPane(side, "Artifact load failed.", xhr.responseText || "Artifact load failed.");
+    });
+}
+
+function syncArtifactReview(artifacts) {
+  const list = artifacts || [];
+  const names = new Set(list.map(function (artifact) { return artifact.name; }));
+
+  if (!artifactSelections.left || !names.has(artifactSelections.left)) {
+    const leftDefault = pickArtifact(list, ["summary_output", "summary_round", "worker_output", "worker_step"], "");
+    artifactSelections.left = leftDefault ? leftDefault.name : "";
+  }
+
+  if (!artifactSelections.right || !names.has(artifactSelections.right) || artifactSelections.right === artifactSelections.left) {
+    const rightDefault = pickArtifact(list, ["worker_output", "worker_step", "summary_output", "summary_round"], artifactSelections.left);
+    artifactSelections.right = rightDefault ? rightDefault.name : "";
+  }
+
+  $("#artifactLeftSelect").html(buildArtifactOptions(list, artifactSelections.left));
+  $("#artifactRightSelect").html(buildArtifactOptions(list, artifactSelections.right));
+
+  loadArtifactPane("Left", artifactSelections.left);
+  loadArtifactPane("Right", artifactSelections.right);
 }
 
 function populateStaticModelSelect(selector, selectedValue) {
@@ -287,6 +382,7 @@ function refreshState() {
     .done(function (data) {
       $("#historyJobs").text(renderJobs(data.jobs || [], data.recoveryWarning || null));
       $("#historyArtifacts").text(renderArtifacts(data.artifacts || []));
+      syncArtifactReview(data.artifacts || []);
     })
     .fail(function (xhr) {
       showMessage("History load failed: " + xhr.responseText, true);
@@ -426,5 +522,15 @@ $(function () {
     const positionId = $(this).data("position");
     const model = $(this).siblings("select.position-model").val();
     postForm("api/set_worker_model.php", { positionId, model }, "Model updated");
+  });
+
+  $("#artifactLeftSelect").on("change", function () {
+    artifactSelections.left = $(this).val();
+    loadArtifactPane("Left", artifactSelections.left);
+  });
+
+  $("#artifactRightSelect").on("change", function () {
+    artifactSelections.right = $(this).val();
+    loadArtifactPane("Right", artifactSelections.right);
   });
 });
