@@ -619,6 +619,7 @@ function applyLoopUi(state) {
   $("#runRound").prop("disabled", isActive || !hasTask);
   $("#runLoop").prop("disabled", isActive || !hasTask);
   $("#addAdversarial").prop("disabled", isActive || !hasTask || workers.length >= 26);
+  $("#applyCurrentModels").prop("disabled", isActive || !hasTask);
   $("#resetSession").prop("disabled", isActive);
   $("#resetState").prop("disabled", isActive);
   $("#cancelLoop").prop("disabled", !isActive);
@@ -780,6 +781,13 @@ $(function () {
     postForm("api/add_adversarial.php", {}, "Adversarial worker added");
   });
 
+  $("#applyCurrentModels").on("click", function () {
+    postForm("api/apply_runtime_models.php", {
+      model: $("#model").val(),
+      summarizerModel: $("#summarizerModel").val()
+    }, "Current task models updated");
+  });
+
   $("#cancelLoop").on("click", function () {
     postForm("api/cancel_loop.php", {}, "Cancel sent");
   });
@@ -845,6 +853,12 @@ $(function () {
   $(document).on("click", ".save-model", function () {
     const positionId = $(this).data("position");
     const model = $(this).siblings("select.position-model").val();
+    postForm("api/set_worker_model.php", { positionId, model }, "Model updated");
+  });
+
+  $(document).on("change", ".position-model", function () {
+    const positionId = $(this).data("position");
+    const model = $(this).val();
     postForm("api/set_worker_model.php", { positionId, model }, "Model updated");
   });
 

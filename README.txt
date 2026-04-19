@@ -55,6 +55,7 @@ Main flow
 2. Optionally keep or edit the `Session Context` field if you are carrying forward a prior session.
 3. Set or swap the API key in the top bar if you want to use `Live API`.
 4. Choose `Mock` or `Live API`, the default worker model, summarizer model, and reasoning effort.
+4a. If a task is already active, use `Apply Models To Current Task` in Settings to push the selected worker default onto all current worker lanes and update the summarizer model too.
 5. Choose whether workers may use grounded web search, whether the summarizer should vet evidence, and optionally set a domain allow-list.
 6. Adjust the session budget if you want tighter spend control.
 7. Click Start Task.

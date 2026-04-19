@@ -77,6 +77,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Live Python dispatch now applies target-aware structured-output token floors and a single retry on `incomplete: max_output_tokens`, while still recording the user-requested cap for auditability
 - Stale queued/running job recovery based on queue age and heartbeat age
 - Per-position model selection in the UI for workers and summarizer
+- Settings can now apply the selected worker default model to all current worker lanes, plus a separate summarizer model, without requiring a new task
 - Grounded worker research mode using the OpenAI Responses API `web_search` tool with optional OpenAI-domain allow-lists
 - Worker checkpoints now carry evidence ledgers, research queries, consulted source URLs, and evidence gaps
 - Summarizer now acts as a vetter, preserving conflicts while scoring supported, mixed, weak, or disputed claims
