@@ -9,6 +9,10 @@ define('OUTPUTS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'outputs');
 define('SESSIONS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'sessions');
 define('JOBS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'jobs');
 define('LOCKS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'locks');
+define('EVALS_PATH', DATA_PATH . DIRECTORY_SEPARATOR . 'evals');
+define('EVAL_SUITES_PATH', EVALS_PATH . DIRECTORY_SEPARATOR . 'suites');
+define('EVAL_ARMS_PATH', EVALS_PATH . DIRECTORY_SEPARATOR . 'arms');
+define('EVAL_RUNS_PATH', EVALS_PATH . DIRECTORY_SEPARATOR . 'runs');
 define('RUNTIME_PATH', ROOT_PATH . DIRECTORY_SEPARATOR . 'runtime');
 define('STATE_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'state.json');
 define('EVENTS_FILE', DATA_PATH . DIRECTORY_SEPARATOR . 'events.jsonl');
@@ -812,6 +816,520 @@ function ensure_data_paths(): void {
     if (!file_exists(STEPS_FILE)) {
         file_put_contents(STEPS_FILE, '');
     }
+}
+
+function write_json_file_pretty(string $path, array $payload): void {
+    file_put_contents($path, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function eval_seed_suite_manifests(): array {
+    return [
+        'core-quality.json' => [
+            'suiteId' => 'core-quality',
+            'title' => 'Core Quality Suite',
+            'description' => 'Decision-heavy product and platform cases for comparing direct and steered output.',
+            'judgeRubric' => [
+                'mustDo' => [
+                    'Answer in a single assistant voice.',
+                    'Make a decisive but conditional recommendation.',
+                    'Absorb the strongest objections into the recommendation.',
+                    'Prefer operational clarity over generic caution.',
+                ],
+                'qualitySignals' => [
+                    'States the call early.',
+                    'Names the dominant tradeoff.',
+                    'Gives a concrete next step.',
+                    'Does not narrate hidden process.',
+                ],
+            ],
+            'cases' => [
+                [
+                    'caseId' => 'sensitive-feature-launch',
+                    'title' => 'Sensitive AI Feature Launch',
+                    'objective' => 'You are advising a 12-person B2B SaaS. The team wants to ship AI-generated summaries for recorded customer support calls within 6 weeks. Calls can contain personal data, refund promises, and contract-sensitive details. The CEO wants a clear ship / no-ship recommendation plus the smallest rollout plan that would still be responsible.',
+                    'constraints' => [
+                        'Answer in a single assistant voice.',
+                        'Give a decisive recommendation, not just a list of pros and cons.',
+                        'Absorb the strongest objections into the recommendation.',
+                        'Keep the answer concise but actionable.',
+                    ],
+                    'sessionContext' => '',
+                    'checks' => [
+                        'requireLive' => true,
+                        'forbiddenPhrases' => ['as an ai language model'],
+                        'maxParagraphs' => 3,
+                    ],
+                    'gold' => [
+                        'idealVerdict' => 'Conditional ship through a tightly bounded rollout, not a blind launch.',
+                        'mustAddress' => [
+                            'privacy and contractual exposure',
+                            'human review or fallback for sensitive outputs',
+                            'smallest responsible rollout path',
+                        ],
+                    ],
+                ],
+                [
+                    'caseId' => 'billing-replatform',
+                    'title' => 'Billing Replatform Before Peak Season',
+                    'objective' => 'A SaaS company wants to replace cron-based billing jobs with an event-driven queue system one month before its holiday traffic spike. The CTO wants a direct go / no-go call and the safest path forward.',
+                    'constraints' => [
+                        'Give a direct recommendation with conditions.',
+                        'Do not hide behind generic caution.',
+                        'Explain the most important tradeoff and the concrete next step.',
+                    ],
+                    'sessionContext' => '',
+                    'checks' => [
+                        'requireLive' => true,
+                        'forbiddenPhrases' => ['it depends'],
+                        'maxParagraphs' => 3,
+                    ],
+                    'gold' => [
+                        'idealVerdict' => 'Bias toward no-go for full replacement near peak, with a staged dual-run or partial path instead.',
+                        'mustAddress' => [
+                            'peak-season risk',
+                            'rollback or dual-run safety',
+                            'concrete next step',
+                        ],
+                    ],
+                ],
+            ],
+        ],
+        'smoke-mock.json' => [
+            'suiteId' => 'smoke-mock',
+            'title' => 'Smoke Mock Suite',
+            'description' => 'Small mock-friendly suite for isolated eval plumbing and UI checks.',
+            'judgeRubric' => [
+                'mustDo' => [
+                    'Stay single-voice.',
+                    'Make a recommendation.',
+                    'Keep the answer short.',
+                ],
+            ],
+            'cases' => [
+                [
+                    'caseId' => 'internal-rollout',
+                    'title' => 'Internal Rollout Memo',
+                    'objective' => 'Advise a small product team on whether to roll out a new internal dashboard feature this week or hold it for one more sprint. Give a direct recommendation and the safest next step.',
+                    'constraints' => [
+                        'Stay concise.',
+                        'Give one recommendation with one next step.',
+                    ],
+                    'sessionContext' => '',
+                    'checks' => [
+                        'requireLive' => false,
+                        'forbiddenPhrases' => ['as an ai language model'],
+                        'maxParagraphs' => 2,
+                    ],
+                    'gold' => [
+                        'idealVerdict' => 'Choose a clear ship-or-hold call with one operational next step.',
+                        'mustAddress' => ['recommendation', 'next step'],
+                    ],
+                ],
+            ],
+        ],
+    ];
+}
+
+function eval_seed_arm_manifests(): array {
+    $directBudget = [
+        'maxTotalTokens' => 120000,
+        'maxCostUsd' => 6.00,
+        'maxOutputTokens' => 2200,
+    ];
+    $steeredBudget = [
+        'maxTotalTokens' => 180000,
+        'maxCostUsd' => 8.00,
+        'maxOutputTokens' => 2400,
+    ];
+    return [
+        'direct-gpt54.json' => [
+            'armId' => 'direct-gpt54',
+            'title' => 'Direct GPT-5.4',
+            'description' => 'Single-model baseline with no adversarial steering.',
+            'type' => 'direct',
+            'runtime' => [
+                'executionMode' => 'live',
+                'model' => 'gpt-5.4',
+                'summarizerModel' => 'gpt-5.4',
+                'reasoningEffort' => 'medium',
+                'budget' => $directBudget,
+                'research' => default_research_config(),
+                'vetting' => ['enabled' => true],
+                'preferredLoop' => ['rounds' => 1, 'delayMs' => 0],
+                'requireLive' => true,
+                'allowMockFallback' => false,
+            ],
+            'workers' => [],
+        ],
+        'direct-mock.json' => [
+            'armId' => 'direct-mock',
+            'title' => 'Direct Mock',
+            'description' => 'Single-model mock baseline for eval smoke tests.',
+            'type' => 'direct',
+            'runtime' => [
+                'executionMode' => 'mock',
+                'model' => 'gpt-5-mini',
+                'summarizerModel' => 'gpt-5-mini',
+                'reasoningEffort' => 'low',
+                'budget' => $directBudget,
+                'research' => default_research_config(),
+                'vetting' => ['enabled' => true],
+                'preferredLoop' => ['rounds' => 1, 'delayMs' => 0],
+                'requireLive' => false,
+                'allowMockFallback' => true,
+            ],
+            'workers' => [],
+        ],
+        'steered-mini.json' => [
+            'armId' => 'steered-mini',
+            'title' => 'Steered Mini',
+            'description' => 'Cheap worker lanes with a cheap summarizer for broad coverage at low cost.',
+            'type' => 'steered',
+            'runtime' => [
+                'executionMode' => 'live',
+                'model' => 'gpt-5-mini',
+                'summarizerModel' => 'gpt-5-mini',
+                'reasoningEffort' => 'medium',
+                'budget' => $steeredBudget,
+                'research' => default_research_config(),
+                'vetting' => ['enabled' => true],
+                'preferredLoop' => ['rounds' => 1, 'delayMs' => 0],
+                'requireLive' => true,
+                'allowMockFallback' => false,
+            ],
+            'workers' => [
+                normalize_worker_definition(['id' => 'A', 'type' => 'proponent', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+                normalize_worker_definition(['id' => 'B', 'type' => 'sceptic', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+                normalize_worker_definition(['id' => 'C', 'type' => 'security', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+            ],
+        ],
+        'steered-mock.json' => [
+            'armId' => 'steered-mock',
+            'title' => 'Steered Mock',
+            'description' => 'Mock multi-lane arm for eval smoke tests.',
+            'type' => 'steered',
+            'runtime' => [
+                'executionMode' => 'mock',
+                'model' => 'gpt-5-mini',
+                'summarizerModel' => 'gpt-5-mini',
+                'reasoningEffort' => 'low',
+                'budget' => $steeredBudget,
+                'research' => default_research_config(),
+                'vetting' => ['enabled' => true],
+                'preferredLoop' => ['rounds' => 1, 'delayMs' => 0],
+                'requireLive' => false,
+                'allowMockFallback' => true,
+            ],
+            'workers' => [
+                normalize_worker_definition(['id' => 'A', 'type' => 'proponent', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+                normalize_worker_definition(['id' => 'B', 'type' => 'sceptic', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+            ],
+        ],
+        'steered-high-summarizer.json' => [
+            'armId' => 'steered-high-summarizer',
+            'title' => 'Steered High Summarizer',
+            'description' => 'Cheap adversarial lanes with a stronger lead summarizer.',
+            'type' => 'steered',
+            'runtime' => [
+                'executionMode' => 'live',
+                'model' => 'gpt-5-mini',
+                'summarizerModel' => 'gpt-5.4',
+                'reasoningEffort' => 'high',
+                'budget' => [
+                    'maxTotalTokens' => 220000,
+                    'maxCostUsd' => 14.00,
+                    'maxOutputTokens' => 2800,
+                ],
+                'research' => default_research_config(),
+                'vetting' => ['enabled' => true],
+                'preferredLoop' => ['rounds' => 1, 'delayMs' => 0],
+                'requireLive' => true,
+                'allowMockFallback' => false,
+            ],
+            'workers' => [
+                normalize_worker_definition(['id' => 'A', 'type' => 'proponent', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+                normalize_worker_definition(['id' => 'B', 'type' => 'sceptic', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+                normalize_worker_definition(['id' => 'C', 'type' => 'security', 'model' => 'gpt-5-mini'], 'gpt-5-mini'),
+            ],
+        ],
+    ];
+}
+
+function ensure_eval_paths(): void {
+    ensure_data_paths();
+    foreach ([EVALS_PATH, EVAL_SUITES_PATH, EVAL_ARMS_PATH, EVAL_RUNS_PATH] as $path) {
+        if (!is_dir($path)) {
+            mkdir($path, 0777, true);
+        }
+    }
+
+    $suiteFiles = glob(EVAL_SUITES_PATH . DIRECTORY_SEPARATOR . '*.json') ?: [];
+    if (!$suiteFiles) {
+        foreach (eval_seed_suite_manifests() as $fileName => $payload) {
+            write_json_file_pretty(EVAL_SUITES_PATH . DIRECTORY_SEPARATOR . $fileName, $payload);
+        }
+    }
+
+    $armFiles = glob(EVAL_ARMS_PATH . DIRECTORY_SEPARATOR . '*.json') ?: [];
+    if (!$armFiles) {
+        foreach (eval_seed_arm_manifests() as $fileName => $payload) {
+            write_json_file_pretty(EVAL_ARMS_PATH . DIRECTORY_SEPARATOR . $fileName, $payload);
+        }
+    }
+}
+
+function eval_manifest_glob(string $rootPath): array {
+    $files = glob($rootPath . DIRECTORY_SEPARATOR . '*.json') ?: [];
+    sort($files);
+    return $files;
+}
+
+function eval_validate_suite_manifest(array $manifest, string $filePath): array {
+    $suiteId = trim((string)($manifest['suiteId'] ?? ''));
+    $title = trim((string)($manifest['title'] ?? ''));
+    $description = trim((string)($manifest['description'] ?? ''));
+    $cases = is_array($manifest['cases'] ?? null) ? $manifest['cases'] : null;
+    if ($suiteId === '') {
+        throw new InvalidArgumentException('Missing suiteId in ' . basename($filePath));
+    }
+    if ($title === '') {
+        throw new InvalidArgumentException('Missing title in suite ' . $suiteId . '.');
+    }
+    if ($cases === null || !$cases) {
+        throw new InvalidArgumentException('Suite ' . $suiteId . ' must include at least one case.');
+    }
+    $seenCaseIds = [];
+    $previewCases = [];
+    foreach ($cases as $index => $case) {
+        if (!is_array($case)) {
+            throw new InvalidArgumentException('Suite ' . $suiteId . ' case #' . ($index + 1) . ' must be an object.');
+        }
+        $caseId = trim((string)($case['caseId'] ?? ''));
+        if ($caseId === '') {
+            throw new InvalidArgumentException('Suite ' . $suiteId . ' has a case without caseId.');
+        }
+        if (isset($seenCaseIds[$caseId])) {
+            throw new InvalidArgumentException('Suite ' . $suiteId . ' contains duplicate caseId ' . $caseId . '.');
+        }
+        $seenCaseIds[$caseId] = true;
+        if (trim((string)($case['title'] ?? '')) === '' || trim((string)($case['objective'] ?? '')) === '') {
+            throw new InvalidArgumentException('Suite ' . $suiteId . ' case ' . $caseId . ' is missing title or objective.');
+        }
+        $previewCases[] = [
+            'caseId' => $caseId,
+            'title' => trim((string)($case['title'] ?? $caseId)),
+            'constraintCount' => count(is_array($case['constraints'] ?? null) ? $case['constraints'] : []),
+        ];
+    }
+    return [
+        'suiteId' => $suiteId,
+        'title' => $title,
+        'description' => $description,
+        'file' => basename($filePath),
+        'caseCount' => count($previewCases),
+        'cases' => $previewCases,
+    ];
+}
+
+function eval_validate_arm_manifest(array $manifest, string $filePath): array {
+    $armId = trim((string)($manifest['armId'] ?? ''));
+    $title = trim((string)($manifest['title'] ?? ''));
+    $type = trim((string)($manifest['type'] ?? ''));
+    if ($armId === '') {
+        throw new InvalidArgumentException('Missing armId in ' . basename($filePath));
+    }
+    if ($title === '') {
+        throw new InvalidArgumentException('Missing title in arm ' . $armId . '.');
+    }
+    if (!in_array($type, ['direct', 'steered'], true)) {
+        throw new InvalidArgumentException('Arm ' . $armId . ' must have type direct or steered.');
+    }
+    $runtime = is_array($manifest['runtime'] ?? null) ? $manifest['runtime'] : [];
+    $model = normalize_model_id((string)($runtime['model'] ?? default_model_id()), default_model_id());
+    $summarizerModel = normalize_model_id((string)($runtime['summarizerModel'] ?? $model), $model);
+    $workers = is_array($manifest['workers'] ?? null) ? $manifest['workers'] : [];
+    if ($type === 'steered' && !$workers) {
+        throw new InvalidArgumentException('Steered arm ' . $armId . ' must include workers.');
+    }
+    $normalizedWorkers = [];
+    if ($workers) {
+        $seenWorkerIds = [];
+        foreach ($workers as $worker) {
+            if (!is_array($worker)) {
+                throw new InvalidArgumentException('Arm ' . $armId . ' contains an invalid worker definition.');
+            }
+            $normalizedWorker = normalize_worker_definition($worker, $model);
+            if (isset($seenWorkerIds[$normalizedWorker['id']])) {
+                throw new InvalidArgumentException('Arm ' . $armId . ' contains duplicate worker id ' . $normalizedWorker['id'] . '.');
+            }
+            $seenWorkerIds[$normalizedWorker['id']] = true;
+            $normalizedWorkers[] = $normalizedWorker;
+        }
+    }
+    return [
+        'armId' => $armId,
+        'title' => $title,
+        'description' => trim((string)($manifest['description'] ?? '')),
+        'type' => $type,
+        'file' => basename($filePath),
+        'model' => $model,
+        'summarizerModel' => $summarizerModel,
+        'reasoningEffort' => trim((string)($runtime['reasoningEffort'] ?? 'low')) ?: 'low',
+        'workerCount' => count($normalizedWorkers),
+        'workers' => array_map(static function (array $worker): array {
+            return [
+                'id' => $worker['id'],
+                'type' => $worker['type'],
+                'label' => $worker['label'],
+                'model' => $worker['model'],
+            ];
+        }, $normalizedWorkers),
+    ];
+}
+
+function load_eval_suite_catalog(): array {
+    ensure_eval_paths();
+    $items = [];
+    $errors = [];
+    $seen = [];
+    foreach (eval_manifest_glob(EVAL_SUITES_PATH) as $filePath) {
+        try {
+            $manifest = read_json_file_safe($filePath);
+            if (!is_array($manifest)) {
+                throw new InvalidArgumentException('Suite manifest is empty or invalid JSON: ' . basename($filePath));
+            }
+            $item = eval_validate_suite_manifest($manifest, $filePath);
+            if (isset($seen[$item['suiteId']])) {
+                throw new InvalidArgumentException('Duplicate suiteId ' . $item['suiteId'] . ' across eval suite files.');
+            }
+            $seen[$item['suiteId']] = true;
+            $items[] = $item;
+        } catch (Throwable $ex) {
+            $errors[] = [
+                'file' => basename($filePath),
+                'message' => $ex->getMessage(),
+            ];
+        }
+    }
+    usort($items, static function (array $a, array $b): int {
+        return strcmp((string)$a['title'], (string)$b['title']);
+    });
+    return ['items' => $items, 'errors' => $errors];
+}
+
+function load_eval_arm_catalog(): array {
+    ensure_eval_paths();
+    $items = [];
+    $errors = [];
+    $seen = [];
+    foreach (eval_manifest_glob(EVAL_ARMS_PATH) as $filePath) {
+        try {
+            $manifest = read_json_file_safe($filePath);
+            if (!is_array($manifest)) {
+                throw new InvalidArgumentException('Arm manifest is empty or invalid JSON: ' . basename($filePath));
+            }
+            $item = eval_validate_arm_manifest($manifest, $filePath);
+            if (isset($seen[$item['armId']])) {
+                throw new InvalidArgumentException('Duplicate armId ' . $item['armId'] . ' across eval arm files.');
+            }
+            $seen[$item['armId']] = true;
+            $items[] = $item;
+        } catch (Throwable $ex) {
+            $errors[] = [
+                'file' => basename($filePath),
+                'message' => $ex->getMessage(),
+            ];
+        }
+    }
+    usort($items, static function (array $a, array $b): int {
+        return strcmp((string)$a['title'], (string)$b['title']);
+    });
+    return ['items' => $items, 'errors' => $errors];
+}
+
+function eval_suite_file_path(string $suiteId): string {
+    return EVAL_SUITES_PATH . DIRECTORY_SEPARATOR . $suiteId . '.json';
+}
+
+function eval_arm_file_path(string $armId): string {
+    return EVAL_ARMS_PATH . DIRECTORY_SEPARATOR . $armId . '.json';
+}
+
+function eval_run_dir_path(string $runId): string {
+    return EVAL_RUNS_PATH . DIRECTORY_SEPARATOR . $runId;
+}
+
+function eval_run_file_path(string $runId): string {
+    return eval_run_dir_path($runId) . DIRECTORY_SEPARATOR . 'run.json';
+}
+
+function read_eval_run(string $runId): ?array {
+    ensure_eval_paths();
+    return read_json_file_safe(eval_run_file_path($runId));
+}
+
+function write_eval_run(array $run): array {
+    ensure_eval_paths();
+    $runId = trim((string)($run['runId'] ?? ''));
+    if ($runId === '') {
+        throw new InvalidArgumentException('Eval runId is required.');
+    }
+    $runDir = eval_run_dir_path($runId);
+    if (!is_dir($runDir)) {
+        mkdir($runDir, 0777, true);
+    }
+    $run['updatedAt'] = gmdate('c');
+    write_json_file_pretty(eval_run_file_path($runId), $run);
+    return $run;
+}
+
+function list_eval_run_files(): array {
+    ensure_eval_paths();
+    $files = glob(EVAL_RUNS_PATH . DIRECTORY_SEPARATOR . '*' . DIRECTORY_SEPARATOR . 'run.json') ?: [];
+    usort($files, static function (string $a, string $b): int {
+        return (filemtime($b) ?: 0) <=> (filemtime($a) ?: 0);
+    });
+    return $files;
+}
+
+function eval_runner_script_path(): string {
+    $path = RUNTIME_PATH . DIRECTORY_SEPARATOR . 'eval_runner.py';
+    if (!file_exists($path)) {
+        throw new RuntimeException('Eval runner script is missing.');
+    }
+    return $path;
+}
+
+function launch_eval_runner(string $runId): void {
+    $pythonPath = python_cli_path();
+    $scriptPath = eval_runner_script_path();
+    launch_background_process($pythonPath, [
+        $scriptPath,
+        '--root=' . ROOT_PATH,
+        '--run-id=' . $runId
+    ]);
+}
+
+function eval_resolve_run_file(string $runId, string $relativePath): ?string {
+    $relativePath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, ltrim($relativePath, "\\/"));
+    if ($relativePath === '' || str_contains($relativePath, '..')) {
+        return null;
+    }
+    $runDir = eval_run_dir_path($runId);
+    if (!is_dir($runDir)) {
+        return null;
+    }
+    $candidate = $runDir . DIRECTORY_SEPARATOR . $relativePath;
+    $resolvedRunDir = realpath($runDir);
+    $resolvedPath = realpath($candidate);
+    if ($resolvedRunDir === false || $resolvedPath === false || !is_file($resolvedPath)) {
+        return null;
+    }
+    $prefix = rtrim($resolvedRunDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+    if (strpos($resolvedPath, $prefix) !== 0 && $resolvedPath !== $resolvedRunDir) {
+        return null;
+    }
+    return $resolvedPath;
 }
 
 function lock_path(string $lockName = 'loop'): string {

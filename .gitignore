@@ -1,6 +1,7 @@
 Auth.txt
 data/checkpoints/
 data/benchmarks/
+data/evals/
 data/outputs/
 data/sessions/
 data/tasks/

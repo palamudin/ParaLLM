@@ -19,6 +19,7 @@ A local prototype scaffold for:
 - Session token / spend tracking with budget limits
 - Optional grounded worker research with web-search controls
 - Summarizer evidence vetting over worker research
+- Dedicated Eval workspace with isolated per-run workspaces, suites, arms, and score artifacts
 - Masked API key management through the UI
 - Persistent commander draft state plus session reset / carry-forward archive support
 - Resident Python runtime service so worker/summarizer logic stays warm between dispatches
@@ -59,6 +60,7 @@ Main flow
 6. Read the final Agent reply in Home. Use `Review` when you want the summarizer position trace, evidence lines, and saved artifacts.
 7. Use `Debug` for manual controls such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, `Cancel Loop`, or `Reset State`, and for reviewing/editing carry-forward `Session Context`.
 8. Use `Review` for memory, jobs, artifacts, and side-by-side output inspection.
+9. Use `Eval` when you want isolated benchmark runs, per-arm scoring, and side-by-side eval-artifact review without touching the live task workspace.
 
 Main files
 ----------
@@ -68,9 +70,12 @@ Main files
 - scripts/loop_runner.php  background loop runner
 - scripts/qa_check.py      reusable lint + reversible mock smoke harness
 - scripts/qa_live_check.py live-mode QA smoke with tight budgets and source allow-lists
+- scripts/qa_eval_check.py isolated eval smoke for the sibling Eval subsystem
 - scripts/quality_benchmark.py blind quality benchmark for direct-vs-steered answer comparison
+- runtime/eval_runner.py   isolated eval batch runner
 - runtime/*.py             resident Python runtime service and engine
 - data/state.json          canonical state
+- data/evals/              isolated eval suites, arms, runs, and artifacts
 - data/sessions/*.json    archived session resets with carry-forward summaries
 - data/events.jsonl        append-only event log
 - data/outputs/*.json      dedicated saved worker/summarizer outputs for inspection
@@ -89,6 +94,10 @@ Run the live verification harness when you want a real model smoke:
 Run the quality benchmark when you want to measure whether steered output actually beats a direct answer on the same prompt:
 
 `python scripts/quality_benchmark.py`
+
+Run the isolated eval smoke when you want to validate suites, arms, run manifests, and isolated eval artifacts:
+
+`python scripts/qa_eval_check.py`
 
 What it does:
 - compiles the Python runtime files
@@ -110,6 +119,8 @@ What the benchmark adds:
 - runs a live steered multi-lane answer on the same case
 - sends both public answers to a blind judge so the scorer does not know which one was steered
 - scores decisiveness, tradeoff handling, objection absorption, actionability, single-voice quality, and overall quality
+- separately scores whether the lead thread stayed in control of adversarial pressure instead of behaving like a funnel
+- can sweep multiple loop depths in one run so extra rounds can be compared on both answer quality and lead-thread control
 - fails fast by default if the supposed steered run silently falls back to mock output
 - supports repeat trials per case and saves aggregate score deltas under `data/benchmarks/`
 
@@ -132,6 +143,7 @@ Useful benchmark flags:
 - `--case core`
 - `--repeats 3`
 - `--loop-rounds 2`
+- `--loop-sweep 1,2,3`
 - `--keep-artifacts`
 - `--allow-mock-fallback`
 
@@ -163,6 +175,8 @@ Home now mirrors those profiles with a compact runtime card, a header profile pi
 Home chat polling now preserves scroll position instead of snapping back to the bottom on every refresh.
 The Home thread is intentionally simplified: it shows the prompt and the summarizer's response in a more standard agent-chat style, while the internal adjudication trace now lives in `Review`.
 The summarizer now treats the visible answer as a lead thought that privately absorbs adversarial pressure, instead of outputting a recap or consensus blend.
+Review now also shows a control audit for the lead thread: its first-pass draft, the control question applied to adversarial pressure, which objections were accepted or rejected, what concerns were held out, and the final self-check before the answer was shown.
+Eval now runs as a sibling subsystem instead of reusing the interactive singleton workspace. Suites live under `data/evals/suites`, arms live under `data/evals/arms`, runs materialize under `data/evals/runs/<runId>`, and each replicate gets its own isolated workspace root so hidden gold labels and score artifacts never leak into normal task state.
 The Home worker rail can now add the next adversarial lane from a selectable template such as `Security`, `Economist`, or `User Advocate`.
 Review now exposes recent job operations, round-history compare actions, session archive replay/export controls, and visible requested-vs-effective output-token cap metadata.
 `Reset Session` writes an archive file under `data/sessions`, clears the active task, and preloads a short carry-forward summary into the `Session Context` field for the next task.

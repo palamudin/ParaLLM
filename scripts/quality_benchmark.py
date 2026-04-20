@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from urllib.parse import quote
 
 from qa_check import (
@@ -37,6 +37,14 @@ SCORE_FIELDS = [
     "actionability",
     "singleVoice",
     "overall",
+]
+
+CONTROL_SCORE_FIELDS = [
+    "leadControl",
+    "adversarialDiscipline",
+    "selfCheckQuality",
+    "nonFunnelIntegration",
+    "overallControl",
 ]
 
 
@@ -88,6 +96,27 @@ def resolve_cases(case_arg: str) -> List[BenchmarkCase]:
         valid = ", ".join(sorted(CORE_CASES.keys()) + ["core"])
         raise QAError(f"Unknown benchmark case '{case_arg}'. Use one of: {valid}")
     return [CORE_CASES[case_arg]]
+
+
+def parse_loop_sweep(raw: str | None, default_rounds: int) -> List[int]:
+    if not raw:
+        return [max(1, int(default_rounds or 1))]
+    values: List[int] = []
+    for chunk in raw.split(","):
+        text = chunk.strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError as error:
+            raise QAError(f"Invalid loop count '{text}' in --loop-sweep.") from error
+        if value < 1:
+            raise QAError("Loop counts in --loop-sweep must be at least 1.")
+        if value not in values:
+            values.append(value)
+    if not values:
+        raise QAError("--loop-sweep did not contain any valid loop counts.")
+    return values
 
 
 def normalize_worker_list(model: str) -> List[Dict[str, Any]]:
@@ -179,6 +208,32 @@ def blind_judge_schema() -> Dict[str, Any]:
     }
 
 
+def control_judge_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "scores",
+            "verdict",
+            "strongestControlStrength",
+            "strongestControlWeakness",
+            "rationale",
+        ],
+        "properties": {
+            "scores": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": CONTROL_SCORE_FIELDS,
+                "properties": {field: {"type": "integer"} for field in CONTROL_SCORE_FIELDS},
+            },
+            "verdict": {"type": "string"},
+            "strongestControlStrength": {"type": "string"},
+            "strongestControlWeakness": {"type": "string"},
+            "rationale": {"type": "string"},
+        },
+    }
+
+
 def choose_answer_slots(case_id: str, trial_number: int) -> Dict[str, str]:
     seed = hashlib.sha256(f"{case_id}:{trial_number}".encode("utf-8")).digest()[0]
     if seed % 2 == 0:
@@ -196,6 +251,12 @@ def average_score_block(blocks: List[Dict[str, int]]) -> Dict[str, float]:
     if not blocks:
         return {field: 0.0 for field in SCORE_FIELDS}
     return {field: round(mean_or_zero([float(block[field]) for block in blocks]), 2) for field in SCORE_FIELDS}
+
+
+def average_control_score_block(blocks: List[Dict[str, int]]) -> Dict[str, float]:
+    if not blocks:
+        return {field: 0.0 for field in CONTROL_SCORE_FIELDS}
+    return {field: round(mean_or_zero([float(block[field]) for block in blocks]), 2) for field in CONTROL_SCORE_FIELDS}
 
 
 def summarize_trial_set(trials: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -250,6 +311,30 @@ def summarize_trial_set(trials: List[Dict[str, Any]]) -> Dict[str, Any]:
         "averageBaselineScores": average_score_block(baseline_blocks),
         "averageSteeredScores": average_score_block(steered_blocks),
         "averageScoreDelta": mean_delta,
+        "verdict": verdict,
+    }
+
+
+def summarize_control_trial_set(trials: List[Dict[str, Any]]) -> Dict[str, Any]:
+    blocks: List[Dict[str, int]] = []
+    for trial in trials:
+        control_judge = trial.get("controlJudge") if isinstance(trial.get("controlJudge"), dict) else {}
+        scores = control_judge.get("scores")
+        if isinstance(scores, dict):
+            blocks.append({field: int(scores.get(field, 0) or 0) for field in CONTROL_SCORE_FIELDS})
+
+    averages = average_control_score_block(blocks)
+    overall = averages.get("overallControl", 0.0)
+    lead_control = averages.get("leadControl", 0.0)
+    verdict = "weak_control"
+    if overall >= 8.0 and lead_control >= 8.0:
+        verdict = "strong_control"
+    elif overall >= 6.0:
+        verdict = "developing_control"
+
+    return {
+        "trials": len(blocks),
+        "averageControlScores": averages,
         "verdict": verdict,
     }
 
@@ -356,6 +441,10 @@ def run_steered_case(
     summarizer_opinion = summary.get("summarizerOpinion")
     if not isinstance(summarizer_opinion, dict):
         raise QAError("Steered summarizerOpinion was missing.")
+    control_audit = summary.get("controlAudit")
+    if not isinstance(control_audit, dict):
+        raise QAError("Steered controlAudit was missing.")
+
     artifact_name = f"{task_id}_summary_round{max(1, loop_rounds):03d}_output.json"
     artifact = request_json(
         api_url(base_url, "get_artifact.php") + "?name=" + quote(artifact_name),
@@ -364,16 +453,19 @@ def run_steered_case(
     artifact_output = artifact.get("content", {}).get("output")
     if not isinstance(artifact_output, dict):
         raise QAError("Steered summary artifact output was missing.")
+
     usage = state.get("usage") if isinstance(state.get("usage"), dict) else {}
     total_tokens = int(usage.get("totalTokens", 0) or 0)
     worker_modes: Dict[str, str] = {}
     for worker_id in ("A", "B", "C"):
+        worker_artifact_name = f"{task_id}_{worker_id}_step{max(1, loop_rounds):03d}_output.json"
         worker_artifact = request_json(
-            api_url(base_url, "get_artifact.php") + f"?name={quote(task_id + '_' + worker_id + '_step' + str(max(1, loop_rounds)).zfill(3) + '_output.json')}",
+            api_url(base_url, "get_artifact.php") + f"?name={quote(worker_artifact_name)}",
             timeout=20,
         )
         worker_mode = str(worker_artifact.get("content", {}).get("mode") or "").strip().lower()
         worker_modes[worker_id] = worker_mode or "unknown"
+
     summary_mode = str(artifact.get("content", {}).get("mode") or "").strip().lower()
     live_validation_error = ""
     if require_live:
@@ -384,6 +476,7 @@ def run_steered_case(
                 f"workerModes={worker_modes}, summaryMode={summary_mode or 'unknown'}, totalTokens={total_tokens}. "
                 "Increase output caps, reduce loop depth, or tune prompts before trusting this comparison."
             )
+
     return {
         "taskId": task_id,
         "summary": summary,
@@ -418,10 +511,7 @@ def remap_blind_judgment(slot_map: Dict[str, str], blind_judgment: Dict[str, Any
 
     baseline_scores_int = {field: int(baseline_scores.get(field, 0) or 0) for field in SCORE_FIELDS}
     steered_scores_int = {field: int(steered_scores.get(field, 0) or 0) for field in SCORE_FIELDS}
-    score_delta = {
-        field: steered_scores_int[field] - baseline_scores_int[field]
-        for field in SCORE_FIELDS
-    }
+    score_delta = {field: steered_scores_int[field] - baseline_scores_int[field] for field in SCORE_FIELDS}
 
     return {
         "baselineScores": baseline_scores_int,
@@ -490,10 +580,216 @@ def run_blind_judge(
     }
 
 
+def run_control_judge(
+    runtime: Any,
+    api_key: str,
+    case: BenchmarkCase,
+    judge_model: str,
+    steered: Dict[str, Any],
+) -> Dict[str, Any]:
+    summary = steered["summary"]
+    front_answer = summary.get("frontAnswer", {})
+    opinion = summary.get("summarizerOpinion", {})
+    control_audit = summary.get("controlAudit", {})
+
+    instructions = (
+        "You are grading whether a lead assistant thread stayed in control of adversarial pressure.\n"
+        "Reward answers where the lead direction is clear, adversarial objections are selectively integrated, rejected pressure is actually rejected, and the final answer is checked against the user's real request.\n"
+        "Penalize funnel-like behavior where adversarial content is merely forwarded, averaged, or allowed to steer the answer blindly.\n"
+        "Score from 1 to 10 on each control criterion.\n"
+        "Return JSON only that matches the schema."
+    )
+    input_text = (
+        f"Benchmark case: {case.title}\n\n"
+        f"Objective:\n{case.objective}\n\n"
+        f"Constraints:\n{json.dumps(case.constraints, ensure_ascii=False, indent=2)}\n\n"
+        f"Public answer:\n{front_answer.get('answer', '')}\n\n"
+        f"Lead direction:\n{front_answer.get('leadDirection', '')}\n\n"
+        f"Absorbed adversarial pressure:\n{front_answer.get('adversarialPressure', '')}\n\n"
+        f"Current stance:\n{opinion.get('stance', '')}\n\n"
+        f"Integration mode:\n{opinion.get('integrationMode', '')}\n\n"
+        f"Lead draft before pressure:\n{control_audit.get('leadDraft', '')}\n\n"
+        f"Control question:\n{control_audit.get('integrationQuestion', '')}\n\n"
+        f"Accepted adversarial points:\n{json.dumps(control_audit.get('acceptedAdversarialPoints', []), ensure_ascii=False, indent=2)}\n\n"
+        f"Rejected adversarial points:\n{json.dumps(control_audit.get('rejectedAdversarialPoints', []), ensure_ascii=False, indent=2)}\n\n"
+        f"Held-out concerns:\n{json.dumps(control_audit.get('heldOutConcerns', []), ensure_ascii=False, indent=2)}\n\n"
+        f"Pre-release self-check:\n{control_audit.get('selfCheck', '')}\n"
+    )
+    result = runtime.invoke_openai_json(
+        api_key=api_key,
+        model=judge_model,
+        reasoning_effort="high",
+        instructions=instructions,
+        input_text=input_text,
+        schema_name="benchmark_control_judge",
+        schema=control_judge_schema(),
+        max_output_tokens=1400,
+        target_kind="generic",
+    )
+    parsed = result.parsed
+    scores = parsed.get("scores")
+    if not isinstance(scores, dict):
+        raise QAError("Control judge response did not include score output.")
+    return {
+        "scores": {field: int(scores.get(field, 0) or 0) for field in CONTROL_SCORE_FIELDS},
+        "verdict": str(parsed.get("verdict") or "").strip(),
+        "strongestControlStrength": str(parsed.get("strongestControlStrength") or "").strip(),
+        "strongestControlWeakness": str(parsed.get("strongestControlWeakness") or "").strip(),
+        "rationale": str(parsed.get("rationale") or "").strip(),
+        "responseId": result.response_id,
+        "attempts": result.attempts,
+    }
+
+
 def benchmark_output_path(root: Path, timestamp: str) -> Path:
     path = root / "data" / "benchmarks"
     path.mkdir(parents=True, exist_ok=True)
     return path / f"benchmark-{timestamp}.json"
+
+
+def execute_suite(
+    root: Path,
+    preserved: PreservedState,
+    runtime: Any,
+    api_key: str,
+    args: argparse.Namespace,
+    cases: List[BenchmarkCase],
+    loop_rounds: int,
+) -> Tuple[Dict[str, Any], List[str]]:
+    task_ids_to_cleanup: List[str] = []
+    suite: Dict[str, Any] = {
+        "loopRounds": loop_rounds,
+        "cases": [],
+    }
+
+    for case in cases:
+        qa_print(f"Benchmarking {case.case_id} with {args.repeats} trial(s) at {loop_rounds} loop(s)")
+        trials: List[Dict[str, Any]] = []
+        for trial_number in range(1, args.repeats + 1):
+            qa_print(f"Trial {trial_number}/{args.repeats} for {case.case_id}")
+            request_json(api_url(args.base_url, "reset_state.php"), method="POST", timeout=20)
+
+            baseline = run_direct_baseline(
+                runtime=runtime,
+                api_key=api_key,
+                case=case,
+                model=args.baseline_model,
+                reasoning_effort=args.reasoning_effort,
+                max_output_tokens=args.max_output_tokens,
+            )
+            steered = run_steered_case(
+                base_url=args.base_url,
+                case=case,
+                worker_model=args.worker_model,
+                summarizer_model=args.summarizer_model,
+                reasoning_effort=args.reasoning_effort,
+                max_cost_usd=args.max_cost_usd,
+                max_total_tokens=args.max_total_tokens,
+                max_output_tokens=args.max_output_tokens,
+                loop_rounds=loop_rounds,
+                require_live=not args.allow_mock_fallback,
+            )
+            task_ids_to_cleanup.append(steered["taskId"])
+            if steered["liveValidationError"]:
+                raise QAError(steered["liveValidationError"])
+
+            judge = run_blind_judge(
+                runtime=runtime,
+                api_key=api_key,
+                case=case,
+                judge_model=args.judge_model,
+                baseline=baseline,
+                steered=steered,
+                trial_number=trial_number,
+            )
+            control_judge = run_control_judge(
+                runtime=runtime,
+                api_key=api_key,
+                case=case,
+                judge_model=args.judge_model,
+                steered=steered,
+            )
+
+            trial_entry = {
+                "trial": trial_number,
+                "baseline": baseline,
+                "steered": {
+                    "taskId": steered["taskId"],
+                    "artifact": steered["artifact"],
+                    "frontAnswer": steered["summary"]["frontAnswer"],
+                    "summarizerOpinion": steered["summary"]["summarizerOpinion"],
+                    "controlAudit": steered["summary"]["controlAudit"],
+                    "workerModes": steered["workerModes"],
+                    "summaryMode": steered["summaryMode"],
+                    "usage": steered["usage"],
+                },
+                "judge": judge,
+                "controlJudge": control_judge,
+            }
+            trials.append(trial_entry)
+            qa_print(
+                f"Trial {trial_number} result: winner={judge['winner']} overallDelta={judge['scoreDelta']['overall']:+d} control={control_judge['scores']['overallControl']}/10"
+            )
+
+            if not args.keep_artifacts:
+                preserved.cleanup_task_artifacts(steered["taskId"])
+
+        case_summary = summarize_trial_set(trials)
+        control_summary = summarize_control_trial_set(trials)
+        suite["cases"].append(
+            {
+                "caseId": case.case_id,
+                "title": case.title,
+                "objective": case.objective,
+                "constraints": case.constraints,
+                "trials": trials,
+                "aggregate": case_summary,
+                "controlAggregate": control_summary,
+            }
+        )
+        qa_print(
+            f"Case summary for {case.case_id}: avgOverallDelta={case_summary['averageScoreDelta']['overall']:+.2f} avgControl={control_summary['averageControlScores']['overallControl']:.2f}"
+        )
+
+    all_trials = [
+        trial
+        for case_entry in suite["cases"]
+        for trial in case_entry.get("trials", [])
+        if isinstance(trial, dict)
+    ]
+    suite["summary"] = summarize_trial_set(all_trials)
+    suite["controlSummary"] = summarize_control_trial_set(all_trials)
+    return suite, task_ids_to_cleanup
+
+
+def build_loop_sweep_comparison(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    comparison: List[Dict[str, Any]] = []
+    for run in runs:
+        if str(run.get("status") or "") == "error":
+            comparison.append(
+                {
+                    "loopRounds": int(run.get("loopRounds", 0) or 0),
+                    "status": "error",
+                    "error": str(run.get("error") or ""),
+                }
+            )
+            continue
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        control_summary = run.get("controlSummary") if isinstance(run.get("controlSummary"), dict) else {}
+        comparison.append(
+            {
+                "loopRounds": int(run.get("loopRounds", 0) or 0),
+                "status": "ok",
+                "trials": int(summary.get("trials", 0) or 0),
+                "verdict": str(summary.get("verdict") or ""),
+                "averageSteeredOverall": float(summary.get("averageSteeredScores", {}).get("overall", 0.0) or 0.0),
+                "averageOverallDelta": float(summary.get("averageScoreDelta", {}).get("overall", 0.0) or 0.0),
+                "averageControlOverall": float(control_summary.get("averageControlScores", {}).get("overallControl", 0.0) or 0.0),
+                "averageLeadControl": float(control_summary.get("averageControlScores", {}).get("leadControl", 0.0) or 0.0),
+                "controlVerdict": str(control_summary.get("verdict") or ""),
+            }
+        )
+    return comparison
 
 
 def parse_args() -> argparse.Namespace:
@@ -513,6 +809,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge-model", default="gpt-5.4", help="Model used to grade baseline vs steered output.")
     parser.add_argument("--reasoning-effort", default="medium", help="Reasoning effort for baseline and steered summarizer.")
     parser.add_argument("--loop-rounds", type=int, default=1, help="Number of steered rounds to run.")
+    parser.add_argument("--loop-sweep", default="", help="Comma-separated loop counts to benchmark, for example 1,2,3.")
     parser.add_argument("--repeats", type=int, default=1, help="How many benchmark trials to run per case.")
     parser.add_argument("--max-cost-usd", type=float, default=4.00, help="Budget cap for each steered run.")
     parser.add_argument("--max-total-tokens", type=int, default=120000, help="Token cap for each steered run.")
@@ -542,6 +839,7 @@ def main() -> int:
         return 1
 
     cases = resolve_cases(args.case)
+    loop_values = parse_loop_sweep(args.loop_sweep, args.loop_rounds)
 
     if not args.skip_prechecks:
         run_python_checks(root)
@@ -562,94 +860,49 @@ def main() -> int:
             "judgeModel": args.judge_model,
             "reasoningEffort": args.reasoning_effort,
             "loopRounds": args.loop_rounds,
+            "loopSweep": loop_values,
             "repeats": args.repeats,
             "maxCostUsdPerSteeredRun": args.max_cost_usd,
             "maxTotalTokensPerSteeredRun": args.max_total_tokens,
             "maxOutputTokens": args.max_output_tokens,
             "keepArtifacts": bool(args.keep_artifacts),
+            "allowMockFallback": bool(args.allow_mock_fallback),
         },
-        "cases": [],
     }
 
     task_ids_to_cleanup: List[str] = []
     with PreservedState(root) as preserved:
         try:
-            for case in cases:
-                qa_print(f"Benchmarking {case.case_id} with {args.repeats} trial(s)")
-                trials: List[Dict[str, Any]] = []
-                for trial_number in range(1, args.repeats + 1):
-                    qa_print(f"Trial {trial_number}/{args.repeats} for {case.case_id}")
-                    request_json(api_url(args.base_url, "reset_state.php"), method="POST", timeout=20)
-
-                    baseline = run_direct_baseline(
+            runs: List[Dict[str, Any]] = []
+            for loop_rounds in loop_values:
+                try:
+                    run_report, run_task_ids = execute_suite(
+                        root=root,
+                        preserved=preserved,
                         runtime=runtime,
                         api_key=api_key,
-                        case=case,
-                        model=args.baseline_model,
-                        reasoning_effort=args.reasoning_effort,
-                        max_output_tokens=args.max_output_tokens,
+                        args=args,
+                        cases=cases,
+                        loop_rounds=loop_rounds,
                     )
-                    steered = run_steered_case(
-                        base_url=args.base_url,
-                        case=case,
-                        worker_model=args.worker_model,
-                        summarizer_model=args.summarizer_model,
-                        reasoning_effort=args.reasoning_effort,
-                        max_cost_usd=args.max_cost_usd,
-                        max_total_tokens=args.max_total_tokens,
-                        max_output_tokens=args.max_output_tokens,
-                        loop_rounds=args.loop_rounds,
-                        require_live=not args.allow_mock_fallback,
-                    )
-                    task_ids_to_cleanup.append(steered["taskId"])
-                    if steered["liveValidationError"]:
-                        raise QAError(steered["liveValidationError"])
-                    judge = run_blind_judge(
-                        runtime=runtime,
-                        api_key=api_key,
-                        case=case,
-                        judge_model=args.judge_model,
-                        baseline=baseline,
-                        steered=steered,
-                        trial_number=trial_number,
+                    run_report["status"] = "ok"
+                    runs.append(run_report)
+                    task_ids_to_cleanup.extend(run_task_ids)
+                except QAError as error:
+                    qa_print(f"Loop sweep entry {loop_rounds} failed: {error}")
+                    runs.append(
+                        {
+                            "loopRounds": loop_rounds,
+                            "status": "error",
+                            "error": str(error),
+                        }
                     )
 
-                    trial_entry = {
-                        "trial": trial_number,
-                        "baseline": baseline,
-                        "steered": {
-                            "taskId": steered["taskId"],
-                            "artifact": steered["artifact"],
-                            "frontAnswer": steered["summary"]["frontAnswer"],
-                            "summarizerOpinion": steered["summary"]["summarizerOpinion"],
-                            "workerModes": steered["workerModes"],
-                            "summaryMode": steered["summaryMode"],
-                            "usage": steered["usage"],
-                        },
-                        "judge": judge,
-                    }
-                    trials.append(trial_entry)
-                    qa_print(
-                        f"Trial {trial_number} result: winner={judge['winner']} overallDelta={judge['scoreDelta']['overall']:+d}"
-                    )
-
-                    if not args.keep_artifacts:
-                        preserved.cleanup_task_artifacts(steered["taskId"])
-
-                case_summary = summarize_trial_set(trials)
-                report["cases"].append(
-                    {
-                        "caseId": case.case_id,
-                        "title": case.title,
-                        "objective": case.objective,
-                        "constraints": case.constraints,
-                        "trials": trials,
-                        "aggregate": case_summary,
-                    }
-                )
-                qa_print(
-                    f"Case summary for {case.case_id}: steeredWins={case_summary['steeredWins']} baselineWins={case_summary['baselineWins']} avgOverallDelta={case_summary['averageScoreDelta']['overall']:+.2f}"
-                )
+            if len(runs) == 1:
+                report.update(runs[0])
+            else:
+                report["runs"] = runs
+                report["loopSweepComparison"] = build_loop_sweep_comparison(runs)
         finally:
             request_json(api_url(args.base_url, "reset_state.php"), method="POST", timeout=20)
             if not args.keep_artifacts:
@@ -657,29 +910,34 @@ def main() -> int:
                     if task_id:
                         preserved.cleanup_task_artifacts(task_id)
 
-    all_trials = [
-        trial
-        for case_entry in report.get("cases", [])
-        for trial in case_entry.get("trials", [])
-        if isinstance(trial, dict)
-    ]
-    report["summary"] = summarize_trial_set(all_trials)
-    report["summary"]["caseCount"] = len(report["cases"])
-
     output_path = benchmark_output_path(root, timestamp)
     output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     qa_print("PASS")
     qa_print(f"Saved benchmark report to {output_path}")
-    print(
-        json.dumps(
-            {
-                "summary": report["summary"],
-                "savedReport": str(output_path),
-            },
-            indent=2,
-            ensure_ascii=False,
+
+    if "runs" in report:
+        print(
+            json.dumps(
+                {
+                    "loopSweepComparison": report.get("loopSweepComparison", []),
+                    "savedReport": str(output_path),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
         )
-    )
+    else:
+        print(
+            json.dumps(
+                {
+                    "summary": report.get("summary", {}),
+                    "controlSummary": report.get("controlSummary", {}),
+                    "savedReport": str(output_path),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
     return 0
 
 

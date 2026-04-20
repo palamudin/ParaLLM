@@ -666,6 +666,52 @@ def normalize_summarizer_opinion(opinion: Any, fallback_summary: Optional[Dict[s
     return normalized
 
 
+def normalize_control_audit(control_audit: Any, fallback_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    fallback_summary = fallback_summary or {}
+    fallback_front_answer = normalize_front_answer(fallback_summary.get("frontAnswer"), fallback_summary)
+    fallback_opinion = normalize_summarizer_opinion(fallback_summary.get("summarizerOpinion"), fallback_summary)
+
+    accepted_points: List[str] = []
+    fallback_pressure = truncate_text(fallback_front_answer.get("adversarialPressure", ""), 220)
+    if fallback_pressure and fallback_pressure != "No strong adversarial pressure was captured.":
+        accepted_points.append(fallback_pressure)
+
+    normalized = {
+        "leadDraft": truncate_text(fallback_front_answer.get("leadDirection", ""), 280)
+        or truncate_text(fallback_front_answer.get("stance", ""), 280)
+        or "No lead draft was captured.",
+        "integrationQuestion": (
+            "Does this adversarial point improve correctness, scope, safety, or usefulness, or does it only pull the answer off course?"
+        ),
+        "acceptedAdversarialPoints": limit_string_list(accepted_points, 3, 220),
+        "rejectedAdversarialPoints": [],
+        "heldOutConcerns": limit_string_list(fallback_summary.get("claimsNeedingVerification", []), 3, 220),
+        "selfCheck": (
+            truncate_text(fallback_opinion.get("integrationMode", ""), 320)
+            or "Before speaking, I checked that the final answer still matched the lead direction and the user's actual request."
+        ),
+    }
+
+    if isinstance(control_audit, dict):
+        lead_draft = truncate_text(control_audit.get("leadDraft", ""), 280)
+        integration_question = truncate_text(control_audit.get("integrationQuestion", ""), 260)
+        accepted = limit_string_list(control_audit.get("acceptedAdversarialPoints", []), 3, 220)
+        rejected = limit_string_list(control_audit.get("rejectedAdversarialPoints", []), 3, 220)
+        held_out = limit_string_list(control_audit.get("heldOutConcerns", []), 3, 220)
+        self_check = truncate_text(control_audit.get("selfCheck", ""), 360)
+        if lead_draft:
+            normalized["leadDraft"] = lead_draft
+        if integration_question:
+            normalized["integrationQuestion"] = integration_question
+        normalized["acceptedAdversarialPoints"] = accepted
+        normalized["rejectedAdversarialPoints"] = rejected
+        normalized["heldOutConcerns"] = held_out
+        if self_check:
+            normalized["selfCheck"] = self_check
+
+    return normalized
+
+
 def normalize_review_trace(review_trace: Any) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     if not isinstance(review_trace, list):
@@ -736,7 +782,7 @@ class OpenAIResult:
 
 
 class LoopRuntime:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, auth_path: str | Path | None = None) -> None:
         self.root = Path(root).resolve()
         self.data_path = self.root / "data"
         self.tasks_path = self.data_path / "tasks"
@@ -748,7 +794,7 @@ class LoopRuntime:
         self.state_path = self.data_path / "state.json"
         self.events_path = self.data_path / "events.jsonl"
         self.steps_path = self.data_path / "steps.jsonl"
-        self.auth_path = self.root / "Auth.txt"
+        self.auth_path = Path(auth_path).resolve() if auth_path else (self.root / "Auth.txt")
 
     def ensure_data_paths(self) -> None:
         for path in (
@@ -1609,11 +1655,19 @@ class LoopRuntime:
         if not isinstance(prior_summary, dict):
             return {}
         review_trace = normalize_review_trace(prior_summary.get("reviewTrace", []))
+        control_audit = normalize_control_audit(prior_summary.get("controlAudit"), prior_summary)
         return {
             "taskId": str(prior_summary.get("taskId", "")),
             "round": int(prior_summary.get("round", 0) or 0),
             "frontAnswer": normalize_front_answer(prior_summary.get("frontAnswer"), prior_summary),
             "summarizerOpinion": normalize_summarizer_opinion(prior_summary.get("summarizerOpinion"), prior_summary),
+            "controlAudit": {
+                "leadDraft": truncate_text(control_audit.get("leadDraft", ""), 220),
+                "acceptedAdversarialPoints": limit_string_list(control_audit.get("acceptedAdversarialPoints", []), 2, 180),
+                "rejectedAdversarialPoints": limit_string_list(control_audit.get("rejectedAdversarialPoints", []), 2, 180),
+                "heldOutConcerns": limit_string_list(control_audit.get("heldOutConcerns", []), 2, 180),
+                "selfCheck": truncate_text(control_audit.get("selfCheck", ""), 220),
+            },
             "stableFindings": limit_string_list(prior_summary.get("stableFindings", []), 3, 220),
             "conditionalTruths": limit_string_list(prior_summary.get("conditionalTruths", []), 3, 220),
             "claimsNeedingVerification": limit_string_list(prior_summary.get("claimsNeedingVerification", []), 3, 220),
@@ -1851,6 +1905,20 @@ class LoopRuntime:
                 "uncertainty": "The review depth should stay adjustable so the trace remains useful instead of becoming noise.",
                 "integrationMode": "Start with a lead answer, then let the strongest objections narrow, condition, redirect, or overturn it before the final wording is shown.",
             },
+            "controlAudit": {
+                "leadDraft": "My first-pass answer is that the front chat should stay single-voice and the internal debate should stay review-only.",
+                "integrationQuestion": "Does this adversarial point make the visible answer truer or safer, or is it only making the hidden process louder?",
+                "acceptedAdversarialPoints": [
+                    "The strongest objection is that adversarial reasoning should tighten the answer without taking over the public voice."
+                ],
+                "rejectedAdversarialPoints": [
+                    "Do not let the public answer turn into a recap of the internal lanes."
+                ],
+                "heldOutConcerns": [
+                    "The exact amount of review detail should stay adjustable so the trace does not become noise."
+                ],
+                "selfCheck": "Before finalizing, I check that the public answer still sounds like one lead mind answering the user instead of a funnel of worker outputs.",
+            },
             "reviewTrace": review_trace,
             "stableFindings": [
                 "Structured checkpoints let many lanes disagree without losing continuity.",
@@ -1904,6 +1972,7 @@ class LoopRuntime:
                 "round",
                 "frontAnswer",
                 "summarizerOpinion",
+                "controlAudit",
                 "reviewTrace",
                 "stableFindings",
                 "conflicts",
@@ -1940,6 +2009,26 @@ class LoopRuntime:
                         "because": {"type": "string"},
                         "uncertainty": {"type": "string"},
                         "integrationMode": {"type": "string"},
+                    },
+                },
+                "controlAudit": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "leadDraft",
+                        "integrationQuestion",
+                        "acceptedAdversarialPoints",
+                        "rejectedAdversarialPoints",
+                        "heldOutConcerns",
+                        "selfCheck",
+                    ],
+                    "properties": {
+                        "leadDraft": {"type": "string"},
+                        "integrationQuestion": {"type": "string"},
+                        "acceptedAdversarialPoints": {"type": "array", "items": {"type": "string"}},
+                        "rejectedAdversarialPoints": {"type": "array", "items": {"type": "string"}},
+                        "heldOutConcerns": {"type": "array", "items": {"type": "string"}},
+                        "selfCheck": {"type": "string"},
                     },
                 },
                 "reviewTrace": {
@@ -2047,9 +2136,19 @@ class LoopRuntime:
             "Judge worker claims using the evidence they provide.\n"
             "Form an opinion from the worker evidence and arguments instead of narrating the process.\n"
             "Treat the public answer as a lead thought, not a consensus blend.\n"
+            "The lead thread stays in control at all times.\n"
             "First decide what you would say if you had to answer alone.\n"
-            "Then let the strongest adversarial lines narrow, qualify, redirect, or overturn that lead thought.\n"
+            "Write that first-pass direction into controlAudit.leadDraft.\n"
+            "Then question each strong adversarial contribution against one control question: does it improve correctness, scope, safety, or usefulness, or does it merely pull the answer off course?\n"
+            "Write that question into controlAudit.integrationQuestion.\n"
+            "Only absorb adversarial pressure that survives that check.\n"
+            "Put accepted pressure into controlAudit.acceptedAdversarialPoints.\n"
+            "Put rejected or downgraded pressure into controlAudit.rejectedAdversarialPoints.\n"
+            "Put concerns you are keeping visible but not letting dominate the answer into controlAudit.heldOutConcerns.\n"
+            "Before you finalize frontAnswer.answer, compare the final wording against your own lead draft and the user's actual request.\n"
+            "Write that last self-audit into controlAudit.selfCheck.\n"
             "Use adversarial pressure to improve the answer, not to speak directly through it.\n"
+            "Do not let the summarizer behave like a funnel that merely forwards or averages lane output.\n"
             "frontAnswer.answer must read like a normal single-assistant reply to the user.\n"
             "frontAnswer.answer should feel more reasonable because it privately absorbed objections, not because it publicly recaps them.\n"
             "Prefer a decisive but conditional answer over a timid laundry list of caveats.\n"
@@ -2059,6 +2158,7 @@ class LoopRuntime:
             "frontAnswer.adversarialPressure should name the strongest internal objection that changed or constrained the answer.\n"
             "summarizerOpinion is review-facing and may speak in the first person.\n"
             "summarizerOpinion.integrationMode should explain how the strongest objections changed the lead direction.\n"
+            "controlAudit is review-facing and should show that the lead thread actively interrogated adversarial pressure instead of submitting to it.\n"
             "reviewTrace is for review operations, not for the public answer.\n"
             "Every reviewTrace line ref must come from the supplied line catalog exactly as written.\n"
             "Do not upgrade weak evidence into a supported fact.\n"
@@ -2132,6 +2232,7 @@ class LoopRuntime:
     def normalize_summary(self, summary: Dict[str, Any], line_catalog: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         summary["frontAnswer"] = normalize_front_answer(summary.get("frontAnswer"), summary)
         summary["summarizerOpinion"] = normalize_summarizer_opinion(summary.get("summarizerOpinion"), summary)
+        summary["controlAudit"] = normalize_control_audit(summary.get("controlAudit"), summary)
         summary["reviewTrace"] = normalize_review_trace(summary.get("reviewTrace", []))
         summary["stableFindings"] = normalize_string_array_preserve_items(summary.get("stableFindings", []))
         summary["conditionalTruths"] = normalize_string_array_preserve_items(summary.get("conditionalTruths", []))

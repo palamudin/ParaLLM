@@ -110,16 +110,36 @@ const QUALITY_PROFILE_CATALOG = {
   }
 };
 const QUALITY_PROFILE_ORDER = ["low", "mid", "high", "ultra"];
+const COMPOSER_ATTACHMENT_LIMIT = 4;
+const COMPOSER_ATTACHMENT_MAX_BYTES = 180000;
+const COMPOSER_ATTACHMENT_MAX_CHARS = 6000;
+const COMPOSER_RECENT_FILES_KEY = "loopComposerRecentFiles";
+const COMPOSER_SUPPORTED_EXTENSIONS = [
+  ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
+  ".php", ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
+];
 let latestAuthStatus = { hasKey: false, masked: null, last4: "" };
 let latestLoopActive = false;
 let artifactSelections = { left: "", right: "" };
 let formDirty = false;
 let lastSyncedFormSourceKey = "";
 let activeView = localStorage.getItem("loopActiveView") || "home";
+let sidebarCollapsed = localStorage.getItem("loopSidebarCollapsed") === "1";
+let activeTheme = localStorage.getItem("loopTheme") || "dark";
+let mobileSidebarOpen = false;
 let latestState = null;
 let latestHistoryState = null;
+let latestEvalHistory = null;
+let selectedEvalRunId = localStorage.getItem("loopSelectedEvalRunId") || "";
+let evalArtifactSelections = { left: "", right: "" };
+let composerToolMenuOpen = false;
+let composerSourceDrawerOpen = false;
+let composerRecentDrawerOpen = false;
+let stagedComposerAttachments = [];
+let recentComposerAttachments = [];
 let draftSaveTimer = null;
 let workerControlsSignature = "";
+let workerControlExpanded = safeJsonParse(localStorage.getItem("loopWorkerControlExpanded") || "{}", {});
 let debugControlsSignature = "";
 let threadRenderSignature = "";
 let threadRenderTaskId = "";
@@ -161,6 +181,166 @@ function truncateText(value, maxLength = 220) {
   const text = String(value || "").trim().replace(/\s+/g, " ");
   if (!text) return "";
   return text.length > maxLength ? text.slice(0, Math.max(0, maxLength - 3)).trim() + "..." : text;
+}
+
+function safeJsonParse(raw, fallback) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed == null ? fallback : parsed;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function normalizeWorkerControlKey(key) {
+  return String(key || "").trim().toLowerCase();
+}
+
+function setWorkerControlExpandedState(key, open) {
+  const normalizedKey = normalizeWorkerControlKey(key);
+  if (!normalizedKey) return;
+  workerControlExpanded[normalizedKey] = !!open;
+  localStorage.setItem("loopWorkerControlExpanded", JSON.stringify(workerControlExpanded));
+}
+
+function appendCompactHoverPopup($root, lines) {
+  const detailLines = (lines || []).filter(Boolean);
+  if (!detailLines.length) return;
+  const $popup = $("<div>").addClass("compact-card-tooltip");
+  detailLines.forEach(function (line) {
+    $popup.append($("<div>").addClass("compact-card-tooltip-line").text(line));
+  });
+  $root.append($popup);
+}
+
+function loadRecentComposerAttachments() {
+  const stored = safeJsonParse(localStorage.getItem(COMPOSER_RECENT_FILES_KEY) || "[]", []);
+  if (!Array.isArray(stored)) return [];
+  return stored
+    .map(function (entry) {
+      if (!entry || typeof entry !== "object") return null;
+      const name = String(entry.name || "").trim();
+      const text = String(entry.text || "");
+      if (!name || !text) return null;
+      return {
+        id: String(entry.id || (name + "-" + Date.now())),
+        name: name,
+        size: Number(entry.size || text.length || 0),
+        type: String(entry.type || "text/plain"),
+        text: text,
+        truncated: !!entry.truncated,
+        addedAt: String(entry.addedAt || "")
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function saveRecentComposerAttachments() {
+  localStorage.setItem(COMPOSER_RECENT_FILES_KEY, JSON.stringify(recentComposerAttachments.slice(0, 6)));
+}
+
+function buildAttachmentId(prefix = "attachment") {
+  return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0);
+  if (size >= 1024 * 1024) return (size / (1024 * 1024)).toFixed(1) + " MB";
+  if (size >= 1024) return Math.round(size / 1024) + " KB";
+  return size + " B";
+}
+
+function supportedComposerFile(file) {
+  const name = String(file?.name || "").toLowerCase();
+  const type = String(file?.type || "").toLowerCase();
+  const extension = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+  return COMPOSER_SUPPORTED_EXTENSIONS.includes(extension)
+    || type.startsWith("text/")
+    || type.includes("json")
+    || type.includes("xml")
+    || type.includes("javascript");
+}
+
+function markComposerConfigDirty() {
+  formDirty = true;
+  renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
+  renderQualityProfileCards();
+  renderComposerTools();
+  queueDraftSave();
+}
+
+function clearComposerAttachments() {
+  stagedComposerAttachments = [];
+  composerRecentDrawerOpen = false;
+  renderComposerTools();
+}
+
+function resetComposerSurface(clearAttachments = true) {
+  if (clearAttachments) {
+    stagedComposerAttachments = [];
+  }
+  composerToolMenuOpen = false;
+  composerSourceDrawerOpen = false;
+  composerRecentDrawerOpen = false;
+  renderComposerTools();
+}
+
+function removeComposerAttachment(attachmentId) {
+  stagedComposerAttachments = stagedComposerAttachments.filter(function (attachment) {
+    return attachment.id !== attachmentId;
+  });
+  renderComposerTools();
+}
+
+function storeRecentComposerAttachment(attachment) {
+  const deduped = recentComposerAttachments.filter(function (entry) {
+    return !(entry.name === attachment.name && entry.text === attachment.text);
+  });
+  deduped.unshift({
+    id: buildAttachmentId("recent"),
+    name: attachment.name,
+    size: attachment.size,
+    type: attachment.type,
+    text: attachment.text,
+    truncated: !!attachment.truncated,
+    addedAt: new Date().toISOString()
+  });
+  recentComposerAttachments = deduped.slice(0, 6);
+  saveRecentComposerAttachments();
+}
+
+function stageComposerAttachment(attachment) {
+  const deduped = stagedComposerAttachments.filter(function (entry) {
+    return !(entry.name === attachment.name && entry.text === attachment.text);
+  });
+  stagedComposerAttachments = deduped.concat([attachment]).slice(-COMPOSER_ATTACHMENT_LIMIT);
+  renderComposerTools();
+}
+
+function attachmentPreviewText(attachment) {
+  return truncateText(String(attachment?.text || "").replace(/\s+/g, " "), 150);
+}
+
+function buildAttachmentContextBlock() {
+  if (!stagedComposerAttachments.length) return "";
+  const blocks = ["Attached source files for this request. Treat them as user-provided context:"];
+  stagedComposerAttachments.forEach(function (attachment) {
+    blocks.push(
+      "File: " + attachment.name + " (" + formatFileSize(attachment.size) + (attachment.truncated ? ", truncated" : "") + ")",
+      attachment.text
+    );
+  });
+  return blocks.join("\n\n");
+}
+
+function buildSendSessionContext(baseSessionContext) {
+  const sections = [String(baseSessionContext || "").trim()].filter(Boolean);
+  const attachmentBlock = buildAttachmentContextBlock();
+  if (attachmentBlock) {
+    sections.push(attachmentBlock);
+  }
+  return sections.join("\n\n---\n\n");
 }
 
 function lineAnchorId(ref) {
@@ -490,6 +670,7 @@ function applyCommanderForm(values) {
   $("#researchDomains").val((safe.researchDomains || []).join(", "));
   renderQualityProfileCards();
   renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
+  renderComposerTools();
 }
 
 function syncCommanderForm(task, draft, force = false) {
@@ -682,14 +863,12 @@ function runtimeSnapshotsMatch(left, right) {
   return JSON.stringify(leftModels) === JSON.stringify(rightModels);
 }
 
-function appendHomeRuntimeBlock($root, label, value, metaLines, warning = false) {
-  const $block = $("<div>").addClass("home-runtime-block");
+function appendHomeRuntimeBlock($root, label, value, detailLines, warning = false) {
+  const $block = $("<div>").addClass("home-runtime-block compact-hover-card");
   if (warning) $block.addClass("warning");
   $block.append($("<div>").addClass("home-runtime-label").text(label));
   $block.append($("<div>").addClass("home-runtime-value").text(value));
-  (metaLines || []).filter(Boolean).forEach(function (line) {
-    $block.append($("<div>").addClass("home-runtime-meta").text(line));
-  });
+  appendCompactHoverPopup($block, detailLines);
   $root.append($block);
 }
 
@@ -837,6 +1016,147 @@ function renderQualityProfileCards() {
   );
 }
 
+function renderHomeRuntimeControls(task, draft, loop) {
+  const $summary = $("#homeRuntimeSummary");
+  const $grid = $("#homeQualityProfiles");
+  const $apply = $("#applyHomeRuntime");
+  if (!$summary.length || !$grid.length || !$apply.length) return;
+
+  const stagedPayload = collectCommanderPayload();
+  const stagedSnapshot = buildQualityProfileSnapshot();
+  const stagedProfileId = detectQualityProfileId(stagedSnapshot);
+  const stagedProfileName = profileDisplayName(stagedProfileId);
+  const activeSnapshot = buildTaskQualityProfileSnapshot(task);
+  const activeProfileId = detectQualityProfileId(activeSnapshot);
+  const activeProfileName = profileDisplayName(activeProfileId);
+  const isLoopActive = loop?.status === "running" || loop?.status === "queued";
+  const hasTask = !!task;
+  const runtimeMatches = hasTask && activeSnapshot ? runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot) : false;
+
+  $summary.empty();
+
+  appendHomeRuntimeBlock(
+    $summary,
+    "Next send",
+    stagedProfileName + " · " + (stagedPayload.executionMode || "live") + " mode",
+    [
+      "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
+      "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+      "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms"
+    ]
+  );
+
+  if (hasTask && activeSnapshot) {
+    appendHomeRuntimeBlock(
+      $summary,
+      "Active task",
+      activeProfileName + " · " + (task?.runtime?.executionMode || "live") + " mode",
+      [
+        "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
+        "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+        "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms"
+      ]
+    );
+
+    appendHomeRuntimeBlock(
+      $summary,
+      runtimeMatches ? "Runtime sync" : "Runtime drift",
+      runtimeMatches ? "Aligned" : "Sync needed",
+      [
+        runtimeMatches
+          ? "Active task already matches the staged template."
+          : "Next send and active task are different.",
+        runtimeMatches
+          ? "You can keep prompting without touching settings."
+          : "Use Sync Active if you want the current task to adopt the staged profile, loop depth, and budget."
+      ],
+      !runtimeMatches
+    );
+  } else {
+    appendHomeRuntimeBlock(
+      $summary,
+      "Active task",
+      "Ready to start",
+      ["Send will start a fresh task with the staged profile, roster, and loop settings."]
+    );
+  }
+
+  $grid.empty();
+  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
+    const profile = QUALITY_PROFILE_CATALOG[profileId];
+    const $button = $("<button>")
+      .attr("type", "button")
+      .addClass("quick-profile-chip compact-hover-card")
+      .toggleClass("active", stagedProfileId === profileId)
+      .attr("data-profile-id", profileId);
+    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
+    $button.append($("<div>").addClass("quick-profile-title").text(profile.label));
+    appendCompactHoverPopup($button, [
+      profile.description,
+      "Workers: " + modelLabel(profile.workerModel) + " | Summarizer: " + modelLabel(profile.summarizerModel),
+      "Budget: " + formatUsdBudget(profile.maxCostUsd) + " | " + formatTokenWall(profile.maxTotalTokens),
+      "Reasoning: " + profile.reasoningEffort + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
+    ]);
+    $grid.append($button);
+  });
+
+  $apply.prop("disabled", isLoopActive || !hasTask);
+  $apply.text(isLoopActive ? "Loop Active" : "Sync Active");
+}
+
+function renderQualityProfileCards() {
+  const $root = $("#qualityProfileCards");
+  const $status = $("#qualityProfileStatus");
+  if (!$root.length || !$status.length) return;
+
+  const snapshot = buildQualityProfileSnapshot();
+  const activeProfileId = detectQualityProfileId(snapshot);
+  const distinctWorkerModels = Array.from(new Set((snapshot.workerModels || []).filter(Boolean)));
+  const workerModelSummary = distinctWorkerModels.length === 1
+    ? modelLabel(distinctWorkerModels[0])
+    : (distinctWorkerModels.length > 1 ? "mixed worker models" : modelLabel(snapshot.model));
+
+  $root.empty();
+  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
+    const profile = QUALITY_PROFILE_CATALOG[profileId];
+    const tokenText = Number(profile.maxTotalTokens) > 0 ? Number(profile.maxTotalTokens).toLocaleString() + " local tokens" : "cost wall only";
+    const $button = $("<button>")
+      .attr("type", "button")
+      .addClass("quality-profile-card compact-hover-card")
+      .toggleClass("active", activeProfileId === profileId)
+      .attr("data-profile-id", profileId);
+    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
+    $button.append($("<div>").addClass("quality-profile-title").text(profile.label));
+    appendCompactHoverPopup($button, [
+      profile.description,
+      "Workers: " + modelLabel(profile.workerModel) + " | Summarizer: " + modelLabel(profile.summarizerModel),
+      "Reasoning: " + profile.reasoningEffort + " | Budget: " + formatUsdBudget(profile.maxCostUsd),
+      tokenText + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
+    ]);
+    $root.append($button);
+  });
+
+  if (activeProfileId) {
+    const profile = QUALITY_PROFILE_CATALOG[activeProfileId];
+    $status.text(
+      profile.label +
+      " matches the current runtime template. " +
+      "Workers use " + modelLabel(profile.workerModel) +
+      ", summarizer uses " + modelLabel(profile.summarizerModel) +
+      ", the token wall is " + (profile.maxTotalTokens > 0 ? Number(profile.maxTotalTokens).toLocaleString() : "off") +
+      ", and auto loop depth is " + Number(profile.loopRounds || 0) + " rounds."
+    );
+    return;
+  }
+
+  $status.text(
+    "Manual mix active. Workers are on " + workerModelSummary +
+    ", summarizer is on " + modelLabel(snapshot.summarizerModel) +
+    ", reasoning is " + (snapshot.reasoningEffort || "unset") +
+    ", and auto loop depth is " + Number(snapshot.loopRounds || 0) + " rounds. Click a profile to snap the whole runtime back into a tested template."
+  );
+}
+
 function applyQualityProfile(profileId) {
   const profile = QUALITY_PROFILE_CATALOG[profileId];
   if (!profile) return;
@@ -875,9 +1195,189 @@ function queueDraftSave() {
   }, 350);
 }
 
+function renderComposerTools() {
+  const $menu = $("#composerToolMenu");
+  const $status = $("#composerToolStatus");
+  const $sourceDrawer = $("#composerSourceDrawer");
+  const $recentDrawer = $("#composerRecentDrawer");
+  const $attachments = $("#composerAttachmentList");
+  const $toggle = $("#composerToolMenuToggle");
+  if (!$menu.length || !$status.length || !$sourceDrawer.length || !$recentDrawer.length || !$attachments.length || !$toggle.length) {
+    return;
+  }
+
+  const researchEnabled = $("#researchEnabled").val() === "1";
+  const externalWeb = $("#researchExternalWebAccess").val() !== "0";
+  const vettingEnabled = $("#vettingEnabled").val() !== "0";
+  const domainsValue = String($("#researchDomains").val() || "").trim();
+  const sourceCount = domainsValue ? domainsValue.split(",").map(function (item) { return item.trim(); }).filter(Boolean).length : 0;
+  const toolChips = [];
+
+  toolChips.push(`<span class="composer-tool-chip${researchEnabled ? " active" : ""}">Search ${researchEnabled ? "on" : "off"}</span>`);
+  if (researchEnabled) {
+    toolChips.push(`<span class="composer-tool-chip">${externalWeb ? "Live web" : "Cached web"}</span>`);
+  }
+  if (sourceCount > 0) {
+    toolChips.push(`<span class="composer-tool-chip">${sourceCount} source${sourceCount === 1 ? "" : "s"}</span>`);
+  }
+  if (stagedComposerAttachments.length > 0) {
+    toolChips.push(`<span class="composer-tool-chip">${stagedComposerAttachments.length} file${stagedComposerAttachments.length === 1 ? "" : "s"}</span>`);
+  }
+  if (vettingEnabled) {
+    toolChips.push(`<span class="composer-tool-chip">Vetting</span>`);
+  }
+  if (!toolChips.length) {
+    toolChips.push(`<span class="composer-tool-chip">No quick tools active</span>`);
+  }
+  $status.html(toolChips.join(""));
+
+  $menu.html(`
+    <button type="button" class="composer-tool-action" data-tool-action="upload">Upload files</button>
+    <button type="button" class="composer-tool-action" data-tool-action="recent">Recent files</button>
+    <button type="button" class="composer-tool-action${researchEnabled ? " active" : ""}" data-tool-action="web-search">${researchEnabled ? "Web search on" : "Web search off"}</button>
+    <button type="button" class="composer-tool-action${composerSourceDrawerOpen ? " active" : ""}" data-tool-action="sources">Add sources</button>
+    <button type="button" class="composer-tool-action${vettingEnabled ? " active" : ""}" data-tool-action="vetting">${vettingEnabled ? "Vetting on" : "Vetting off"}</button>
+  `);
+  $menu.prop("hidden", !composerToolMenuOpen);
+  $toggle.attr("aria-expanded", composerToolMenuOpen ? "true" : "false");
+
+  if (!hasFocusWithin("#composerSourceDrawer")) {
+    $("#composerResearchDomainsInput").val(domainsValue);
+    $("#composerResearchModeSelect").val(externalWeb ? "1" : "0");
+  }
+  $sourceDrawer.prop("hidden", !composerSourceDrawerOpen);
+
+  if (composerRecentDrawerOpen) {
+    if (recentComposerAttachments.length) {
+      $recentDrawer.html(`
+        <div class="composer-recent-stack">
+          ${recentComposerAttachments.map(function (attachment) {
+            return `
+              <button type="button" class="composer-recent-file" data-recent-file-id="${escapeHtml(attachment.id)}">
+                <span class="composer-recent-title">${escapeHtml(attachment.name)}</span>
+                <span class="composer-recent-meta">${escapeHtml(formatFileSize(attachment.size) + (attachment.truncated ? " | truncated" : ""))}</span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+      `);
+    } else {
+      $recentDrawer.html(`<div class="fieldnote">No recent text files staged yet.</div>`);
+    }
+  } else {
+    $recentDrawer.empty();
+  }
+  $recentDrawer.prop("hidden", !composerRecentDrawerOpen);
+
+  if (!stagedComposerAttachments.length) {
+    $attachments.html(`<div class="fieldnote">Upload text or code files here when you want the next send to carry local source context.</div>`);
+    return;
+  }
+
+  $attachments.html(`
+    <div class="composer-attachment-stack">
+      ${stagedComposerAttachments.map(function (attachment) {
+        return `
+          <article class="composer-attachment-card">
+            <div class="composer-attachment-head">
+              <div>
+                <div class="composer-attachment-title">${escapeHtml(attachment.name)}</div>
+                <div class="composer-attachment-meta">${escapeHtml(formatFileSize(attachment.size) + (attachment.truncated ? " | truncated for send" : ""))}</div>
+              </div>
+              <button type="button" class="composer-attachment-remove" data-attachment-id="${escapeHtml(attachment.id)}">Remove</button>
+            </div>
+            <div class="composer-attachment-preview">${escapeHtml(attachmentPreviewText(attachment))}</div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `);
+}
+
 function hasFocusWithin(selector) {
   const active = document.activeElement;
   return !!active && $(active).closest(selector).length > 0;
+}
+
+function isMobileShell() {
+  return window.matchMedia("(max-width: 1100px)").matches;
+}
+
+function setTheme(theme) {
+  activeTheme = theme === "light" ? "light" : "dark";
+  localStorage.setItem("loopTheme", activeTheme);
+  document.documentElement.setAttribute("data-theme", activeTheme);
+  $(".theme-toggle-btn")
+    .removeClass("active")
+    .attr("aria-pressed", "false");
+  $('.theme-toggle-btn[data-theme-option="' + activeTheme + '"]')
+    .addClass("active")
+    .attr("aria-pressed", "true");
+}
+
+function syncShellChrome() {
+  const mobile = isMobileShell();
+  if (!mobile) {
+    mobileSidebarOpen = false;
+  }
+  $(".app-shell")
+    .toggleClass("sidebar-collapsed", !mobile && sidebarCollapsed)
+    .toggleClass("show-sidebar", mobile && mobileSidebarOpen);
+  $("#sidebarBackdrop").prop("hidden", !(mobile && mobileSidebarOpen));
+  $("#mobileSidebarToggle")
+    .prop("hidden", !mobile)
+    .attr("aria-expanded", mobile && mobileSidebarOpen ? "true" : "false")
+    .text(mobileSidebarOpen ? "Close menu" : "Menu");
+  const sidebarToggleLabel = mobile
+    ? "Close sidebar"
+    : (sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar");
+  $("#sidebarToggle")
+    .html(mobile ? "&#10005;" : (sidebarCollapsed ? "&#8594;" : "&#8592;"))
+    .attr("aria-expanded", mobile ? (mobileSidebarOpen ? "true" : "false") : (sidebarCollapsed ? "false" : "true"))
+    .attr("aria-label", sidebarToggleLabel)
+    .attr("title", sidebarToggleLabel);
+}
+
+function setMobileSidebarOpen(open) {
+  mobileSidebarOpen = !!open;
+  syncShellChrome();
+}
+
+function setSidebarCollapsed(collapsed) {
+  sidebarCollapsed = !!collapsed;
+  localStorage.setItem("loopSidebarCollapsed", sidebarCollapsed ? "1" : "0");
+  syncShellChrome();
+}
+
+function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
+  const taskId = task?.taskId || "none";
+  const memoryVersion = state?.memoryVersion ?? 0;
+  const workerCount = workers.length || 0;
+  const loopJobId = loop?.jobId || "none";
+  const loopStatus = loop?.status || "idle";
+  const loopProgress = (loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0);
+  const usageTokens = (usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0);
+  const usageWebSearchCalls = usage.webSearchCalls ?? 0;
+  const usageCost = formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0);
+
+  $("#taskId, #footerTaskId, #headerTaskId").text(taskId);
+  $("#memoryVersion, #footerMemoryVersion").text(memoryVersion);
+  $("#workerCount, #footerWorkerCount, #headerWorkerCount").text(workerCount);
+  $("#loopJobId, #footerLoopJobId").text(loopJobId);
+  $("#loopStatus, #footerLoopStatus, #headerLoopStatus").text(loopStatus);
+  $("#loopProgress, #footerLoopProgress").text(loopProgress);
+  $("#usageTokens, #footerUsageTokens").text(usageTokens);
+  $("#usageWebSearchCalls, #footerUsageWebSearchCalls").text(usageWebSearchCalls);
+  $("#usageCost, #footerUsageCost").text(usageCost);
+}
+
+function closeInlineHelpPopovers($except = $()) {
+  $(".inline-help.open").not($except).removeClass("open");
+  const activeElement = document.activeElement;
+  const $activeHelp = $(activeElement).closest(".inline-help");
+  if ($activeHelp.length && !$except.is($activeHelp)) {
+    activeElement.blur();
+  }
 }
 
 function updateAuthButtons() {
@@ -1122,6 +1622,341 @@ function renderArtifactPolicy(policy) {
   `;
 }
 
+function suggestDefaultEvalArmIds(arms) {
+  const list = Array.isArray(arms) ? arms : [];
+  const picks = [];
+  const direct = list.find(function (arm) { return arm?.type === "direct"; });
+  const steered = list.find(function (arm) { return arm?.type === "steered"; });
+  if (direct?.armId) picks.push(direct.armId);
+  if (steered?.armId) picks.push(steered.armId);
+  list.forEach(function (arm) {
+    if (picks.length >= 2) return;
+    if (arm?.armId && !picks.includes(arm.armId)) {
+      picks.push(arm.armId);
+    }
+  });
+  return picks;
+}
+
+function currentSelectedEvalArmIds() {
+  const ids = [];
+  $("#evalArmList .eval-arm-checkbox:checked").each(function () {
+    const armId = String($(this).val() || "").trim();
+    if (armId) ids.push(armId);
+  });
+  return ids;
+}
+
+function buildEvalSuiteOptions(suites, selectedSuiteId) {
+  const options = [`<option value="">Choose suite</option>`];
+  (suites || []).forEach(function (suite) {
+    const suiteId = String(suite?.suiteId || "");
+    const selected = suiteId === selectedSuiteId ? " selected" : "";
+    options.push(`<option value="${escapeHtml(suiteId)}"${selected}>${escapeHtml((suite?.title || suiteId) + " (" + Number(suite?.caseCount || 0) + " cases)")}</option>`);
+  });
+  return options.join("");
+}
+
+function renderEvalArmList(arms) {
+  const $root = $("#evalArmList");
+  const selectedIds = currentSelectedEvalArmIds();
+  const effectiveSelected = selectedIds.length ? selectedIds : suggestDefaultEvalArmIds(arms);
+  if (!$root.length) return;
+  if (!arms || !arms.length) {
+    $root.html(`<div class="review-empty">No eval arms available.</div>`);
+    return;
+  }
+  $root.html((arms || []).map(function (arm) {
+    const armId = String(arm?.armId || "");
+    const checked = effectiveSelected.includes(armId) ? " checked" : "";
+    const summary = [
+      (arm?.type || "arm"),
+      modelLabel(arm?.model || "gpt-5-mini"),
+      arm?.type === "steered" ? (modelLabel(arm?.summarizerModel || arm?.model || "gpt-5-mini") + " summarizer") : "single answer",
+      (arm?.reasoningEffort || "low") + " reasoning"
+    ].join(" | ");
+    return `
+      <label class="eval-arm-option">
+        <input class="eval-arm-checkbox" type="checkbox" value="${escapeHtml(armId)}"${checked} />
+        <span>
+          <strong>${escapeHtml(arm?.title || armId)}</strong>
+          <span class="eval-arm-meta">${escapeHtml(summary)}</span>
+          <span class="eval-arm-copy">${escapeHtml(arm?.description || "No description.")}</span>
+        </span>
+      </label>
+    `;
+  }).join(""));
+}
+
+function renderEvalCatalog(data) {
+  const suites = data?.suites || [];
+  const arms = data?.arms || [];
+  const selectedSuiteId = String($("#evalSuiteSelect").val() || data?.selectedRun?.suiteId || suites?.[0]?.suiteId || "");
+  $("#evalSuiteSelect").html(buildEvalSuiteOptions(suites, selectedSuiteId));
+  if (selectedSuiteId) {
+    $("#evalSuiteSelect").val(selectedSuiteId);
+  }
+  renderEvalArmList(arms);
+
+  const notes = [];
+  if ((data?.suiteErrors || []).length) {
+    notes.push("Suite manifest errors: " + data.suiteErrors.map(function (error) { return error.file + " - " + error.message; }).join(" | "));
+  }
+  if ((data?.armErrors || []).length) {
+    notes.push("Arm manifest errors: " + data.armErrors.map(function (error) { return error.file + " - " + error.message; }).join(" | "));
+  }
+  if (!notes.length) {
+    notes.push("Eval catalogs are loaded from isolated local manifests in data/evals/.");
+  }
+  $("#evalCatalogNote").text(notes.join(" "));
+}
+
+function buildEvalArtifactOptions(artifacts, selectedArtifactId) {
+  const options = [`<option value="">Select artifact</option>`];
+  (artifacts || []).forEach(function (artifact) {
+    const artifactId = String(artifact?.artifactId || "");
+    const selected = artifactId === selectedArtifactId ? " selected" : "";
+    options.push(`<option value="${escapeHtml(artifactId)}"${selected}>${escapeHtml((artifact?.name || artifactId) + " [" + (artifact?.kind || "artifact") + "]")}</option>`);
+  });
+  return options.join("");
+}
+
+function pickEvalArtifact(artifacts, preferredKinds, excludeArtifactId) {
+  const list = artifacts || [];
+  const preferred = list.find(function (artifact) {
+    return (!excludeArtifactId || artifact.artifactId !== excludeArtifactId) && preferredKinds.includes(artifact.kind);
+  });
+  if (preferred) return preferred;
+  return list.find(function (artifact) {
+    return !excludeArtifactId || artifact.artifactId !== excludeArtifactId;
+  }) || null;
+}
+
+function setEvalArtifactPane(side, metaText, contentText) {
+  $("#evalArtifact" + side + "Meta").text(metaText);
+  $("#evalArtifact" + side + "Content").text(contentText);
+}
+
+function loadEvalArtifactPane(side, artifactId) {
+  if (!artifactId || !selectedEvalRunId) {
+    setEvalArtifactPane(side, "No artifact selected.", "No artifact selected.");
+    return;
+  }
+  $.getJSON("api/get_eval_artifact.php", { runId: selectedEvalRunId, artifactId: artifactId })
+    .done(function (data) {
+      if (evalArtifactSelections[side.toLowerCase()] !== artifactId) return;
+      setEvalArtifactPane(side, renderArtifactMeta(data), renderArtifactContent(data));
+    })
+    .fail(function (xhr) {
+      setEvalArtifactPane(side, "Artifact load failed.", xhr.responseText || "Artifact load failed.");
+    });
+}
+
+function syncEvalArtifactReview(artifacts) {
+  const list = artifacts || [];
+  const ids = new Set(list.map(function (artifact) { return artifact.artifactId; }));
+  if (!evalArtifactSelections.left || !ids.has(evalArtifactSelections.left)) {
+    const leftDefault = pickEvalArtifact(list, ["score", "summary_output", "direct_output", "result"], "");
+    evalArtifactSelections.left = leftDefault ? leftDefault.artifactId : "";
+  }
+  if (!evalArtifactSelections.right || !ids.has(evalArtifactSelections.right) || evalArtifactSelections.right === evalArtifactSelections.left) {
+    const rightDefault = pickEvalArtifact(list, ["summary_output", "direct_output", "result", "worker_output", "score"], evalArtifactSelections.left);
+    evalArtifactSelections.right = rightDefault ? rightDefault.artifactId : "";
+  }
+  $("#evalArtifactLeftSelect").html(buildEvalArtifactOptions(list, evalArtifactSelections.left));
+  $("#evalArtifactRightSelect").html(buildEvalArtifactOptions(list, evalArtifactSelections.right));
+  loadEvalArtifactPane("Left", evalArtifactSelections.left);
+  loadEvalArtifactPane("Right", evalArtifactSelections.right);
+}
+
+function applyEvalArtifactSelectionPair(leftArtifactId, rightArtifactId) {
+  const artifacts = latestEvalHistory?.selectedRun?.artifacts || [];
+  const ids = new Set(artifacts.map(function (artifact) { return artifact.artifactId; }));
+  evalArtifactSelections.left = leftArtifactId && ids.has(leftArtifactId) ? leftArtifactId : "";
+  evalArtifactSelections.right = rightArtifactId && ids.has(rightArtifactId) ? rightArtifactId : "";
+  if (!evalArtifactSelections.left) {
+    const leftDefault = pickEvalArtifact(artifacts, ["score", "summary_output", "direct_output", "result"], "");
+    evalArtifactSelections.left = leftDefault ? leftDefault.artifactId : "";
+  }
+  if (!evalArtifactSelections.right || evalArtifactSelections.right === evalArtifactSelections.left) {
+    const rightDefault = pickEvalArtifact(artifacts, ["summary_output", "direct_output", "result", "worker_output"], evalArtifactSelections.left);
+    evalArtifactSelections.right = rightDefault ? rightDefault.artifactId : "";
+  }
+  $("#evalArtifactLeftSelect").html(buildEvalArtifactOptions(artifacts, evalArtifactSelections.left));
+  $("#evalArtifactRightSelect").html(buildEvalArtifactOptions(artifacts, evalArtifactSelections.right));
+  loadEvalArtifactPane("Left", evalArtifactSelections.left);
+  loadEvalArtifactPane("Right", evalArtifactSelections.right);
+}
+
+function formatScoreSummary(scores, overallKey, label) {
+  if (!scores || typeof scores !== "object" || !Object.keys(scores).length) {
+    return label + ": n/a";
+  }
+  return label + ": " + Number(scores[overallKey] || 0).toFixed(1) + " overall";
+}
+
+function renderEvalRunHistory(runs, currentRunId) {
+  if (!runs || !runs.length) {
+    return `<div class="review-empty">No eval runs yet.</div>`;
+  }
+  return `
+    <div class="history-stack">
+      ${runs.map(function (run) {
+        const qualityOverall = Number(run?.summary?.averageQuality?.overallQuality || 0).toFixed(1);
+        const controlOverall = Number(run?.summary?.averageControl?.overallControl || 0).toFixed(1);
+        return `
+          <article class="history-card${String(run?.runId || "") === currentRunId ? " active" : ""}">
+            <div class="history-head">
+              <div class="history-title">${escapeHtml(run?.runId || "eval-run")}</div>
+              <button type="button" class="select-eval-run" data-run-id="${escapeHtml(run?.runId || "")}">Open</button>
+            </div>
+            <div class="history-meta">${escapeHtml(
+              "Status: " + (run?.status || "unknown") +
+              " | suite " + (run?.suiteId || "n/a") +
+              " | reps " + Number(run?.replicates || 0) +
+              " | loops " + ((run?.loopSweep || []).join(", ") || "1")
+            )}</div>
+            <div class="history-meta">${escapeHtml(
+              "Quality " + qualityOverall +
+              " | Control " + controlOverall +
+              " | Tokens " + formatInteger(run?.summary?.totalTokens || 0) +
+              " | Spend " + formatUsd(run?.summary?.estimatedCostUsd || 0)
+            )}</div>
+            ${run?.current ? `<div class="history-meta">${escapeHtml("Running: " + [run.current.caseId, run.current.variantId, "r" + run.current.replicate].filter(Boolean).join(" | "))}</div>` : ""}
+            ${run?.error ? `<div class="history-meta">${escapeHtml("Error: " + run.error)}</div>` : ""}
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderEvalRunDetail(run) {
+  if (!run || typeof run !== "object") {
+    return `<div class="review-empty">Pick a run to inspect case-by-case scoring and artifacts.</div>`;
+  }
+  const summary = run.summary || {};
+  const topCards = `
+    <div class="eval-summary-grid">
+      <article class="history-card">
+        <div class="history-title">${escapeHtml(run?.suite?.title || run?.suiteId || "Eval suite")}</div>
+        <div class="history-meta">${escapeHtml((run?.status || "unknown") + " | judge " + (run?.judgeModel || "n/a"))}</div>
+      </article>
+      <article class="history-card">
+        <div class="history-title">Quality</div>
+        <div class="history-meta">${escapeHtml(formatScoreSummary(summary.averageQuality || {}, "overallQuality", "Average"))}</div>
+      </article>
+      <article class="history-card">
+        <div class="history-title">Control</div>
+        <div class="history-meta">${escapeHtml(formatScoreSummary(summary.averageControl || {}, "overallControl", "Average"))}</div>
+      </article>
+      <article class="history-card">
+        <div class="history-title">Usage</div>
+        <div class="history-meta">${escapeHtml("Tokens " + formatInteger(summary.totalTokens || 0) + " | Spend " + formatUsd(summary.estimatedCostUsd || 0))}</div>
+      </article>
+    </div>
+  `;
+
+  const caseCards = (run.cases || []).map(function (caseEntry) {
+    const variantCards = (caseEntry.variants || []).map(function (variant) {
+      const replicateRows = (variant.replicates || []).map(function (replicate) {
+        const artifacts = replicate.artifacts || [];
+        const scoreArtifact = artifacts.find(function (artifact) { return artifact.kind === "score"; });
+        const resultArtifact = artifacts.find(function (artifact) { return artifact.kind === "result"; });
+        const directArtifact = artifacts.find(function (artifact) { return artifact.kind === "direct_output"; });
+        const summaryArtifact = artifacts.find(function (artifact) { return artifact.kind === "summary_output"; });
+        const workerArtifact = artifacts.find(function (artifact) { return artifact.kind === "worker_output"; });
+        const primaryAnswerArtifact = summaryArtifact || directArtifact || resultArtifact || scoreArtifact;
+        const buttons = [];
+        if (scoreArtifact && primaryAnswerArtifact) {
+          buttons.push(`<button type="button" class="load-eval-artifact-pair" data-left="${escapeHtml(scoreArtifact.artifactId)}" data-right="${escapeHtml(primaryAnswerArtifact.artifactId)}">Score vs answer</button>`);
+        }
+        if (summaryArtifact && workerArtifact) {
+          buttons.push(`<button type="button" class="load-eval-artifact-pair" data-left="${escapeHtml(summaryArtifact.artifactId)}" data-right="${escapeHtml(workerArtifact.artifactId)}">Summary vs lane</button>`);
+        }
+        return `
+          <div class="eval-replicate-row${replicate.status === "error" ? " warning" : ""}">
+            <div>
+              <div class="history-title">Replicate ${escapeHtml(String(replicate.replicate || 0))}</div>
+              <div class="round-worker-meta">${escapeHtml(
+                "Status " + (replicate.status || "unknown") +
+                " | mode " + (replicate.mode || "n/a") +
+                " | deterministic " + ((replicate.deterministic?.passedCount || 0) + "/" + (replicate.deterministic?.totalCount || 0))
+              )}</div>
+              <div class="round-worker-meta">${escapeHtml(
+                "Quality " + Number(replicate.quality?.scores?.overallQuality || 0).toFixed(1) +
+                " | Control " + Number(replicate.control?.scores?.overallControl || 0).toFixed(1) +
+                " | Tokens " + formatInteger(replicate.usage?.totalTokens || 0) +
+                " | Spend " + formatUsd(replicate.usage?.estimatedCostUsd || 0)
+              )}</div>
+              <div class="eval-answer-preview">${escapeHtml(truncateText(replicate.publicAnswer || replicate.error || "No answer captured.", 240))}</div>
+            </div>
+            ${buttons.length ? `<div class="round-history-actions">${buttons.join("")}</div>` : ""}
+          </div>
+        `;
+      }).join("") || `<div class="review-empty small">No replicates recorded yet.</div>`;
+
+      return `
+        <article class="eval-variant-card">
+          <div class="round-history-head">
+            <div class="round-history-title">${escapeHtml(variant.title || variant.variantId || "Variant")}</div>
+            <div class="round-history-title">${escapeHtml((variant.type || "variant") + " | loops " + Number(variant.loopRounds || 0))}</div>
+          </div>
+          <div class="round-history-meta">${escapeHtml(
+            "Pass rate " + Number(variant.aggregate?.deterministicPassRate || 0).toFixed(2) +
+            " | Quality " + Number(variant.aggregate?.quality?.overallQuality || 0).toFixed(1) +
+            " | Control " + Number(variant.aggregate?.control?.overallControl || 0).toFixed(1) +
+            " | Tokens " + formatInteger(variant.aggregate?.totalTokens || 0) +
+            " | Spend " + formatUsd(variant.aggregate?.estimatedCostUsd || 0)
+          )}</div>
+          <div class="eval-replicate-stack">${replicateRows}</div>
+        </article>
+      `;
+    }).join("");
+
+    return `
+      <article class="eval-case-card">
+        <div class="history-head">
+          <div class="history-title">${escapeHtml(caseEntry.title || caseEntry.caseId || "Case")}</div>
+          <div class="history-title">${escapeHtml(caseEntry.caseId || "")}</div>
+        </div>
+        <div class="history-meta">${escapeHtml(truncateText(caseEntry.objective || "No objective recorded.", 220))}</div>
+        <div class="eval-variant-stack">${variantCards || `<div class="review-empty small">No variants recorded for this case yet.</div>`}</div>
+      </article>
+    `;
+  }).join("");
+
+  return topCards + `<div class="eval-case-stack">${caseCards || `<div class="review-empty">No case results yet.</div>`}</div>`;
+}
+
+function refreshEvalHistory() {
+  const params = selectedEvalRunId ? { runId: selectedEvalRunId } : {};
+  $.getJSON("api/get_eval_history.php", params)
+    .done(function (data) {
+      if (!data?.selectedRun && selectedEvalRunId && (data?.runs || []).length) {
+        selectedEvalRunId = String(data.runs[0]?.runId || "");
+        localStorage.setItem("loopSelectedEvalRunId", selectedEvalRunId);
+        refreshEvalHistory();
+        return;
+      }
+      latestEvalHistory = data;
+      if (data?.selectedRunId) {
+        selectedEvalRunId = String(data.selectedRunId);
+        localStorage.setItem("loopSelectedEvalRunId", selectedEvalRunId);
+      }
+      renderEvalCatalog(data);
+      $("#evalRunHistory").html(renderEvalRunHistory(data.runs || [], selectedEvalRunId));
+      $("#evalRunDetail").html(renderEvalRunDetail(data.selectedRun || null));
+      syncEvalArtifactReview((data.selectedRun || {}).artifacts || []);
+    })
+    .fail(function (xhr) {
+      latestEvalHistory = null;
+      $("#evalRunHistory").html(`<div class="review-empty">Eval history failed to load.</div>`);
+      $("#evalRunDetail").html(`<div class="review-empty">Eval detail failed to load.</div>`);
+      showMessage("Eval history load failed: " + extractErrorMessage(xhr), true);
+    });
+}
+
 function loadExportPreview(archiveFile = "") {
   const requestKey = archiveFile ? "archive:" + archiveFile : "current";
   exportPreviewKey = requestKey;
@@ -1270,6 +2105,88 @@ function renderHomeWorkerControls(task, draft, loop) {
   });
 }
 
+function workerDirectiveLabel(worker) {
+  const typeId = String(worker?.type || "sceptic");
+  return WORKER_TYPE_CATALOG[typeId]?.label || displayWorkerLabel(worker);
+}
+
+function workerTemperatureLabel(worker) {
+  const temperatureId = String(worker?.temperature || "balanced");
+  return WORKER_TEMPERATURE_CATALOG[temperatureId]?.label || temperatureId;
+}
+
+function buildWorkerControlCard(worker, isActive) {
+  const workerId = String(worker.id || "").trim();
+  const workerKey = normalizeWorkerControlKey(workerId);
+  const $card = $("<details>")
+    .addClass("workercontrol workercontrol-collapsible")
+    .attr("data-worker-id", workerId);
+  if (workerControlExpanded[workerKey]) {
+    $card.attr("open", "open");
+  }
+
+  const $summary = $("<summary>").addClass("workercontrol-summary");
+  const $summaryMain = $("<div>").addClass("workercontrol-summary-main");
+  $summaryMain.append($("<div>").addClass("workercontrol-title").text(workerId + " · " + displayWorkerLabel(worker)));
+  $summaryMain.append(
+    $("<div>").addClass("workercontrol-meta").text(
+      workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + modelLabel(worker.model)
+    )
+  );
+  $summary.append($summaryMain);
+  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("⌄"));
+  $card.append($summary);
+
+  const $body = $("<div>").addClass("workercontrol-body");
+
+  const $typeRow = $("<div>").addClass("workercontrol-field");
+  $typeRow.append($("<label>").text("Directive"));
+  $typeRow.append(
+    $("<select>").addClass("worker-type").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTypeOptions(worker.type || "sceptic"))
+  );
+  $body.append($typeRow);
+
+  const $temperatureRow = $("<div>").addClass("workercontrol-field");
+  $temperatureRow.append($("<label>").text("Temperature"));
+  $temperatureRow.append(
+    $("<select>").addClass("worker-temperature").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTemperatureOptions(worker.temperature || "balanced"))
+  );
+  $body.append($temperatureRow);
+
+  const $modelRow = $("<div>").addClass("workercontrol-field");
+  $modelRow.append($("<label>").text("Model"));
+  $modelRow.append(
+    $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model))
+  );
+  $body.append($modelRow);
+
+  $card.append($body);
+  return $card;
+}
+
+function renderHomeWorkerControls(task, draft, loop) {
+  const $controls = $("#workerControls");
+  const workers = stagedWorkerSource(draft, task);
+  const signature = JSON.stringify({
+    mode: "draft",
+    workers,
+    loopStatus: loop?.status || "idle"
+  });
+  if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
+  workerControlsSignature = signature;
+  $controls.empty();
+
+  if (!workers.length) {
+    $controls.append($("<div>").addClass("workercontrol").text("No workers configured."));
+    return;
+  }
+
+  const isActive = loop?.status === "running" || loop?.status === "queued";
+  workers.forEach(function (worker) {
+    $controls.append(buildWorkerControlCard(worker, isActive));
+  });
+}
+
 function renderDebugTargetControls(task, loop, stateWorkers) {
   const $controls = $("#debugTargetControls");
   const signature = JSON.stringify({
@@ -1341,6 +2258,190 @@ function renderRosterPanels(task, draft) {
     ));
     $grid.append($card);
   });
+}
+
+function renderFooterCheckpoints(task) {
+  const $list = $("#footerCheckpointList");
+  if (!$list.length) return;
+  $list.empty();
+
+  const workers = task?.workers || [];
+  if (!workers.length) {
+    $list.append($("<div>").addClass("footer-checkpoint-empty").text("No checkpoints yet."));
+    return;
+  }
+
+  const workerState = task?.stateWorkers || {};
+  const entries = workers.map(function (worker) {
+    return { worker, checkpoint: workerState[worker.id] || null };
+  }).sort(function (left, right) {
+    const leftStep = left.checkpoint?.step || 0;
+    const rightStep = right.checkpoint?.step || 0;
+    if (!!left.checkpoint !== !!right.checkpoint) return left.checkpoint ? -1 : 1;
+    return rightStep - leftStep;
+  });
+
+  if (!entries.some(function (entry) { return !!entry.checkpoint; })) {
+    $list.append($("<div>").addClass("footer-checkpoint-empty").text("Waiting for the first worker checkpoints."));
+    return;
+  }
+
+  entries.forEach(function (entry) {
+    if (!entry.checkpoint) return;
+    const worker = entry.worker;
+    const checkpoint = entry.checkpoint;
+    const preview = truncateText(checkpoint.observation || checkpoint.requestToPeer || "Checkpoint available.", 88);
+    const $item = $("<div>").addClass("footer-checkpoint-item compact-hover-card");
+    const $head = $("<div>").addClass("footer-checkpoint-head");
+    $head.append($("<div>").addClass("footer-checkpoint-title").text(displayWorkerLabel(worker)));
+    $head.append($("<div>").addClass("footer-checkpoint-step").text("step " + (checkpoint.step || 0)));
+    $item.append($head);
+    $item.append($("<div>").addClass("footer-checkpoint-copy").text(preview));
+    appendCompactHoverPopup($item, [
+      "Role: " + (worker.role || "worker") + " | Model: " + modelLabel(worker.model),
+      checkpoint.observation ? "Observation: " + truncateText(checkpoint.observation, 280) : "",
+      checkpoint.requestToPeer ? "Peer steer: " + truncateText(checkpoint.requestToPeer, 220) : "",
+      checkpoint.confidence != null ? "Confidence: " + Math.round(Number(checkpoint.confidence) * 100) + "%" : ""
+    ]);
+    $list.append($item);
+  });
+}
+
+function buildWorkerControlCard(worker, isActive) {
+  const workerId = String(worker.id || "").trim();
+  const workerKey = normalizeWorkerControlKey(workerId);
+  const $card = $("<details>")
+    .addClass("workercontrol workercontrol-collapsible")
+    .attr("data-worker-id", workerId);
+  if (workerControlExpanded[workerKey]) {
+    $card.attr("open", "open");
+  }
+
+  const $summary = $("<summary>").addClass("workercontrol-summary");
+  const $summaryMain = $("<div>").addClass("workercontrol-summary-main");
+  $summaryMain.append($("<div>").addClass("workercontrol-title").text(workerId + " | " + displayWorkerLabel(worker)));
+  $summaryMain.append(
+    $("<div>").addClass("workercontrol-meta").text(
+      workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + modelLabel(worker.model)
+    )
+  );
+  $summary.append($summaryMain);
+  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
+  $card.append($summary);
+
+  const $body = $("<div>").addClass("workercontrol-body");
+
+  const $typeRow = $("<div>").addClass("workercontrol-field");
+  $typeRow.append($("<label>").text("Directive"));
+  $typeRow.append(
+    $("<select>").addClass("worker-type").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTypeOptions(worker.type || "sceptic"))
+  );
+  $body.append($typeRow);
+
+  const $temperatureRow = $("<div>").addClass("workercontrol-field");
+  $temperatureRow.append($("<label>").text("Temperature"));
+  $temperatureRow.append(
+    $("<select>").addClass("worker-temperature").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTemperatureOptions(worker.temperature || "balanced"))
+  );
+  $body.append($temperatureRow);
+
+  const $modelRow = $("<div>").addClass("workercontrol-field");
+  $modelRow.append($("<label>").text("Model"));
+  $modelRow.append(
+    $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model))
+  );
+  $body.append($modelRow);
+
+  $card.append($body);
+  return $card;
+}
+
+function renderHomeRuntimeControls(task, draft, loop) {
+  const $summary = $("#homeRuntimeSummary");
+  const $grid = $("#homeQualityProfiles");
+  const $apply = $("#applyHomeRuntime");
+  if (!$summary.length || !$grid.length || !$apply.length) return;
+
+  const stagedPayload = collectCommanderPayload();
+  const stagedSnapshot = buildQualityProfileSnapshot();
+  const stagedProfileId = detectQualityProfileId(stagedSnapshot);
+  const stagedProfileName = profileDisplayName(stagedProfileId);
+  const activeSnapshot = buildTaskQualityProfileSnapshot(task);
+  const activeProfileId = detectQualityProfileId(activeSnapshot);
+  const activeProfileName = profileDisplayName(activeProfileId);
+  const isLoopActive = loop?.status === "running" || loop?.status === "queued";
+  const hasTask = !!task;
+  const runtimeMatches = hasTask && activeSnapshot ? runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot) : false;
+
+  $summary.empty();
+
+  appendHomeRuntimeBlock(
+    $summary,
+    "Next send",
+    stagedProfileName + " | " + (stagedPayload.executionMode || "live") + " mode",
+    [
+      "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
+      "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+      "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms"
+    ]
+  );
+
+  if (hasTask && activeSnapshot) {
+    appendHomeRuntimeBlock(
+      $summary,
+      "Active task",
+      activeProfileName + " | " + (task?.runtime?.executionMode || "live") + " mode",
+      [
+        "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
+        "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+        "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms"
+      ]
+    );
+
+    appendHomeRuntimeBlock(
+      $summary,
+      runtimeMatches ? "Runtime sync" : "Runtime drift",
+      runtimeMatches ? "Aligned" : "Sync needed",
+      [
+        runtimeMatches
+          ? "Active task already matches the staged template."
+          : "Next send and active task are different.",
+        runtimeMatches
+          ? "You can keep prompting without touching settings."
+          : "Use Sync Active if you want the current task to adopt the staged profile, loop depth, and budget."
+      ],
+      !runtimeMatches
+    );
+  } else {
+    appendHomeRuntimeBlock(
+      $summary,
+      "Active task",
+      "Ready to start",
+      ["Send will start a fresh task with the staged profile, roster, and loop settings."]
+    );
+  }
+
+  $grid.empty();
+  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
+    const profile = QUALITY_PROFILE_CATALOG[profileId];
+    const $button = $("<button>")
+      .attr("type", "button")
+      .addClass("quick-profile-chip compact-hover-card")
+      .toggleClass("active", stagedProfileId === profileId)
+      .attr("data-profile-id", profileId);
+    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
+    $button.append($("<div>").addClass("quick-profile-title").text(profile.label));
+    appendCompactHoverPopup($button, [
+      profile.description,
+      "Workers: " + modelLabel(profile.workerModel) + " | Summarizer: " + modelLabel(profile.summarizerModel),
+      "Budget: " + formatUsdBudget(profile.maxCostUsd) + " | " + formatTokenWall(profile.maxTotalTokens),
+      "Reasoning: " + profile.reasoningEffort + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
+    ]);
+    $grid.append($button);
+  });
+
+  $apply.prop("disabled", isLoopActive || !hasTask);
+  $apply.text(isLoopActive ? "Loop Active" : "Sync Active");
 }
 
 function renderListSection(label, items) {
@@ -1596,6 +2697,7 @@ function renderSummaryOpinion(summary) {
   }
   const frontAnswer = summary.frontAnswer || {};
   const opinion = summary.summarizerOpinion || {};
+  const controlAudit = summary.controlAudit || {};
   const blocks = [
     renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary)),
     renderReviewBlock("Lead direction", frontAnswer.leadDirection || frontAnswer.stance || ""),
@@ -1603,6 +2705,18 @@ function renderSummaryOpinion(summary) {
     renderReviewBlock("Current stance", opinion.stance || frontAnswer.stance || ""),
     renderReviewBlock("Why it landed here", opinion.because || ""),
     renderReviewBlock("Integration mode", opinion.integrationMode || ""),
+    renderReviewBlock("Lead draft before pressure", controlAudit.leadDraft || ""),
+    renderReviewBlock("Control question", controlAudit.integrationQuestion || ""),
+    Array.isArray(controlAudit.acceptedAdversarialPoints) && controlAudit.acceptedAdversarialPoints.length
+      ? renderReviewBlock("Accepted adversarial points", controlAudit.acceptedAdversarialPoints.join("\n"))
+      : "",
+    Array.isArray(controlAudit.rejectedAdversarialPoints) && controlAudit.rejectedAdversarialPoints.length
+      ? renderReviewBlock("Rejected adversarial points", controlAudit.rejectedAdversarialPoints.join("\n"))
+      : "",
+    Array.isArray(controlAudit.heldOutConcerns) && controlAudit.heldOutConcerns.length
+      ? renderReviewBlock("Held-out concerns", controlAudit.heldOutConcerns.join("\n"))
+      : "",
+    renderReviewBlock("Pre-release self-check", controlAudit.selfCheck || ""),
     renderReviewBlock("Uncertainty", opinion.uncertainty || frontAnswer.confidenceNote || ""),
     renderReviewBlock("Recommended next action", summary.recommendedNextAction || ""),
     renderReviewBlock("Vetting note", summary.vettingSummary || "")
@@ -1857,15 +2971,7 @@ function legacyApplyLoopUiUnused(state) {
   const vetting = task?.runtime?.vetting || {};
   const summaryReady = allWorkerCheckpointsReady(task, state.workers || {});
 
-  $("#taskId").text(task?.taskId || "none");
-  $("#headerTaskId").text(task?.taskId || "none");
-  $("#memoryVersion").text(state.memoryVersion ?? 0);
-  $("#workerCount").text(workers.length || 0);
-  $("#headerWorkerCount").text(workers.length || 0);
-  $("#loopJobId").text(loop?.jobId || "none");
-  $("#loopStatus").text(loop?.status || "idle");
-  $("#headerLoopStatus").text(loop?.status || "idle");
-  $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
+  syncWorkspaceStatus(task, state, workers, loop, usage, budget);
   $("#loopNote").text(
     loop?.lastMessage ||
     (!hasTask
@@ -1875,10 +2981,6 @@ function legacyApplyLoopUiUnused(state) {
       " and the summarizer " + (vetting.enabled === false ? "merges only." : "acts as the evidence vetter.")
     ))
   );
-  $("#usageTokens").text((usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0));
-  $("#usageWebSearchCalls").text(usage.webSearchCalls ?? 0);
-  $("#usageCost").text(formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0));
-
   latestLoopActive = isActive;
   updateAuthButtons();
 
@@ -2000,16 +3102,8 @@ function applyLoopUi(state) {
   const activeProfileName = profileDisplayName(detectQualityProfileId(activeSnapshot));
   const headerProfileName = hasTask ? activeProfileName : stagedProfileName;
 
-  $("#taskId").text(task?.taskId || "none");
-  $("#headerTaskId").text(task?.taskId || "none");
+  syncWorkspaceStatus(task, state, workers, loop, usage, budget);
   $("#headerProfile").text(headerProfileName);
-  $("#memoryVersion").text(state.memoryVersion ?? 0);
-  $("#workerCount").text(workers.length || 0);
-  $("#headerWorkerCount").text(workers.length || 0);
-  $("#loopJobId").text(loop?.jobId || "none");
-  $("#loopStatus").text(loop?.status || "idle");
-  $("#headerLoopStatus").text(loop?.status || "idle");
-  $("#loopProgress").text((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
   $("#loopNote").text(
     loop?.lastMessage ||
     (!hasTask
@@ -2021,10 +3115,6 @@ function applyLoopUi(state) {
       " Next send is staged for the " + stagedProfileName + " profile in " + stagedMode + " mode."
     ))
   );
-  $("#usageTokens").text((usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0));
-  $("#usageWebSearchCalls").text(usage.webSearchCalls ?? 0);
-  $("#usageCost").text(formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0));
-
   latestLoopActive = isActive;
   updateAuthButtons();
 
@@ -2041,6 +3131,7 @@ function applyLoopUi(state) {
 
 function refreshState() {
   refreshAuth();
+  refreshEvalHistory();
 
   $.getJSON("api/get_state.php")
     .done(function (data) {
@@ -2053,7 +3144,7 @@ function refreshState() {
       renderHomeRuntimeControls(data.activeTask || null, data.draft || null, data.loop || null);
       renderQualityProfileCards();
       renderDebugTargetControls(data.activeTask || null, data.loop || null, data.workers || {});
-      renderRosterPanels(task, data.draft || null);
+      renderFooterCheckpoints(task);
       renderConversationThread(data.activeTask || null, data.summary || null, data.workers || {}, data.loop || null);
       renderSummaryReview(data.summary || null, data.activeTask || null, data.workers || {});
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
@@ -2156,25 +3247,57 @@ function setActiveView(viewName) {
 }
 
 $(function () {
+  recentComposerAttachments = loadRecentComposerAttachments();
   populateStaticModelSelect("#model", "gpt-5-mini");
   populateStaticModelSelect("#summarizerModel", "gpt-5-mini");
   $("#researchEnabled").val("0");
   $("#researchExternalWebAccess").val("1");
   $("#vettingEnabled").val("1");
+  $("#composerFileInput").attr("accept", COMPOSER_SUPPORTED_EXTENSIONS.join(","));
   applyCommanderForm(defaultDraftState());
   renderAddWorkerTypeControl(null, defaultDraftState(), null);
+  setTheme(activeTheme);
+  setSidebarCollapsed(sidebarCollapsed);
   setActiveView(activeView);
   refreshState();
   setInterval(refreshState, 2000);
 
   $(".nav-btn").on("click", function () {
     setActiveView($(this).data("view"));
+    if (isMobileShell()) {
+      setMobileSidebarOpen(false);
+    }
+  });
+
+  $("#sidebarToggle").on("click", function () {
+    if (isMobileShell()) {
+      setMobileSidebarOpen(false);
+      return;
+    }
+    setSidebarCollapsed(!sidebarCollapsed);
+  });
+
+  $("#mobileSidebarToggle, #sidebarBackdrop").on("click", function () {
+    setMobileSidebarOpen(!mobileSidebarOpen);
+  });
+
+  $(window).on("resize", function () {
+    syncShellChrome();
+  });
+
+  $(document).on("click", ".theme-toggle-btn", function () {
+    setTheme(String($(this).data("themeOption") || "dark"));
+  });
+
+  $(document).on("toggle", ".workercontrol-collapsible", function () {
+    setWorkerControlExpandedState($(this).data("workerId"), this.open);
   });
 
   $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
     formDirty = true;
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
     renderQualityProfileCards();
+    renderComposerTools();
     queueDraftSave();
   });
 
@@ -2189,7 +3312,7 @@ $(function () {
     }
 
     const startPayload = {
-      sessionContext: payload.sessionContext,
+      sessionContext: buildSendSessionContext(payload.sessionContext),
       objective: payload.objective,
       constraints: JSON.stringify(payload.constraints),
       executionMode: payload.executionMode,
@@ -2212,6 +3335,7 @@ $(function () {
       .done(function (resp) {
         let out = resp;
         try { out = JSON.parse(resp); } catch (_) {}
+        resetComposerSurface(true);
         $.post("api/start_loop.php", { rounds: payload.loopRounds, delayMs: payload.loopDelayMs })
           .done(function (loopResp) {
             let loopOut = loopResp;
@@ -2289,11 +3413,223 @@ $(function () {
 
   $("#refresh").on("click", refreshState);
 
+  $("#composerToolMenuToggle").on("click", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeInlineHelpPopovers();
+    composerToolMenuOpen = !composerToolMenuOpen;
+    if (!composerToolMenuOpen) {
+      composerRecentDrawerOpen = false;
+    }
+    renderComposerTools();
+  });
+
+  $(document).on("click", ".inline-help-trigger", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const $help = $(this).closest(".inline-help");
+    const shouldOpen = !$help.hasClass("open");
+    closeInlineHelpPopovers($help);
+    $help.toggleClass("open", shouldOpen);
+    if (!shouldOpen) {
+      this.blur();
+    }
+  });
+
+  $(document).on("click", ".composer-tool-action", function () {
+    const action = String($(this).data("toolAction") || "").trim();
+    if (action === "upload") {
+      composerToolMenuOpen = false;
+      renderComposerTools();
+      $("#composerFileInput").trigger("click");
+      return;
+    }
+    if (action === "recent") {
+      composerRecentDrawerOpen = !composerRecentDrawerOpen;
+      composerToolMenuOpen = false;
+      renderComposerTools();
+      return;
+    }
+    if (action === "web-search") {
+      $("#researchEnabled").val($("#researchEnabled").val() === "1" ? "0" : "1");
+      composerToolMenuOpen = false;
+      markComposerConfigDirty();
+      return;
+    }
+    if (action === "sources") {
+      composerSourceDrawerOpen = !composerSourceDrawerOpen;
+      composerRecentDrawerOpen = false;
+      composerToolMenuOpen = false;
+      if (composerSourceDrawerOpen && $("#researchEnabled").val() !== "1") {
+        $("#researchEnabled").val("1");
+        markComposerConfigDirty();
+        return;
+      }
+      renderComposerTools();
+      return;
+    }
+    if (action === "vetting") {
+      $("#vettingEnabled").val($("#vettingEnabled").val() === "1" ? "0" : "1");
+      composerToolMenuOpen = false;
+      markComposerConfigDirty();
+    }
+  });
+
+  $("#composerResearchDomainsInput").on("input change", function () {
+    $("#researchDomains").val($(this).val());
+    if (String($(this).val() || "").trim()) {
+      $("#researchEnabled").val("1");
+    }
+    markComposerConfigDirty();
+  });
+
+  $("#composerResearchModeSelect").on("change", function () {
+    $("#researchExternalWebAccess").val($(this).val());
+    $("#researchEnabled").val("1");
+    markComposerConfigDirty();
+  });
+
+  $("#composerFileInput").on("change", async function () {
+    const files = Array.from(this.files || []);
+    this.value = "";
+    if (!files.length) return;
+
+    const remainingSlots = Math.max(0, COMPOSER_ATTACHMENT_LIMIT - stagedComposerAttachments.length);
+    if (remainingSlots <= 0) {
+      showMessage("Remove a staged file before adding another one.", true);
+      return;
+    }
+
+    const selectedFiles = files.slice(0, remainingSlots);
+    const skippedForCount = files.length - selectedFiles.length;
+    const staged = [];
+    const rejected = [];
+
+    for (const file of selectedFiles) {
+      if (!supportedComposerFile(file)) {
+        rejected.push(file.name + " (unsupported file type)");
+        continue;
+      }
+      if (Number(file.size || 0) > COMPOSER_ATTACHMENT_MAX_BYTES) {
+        rejected.push(file.name + " (over " + formatFileSize(COMPOSER_ATTACHMENT_MAX_BYTES) + ")");
+        continue;
+      }
+      try {
+        const rawText = await file.text();
+        staged.push({
+          id: buildAttachmentId("file"),
+          name: file.name,
+          size: Number(file.size || rawText.length || 0),
+          type: file.type || "text/plain",
+          text: rawText.slice(0, COMPOSER_ATTACHMENT_MAX_CHARS),
+          truncated: rawText.length > COMPOSER_ATTACHMENT_MAX_CHARS,
+          addedAt: new Date().toISOString()
+        });
+      } catch (_) {
+        rejected.push(file.name + " (could not read)");
+      }
+    }
+
+    staged.forEach(function (attachment) {
+      stageComposerAttachment(attachment);
+      storeRecentComposerAttachment(attachment);
+    });
+
+    if (staged.length) {
+      showMessage("Staged " + staged.length + " file" + (staged.length === 1 ? "" : "s") + " for the next send.");
+    }
+    if (rejected.length || skippedForCount > 0) {
+      const notes = [];
+      if (rejected.length) notes.push("Skipped: " + rejected.join(", "));
+      if (skippedForCount > 0) notes.push("Only " + COMPOSER_ATTACHMENT_LIMIT + " files can be staged at once.");
+      showMessage(notes.join(" "), true);
+    }
+  });
+
+  $(document).on("click", ".composer-attachment-remove", function () {
+    removeComposerAttachment(String($(this).data("attachmentId") || ""));
+  });
+
+  $(document).on("click", ".composer-recent-file", function () {
+    const recentId = String($(this).data("recentFileId") || "").trim();
+    const attachment = recentComposerAttachments.find(function (entry) {
+      return entry.id === recentId;
+    });
+    if (!attachment) return;
+    stageComposerAttachment(Object.assign({}, attachment, { id: buildAttachmentId("file") }));
+    composerRecentDrawerOpen = false;
+    renderComposerTools();
+    showMessage("Restaged " + attachment.name + " for the next send.");
+  });
+
+  $(document).on("click", function (event) {
+    const $target = $(event.target);
+    if (!$target.closest(".inline-help").length) {
+      closeInlineHelpPopovers();
+    }
+    if ($target.closest("#composerTools").length) return;
+    if (!composerToolMenuOpen && !composerRecentDrawerOpen && !composerSourceDrawerOpen) return;
+    composerToolMenuOpen = false;
+    composerRecentDrawerOpen = false;
+    composerSourceDrawerOpen = false;
+    renderComposerTools();
+  });
+
+  $(document).on("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    closeInlineHelpPopovers();
+    if (mobileSidebarOpen) {
+      setMobileSidebarOpen(false);
+    }
+    if (composerToolMenuOpen || composerRecentDrawerOpen || composerSourceDrawerOpen) {
+      composerToolMenuOpen = false;
+      composerRecentDrawerOpen = false;
+      composerSourceDrawerOpen = false;
+      renderComposerTools();
+    }
+  });
+
+  $("#startEvalRun").on("click", function () {
+    const suiteId = String($("#evalSuiteSelect").val() || "").trim();
+    const armIds = currentSelectedEvalArmIds();
+    const replicates = parseInt($("#evalReplicates").val(), 10) || 1;
+    const loopSweep = String($("#evalLoopSweep").val() || "1").trim();
+    if (!suiteId) {
+      showMessage("Choose an eval suite first.", true);
+      return;
+    }
+    if (!armIds.length) {
+      showMessage("Choose at least one eval arm.", true);
+      return;
+    }
+    $.post("api/start_eval_run.php", {
+      suiteId: suiteId,
+      armIds: JSON.stringify(armIds),
+      replicates: replicates,
+      loopSweep: loopSweep
+    })
+      .done(function (resp) {
+        let out = resp;
+        try { out = JSON.parse(resp); } catch (_) {}
+        selectedEvalRunId = String(out.runId || "");
+        if (selectedEvalRunId) {
+          localStorage.setItem("loopSelectedEvalRunId", selectedEvalRunId);
+        }
+        showMessage("Eval run queued" + (out.message ? " | " + out.message : ""));
+        setActiveView("eval");
+        refreshEvalHistory();
+      })
+      .fail(function (xhr) {
+        showMessage("Eval launch failed: " + extractErrorMessage(xhr), true);
+      });
+  });
+
   $("#resetSession").on("click", function () {
     if (!confirm("Archive the current session and load a fresh draft with short carry-forward context?")) return;
     postForm("api/reset_session.php", {}, "Session reset", {
       clearFormDirty: true,
       onSuccess: function () {
+        resetComposerSurface(true);
         workerControlsSignature = "";
         debugControlsSignature = "";
         setActiveView("home");
@@ -2342,6 +3678,7 @@ $(function () {
     postForm("api/reset_state.php", {}, "State reset", {
       clearFormDirty: true,
       onSuccess: function () {
+        resetComposerSurface(true);
         workerControlsSignature = "";
         debugControlsSignature = "";
       }
@@ -2431,6 +3768,19 @@ $(function () {
     });
   });
 
+  $(document).on("click", ".select-eval-run", function () {
+    selectedEvalRunId = String($(this).data("runId") || "").trim();
+    localStorage.setItem("loopSelectedEvalRunId", selectedEvalRunId);
+    refreshEvalHistory();
+  });
+
+  $(document).on("click", ".load-eval-artifact-pair", function () {
+    applyEvalArtifactSelectionPair(
+      String($(this).data("left") || ""),
+      String($(this).data("right") || "")
+    );
+  });
+
   $("#artifactLeftSelect").on("change", function () {
     artifactSelections.left = $(this).val();
     loadArtifactPane("Left", artifactSelections.left);
@@ -2439,5 +3789,15 @@ $(function () {
   $("#artifactRightSelect").on("change", function () {
     artifactSelections.right = $(this).val();
     loadArtifactPane("Right", artifactSelections.right);
+  });
+
+  $("#evalArtifactLeftSelect").on("change", function () {
+    evalArtifactSelections.left = $(this).val();
+    loadEvalArtifactPane("Left", evalArtifactSelections.left);
+  });
+
+  $("#evalArtifactRightSelect").on("change", function () {
+    evalArtifactSelections.right = $(this).val();
+    loadEvalArtifactPane("Right", evalArtifactSelections.right);
   });
 });

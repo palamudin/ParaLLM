@@ -35,7 +35,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `runtime/*.py`: resident worker / summarizer runtime service
 - `scripts/qa_check.py`: reusable QA harness for linting and reversible endpoint smoke checks
 - `scripts/qa_live_check.py`: reusable live QA harness for budget-capped, source-restricted endpoint smoke checks
+- `scripts/qa_eval_check.py`: reusable isolated-eval smoke harness for suites, arms, and run artifacts
 - `scripts/quality_benchmark.py`: blind quality benchmark for comparing direct output vs steered output on the same case
+- `runtime/eval_runner.py`: isolated eval runner for suite/arm/replicate benchmarking outside the live singleton workspace
 - `data/state.json`: canonical state
 - `data/events.jsonl`: low-level event log
 - `data/steps.jsonl`: structured step log for human-readable process trace
@@ -44,6 +46,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `data/outputs/*.json`: dedicated worker and summarizer output artifacts with response metadata for quality review
 - `data/sessions/*.json`: archived session snapshots captured by Reset Session with carry-forward context
 - `data/jobs/*.json`: background loop job metadata and result summaries
+- `data/evals/`: isolated eval suites, arm manifests, run manifests, score files, and per-replicate workspaces
 - `data/locks/loop.lock`: cross-process lock directory used by PHP and the resident Python runtime
 
 ## Runtime Options
@@ -111,11 +114,13 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - The main thread now renders the Agent answer in a simpler chat format while worker lanes stay collapsed behind an `Inspect worker lanes` disclosure by default
 - The main thread should now converge toward a truly seamless assistant reply, with internal lane reasoning removed from the public thread and moved into Review
 - The summarizer now treats the visible answer as a lead direction that privately absorbs adversarial pressure, instead of outputting a recap or an averaged consensus blend
+- The lead thread now performs a review-only control audit before answering: it records its first-pass draft, the question it applies to adversarial pressure, which objections it accepted or rejected, what concerns it held out, and the self-check it ran before finalizing the public answer
 - Summaries now need a front-answer layer plus a review-only adjudication layer with cited worker line refs
 - Review should expose the summarizer's current position, why it landed there, and the exact worker lines that shaped that judgment
 - Reusable QA should exist as a first-class path so syntax checks and reversible endpoint smoke tests can be rerun quickly after runtime/UI changes
 - Live QA should stay separate from mock QA so spend-bearing checks remain explicit, budget-capped, and domain-restricted
 - Quality benchmarking should also be first-class so we can test whether steered output is actually better than a direct answer, not just more elaborate
+- Isolated evals should live beside the app, not inside the interactive singleton state, so hidden gold answers and benchmark artifacts cannot contaminate normal tasks
 - Session context is now treated as review/debug data rather than primary user input and has been moved out of the Home surface
 - Fine tuning controls now live in Settings instead of crowding the main conversation surface, and the stored draft now includes worker roster, loop rounds, and loop delay
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
@@ -188,6 +193,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - a new blind judge path compares a direct baseline answer against the public steered answer on the same prompt
   - the judge only sees anonymous `Answer A` / `Answer B` slots so it cannot bias toward the known architecture
   - the benchmark now rejects silent mock-fallback steer runs by default so a broken live path does not masquerade as a bad quality result
+  - the benchmark now also scores lead-thread control over adversarial pressure and can sweep multiple loop depths in one run
   - repeat trials now aggregate score deltas for decisiveness, tradeoff handling, objection absorption, actionability, single-voice quality, and overall quality
   - benchmark reports now save locally under `data/benchmarks/`
 

@@ -9,47 +9,26 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand-block">
-        <div class="brand-mark">L</div>
-        <div>
-          <div class="brand-overline">Local multi-lane runtime</div>
-          <h1>AI Loop</h1>
-          <p>Parallel lanes, sparse sharing, vetted memory.</p>
+    <aside id="sidebarPanel" class="sidebar">
+      <div class="sidebar-topbar">
+        <div class="brand-block">
+          <div class="brand-mark">L</div>
+          <div>
+            <h1>AI Loop</h1>
+          </div>
         </div>
+        <button type="button" id="sidebarToggle" class="sidebar-toggle" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">&#8592;</button>
       </div>
 
       <nav class="sidebar-nav">
-        <button class="nav-btn active" data-view="home">Home</button>
-        <button class="nav-btn" data-view="settings">Settings</button>
-        <button class="nav-btn" data-view="debug">Debug</button>
-        <button class="nav-btn" data-view="review">Review</button>
+        <button class="nav-btn active" data-view="home" data-short="H">Home</button>
+        <button class="nav-btn" data-view="eval" data-short="E">Eval</button>
+        <button class="nav-btn" data-view="settings" data-short="S">Settings</button>
+        <button class="nav-btn" data-view="debug" data-short="D">Debug</button>
+        <button class="nav-btn" data-view="review" data-short="R">Review</button>
       </nav>
-
-      <div class="sidebar-card">
-        <div class="sidebar-card-label">Current task</div>
-        <div id="taskId" class="sidebar-card-value">none</div>
-        <div class="sidebar-card-note">Memory version <span id="memoryVersion">0</span> · Workers <span id="workerCount">0</span></div>
-      </div>
-
-      <div class="sidebar-card">
-        <div class="sidebar-card-label">Loop runtime</div>
-        <div class="sidebar-stack">
-          <div>Job <span id="loopJobId">none</span></div>
-          <div>Status <span id="loopStatus">idle</span></div>
-          <div>Progress <span id="loopProgress">0 / 0</span></div>
-        </div>
-      </div>
-
-      <div class="sidebar-card">
-        <div class="sidebar-card-label">Usage</div>
-        <div class="sidebar-stack">
-          <div>Tokens <span id="usageTokens">0 / 0</span></div>
-          <div>Web search <span id="usageWebSearchCalls">0</span></div>
-          <div>Approx spend <span id="usageCost">$0.0000 / $0.0000</span></div>
-        </div>
-      </div>
     </aside>
+    <button type="button" id="sidebarBackdrop" class="sidebar-backdrop" hidden aria-label="Close sidebar"></button>
 
     <main class="workspace">
       <header class="workspace-header">
@@ -58,22 +37,31 @@
           <h2>Commander Chat</h2>
           <p>Home is for prompting and reading lane output. Settings holds integrations and fine tuning. Debug stays out of the way until you need it.</p>
         </div>
-        <div class="workspace-pill-row">
-          <div class="workspace-pill">
-            <span class="workspace-pill-label">Task</span>
-            <span id="headerTaskId" class="workspace-pill-value">none</span>
+        <div class="workspace-header-actions">
+          <div class="workspace-shell-tools">
+            <button type="button" id="mobileSidebarToggle" class="workspace-shell-btn" aria-expanded="false" aria-controls="sidebarPanel" hidden>Menu</button>
+            <div class="theme-toggle" role="group" aria-label="Color theme">
+              <button type="button" class="theme-toggle-btn" data-theme-option="light" aria-pressed="false">Light</button>
+              <button type="button" class="theme-toggle-btn" data-theme-option="dark" aria-pressed="true">Dark</button>
+            </div>
           </div>
-          <div class="workspace-pill">
-            <span class="workspace-pill-label">Profile</span>
-            <span id="headerProfile" class="workspace-pill-value">Low</span>
-          </div>
-          <div class="workspace-pill">
-            <span class="workspace-pill-label">Loop</span>
-            <span id="headerLoopStatus" class="workspace-pill-value">idle</span>
-          </div>
-          <div class="workspace-pill">
-            <span class="workspace-pill-label">Workers</span>
-            <span id="headerWorkerCount" class="workspace-pill-value">0</span>
+          <div class="workspace-pill-row">
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">Task</span>
+              <span id="headerTaskId" class="workspace-pill-value">none</span>
+            </div>
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">Profile</span>
+              <span id="headerProfile" class="workspace-pill-value">Low</span>
+            </div>
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">Loop</span>
+              <span id="headerLoopStatus" class="workspace-pill-value">idle</span>
+            </div>
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">Workers</span>
+              <span id="headerWorkerCount" class="workspace-pill-value">0</span>
+            </div>
           </div>
         </div>
       </header>
@@ -86,8 +74,13 @@
             <div class="panel-head">
               <div>
                 <div class="panel-kicker">Chat / responses</div>
-                <h3>Agent</h3>
-                <p>Send one prompt and read one answer. Internal adversarial review still happens, but the front reply stays in a single assistant voice.</p>
+                <div class="title-help-row">
+                  <h3>Agent</h3>
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show agent chat guidance">Info</button>
+                    <div class="inline-help-popup">Send one prompt and read one answer. Internal adversarial review still happens, but the front reply stays in a single assistant voice.</div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -102,8 +95,49 @@
               <label for="objective">Commander prompt</label>
               <textarea id="objective" rows="5" placeholder="Describe what you want the lane stack to investigate, build, or write..."></textarea>
 
+              <div id="composerTools" class="composer-tools">
+                <div class="composer-tool-row">
+                  <div class="composer-tool-launcher">
+                    <button type="button" id="composerToolMenuToggle" class="composer-tool-toggle" aria-expanded="false" aria-controls="composerToolMenu">+</button>
+                    <div id="composerToolMenu" class="composer-tool-menu" hidden></div>
+                    <input id="composerFileInput" type="file" multiple hidden />
+                  </div>
+                  <div id="composerToolStatus" class="composer-tool-status"></div>
+                </div>
+
+                <div id="composerSourceDrawer" class="composer-inline-drawer" hidden>
+                  <div class="composer-inline-grid">
+                    <div>
+                      <label for="composerResearchDomainsInput">Allowed sources</label>
+                      <input id="composerResearchDomainsInput" type="text" placeholder="Optional comma-separated domains like openai.com, sec.gov" />
+                    </div>
+                    <div>
+                      <label for="composerResearchModeSelect">Web access</label>
+                      <select id="composerResearchModeSelect">
+                        <option value="1">Live web</option>
+                        <option value="0">Cached / indexed only</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="section-help-row">
+                    <div class="inline-help">
+                      <button type="button" class="inline-help-trigger" aria-label="Show tool drawer guidance">Info</button>
+                      <div class="inline-help-popup">These controls mirror the runtime research settings, but they stay right beneath the chat where people expect tools to live.</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="composerRecentDrawer" class="composer-inline-drawer" hidden></div>
+                <div id="composerAttachmentList" class="composer-attachment-list"></div>
+              </div>
+
               <div class="composer-footer">
-                <div class="composer-hint">Settings stores fine tuning, integrations, loop count, and research policy. Debug keeps the manual controls out of the main flow.</div>
+                <div class="footer-help-slot">
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show composer guidance">Info</button>
+                    <div class="inline-help-popup">Settings still holds the full runtime sheet, but quick tools like search and file staging now live here under the chat where people naturally look for them.</div>
+                  </div>
+                </div>
                 <div class="composer-actions">
                   <button id="sendPrompt">Send</button>
                 </div>
@@ -137,21 +171,15 @@
                   <button id="addAdversarial">+ Add</button>
                 </div>
               </div>
-              <div id="loopNote" class="loop-note">These lanes auto-run when you press Send. More lanes narrow each perspective instead of making each worker carry the full burden.</div>
+              <div class="section-help-row">
+                <div class="inline-help">
+                  <button type="button" class="inline-help-trigger" aria-label="Show worker lane guidance">Info</button>
+                  <div id="loopNote" class="inline-help-popup">These lanes auto-run when you press Send. More lanes narrow each perspective instead of making each worker carry the full burden.</div>
+                </div>
+              </div>
               <div id="workerControls" class="workercontrols">No active task.</div>
             </section>
 
-            <section class="panel rail-panel">
-              <div class="panel-head compact">
-                <div>
-                  <div class="panel-kicker">Lane snapshots</div>
-                  <h3>Latest checkpoints</h3>
-                </div>
-              </div>
-              <div id="workerGrid" class="lane-stack">
-                <div class="lane-card-empty">No active task.</div>
-              </div>
-            </section>
           </aside>
         </div>
       </section>
@@ -162,8 +190,13 @@
             <div class="panel-head">
               <div>
                 <div class="panel-kicker">Settings / integrations</div>
-                <h3>API key management</h3>
-                <p>Keep secrets out of the main workspace and swap test keys here.</p>
+                <div class="title-help-row">
+                  <h3>API key management</h3>
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show API key guidance">Info</button>
+                    <div class="inline-help-popup">Keep secrets out of the main workspace and swap test keys here.</div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -185,8 +218,13 @@
             <div class="panel-head">
               <div>
                 <div class="panel-kicker">Settings / fine tuning</div>
-                <h3>Runtime controls</h3>
-                <p>Budgets, model choices, loop depth, and research policy live here.</p>
+                <div class="title-help-row">
+                  <h3>Runtime controls</h3>
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show runtime control guidance">Info</button>
+                    <div class="inline-help-popup">Budgets, model choices, loop depth, and research policy live here.</div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -198,12 +236,22 @@
             <div class="form-section quality-profile-section">
               <div class="quality-profile-head">
                 <div>
-                  <label>Reasoning profile</label>
-                  <div id="qualityProfileStatus" class="fieldnote">Profiles retune models, reasoning effort, auto-loop depth, and spend ceilings without making people hand-tune every lane.</div>
+                  <div class="label-help-row">
+                    <label>Reasoning profile</label>
+                    <div class="inline-help">
+                      <button type="button" class="inline-help-trigger" aria-label="Show reasoning profile guidance">Info</button>
+                      <div id="qualityProfileStatus" class="inline-help-popup">Profiles retune models, reasoning effort, auto-loop depth, and spend ceilings without making people hand-tune every lane.</div>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div id="qualityProfileCards" class="quality-profile-grid"></div>
-              <div class="fieldnote">Profiles change worker default model, summarizer model, reasoning effort, auto-loop depth, session cost cap, local token cap, and per-call output cap. Research and vetting still stay manual.</div>
+              <div class="section-help-row">
+                <div class="inline-help">
+                  <button type="button" class="inline-help-trigger" aria-label="Show profile template detail">Info</button>
+                  <div class="inline-help-popup">Profiles change worker default model, summarizer model, reasoning effort, auto-loop depth, session cost cap, local token cap, and per-call output cap. Research and vetting still stay manual.</div>
+                </div>
+              </div>
             </div>
 
             <div class="settings-grid">
@@ -226,7 +274,12 @@
 
             <div class="form-section">
               <div class="composer-footer">
-                <div class="composer-hint">Profiles are the fast path. These knobs are still here when you want to fine-tune the current template before the next send.</div>
+                <div class="footer-help-slot">
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show runtime fine-tuning guidance">Info</button>
+                    <div class="inline-help-popup">Profiles are the fast path. These knobs are still here when you want to fine-tune the current template before the next send.</div>
+                  </div>
+                </div>
                 <div class="composer-actions">
                   <button id="applyCurrentModels">Apply Runtime To Current Task</button>
                 </div>
@@ -294,9 +347,14 @@
             </div>
 
             <div class="form-section">
-              <label for="researchDomains">Research domain allowlist</label>
+              <div class="label-help-row">
+                <label for="researchDomains">Research domain allowlist</label>
+                <div class="inline-help">
+                  <button type="button" class="inline-help-trigger" aria-label="Show research allowlist guidance">Info</button>
+                  <div class="inline-help-popup">Workers can search broadly or be constrained to specific domains. The summarizer vets the worker evidence without doing its own web research.</div>
+                </div>
+              </div>
               <input id="researchDomains" type="text" placeholder="Optional, comma-separated domains like openai.com, platform.openai.com" />
-              <div class="fieldnote">Workers can search broadly or be constrained to specific domains. The summarizer vets the worker evidence without doing its own web research.</div>
             </div>
           </section>
         </div>
@@ -313,7 +371,12 @@
             </div>
             <label for="sessionContext">Carry-forward memory</label>
             <textarea id="sessionContext" rows="8" placeholder="Short carry-forward context from a previous session will appear here after Reset Session."></textarea>
-            <div class="fieldnote">This is review context for the runtime, not something the main user flow needs to see in Home.</div>
+            <div class="section-help-row">
+              <div class="inline-help">
+                <button type="button" class="inline-help-trigger" aria-label="Show session context guidance">Info</button>
+                <div class="inline-help-popup">This is review context for the runtime, not something the main user flow needs to see in Home.</div>
+              </div>
+            </div>
           </section>
 
           <section class="panel">
@@ -332,7 +395,12 @@
               <button id="cancelLoop" class="danger">Cancel Loop</button>
               <button id="resetState" class="danger">Reset State</button>
             </div>
-            <div class="fieldnote">Home should only need a prompt and Send. These controls stay here for QA, debugging, and manual intervention.</div>
+            <div class="section-help-row">
+              <div class="inline-help">
+                <button type="button" class="inline-help-trigger" aria-label="Show debug controls guidance">Info</button>
+                <div class="inline-help-popup">Home should only need a prompt and Send. These controls stay here for QA, debugging, and manual intervention.</div>
+              </div>
+            </div>
             <div id="debugTargetControls" class="workercontrols">No active task.</div>
           </section>
 
@@ -354,6 +422,97 @@
               </div>
             </div>
             <pre id="events">No data.</pre>
+          </section>
+        </div>
+      </section>
+
+      <section class="workspace-view" data-view="eval">
+        <div class="eval-layout">
+          <div class="eval-grid">
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Eval</div>
+                  <h3>Run launcher</h3>
+                </div>
+                <button id="startEvalRun">Start Eval</button>
+              </div>
+              <div class="settings-grid eval-launch-grid">
+                <div>
+                  <label for="evalSuiteSelect">Suite</label>
+                  <select id="evalSuiteSelect"></select>
+                </div>
+                <div>
+                  <label for="evalReplicates">Replicates</label>
+                  <input id="evalReplicates" type="number" min="1" max="5" value="1" />
+                </div>
+                <div>
+                  <label for="evalLoopSweep">Loop sweep</label>
+                  <input id="evalLoopSweep" type="text" value="1" placeholder="1,2,3" />
+                </div>
+              </div>
+              <div class="form-section">
+                <label>Arms</label>
+                <div id="evalArmList" class="eval-arm-list">
+                  <div class="review-empty">Loading eval arms...</div>
+                </div>
+                <div class="section-help-row">
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show eval catalog guidance">Info</button>
+                    <div id="evalCatalogNote" class="inline-help-popup">Eval catalogs are loaded from isolated local manifests in <code>data/evals/</code>.</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Eval</div>
+                  <h3>Recent runs</h3>
+                </div>
+              </div>
+              <div id="evalRunHistory" class="review-empty">No eval runs yet.</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Eval</div>
+                  <h3>Case results</h3>
+                </div>
+              </div>
+              <div id="evalRunDetail" class="review-empty">Pick a run to inspect case-by-case scoring and artifacts.</div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-kicker">Eval</div>
+                <div class="title-help-row">
+                  <h3>Artifact review</h3>
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show eval artifact review guidance">Info</button>
+                    <div class="inline-help-popup">Compare isolated eval artifacts and score files side by side without mixing them into Review.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="artifact-review-grid">
+              <div class="artifact-pane">
+                <label for="evalArtifactLeftSelect">Left artifact</label>
+                <select id="evalArtifactLeftSelect"></select>
+                <div id="evalArtifactLeftMeta" class="artifact-meta">No artifact selected.</div>
+                <pre id="evalArtifactLeftContent">No artifact selected.</pre>
+              </div>
+              <div class="artifact-pane">
+                <label for="evalArtifactRightSelect">Right artifact</label>
+                <select id="evalArtifactRightSelect"></select>
+                <div id="evalArtifactRightMeta" class="artifact-meta">No artifact selected.</div>
+                <pre id="evalArtifactRightContent">No artifact selected.</pre>
+              </div>
+            </div>
           </section>
         </div>
       </section>
@@ -467,8 +626,13 @@
             <div class="panel-head">
               <div>
                 <div class="panel-kicker">Review</div>
-                <h3>Artifact review</h3>
-                <p>Compare normalized output and raw response text side by side.</p>
+                <div class="title-help-row">
+                  <h3>Artifact review</h3>
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show review artifact guidance">Info</button>
+                    <div class="inline-help-popup">Compare normalized output and raw response text side by side.</div>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="artifact-review-grid">
@@ -488,6 +652,37 @@
           </section>
         </div>
       </section>
+
+      <footer class="workspace-footer">
+        <div class="workspace-status-grid">
+          <section class="workspace-status-card">
+            <div class="workspace-status-label">Current task</div>
+            <div id="footerTaskId" class="workspace-status-value">none</div>
+            <div class="workspace-status-meta">Memory version <span id="footerMemoryVersion">0</span> · Workers <span id="footerWorkerCount">0</span></div>
+          </section>
+
+          <section class="workspace-status-card">
+            <div class="workspace-status-label">Loop runtime</div>
+            <div class="workspace-status-meta-row"><span>Job</span><span id="footerLoopJobId">none</span></div>
+            <div class="workspace-status-meta-row"><span>Status</span><span id="footerLoopStatus">idle</span></div>
+            <div class="workspace-status-meta-row"><span>Progress</span><span id="footerLoopProgress">0 / 0</span></div>
+          </section>
+
+          <section class="workspace-status-card">
+            <div class="workspace-status-label">Usage</div>
+            <div class="workspace-status-meta-row"><span>Tokens</span><span id="footerUsageTokens">0 / 0</span></div>
+            <div class="workspace-status-meta-row"><span>Web search</span><span id="footerUsageWebSearchCalls">0</span></div>
+            <div class="workspace-status-meta-row"><span>Approx spend</span><span id="footerUsageCost">$0.0000 / $0.0000</span></div>
+          </section>
+
+          <section class="workspace-status-card workspace-status-card-wide">
+            <div class="workspace-status-label">Checkpoints</div>
+            <div id="footerCheckpointList" class="footer-checkpoint-list">
+              <div class="footer-checkpoint-empty">No checkpoints yet.</div>
+            </div>
+          </section>
+        </div>
+      </footer>
     </main>
   </div>
 
