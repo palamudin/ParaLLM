@@ -21,6 +21,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 - Local-first on Windows with XAMPP, PHP, HTML, CSS, JavaScript, and now a resident Python runtime
 - No Node requirement for the first prototype
+- Frontend dependencies that become part of the shell baseline should be vendored locally instead of pulled from runtime CDNs
 - Persistence kept in local JSON / JSONL files
 - Every important step should be logged
 - Contradictions should remain visible
@@ -31,6 +32,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `index.html`: local control panel and live state display
 - `assets/app.js`: frontend polling and command dispatch
 - `assets/app.css`: local styling
+- `assets/vendor/bootstrap/`: locally vendored Bootstrap 5 shell baseline and utility/component layer
 - `api/*.php`: PHP broker endpoints
 - `runtime/*.py`: resident worker / summarizer runtime service
 - `scripts/qa_check.py`: reusable QA harness for linting and reversible endpoint smoke checks
@@ -111,6 +113,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Review and artifact meta now surface requested vs effective output-token caps, retry attempts, and incomplete-output recovery notes directly in the UI
 - URL/source normalization now drops malformed non-URL entries and canonicalizes saved source links in fresh artifacts
 - Sidebar workspace shell now splits `Home`, `Settings`, `Debug`, and `Review`, with a chat-first center pane and the API key moved into Settings / Integrations
+- The frontend shell now rides a local Bootstrap 5 baseline instead of a purely bespoke spacing/layout stack, which gives the app a tighter admin-style canvas and a saner light/dark foundation
+- The sidebar is now a true collapsible admin rail with a header-anchored collapse control on desktop and slide-in behavior on smaller screens
+- The Home composer footer is now intentionally compressed: quick tools and `Send` share one row, redundant composer help is removed, and empty attachment filler text no longer consumes vertical space
 - The main thread now renders the Agent answer in a simpler chat format while worker lanes stay collapsed behind an `Inspect worker lanes` disclosure by default
 - The main thread should now converge toward a truly seamless assistant reply, with internal lane reasoning removed from the public thread and moved into Review
 - The summarizer now treats the visible answer as a lead direction that privately absorbs adversarial pressure, instead of outputting a recap or an averaged consensus blend

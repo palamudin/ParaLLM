@@ -38,6 +38,7 @@ Requirements
 - Python 3 available locally
 - PHP process launching functions available locally
 - Node is optional and only used for local JavaScript syntax checks if present
+- Bootstrap 5.3 is vendored locally under `assets/vendor/bootstrap`, so the UI does not depend on a Bootstrap CDN at runtime
 
 If process launching is disabled in php.ini
 ------------------------------------------
@@ -66,6 +67,7 @@ Main files
 ----------
 - index.html               UI
 - assets/app.js            frontend logic
+- assets/vendor/bootstrap/ local Bootstrap 5.3 CSS/JS used by the shell and component baseline
 - api/*.php                broker endpoints
 - scripts/loop_runner.php  background loop runner
 - scripts/qa_check.py      reusable lint + reversible mock smoke harness
@@ -153,6 +155,12 @@ Workers support two modes:
 - `mock`: local scaffolded reasoning output
 - `live`: real model calls through the OpenAI Responses API
 
+The frontend shell now uses a locally vendored Bootstrap 5 baseline plus app-specific CSS for the product look. The current shell direction is:
+- fixed admin-style left rail with desktop collapse and mobile slide-in behavior
+- Bootstrap color-mode driven light/dark theming instead of a separate parallel theme stack
+- tighter dashboard spacing across the shell, cards, forms, and controls
+- a slimmer Home composer where quick-tool chips and `Send` share one compact footer row
+
 PHP now dispatches worker and summarizer targets through a resident Python service on `127.0.0.1:8765`.
 That service keeps the runtime warm between calls and writes the same state, checkpoint, output, and step-log artifacts as before.
 On Windows, detached background launches now use `cmd /c start` instead of a PowerShell shim, so the runtime no longer depends on `.ps1` worker scripts.
@@ -173,6 +181,7 @@ The stored draft now also carries the worker roster plus loop rounds and delay, 
 Settings now expose opinionated `Low`, `Mid`, `High`, and `Ultra` runtime profiles so users can snap models, reasoning effort, auto-loop depth, and budget ceilings into tested templates before fine-tuning manually.
 Home now mirrors those profiles with a compact runtime card, a header profile pill, and a `Sync Active` action so the front dash stays usable without a trip into Settings.
 Home chat polling now preserves scroll position instead of snapping back to the bottom on every refresh.
+Home now uses a more compact composer/footer treatment: empty helper filler is hidden, quick tools sit inline with `Send`, and attachment cards only render when files are actually staged.
 The Home thread is intentionally simplified: it shows the prompt and the summarizer's response in a more standard agent-chat style, while the internal adjudication trace now lives in `Review`.
 The summarizer now treats the visible answer as a lead thought that privately absorbs adversarial pressure, instead of outputting a recap or consensus blend.
 Review now also shows a control audit for the lead thread: its first-pass draft, the control question applied to adversarial pressure, which objections were accepted or rejected, what concerns were held out, and the final self-check before the answer was shown.
