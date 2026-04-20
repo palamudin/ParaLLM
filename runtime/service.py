@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,18 +38,47 @@ def build_handler(runtime: LoopRuntime):
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/run-target":
+                stop_heartbeat = None
+                heartbeat_thread = None
                 try:
                     payload = self.read_json_body()
                     target = str(payload.get("target", "")).strip()
                     task_id = payload.get("taskId")
+                    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
                     if not target:
                         raise RuntimeErrorWithCode("Target is required.", 400)
-                    result = runtime.run_target(target, str(task_id).strip() if task_id else None)
+                    dispatch_job_id = str(options.get("dispatchJobId") or "").strip()
+                    if dispatch_job_id:
+                        heartbeat_message = str(
+                            options.get("dispatchHeartbeatMessage")
+                            or f"Waiting on {target} response..."
+                        ).strip()
+                        stop_heartbeat = threading.Event()
+
+                        def keepalive() -> None:
+                            while not stop_heartbeat.wait(10.0):
+                                try:
+                                    runtime.heartbeat_dispatch_job(dispatch_job_id, heartbeat_message)
+                                except Exception:
+                                    return
+
+                        heartbeat_thread = threading.Thread(
+                            target=keepalive,
+                            name=f"dispatch-heartbeat-{dispatch_job_id}",
+                            daemon=True,
+                        )
+                        heartbeat_thread.start()
+                    result = runtime.run_target(target, str(task_id).strip() if task_id else None, options)
                     self.send_json(200, {"ok": True, "result": result})
                 except RuntimeErrorWithCode as error:
                     self.send_json(error.status_code, {"message": str(error)})
                 except Exception as error:
                     self.send_json(500, {"message": str(error)})
+                finally:
+                    if stop_heartbeat is not None:
+                        stop_heartbeat.set()
+                    if heartbeat_thread is not None:
+                        heartbeat_thread.join(timeout=1.0)
                 return
             self.send_json(404, {"message": "Not found."})
 

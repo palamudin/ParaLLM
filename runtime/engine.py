@@ -116,8 +116,28 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def budget_target_keys() -> List[str]:
+    return ["commander", "worker", "summarizer"]
+
+
+def normalize_budget_limits(config: Optional[Dict[str, Any]] = None, fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or {}
+    base = fallback or {"maxTotalTokens": 0, "maxCostUsd": 0.0, "maxOutputTokens": 0}
+    return {
+        "maxTotalTokens": max(0, int(config.get("maxTotalTokens", base["maxTotalTokens"]))),
+        "maxCostUsd": round(max(0.0, float(config.get("maxCostUsd", base["maxCostUsd"]))), 6),
+        "maxOutputTokens": max(0, int(config.get("maxOutputTokens", base["maxOutputTokens"]))),
+    }
+
+
 def default_budget_config() -> Dict[str, Any]:
-    return {"maxTotalTokens": 250000, "maxCostUsd": 5.0, "maxOutputTokens": 1200}
+    overall = {"maxTotalTokens": 250000, "maxCostUsd": 5.0, "maxOutputTokens": 1200}
+    return {
+        "maxTotalTokens": overall["maxTotalTokens"],
+        "maxCostUsd": overall["maxCostUsd"],
+        "maxOutputTokens": overall["maxOutputTokens"],
+        "targets": {key: dict(overall) for key in budget_target_keys()},
+    }
 
 
 def default_research_config() -> Dict[str, Any]:
@@ -301,10 +321,17 @@ def normalize_allowed_domains(value: Any) -> List[str]:
 def normalize_budget_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     config = config or {}
     default = default_budget_config()
+    overall = normalize_budget_limits(config, default)
+    raw_targets = config.get("targets") if isinstance(config.get("targets"), dict) else {}
+    targets: Dict[str, Dict[str, Any]] = {}
+    for key in budget_target_keys():
+        target_config = raw_targets.get(key) if isinstance(raw_targets.get(key), dict) else {}
+        targets[key] = normalize_budget_limits(target_config, overall)
     return {
-        "maxTotalTokens": max(0, int(config.get("maxTotalTokens", default["maxTotalTokens"]))),
-        "maxCostUsd": round(max(0.0, float(config.get("maxCostUsd", default["maxCostUsd"]))), 6),
-        "maxOutputTokens": max(0, int(config.get("maxOutputTokens", default["maxOutputTokens"]))),
+        "maxTotalTokens": overall["maxTotalTokens"],
+        "maxCostUsd": overall["maxCostUsd"],
+        "maxOutputTokens": overall["maxOutputTokens"],
+        "targets": targets,
     }
 
 
@@ -1197,6 +1224,9 @@ class LoopRuntime:
     def _lock_path(self, name: str = "loop") -> Path:
         return self.locks_path / f"{name}.lock"
 
+    def _job_path(self, job_id: str) -> Path:
+        return self.jobs_path / f"{job_id}.json"
+
     def _remove_tree(self, path: Path) -> None:
         if not path.exists():
             return
@@ -1275,6 +1305,51 @@ class LoopRuntime:
         with self.with_lock():
             with self.steps_path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
+
+    def read_job_unlocked(self, job_id: str) -> Optional[Dict[str, Any]]:
+        path = self._job_path(str(job_id or "").strip())
+        if not path.exists():
+            return None
+        data = self._read_json_file(path, None)
+        return data if isinstance(data, dict) else None
+
+    def write_job_unlocked(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        job_id = str(job.get("jobId", "")).strip()
+        if not job_id:
+            raise RuntimeErrorWithCode("Job payload is missing jobId.", 500)
+        path = self._job_path(job_id)
+        self._write_json_file(path, job)
+        return job
+
+    def mutate_job(self, job_id: str, callback) -> Optional[Dict[str, Any]]:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id:
+            return None
+        with self.with_lock():
+            existing = self.read_job_unlocked(normalized_job_id)
+            next_job = callback(existing)
+            if next_job is None:
+                return existing
+            if not isinstance(next_job, dict):
+                return existing
+            return self.write_job_unlocked(next_job)
+
+    def heartbeat_dispatch_job(self, job_id: str, message: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        timestamp = utc_now()
+
+        def updater(existing: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if not isinstance(existing, dict):
+                return existing
+            status = str(existing.get("status", ""))
+            if status not in {"queued", "running"}:
+                return existing
+            updated = dict(existing)
+            updated["lastHeartbeatAt"] = timestamp
+            if message:
+                updated["lastMessage"] = message
+            return updated
+
+        return self.mutate_job(job_id, updater)
 
     def normalize_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
         normalized = default_state()
@@ -1360,7 +1435,30 @@ class LoopRuntime:
             "masked": mask_api_key(api_key),
         }
 
-    def get_task_runtime(self, task: Dict[str, Any], model_override: Optional[str] = None) -> Dict[str, Any]:
+    def budget_scope_key(self, target: Optional[str]) -> Optional[str]:
+        normalized = normalize_auth_target(target)
+        if normalized == "commander":
+            return "commander"
+        if normalized == "summarizer":
+            return "summarizer"
+        if re.match(r"^[A-Z]$", normalized):
+            return "worker"
+        return None
+
+    def get_budget_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        return normalize_budget_config(task_runtime.get("budget") if isinstance(task_runtime.get("budget"), dict) else {})
+
+    def get_budget_limits(self, task: Dict[str, Any], target: Optional[str] = None) -> Dict[str, Any]:
+        budget = self.get_budget_config(task)
+        scope_key = self.budget_scope_key(target)
+        if scope_key:
+            target_budget = budget.get("targets", {}).get(scope_key)
+            if isinstance(target_budget, dict):
+                return normalize_budget_limits(target_budget, budget)
+        return normalize_budget_limits(budget, default_budget_config())
+
+    def get_task_runtime(self, task: Dict[str, Any], model_override: Optional[str] = None, budget_target: Optional[str] = None) -> Dict[str, Any]:
         runtime = {
             "executionMode": "live",
             "model": DEFAULT_MODEL_ID,
@@ -1378,9 +1476,9 @@ class LoopRuntime:
             if reasoning_effort in {"none", "low", "medium", "high", "xhigh"}:
                 runtime["reasoningEffort"] = reasoning_effort
             runtime["model"] = normalize_model_id(task_runtime.get("model"), runtime["model"])
-            runtime["maxOutputTokens"] = normalize_budget_config(task_runtime.get("budget") if isinstance(task_runtime.get("budget"), dict) else {})["maxOutputTokens"]
             runtime["research"] = normalize_research_config(task_runtime.get("research") if isinstance(task_runtime.get("research"), dict) else {})
             runtime["vetting"] = normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
+        runtime["maxOutputTokens"] = self.get_budget_limits(task, budget_target)["maxOutputTokens"]
         if model_override:
             runtime["model"] = normalize_model_id(model_override, runtime["model"])
         return runtime
@@ -1392,10 +1490,6 @@ class LoopRuntime:
     def get_vetting_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
         return normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
-
-    def get_budget_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
-        return normalize_budget_config(task_runtime.get("budget") if isinstance(task_runtime.get("budget"), dict) else {})
 
     def get_model_pricing(self, model: str) -> Dict[str, Any]:
         resolved = normalize_model_id(model, DEFAULT_MODEL_ID)
@@ -1530,21 +1624,46 @@ class LoopRuntime:
             self.write_state_unlocked(state)
             return usage
 
-    def get_budget_status(self, task: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any]:
-        budget = self.get_budget_config(task)
-        normalized_usage = normalize_usage_state(usage)
+    def describe_budget_overrun(self, budget: Dict[str, Any], usage: Dict[str, Any], label: str) -> List[str]:
         reasons: List[str] = []
-        if int(budget["maxTotalTokens"]) > 0 and int(normalized_usage["totalTokens"]) >= int(budget["maxTotalTokens"]):
-            reasons.append(f"tokens {int(normalized_usage['totalTokens'])}/{int(budget['maxTotalTokens'])}")
-        if float(budget["maxCostUsd"]) > 0 and float(normalized_usage["estimatedCostUsd"]) >= float(budget["maxCostUsd"]):
+        if int(budget["maxTotalTokens"]) > 0 and int(usage["totalTokens"]) >= int(budget["maxTotalTokens"]):
+            reasons.append(f"{label} tokens {int(usage['totalTokens'])}/{int(budget['maxTotalTokens'])}")
+        if float(budget["maxCostUsd"]) > 0 and float(usage["estimatedCostUsd"]) >= float(budget["maxCostUsd"]):
             reasons.append(
-                f"estimated cost ${float(normalized_usage['estimatedCostUsd']):0.4f}/${float(budget['maxCostUsd']):0.4f}"
+                f"{label} estimated cost ${float(usage['estimatedCostUsd']):0.4f}/${float(budget['maxCostUsd']):0.4f}"
             )
-        return {"exceeded": bool(reasons), "message": "; ".join(reasons), "budget": budget, "usage": normalized_usage}
+        return reasons
+
+    def get_budget_status(self, task: Dict[str, Any], usage: Dict[str, Any], target: Optional[str] = None) -> Dict[str, Any]:
+        normalized_usage = normalize_usage_state(usage)
+        overall_budget = normalize_budget_limits(self.get_budget_config(task), default_budget_config())
+        overall_usage = normalize_usage_bucket(normalized_usage)
+        reasons: List[str] = self.describe_budget_overrun(overall_budget, overall_usage, "overall")
+
+        scope_key = self.budget_scope_key(target)
+        target_budget = self.get_budget_limits(task, target) if target else overall_budget
+        target_usage = overall_usage
+        normalized_target = normalize_auth_target(target) if target else None
+        if normalized_target:
+            target_bucket = normalized_usage.get("byTarget", {}).get(normalized_target)
+            target_usage = normalize_usage_bucket(target_bucket if isinstance(target_bucket, dict) else {})
+        if scope_key and normalized_target:
+            reasons.extend(self.describe_budget_overrun(target_budget, target_usage, f"{scope_key}:{normalized_target}"))
+
+        return {
+            "exceeded": bool(reasons),
+            "message": "; ".join(reasons),
+            "budget": overall_budget,
+            "usage": overall_usage,
+            "target": normalized_target,
+            "scope": scope_key,
+            "targetBudget": target_budget,
+            "targetUsage": target_usage,
+        }
 
     def assert_budget_available(self, target: str, task: Dict[str, Any]) -> None:
         state = self.read_state()
-        status = self.get_budget_status(task, state.get("usage") if isinstance(state.get("usage"), dict) else {})
+        status = self.get_budget_status(task, state.get("usage") if isinstance(state.get("usage"), dict) else {}, target)
         if status["exceeded"]:
             raise RuntimeErrorWithCode(f"Budget limit reached: {status['message']}", 409)
 
@@ -1607,7 +1726,7 @@ class LoopRuntime:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(request, timeout=180) as handle:
+                with urllib.request.urlopen(request, timeout=1800) as handle:
                     response = json.loads(handle.read().decode("utf-8"))
             except urllib.error.HTTPError as error:
                 body_text = error.read().decode("utf-8", errors="replace")
@@ -1675,17 +1794,17 @@ class LoopRuntime:
         requested = max(0, int(requested_max_output_tokens or 0))
         kind = target_kind.strip().lower()
         if kind == "worker":
-            floor = 900
-            retry_floor = 1800
-            hard_ceiling = 4000
+            floor = 1600
+            retry_floor = 3200
+            hard_ceiling = 12000
         elif kind == "summarizer":
-            floor = 1400
-            retry_floor = 2800
-            hard_ceiling = 8000
+            floor = 2400
+            retry_floor = 5200
+            hard_ceiling = 18000
         else:
-            floor = 900
-            retry_floor = 1800
-            hard_ceiling = 4000
+            floor = 1600
+            retry_floor = 3200
+            hard_ceiling = 12000
 
         initial = max(requested, floor)
         attempts = [initial]
@@ -1694,7 +1813,10 @@ class LoopRuntime:
         retry_candidate = min(retry_candidate, max(initial, hard_ceiling))
         if retry_candidate > initial:
             attempts.append(retry_candidate)
-        if kind == "summarizer" and retry_candidate < hard_ceiling:
+        final_candidate = min(max(retry_candidate * 2, retry_floor), hard_ceiling)
+        if final_candidate > retry_candidate:
+            attempts.append(final_candidate)
+        if kind == "summarizer" and final_candidate < hard_ceiling:
             attempts.append(hard_ceiling)
 
         deduped: List[int] = []
@@ -1924,7 +2046,7 @@ class LoopRuntime:
             schema_name="loop_commander_draft",
             schema=self.commander_schema(),
             max_output_tokens=int(runtime["maxOutputTokens"]),
-            target_kind="summarizer",
+            target_kind="commander",
         )
         parsed = normalize_commander_checkpoint(dict(result.parsed), task, round_number)
         call_meta = {
@@ -2811,12 +2933,15 @@ class LoopRuntime:
         runtime: Dict[str, Any],
         vetting_config: Dict[str, Any],
         line_catalog: List[Dict[str, Any]],
+        partial_mode: bool = False,
+        pending_workers: Optional[List[str]] = None,
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         summary_config = summarizer_config(task)
         harness_lines = summarizer_harness_instruction_lines(summary_config.get("harness"))
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
         session_context = str(task.get("sessionContext", "")).strip()
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
+        pending_workers = normalize_worker_id_list(pending_workers or [])
         instructions = (
             "You are the summarizer in a sparse multi-lane reasoning loop.\n"
             "Merge all worker checkpoints into a structured adjudication.\n"
@@ -2865,6 +2990,14 @@ class LoopRuntime:
             "Do not upgrade weak evidence into a supported fact.\n"
             "Do not do new research.\n"
             "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
+            + (
+                "This is a partial summary request.\n"
+                "Some worker checkpoints are still missing or still running.\n"
+                "Use only the currently available checkpoints.\n"
+                "The public answer should still be useful and decisive, but its confidence note must clearly reflect the missing evidence.\n"
+                if partial_mode
+                else ""
+            )
             + "\n".join(harness_lines)
             + "\nReturn JSON only that matches the schema exactly."
         )
@@ -2875,6 +3008,8 @@ class LoopRuntime:
             f"Commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
             f"Task brief:\n{json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)}\n\n"
             f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
+            f"Partial summary mode:\n{partial_mode}\n\n"
+            f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}\n\n"
             f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
             f"Worker checkpoint digests:\n{json.dumps(self.project_worker_state_for_summary(worker_state, workers), ensure_ascii=False, indent=2)}\n\n"
             f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
@@ -2948,6 +3083,42 @@ class LoopRuntime:
         summary["mergedAt"] = summary.get("mergedAt") or utc_now()
         return summary
 
+    def annotate_partial_summary(self, summary: Dict[str, Any], available_workers: List[str], pending_workers: List[str]) -> Dict[str, Any]:
+        available_workers = normalize_worker_id_list(available_workers)
+        pending_workers = normalize_worker_id_list(pending_workers)
+        note_bits = []
+        if available_workers:
+            note_bits.append("Used current checkpoints from " + ", ".join(available_workers) + ".")
+        if pending_workers:
+            note_bits.append("Still waiting on " + ", ".join(pending_workers) + ".")
+        note_bits.append("This answer was forced from current checkpoints before the full merge finished.")
+        summary["frontAnswer"]["confidenceNote"] = truncate_text(
+            " ".join(note_bits),
+            320,
+        )
+        summary["summarizerOpinion"]["uncertainty"] = truncate_text(
+            (summary["summarizerOpinion"].get("uncertainty", "") + " Partial merge only; missing workers can still change the answer.")
+            .strip(),
+            320,
+        )
+        summary["summarizerOpinion"]["integrationMode"] = truncate_text(
+            "Lead answer from current evidence only; pending workers remain advisory until a full merge completes.",
+            220,
+        )
+        control_audit = summary.get("controlAudit") if isinstance(summary.get("controlAudit"), dict) else {}
+        held_out = normalize_string_array_preserve_items(control_audit.get("heldOutConcerns", []))
+        if pending_workers:
+            held_out.append("Pending worker checkpoints: " + ", ".join(pending_workers))
+        control_audit["heldOutConcerns"] = held_out[:6]
+        control_audit["selfCheck"] = truncate_text(
+            (str(control_audit.get("selfCheck", "")).strip() + " This was released as a partial answer, so keep course changes conservative until all workers land.")
+            .strip(),
+            320,
+        )
+        summary["controlAudit"] = normalize_control_audit(control_audit, summary)
+        summary["sourceWorkers"] = available_workers
+        return summary
+
     def write_commander_files(self, task_id: str, round_number: int, checkpoint: Dict[str, Any]) -> tuple[Path, Path]:
         latest = self.checkpoints_path / f"{task_id}_commander.json"
         history = self.checkpoints_path / f"{task_id}_commander_round{round_number:03d}.json"
@@ -2964,9 +3135,10 @@ class LoopRuntime:
         history.write_text(payload, encoding="utf-8")
         return latest, history
 
-    def write_summary_files(self, task_id: str, round_number: int, summary: Dict[str, Any]) -> tuple[Path, Path]:
-        latest = self.checkpoints_path / f"{task_id}_summary.json"
-        history = self.checkpoints_path / f"{task_id}_summary_round{round_number:03d}.json"
+    def write_summary_files(self, task_id: str, round_number: int, summary: Dict[str, Any], suffix: str = "") -> tuple[Path, Path]:
+        normalized_suffix = f"_{suffix}" if suffix else ""
+        latest = self.checkpoints_path / f"{task_id}_summary{normalized_suffix}.json"
+        history = self.checkpoints_path / f"{task_id}_summary{normalized_suffix}_round{round_number:03d}.json"
         payload = json.dumps(summary, indent=2, ensure_ascii=False)
         latest.write_text(payload, encoding="utf-8")
         history.write_text(payload, encoding="utf-8")
@@ -2994,7 +3166,7 @@ class LoopRuntime:
             )
         round_number = completed_round + 1
         summary_config = commander_config(task)
-        runtime = self.get_task_runtime(task, summary_config["model"])
+        runtime = self.get_task_runtime(task, summary_config["model"], "commander")
         constraints = normalize_string_array_preserve_items(task.get("constraints", []))
         prior_summary = state.get("summary") if isinstance(state.get("summary"), dict) else None
         checkpoint: Optional[Dict[str, Any]] = None
@@ -3143,7 +3315,7 @@ class LoopRuntime:
         worker = find_task_worker(task, worker_id)
         if worker is None:
             raise RuntimeErrorWithCode(f"Unknown worker id: {worker_id}", 400)
-        runtime = self.get_task_runtime(task, worker["model"])
+        runtime = self.get_task_runtime(task, worker["model"], worker_id)
         research_config = self.get_research_config(task)
         constraints = normalize_string_array_preserve_items(task.get("constraints", []))
         prior_summary = state.get("summary") if isinstance(state.get("summary"), dict) else None
@@ -3346,7 +3518,7 @@ class LoopRuntime:
                 )
             worker_state[worker["id"]] = checkpoint
         summary_config = summarizer_config(task)
-        runtime = self.get_task_runtime(task, summary_config["model"])
+        runtime = self.get_task_runtime(task, summary_config["model"], "summarizer")
         vetting_config = self.get_vetting_config(task)
         line_catalog = self.build_summary_line_catalog(worker_state, workers)
         summary: Optional[Dict[str, Any]] = None
@@ -3481,7 +3653,163 @@ class LoopRuntime:
         )
         return {"target": "summarizer", "output": "Summary written.", "exitCode": 0}
 
-    def run_target(self, target: str, task_id: Optional[str] = None) -> Dict[str, Any]:
+    def run_answer_now(self) -> Dict[str, Any]:
+        state = self.read_state()
+        task = state.get("activeTask")
+        if not isinstance(task, dict):
+            raise RuntimeErrorWithCode("No active task.", 400)
+        commander_checkpoint = state.get("commander") if isinstance(state.get("commander"), dict) else None
+        if not isinstance(commander_checkpoint, dict):
+            raise RuntimeErrorWithCode("Commander draft is required before forcing an answer.", 409)
+        workers = task_workers(task)
+        state_workers = state.get("workers") if isinstance(state.get("workers"), dict) else {}
+        commander_round = int(commander_checkpoint.get("round", 0) or 0)
+        worker_state: Dict[str, Any] = {}
+        pending_workers: List[str] = []
+        for worker in workers:
+            checkpoint = state_workers.get(worker["id"])
+            if isinstance(checkpoint, dict) and int(checkpoint.get("step", 0) or 0) == commander_round:
+                worker_state[worker["id"]] = checkpoint
+            else:
+                pending_workers.append(worker["id"])
+        summary_config = summarizer_config(task)
+        runtime = self.get_task_runtime(task, summary_config["model"], "summarizer")
+        requested_partial_tokens = int(runtime.get("maxOutputTokens", 0) or 0)
+        runtime["maxOutputTokens"] = min(max(requested_partial_tokens, 2200), 3200) if requested_partial_tokens > 0 else 2200
+        if runtime["reasoningEffort"] in {"high", "xhigh"}:
+            runtime["reasoningEffort"] = "medium"
+        elif runtime["reasoningEffort"] == "none":
+            runtime["reasoningEffort"] = "low"
+        vetting_config = self.get_vetting_config(task)
+        line_catalog = self.build_summary_line_catalog(worker_state, workers)
+        summary: Optional[Dict[str, Any]] = None
+        response_id: Optional[str] = None
+        response: Optional[Dict[str, Any]] = None
+        usage_snapshot: Optional[Dict[str, Any]] = None
+        call_meta: Dict[str, Any] = {
+            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "effectiveMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
+            "recoveredFromIncomplete": False,
+        }
+        mode_used = "mock"
+        auth_assignment = self.get_api_key_assignment("summarizer", task, round_number=commander_round)
+        auth_meta = auth_assignment_meta(auth_assignment)
+        if runtime["executionMode"] == "live":
+            api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
+            if api_key:
+                try:
+                    self.assert_budget_available("summarizer", task)
+                    summary, response_id, response, call_meta = self.new_live_summary(
+                        api_key,
+                        task,
+                        commander_checkpoint,
+                        workers,
+                        worker_state,
+                        runtime,
+                        vetting_config,
+                        line_catalog,
+                        partial_mode=True,
+                        pending_workers=pending_workers,
+                    )
+                    usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
+                    mode_used = "live"
+                except RuntimeErrorWithCode as error:
+                    if str(error).startswith("Budget limit reached:"):
+                        self.append_step(
+                            "budget",
+                            "Budget stopped Answer Now before another live call.",
+                            {"taskId": task["taskId"], "model": runtime["model"], "error": str(error), "auth": auth_meta},
+                        )
+                        raise
+                    if not self.should_fallback_to_mock(error):
+                        raise RuntimeErrorWithCode(f"Live run failed for answer_now: {error}", error.status_code)
+                    self.append_step(
+                        "summarizer",
+                        "Live Answer Now call failed; falling back to mock.",
+                        {
+                            "taskId": task["taskId"],
+                            "model": runtime["model"],
+                            "reasoningEffort": runtime["reasoningEffort"],
+                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+                            "error": str(error),
+                            "auth": auth_meta,
+                        },
+                    )
+            else:
+                self.append_step("summarizer", "No API key found for Answer Now; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+        if summary is None:
+            summary = self.new_mock_summary(task, commander_checkpoint, workers, worker_state, vetting_config, line_catalog)
+        summary = self.normalize_summary(summary, line_catalog)
+        summary = self.annotate_partial_summary(summary, list(worker_state.keys()), pending_workers)
+        def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
+            current["summary"] = summary
+            current["memoryVersion"] = int(current.get("memoryVersion", 0) or 0) + 1
+            return current
+        state = self.mutate_state(update_state)
+        current_memory_version = int(state.get("memoryVersion", 0) or 0)
+        _, history_summary = self.write_summary_files(str(task["taskId"]), int(summary.get("round", 0) or 0), summary, "partial")
+        output_artifact = {
+            "taskId": str(task["taskId"]),
+            "artifactType": "summary_partial_output",
+            "target": "answer_now",
+            "label": "Answer Now",
+            "mode": mode_used,
+            "model": runtime["model"],
+            "round": int(summary.get("round", 0) or 0),
+            "capturedAt": utc_now(),
+            "responseId": response_id,
+            "rawOutputText": self.get_response_output_text(response) if response else None,
+            "responseMeta": {
+                "status": str(response.get("status", "completed")),
+                "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "partialSummary": True,
+                "pendingWorkers": pending_workers,
+            } if response else None,
+            "authMeta": auth_meta,
+            "output": summary,
+        }
+        _, history_output = self.write_output_artifact(
+            f"{task['taskId']}_summary_partial_output.json",
+            f"{task['taskId']}_summary_partial_round{int(summary.get('round', 0) or 0):03d}_output.json",
+            output_artifact,
+        )
+        budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
+        self.append_step(
+            "summarizer",
+            "Answer Now produced a partial summary from current checkpoints.",
+            {
+                "taskId": task["taskId"],
+                "round": int(summary.get("round", 0) or 0),
+                "memoryVersion": current_memory_version,
+                "mode": mode_used,
+                "model": runtime["model"],
+                "reasoningEffort": runtime["reasoningEffort"],
+                "responseId": response_id,
+                "availableWorkers": list(worker_state.keys()),
+                "pendingWorkers": pending_workers,
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "totalTokens": int(budget_totals.get("totalTokens", 0)),
+                "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
+                "checkpointFile": history_summary.name,
+                "outputFile": history_output.name,
+                "auth": auth_meta,
+            },
+        )
+        self.append_event(
+            "runtime_run",
+            {"target": "answer_now", "backend": "python", "exitCode": 0, "output": "Partial summary written."},
+        )
+        return {"target": "answer_now", "output": "Partial summary written.", "exitCode": 0}
+
+    def run_target(self, target: str, task_id: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         current_state = self.read_state()
         task = current_state.get("activeTask")
         if not isinstance(task, dict):
@@ -3492,4 +3820,6 @@ class LoopRuntime:
             return self.run_commander()
         if target == "summarizer":
             return self.run_summarizer()
+        if target == "answer_now" or (isinstance(options, dict) and options.get("partialSummary") and target == "summarizer"):
+            return self.run_answer_now()
         return self.run_worker(target)

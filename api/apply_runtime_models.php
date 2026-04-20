@@ -31,6 +31,14 @@ $budget = normalize_budget_config([
     'maxTotalTokens' => post_int_value('maxTotalTokens', $currentBudget['maxTotalTokens']),
     'maxCostUsd' => post_float_value('maxCostUsd', $currentBudget['maxCostUsd']),
     'maxOutputTokens' => post_int_value('maxOutputTokens', $currentBudget['maxOutputTokens']),
+    'targets' => (function () use ($currentBudget): array {
+        $raw = post_value('budgetTargets', null);
+        if ($raw === null) {
+            return is_array($currentBudget['targets'] ?? null) ? $currentBudget['targets'] : [];
+        }
+        $decoded = json_decode((string)$raw, true);
+        return is_array($decoded) ? $decoded : [];
+    })(),
 ]);
 $preferredLoop = normalize_loop_preferences([
     'rounds' => post_int_value('loopRounds', $currentLoop['rounds']),

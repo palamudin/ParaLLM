@@ -241,6 +241,7 @@ function default_draft_state(): array {
         'maxTotalTokens' => $budget['maxTotalTokens'],
         'maxCostUsd' => $budget['maxCostUsd'],
         'maxOutputTokens' => $budget['maxOutputTokens'],
+        'budgetTargets' => $budget['targets'],
         'researchEnabled' => false,
         'researchExternalWebAccess' => true,
         'researchDomains' => [],
@@ -253,11 +254,38 @@ function default_draft_state(): array {
     ];
 }
 
-function default_budget_config(): array {
+function budget_target_keys(): array {
+    return ['commander', 'worker', 'summarizer'];
+}
+
+function normalize_budget_limits(array $config = [], ?array $fallback = null): array {
+    $base = $fallback ?: [
+        'maxTotalTokens' => 0,
+        'maxCostUsd' => 0.0,
+        'maxOutputTokens' => 0,
+    ];
     return [
+        'maxTotalTokens' => max(0, (int)($config['maxTotalTokens'] ?? $base['maxTotalTokens'] ?? 0)),
+        'maxCostUsd' => max(0.0, round((float)($config['maxCostUsd'] ?? $base['maxCostUsd'] ?? 0.0), 6)),
+        'maxOutputTokens' => max(0, (int)($config['maxOutputTokens'] ?? $base['maxOutputTokens'] ?? 0)),
+    ];
+}
+
+function default_budget_config(): array {
+    $overall = [
         'maxTotalTokens' => 250000,
         'maxCostUsd' => 5.00,
         'maxOutputTokens' => 1200,
+    ];
+    return [
+        'maxTotalTokens' => $overall['maxTotalTokens'],
+        'maxCostUsd' => $overall['maxCostUsd'],
+        'maxOutputTokens' => $overall['maxOutputTokens'],
+        'targets' => [
+            'commander' => $overall,
+            'worker' => $overall,
+            'summarizer' => $overall,
+        ],
     ];
 }
 
@@ -333,15 +361,29 @@ function normalize_allowed_domains($value): array {
 
 function normalize_budget_config(array $config = []): array {
     $default = default_budget_config();
+    $overall = normalize_budget_limits($config, $default);
+    $targetsInput = is_array($config['targets'] ?? null) ? $config['targets'] : [];
+    $targets = [];
+    foreach (budget_target_keys() as $targetKey) {
+        $targetConfig = is_array($targetsInput[$targetKey] ?? null) ? $targetsInput[$targetKey] : [];
+        $targets[$targetKey] = normalize_budget_limits($targetConfig, $overall);
+    }
     return [
-        'maxTotalTokens' => max(0, (int)($config['maxTotalTokens'] ?? $default['maxTotalTokens'])),
-        'maxCostUsd' => max(0.0, round((float)($config['maxCostUsd'] ?? $default['maxCostUsd']), 6)),
-        'maxOutputTokens' => max(0, (int)($config['maxOutputTokens'] ?? $default['maxOutputTokens'])),
+        'maxTotalTokens' => $overall['maxTotalTokens'],
+        'maxCostUsd' => $overall['maxCostUsd'],
+        'maxOutputTokens' => $overall['maxOutputTokens'],
+        'targets' => $targets,
     ];
 }
 
 function normalize_draft_state(?array $draft): array {
     $default = default_draft_state();
+    $budget = normalize_budget_config([
+        'maxTotalTokens' => $draft['maxTotalTokens'] ?? $default['maxTotalTokens'],
+        'maxCostUsd' => $draft['maxCostUsd'] ?? $default['maxCostUsd'],
+        'maxOutputTokens' => $draft['maxOutputTokens'] ?? $default['maxOutputTokens'],
+        'targets' => is_array($draft['budgetTargets'] ?? null) ? $draft['budgetTargets'] : ($default['budgetTargets'] ?? []),
+    ]);
     $loop = normalize_loop_preferences([
         'rounds' => $draft['loopRounds'] ?? $default['loopRounds'],
         'delayMs' => $draft['loopDelayMs'] ?? $default['loopDelayMs'],
@@ -364,9 +406,10 @@ function normalize_draft_state(?array $draft): array {
         'model' => normalize_model_id((string)($draft['model'] ?? $default['model']), $default['model']),
         'summarizerModel' => normalize_model_id((string)($draft['summarizerModel'] ?? $default['summarizerModel']), (string)($draft['model'] ?? $default['model'])),
         'reasoningEffort' => $reasoningEffort,
-        'maxTotalTokens' => max(0, (int)($draft['maxTotalTokens'] ?? $default['maxTotalTokens'])),
-        'maxCostUsd' => max(0.0, round((float)($draft['maxCostUsd'] ?? $default['maxCostUsd']), 6)),
-        'maxOutputTokens' => max(0, (int)($draft['maxOutputTokens'] ?? $default['maxOutputTokens'])),
+        'maxTotalTokens' => $budget['maxTotalTokens'],
+        'maxCostUsd' => $budget['maxCostUsd'],
+        'maxOutputTokens' => $budget['maxOutputTokens'],
+        'budgetTargets' => $budget['targets'],
         'researchEnabled' => coerce_bool($draft['researchEnabled'] ?? $default['researchEnabled'], $default['researchEnabled']),
         'researchExternalWebAccess' => coerce_bool($draft['researchExternalWebAccess'] ?? $default['researchExternalWebAccess'], $default['researchExternalWebAccess']),
         'researchDomains' => normalize_allowed_domains($draft['researchDomains'] ?? $default['researchDomains']),
@@ -409,6 +452,7 @@ function build_draft_from_task(?array $task, array $overrides = [], bool $resetB
         'maxTotalTokens' => $budget['maxTotalTokens'],
         'maxCostUsd' => $budget['maxCostUsd'],
         'maxOutputTokens' => $budget['maxOutputTokens'],
+        'budgetTargets' => $budget['targets'],
         'researchEnabled' => $research['enabled'],
         'researchExternalWebAccess' => $research['externalWebAccess'],
         'researchDomains' => $research['domains'],
@@ -971,6 +1015,13 @@ function ensure_data_paths(): void {
     if (!file_exists(STEPS_FILE)) {
         file_put_contents(STEPS_FILE, '');
     }
+}
+
+function allow_long_running_request(): void {
+    if (function_exists('set_time_limit')) {
+        @set_time_limit(0);
+    }
+    @ini_set('max_execution_time', '0');
 }
 
 function write_json_file_pretty(string $path, array $payload): void {
@@ -1711,9 +1762,11 @@ function auth_file_path(): string {
 function normalize_auth_key_pool($value): array {
     $raw = is_array($value) ? $value : preg_split('/\r\n|\r|\n/', (string)$value);
     $keys = [];
+    $seen = [];
     foreach ($raw as $entry) {
         $key = trim((string)$entry);
-        if ($key !== '') {
+        if ($key !== '' && !isset($seen[$key])) {
+            $seen[$key] = true;
             $keys[] = $key;
         }
     }
@@ -1780,13 +1833,14 @@ function post_int_value(string $key, int $default): int {
 
 function available_targets(?array $task): array {
     if (!$task) {
-        return ['commander', 'summarizer'];
+        return ['commander', 'summarizer', 'answer_now'];
     }
     $targets = array_map(static function (array $worker): string {
         return (string)$worker['id'];
     }, task_workers($task));
     array_unshift($targets, 'commander');
     $targets[] = 'summarizer';
+    $targets[] = 'answer_now';
     return array_values(array_unique($targets));
 }
 
@@ -1815,20 +1869,34 @@ function read_job_unlocked(string $jobId): ?array {
 }
 
 function default_job(array $config): array {
+    $requestedJobType = (string)($config['jobType'] ?? 'loop');
+    $jobType = in_array($requestedJobType, ['loop', 'target'], true)
+        ? $requestedJobType
+        : 'loop';
+    $dependencyJobIds = array_values(array_filter(array_map(static function ($value): string {
+        return trim((string)$value);
+    }, is_array($config['dependencyJobIds'] ?? null) ? $config['dependencyJobIds'] : [])));
     return [
         'jobId' => $config['jobId'],
         'taskId' => $config['taskId'],
+        'jobType' => $jobType,
         'mode' => $config['mode'] ?? 'background',
         'status' => $config['status'] ?? 'queued',
+        'target' => $config['target'] ?? null,
+        'batchId' => $config['batchId'] ?? null,
         'queuePosition' => max(0, (int)($config['queuePosition'] ?? 0)),
         'attempt' => max(1, (int)($config['attempt'] ?? 1)),
         'resumeOfJobId' => $config['resumeOfJobId'] ?? null,
         'retryOfJobId' => $config['retryOfJobId'] ?? null,
         'resumeFromRound' => max(1, (int)($config['resumeFromRound'] ?? 1)),
-        'rounds' => (int)$config['rounds'],
-        'delayMs' => (int)$config['delayMs'],
+        'rounds' => (int)($config['rounds'] ?? 0),
+        'delayMs' => (int)($config['delayMs'] ?? 0),
         'workerCount' => max(0, (int)($config['workerCount'] ?? 0)),
         'cancelRequested' => (bool)($config['cancelRequested'] ?? false),
+        'dependencyJobIds' => $dependencyJobIds,
+        'dependencyMode' => (string)($config['dependencyMode'] ?? 'all'),
+        'partialSummary' => (bool)($config['partialSummary'] ?? false),
+        'timeoutSeconds' => max(30, (int)($config['timeoutSeconds'] ?? 300)),
         'queuedAt' => $config['queuedAt'] ?? gmdate('c'),
         'startedAt' => $config['startedAt'] ?? null,
         'finishedAt' => $config['finishedAt'] ?? null,
@@ -1838,6 +1906,7 @@ function default_job(array $config): array {
         'lastMessage' => $config['lastMessage'] ?? 'Queued.',
         'usage' => normalize_usage_state(isset($config['usage']) && is_array($config['usage']) ? $config['usage'] : []),
         'results' => $config['results'] ?? [],
+        'metadata' => isset($config['metadata']) && is_array($config['metadata']) ? $config['metadata'] : [],
         'error' => $config['error'] ?? null
     ];
 }
@@ -1927,9 +1996,12 @@ function read_jobs_unlocked(): array {
     return $jobs;
 }
 
-function active_background_job_count_unlocked(?string $taskId = null): int {
+function active_background_job_count_unlocked(?string $taskId = null, string $jobType = 'loop'): int {
     $count = 0;
     foreach (read_jobs_unlocked() as $job) {
+        if ((string)($job['jobType'] ?? 'loop') !== $jobType) {
+            continue;
+        }
         if (!job_status_is_active($job['status'] ?? null)) {
             continue;
         }
@@ -1941,9 +2013,12 @@ function active_background_job_count_unlocked(?string $taskId = null): int {
     return $count;
 }
 
-function queued_background_jobs_unlocked(?string $taskId = null, ?string $excludeJobId = null): array {
+function queued_background_jobs_unlocked(?string $taskId = null, ?string $excludeJobId = null, string $jobType = 'loop'): array {
     $jobs = [];
     foreach (read_jobs_unlocked() as $job) {
+        if ((string)($job['jobType'] ?? 'loop') !== $jobType) {
+            continue;
+        }
         if (($job['status'] ?? null) !== 'queued') {
             continue;
         }
@@ -1970,16 +2045,16 @@ function queued_background_jobs_unlocked(?string $taskId = null, ?string $exclud
     return $jobs;
 }
 
-function next_background_queue_position_unlocked(?string $taskId = null): int {
+function next_background_queue_position_unlocked(?string $taskId = null, string $jobType = 'loop'): int {
     $maxPosition = 0;
-    foreach (queued_background_jobs_unlocked($taskId) as $job) {
+    foreach (queued_background_jobs_unlocked($taskId, null, $jobType) as $job) {
         $maxPosition = max($maxPosition, (int)($job['queuePosition'] ?? 0));
     }
     return $maxPosition + 1;
 }
 
-function find_next_queued_background_job_unlocked(?string $taskId = null, ?string $excludeJobId = null): ?array {
-    $jobs = queued_background_jobs_unlocked($taskId, $excludeJobId);
+function find_next_queued_background_job_unlocked(?string $taskId = null, ?string $excludeJobId = null, string $jobType = 'loop'): ?array {
+    $jobs = queued_background_jobs_unlocked($taskId, $excludeJobId, $jobType);
     return $jobs ? $jobs[0] : null;
 }
 
@@ -2065,6 +2140,11 @@ function build_artifact_history_entry(string $artifactFile): ?array {
         $entry['worker'] = 'commander';
         $entry['kind'] = 'commander_output';
         $entry['roundOrStep'] = (int)$matches[2];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_partial_round(\d+)_output\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'summary-partial';
+        $entry['kind'] = 'summary_partial_output';
+        $entry['roundOrStep'] = (int)$matches[2];
     } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)_output\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = 'summary';
@@ -2079,6 +2159,11 @@ function build_artifact_history_entry(string $artifactFile): ?array {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = 'commander';
         $entry['kind'] = 'commander_round';
+        $entry['roundOrStep'] = (int)$matches[2];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_partial_round(\d+)\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'summary-partial';
+        $entry['kind'] = 'summary_partial_round';
         $entry['roundOrStep'] = (int)$matches[2];
     } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];
@@ -2393,7 +2478,7 @@ function ensure_runtime_service(): void {
     }, 15000, 'runtime-service');
 }
 
-function run_python_runtime_target(string $target, ?array $task = null): array {
+function run_python_runtime_target(string $target, ?array $task = null, array $options = [], int $timeoutSeconds = 300): array {
     $stateTask = $task;
     if ($stateTask === null) {
         $state = read_state();
@@ -2404,13 +2489,18 @@ function run_python_runtime_target(string $target, ?array $task = null): array {
     }
 
     ensure_runtime_service();
-    $response = runtime_service_request('POST', '/run-target', [
+    $payload = [
         'target' => $target,
         'taskId' => $stateTask['taskId'] ?? null
-    ], 300);
+    ];
+    if ($options) {
+        $payload['options'] = $options;
+    }
+    $response = runtime_service_request('POST', '/run-target', $payload, max(30, $timeoutSeconds));
 
     append_event('runtime_dispatch', [
         'target' => $target,
+        'options' => $options,
         'backend' => 'python',
         'statusCode' => $response['statusCode'],
         'body' => $response['body']
@@ -2439,6 +2529,6 @@ function run_python_runtime_target(string $target, ?array $task = null): array {
     ];
 }
 
-function run_dispatch_target(string $target, ?array $task = null): array {
-    return run_python_runtime_target($target, $task);
+function run_dispatch_target(string $target, ?array $task = null, array $options = [], int $timeoutSeconds = 300): array {
+    return run_python_runtime_target($target, $task, $options, $timeoutSeconds);
 }

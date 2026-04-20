@@ -29,6 +29,15 @@ if ($summarizerHarnessRaw !== null) {
     }
 }
 
+$budgetTargets = $existingDraft['budgetTargets'] ?? default_budget_config()['targets'];
+$budgetTargetsRaw = post_value('budgetTargets', null);
+if ($budgetTargetsRaw !== null) {
+    $decodedBudgetTargets = json_decode((string)$budgetTargetsRaw, true);
+    if (is_array($decodedBudgetTargets)) {
+        $budgetTargets = $decodedBudgetTargets;
+    }
+}
+
 $draft = normalize_draft_state(array_merge($existingDraft, [
     'objective' => trim((string)post_value('objective', $existingDraft['objective'])),
     'constraints' => $constraints,
@@ -40,6 +49,7 @@ $draft = normalize_draft_state(array_merge($existingDraft, [
     'maxCostUsd' => post_value('maxCostUsd', $existingDraft['maxCostUsd']),
     'maxTotalTokens' => post_value('maxTotalTokens', $existingDraft['maxTotalTokens']),
     'maxOutputTokens' => post_value('maxOutputTokens', $existingDraft['maxOutputTokens']),
+    'budgetTargets' => $budgetTargets,
     'researchEnabled' => post_value('researchEnabled', $existingDraft['researchEnabled']),
     'researchExternalWebAccess' => post_value('researchExternalWebAccess', $existingDraft['researchExternalWebAccess']),
     'researchDomains' => post_value('researchDomains', $existingDraft['researchDomains']),

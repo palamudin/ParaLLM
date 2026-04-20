@@ -1,14 +1,22 @@
 <?php
 require __DIR__ . '/common.php';
+require __DIR__ . '/dispatch_runtime.php';
 ensure_data_paths();
+allow_long_running_request();
 
 $target = trim((string)post_value('target', ''));
 $state = recover_loop_state_if_needed();
+recover_dispatch_jobs_if_needed();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
 }
 if (loop_is_active($state)) {
     json_response(['message' => 'The autonomous loop is running. Cancel it before manual dispatch.'], 409);
+}
+if (with_lock(function () use ($state): int {
+    return active_target_job_count_unlocked((string)($state['activeTask']['taskId'] ?? ''), true);
+}) > 0) {
+    json_response(['message' => 'A background target dispatch is already running. Wait for it to finish or use the queued answer path.'], 409);
 }
 if (!is_valid_target($target, $state['activeTask'])) {
     json_response(['message' => 'Invalid target.'], 400);

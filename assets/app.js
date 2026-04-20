@@ -128,7 +128,11 @@ let latestAuthStatus = { hasKey: false, keyCount: 0, masked: null, last4: "", ma
 let authDynamicRows = [];
 let authRowSequence = 0;
 let authSaveTimers = {};
+let authRowSaveState = {};
 let latestLoopActive = false;
+let latestManualDispatchCount = 0;
+let latestManualDispatchEntries = [];
+let manualDispatchSequence = 0;
 let artifactSelections = { left: "", right: "" };
 let formDirty = false;
 let lastSyncedFormSourceKey = "";
@@ -176,6 +180,16 @@ function formatUsd(value) {
 function formatUsdBudget(value) {
   const amount = Number(value || 0);
   return "$" + amount.toFixed(2);
+}
+
+function formatElapsedDuration(startedAt) {
+  const started = Number(startedAt || 0);
+  if (!started) return "0s";
+  const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes <= 0) return remainder + "s";
+  return minutes + "m " + String(remainder).padStart(2, "0") + "s";
 }
 
 function escapeHtml(value) {
@@ -475,7 +489,7 @@ function renderAddWorkerTypeControl(task, draft, loop) {
   if (!$select.length) return;
 
   const workers = stagedWorkerSource(draft, task);
-  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const isActive = isWorkspaceBusy(loop, latestState);
   const suggestedType = nextAvailableWorkerType(task, draft);
   const preferredSelection = String($select.data("selectedType") || $select.val() || "").trim();
   const selectedValue = WORKER_TYPE_CATALOG[preferredSelection] ? preferredSelection : suggestedType;
@@ -1464,9 +1478,17 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
   const taskId = task?.taskId || "none";
   const memoryVersion = state?.memoryVersion ?? 0;
   const workerCount = workers.length || 0;
-  const loopJobId = loop?.jobId || "none";
-  const loopStatus = loop?.status || "idle";
-  const loopProgress = (loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0);
+  const dispatch = state?.dispatch || {};
+  const dispatchEntries = Array.isArray(dispatch.activeJobs) ? dispatch.activeJobs : [];
+  const dispatchPrimary = dispatchEntries[0] || null;
+  const dispatchActive = dispatchEntries.length > 0 || latestManualDispatchCount > 0;
+  const loopJobId = dispatchActive && !loop?.jobId ? (dispatchPrimary?.jobId || "none") : (loop?.jobId || "none");
+  const loopStatus = dispatchActive
+    ? ("dispatch-" + String(dispatch.status || "running"))
+    : (loop?.status || "idle");
+  const loopProgress = dispatchActive
+    ? (Number(dispatch.runningCount || 0) + " running | " + Number(dispatch.queuedCount || 0) + " queued")
+    : ((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
   const usageTokens = (usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0);
   const usageWebSearchCalls = usage.webSearchCalls ?? 0;
   const usageCost = formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0);
@@ -1482,6 +1504,25 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
   $("#usageCost, #footerUsageCost").text(usageCost);
 }
 
+function activeDispatchEntries(state) {
+  const stateEntries = Array.isArray(state?.dispatch?.activeJobs) ? state.dispatch.activeJobs : [];
+  return stateEntries.length ? stateEntries : latestManualDispatchEntries;
+}
+
+function activeDispatchCount(state) {
+  return activeDispatchEntries(state).length;
+}
+
+function hasActiveDispatchTarget(state, target) {
+  return activeDispatchEntries(state).some(function (entry) {
+    return String(entry?.target || "") === String(target || "");
+  });
+}
+
+function isWorkspaceBusy(loop, state) {
+  return loop?.status === "running" || loop?.status === "queued" || activeDispatchCount(state) > 0;
+}
+
 function closeInlineHelpPopovers($except = $()) {
   $(".inline-help.open").not($except).removeClass("open");
   const activeElement = document.activeElement;
@@ -1492,9 +1533,10 @@ function closeInlineHelpPopovers($except = $()) {
 }
 
 function updateAuthButtons() {
-  $("#addAuthField").prop("disabled", latestLoopActive);
-  $("#clearAuth").prop("disabled", latestLoopActive || !latestAuthStatus.hasKey);
-  $(".auth-key-input, .auth-key-remove").prop("disabled", latestLoopActive);
+  const inputsLocked = latestLoopActive || activeDispatchCount(latestState) > 0;
+  $("#addAuthField").prop("disabled", inputsLocked);
+  $("#clearAuth").prop("disabled", inputsLocked || !latestAuthStatus.hasKey);
+  $(".auth-key-input, .auth-key-remove").prop("disabled", inputsLocked);
 }
 
 function formatKeyCountLabel(count) {
@@ -1703,6 +1745,22 @@ function clearAuthSaveTimer(timerKey) {
   delete authSaveTimers[timerKey];
 }
 
+function authSaveMeta(timerKey) {
+  if (!authRowSaveState[timerKey]) {
+    authRowSaveState[timerKey] = {
+      inFlight: false,
+      pendingValue: "",
+      lastSubmitted: ""
+    };
+  }
+  return authRowSaveState[timerKey];
+}
+
+function clearAuthSaveMeta(timerKey) {
+  if (!timerKey) return;
+  delete authRowSaveState[timerKey];
+}
+
 function handleAuthMutationSuccess(resp, successText, options = {}) {
   let out = resp;
   try { out = JSON.parse(resp); } catch (_) {}
@@ -1716,8 +1774,15 @@ function handleAuthMutationSuccess(resp, successText, options = {}) {
 function persistAuthSlot(slotIndex, apiKey) {
   const trimmed = String(apiKey || "").trim();
   if (!trimmed || latestLoopActive) return;
+  const timerKey = "stored-" + String(slotIndex);
+  const meta = authSaveMeta(timerKey);
+  if (meta.inFlight || meta.lastSubmitted === trimmed) return;
+  meta.inFlight = true;
+  meta.pendingValue = trimmed;
   $.post("api/set_auth.php", { replaceIndex: slotIndex, apiKey: trimmed })
     .done(function (resp) {
+      meta.inFlight = false;
+      meta.lastSubmitted = trimmed;
       handleAuthMutationSuccess(resp, "API key slot updated", {
         onSuccess: function () {
           renderAuthEditor(true);
@@ -1725,6 +1790,7 @@ function persistAuthSlot(slotIndex, apiKey) {
       });
     })
     .fail(function (xhr) {
+      meta.inFlight = false;
       showMessage("API key slot update failed: " + extractErrorMessage(xhr), true);
     });
 }
@@ -1732,16 +1798,24 @@ function persistAuthSlot(slotIndex, apiKey) {
 function appendAuthKey(rowId, apiKey) {
   const trimmed = String(apiKey || "").trim();
   if (!trimmed || latestLoopActive) return;
+  const meta = authSaveMeta(rowId);
+  if (meta.inFlight || meta.lastSubmitted === trimmed) return;
+  meta.inFlight = true;
+  meta.pendingValue = trimmed;
   $.post("api/set_auth.php", { appendKey: trimmed })
     .done(function (resp) {
+      meta.inFlight = false;
+      meta.lastSubmitted = trimmed;
       handleAuthMutationSuccess(resp, "API key added", {
         onSuccess: function () {
           removeAuthDynamicRow(rowId);
+          clearAuthSaveMeta(rowId);
           renderAuthEditor(true);
         }
       });
     })
     .fail(function (xhr) {
+      meta.inFlight = false;
       showMessage("API key append failed: " + extractErrorMessage(xhr), true);
     });
 }
@@ -1768,19 +1842,27 @@ function scheduleAuthRowSave($input, immediate = false) {
   const slotIndex = Number($row.data("slotIndex"));
   const value = String($input.val() || "");
   const timerKey = mode === "stored" ? "stored-" + slotIndex : rowId;
+  const trimmed = value.trim();
+  const meta = authSaveMeta(timerKey);
 
   if (mode === "new" && rowId) {
     updateAuthDynamicRow(rowId, value);
   }
 
+  if (trimmed !== meta.pendingValue) {
+    meta.lastSubmitted = "";
+  }
+  meta.pendingValue = trimmed;
+
   clearAuthSaveTimer(timerKey);
 
   const runner = function () {
+    if (!trimmed) return;
     if (mode === "stored") {
-      persistAuthSlot(slotIndex, value);
+      persistAuthSlot(slotIndex, trimmed);
       return;
     }
-    appendAuthKey(rowId, value);
+    appendAuthKey(rowId, trimmed);
   };
 
   if (immediate) {
@@ -1832,7 +1914,7 @@ function renderJobHistory(jobs, recoveryWarning, queueLimit) {
   sections.push(`
     <article class="history-card">
       <div class="history-title">Queue policy</div>
-      <div class="history-meta">Background loops can queue up to ${formatInteger(queueLimit || 0)} jobs. Interrupted jobs can resume from the next unfinished round, while retry starts a fresh attempt.</div>
+      <div class="history-meta">Background loops can queue up to ${formatInteger(queueLimit || 0)} jobs. Target dispatches run as independent background jobs, and Answer Now can summarize from current checkpoints while other lanes are still running.</div>
     </article>
   `);
 
@@ -1842,22 +1924,35 @@ function renderJobHistory(jobs, recoveryWarning, queueLimit) {
   }
 
   jobs.forEach(function (job) {
-    const title = truncateText(job.objective || job.taskId || job.jobId || "Unknown job", 140);
-    const metaLines = [
+    const isTargetJob = String(job.jobType || "loop") === "target";
+    const title = truncateText(
+      isTargetJob
+        ? ((job.target === "answer_now" ? "Answer Now" : ("Dispatch " + String(job.target || "target"))) + " | " + (job.objective || job.taskId || job.jobId || "job"))
+        : (job.objective || job.taskId || job.jobId || "Unknown job"),
+      140
+    );
+    const metaLines = isTargetJob ? [
+      "Status: " + (job.status || "unknown") + " | target " + String(job.target || "target") + (job.partialSummary ? " | partial summary" : ""),
+      "Attempt " + formatInteger(job.attempt || 1) + " | tokens " + formatInteger(job.totalTokens || 0) + " | spend " + formatUsd(job.estimatedCostUsd || 0),
+      "Queued " + (job.queuedAt || "n/a") + " | started " + (job.startedAt || "n/a") + " | finished " + (job.finishedAt || "n/a")
+    ] : [
       "Status: " + (job.status || "unknown") + " | rounds " + formatInteger(job.completedRounds || 0) + "/" + formatInteger(job.rounds || 0) + " | workers " + formatInteger(job.workerCount || 0),
       "Attempt " + formatInteger(job.attempt || 1) + " | tokens " + formatInteger(job.totalTokens || 0) + " | spend " + formatUsd(job.estimatedCostUsd || 0),
       "Queued " + (job.queuedAt || "n/a") + " | started " + (job.startedAt || "n/a") + " | finished " + (job.finishedAt || "n/a")
     ];
 
-    if (Number(job.queuePosition || 0) > 0) {
+    if (!isTargetJob && Number(job.queuePosition || 0) > 0) {
       metaLines.push("Queue position: " + formatInteger(job.queuePosition));
     }
-    if (job.resumeOfJobId) {
+    if (!isTargetJob && job.resumeOfJobId) {
       metaLines.push("Resume of: " + job.resumeOfJobId + " | resumed from round " + formatInteger(job.resumeFromRound || 1));
-    } else if (job.retryOfJobId) {
+    } else if (!isTargetJob && job.retryOfJobId) {
       metaLines.push("Retry of: " + job.retryOfJobId);
-    } else if (job.canResume) {
+    } else if (!isTargetJob && job.canResume) {
       metaLines.push("Resume point: round " + formatInteger(job.resumeFromRound || 1));
+    }
+    if (isTargetJob && job.batchId) {
+      metaLines.push("Batch: " + job.batchId);
     }
     if (job.lastMessage) {
       metaLines.push("Note: " + job.lastMessage);
@@ -2430,7 +2525,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
     return;
   }
 
-  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const isActive = isWorkspaceBusy(loop, latestState);
   const summaryReady = allWorkerCheckpointsReady(task, stateWorkers || {});
 
   task.workers.forEach(function (worker) {
@@ -2462,7 +2557,8 @@ function renderWorkerControls(task, loop, stateWorkers) {
   $summaryRow.append(
     $("<select>").addClass("position-model").attr("data-position", "summarizer").html(buildModelOptions(summarizerModel)),
     $("<button>").addClass("save-model").attr("data-position", "summarizer").prop("disabled", isActive).text("Save Model"),
-    $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize")
+    $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize"),
+    $("<button>").addClass("run-target secondary").attr("data-target", "answer_now").prop("disabled", commanderRound(task) <= 0 || hasActiveDispatchTarget(latestState, "answer_now")).text("Answer Now")
   );
   $summaryCard.append($summaryRow);
   $controls.append($summaryCard);
@@ -2476,7 +2572,8 @@ function renderHomeWorkerControls(task, draft, loop) {
     mode: "draft",
     workers,
     summarizer,
-    loopStatus: loop?.status || "idle"
+    loopStatus: loop?.status || "idle",
+    dispatchStatus: latestState?.dispatch?.status || "idle"
   });
   if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
   workerControlsSignature = signature;
@@ -2487,7 +2584,7 @@ function renderHomeWorkerControls(task, draft, loop) {
     return;
   }
 
-  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const isActive = isWorkspaceBusy(loop, latestState);
   workers.forEach(function (worker) {
     const $card = $("<div>").addClass("workercontrol").attr("data-worker-id", worker.id);
     $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + displayWorkerLabel(worker)));
@@ -2611,6 +2708,7 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
     commanderRound: currentCommander?.round || 0,
     workers: task?.workers || [],
     loopStatus: loop?.status || "idle",
+    dispatchStatus: latestState?.dispatch?.status || "idle",
     summaryReady: summarizerReadyForCommanderRound(task, stateWorkers || {})
   });
   if (signature === debugControlsSignature || hasFocusWithin("#debugTargetControls")) return;
@@ -2622,10 +2720,11 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
     return;
   }
 
-  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const isActive = isWorkspaceBusy(loop, latestState);
   const currentCommanderRound = commanderRound(task);
   const summaryReady = summarizerReadyForCommanderRound(task, stateWorkers || {});
   const commanderModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
+  const partialAnswerActive = hasActiveDispatchTarget(latestState, "answer_now");
 
   const $commanderCard = $("<div>").addClass("workercontrol");
   $commanderCard.append($("<div>").addClass("workercontrol-title").text("Commander"));
@@ -2671,7 +2770,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   );
   $summaryCard.append(
     $("<div>").addClass("inlineform").append(
-      $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize")
+      $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize"),
+      $("<button>").addClass("run-target secondary").attr("data-target", "answer_now").prop("disabled", currentCommanderRound <= 0 || partialAnswerActive).text("Answer Now")
     )
   );
   $controls.append($summaryCard);
@@ -3526,7 +3626,8 @@ function legacyApplyLoopUiUnused(state) {
   const loop = state.loop || null;
   const task = state.activeTask || null;
   const hasTask = !!task;
-  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const dispatchActive = activeDispatchCount(state) > 0;
+  const isActive = isWorkspaceBusy(loop, state);
   const workers = activeWorkerSource(task, state.draft || null);
   const usage = state.usage || {};
   const budget = task?.runtime?.budget || {
@@ -3539,6 +3640,9 @@ function legacyApplyLoopUiUnused(state) {
 
   syncWorkspaceStatus(task, state, workers, loop, usage, budget);
   $("#loopNote").text(
+    dispatchActive
+      ? (state?.dispatch?.lastMessage || "Background target dispatch is in flight.")
+      :
     loop?.lastMessage ||
     (!hasTask
       ? "Press Send to start the configured roster and loop automatically."
@@ -3558,7 +3662,7 @@ function legacyApplyLoopUiUnused(state) {
   $("#applyCurrentModels").prop("disabled", isActive || !hasTask);
   $("#resetSession").prop("disabled", isActive);
   $("#resetState").prop("disabled", isActive);
-  $("#cancelLoop").prop("disabled", !isActive);
+  $("#cancelLoop").prop("disabled", !(loop?.status === "running" || loop?.status === "queued"));
 }
 
 function renderConversationThread(task, summary, workerState, loop) {
@@ -3650,7 +3754,8 @@ function applyLoopUi(state) {
   const loop = state.loop || null;
   const task = state.activeTask || null;
   const hasTask = !!task;
-  const isActive = loop?.status === "running" || loop?.status === "queued";
+  const dispatchActive = activeDispatchCount(state) > 0;
+  const isActive = isWorkspaceBusy(loop, state);
   const workers = activeWorkerSource(task, state.draft || null);
   const usage = state.usage || {};
   const budget = task?.runtime?.budget || {
@@ -3671,6 +3776,9 @@ function applyLoopUi(state) {
   syncWorkspaceStatus(task, state, workers, loop, usage, budget);
   $("#headerProfile").text(headerProfileName);
   $("#loopNote").text(
+    dispatchActive
+      ? (state?.dispatch?.lastMessage || "Background target dispatch is in flight.")
+      :
     loop?.lastMessage ||
     (!hasTask
       ? "Press Send to start the configured roster and loop automatically. Next send is staged for the " + stagedProfileName + " profile in " + stagedMode + " mode."
@@ -3692,16 +3800,18 @@ function applyLoopUi(state) {
   $("#applyCurrentModels").prop("disabled", isActive || !hasTask);
   $("#resetSession").prop("disabled", isActive);
   $("#resetState").prop("disabled", isActive);
-  $("#cancelLoop").prop("disabled", !isActive);
+  $("#cancelLoop").prop("disabled", !(loop?.status === "running" || loop?.status === "queued"));
 }
 
 function refreshState() {
+  renderDispatchActivity();
   refreshAuth();
   refreshEvalHistory();
 
   $.getJSON("api/get_state.php")
     .done(function (data) {
       latestState = data;
+      renderDispatchActivity();
       const task = data.activeTask
         ? Object.assign({}, data.activeTask, {
             stateWorkers: data.workers || {},
@@ -3774,7 +3884,57 @@ function extractErrorMessage(xhr) {
   return xhr.responseText || "Request failed.";
 }
 
+function renderDispatchActivity() {
+  const $banner = $("#dispatchActivity");
+  if (!$banner.length) return;
+  const entries = activeDispatchEntries(latestState);
+  if (!entries.length) {
+    $banner.prop("hidden", true).empty();
+    return;
+  }
+  const entry = entries[0];
+  const label = String(entry?.targetLabel || entry?.label || "Manual dispatch");
+  const count = entries.length;
+  const extra = count > 1 ? " + " + (count - 1) + " more" : "";
+  const elapsed = formatElapsedDuration(entry?.startedAt || entry?.queuedAt || 0);
+  const note = String(entry?.lastMessage || "");
+  $banner
+    .prop("hidden", false)
+    .html("<strong>Processing</strong> " + escapeHtml(label + extra) + " | waiting " + escapeHtml(elapsed) + " | " + escapeHtml(note || "long ultra-reasoning calls can take minutes."));
+}
+
+function beginManualDispatch(label) {
+  manualDispatchSequence += 1;
+  const entry = {
+    id: "manual-" + manualDispatchSequence,
+    label: String(label || "Manual dispatch"),
+    startedAt: Date.now()
+  };
+  latestManualDispatchEntries.push(entry);
+  latestManualDispatchCount = latestManualDispatchEntries.length;
+  renderDispatchActivity();
+  if (latestState) {
+    applyLoopUi(latestState);
+  }
+  return entry.id;
+}
+
+function endManualDispatch(dispatchId) {
+  latestManualDispatchEntries = latestManualDispatchEntries.filter(function (entry) {
+    return entry.id !== dispatchId;
+  });
+  latestManualDispatchCount = latestManualDispatchEntries.length;
+  renderDispatchActivity();
+  if (latestState) {
+    applyLoopUi(latestState);
+  }
+}
+
 function postForm(url, payload, successText, options = {}) {
+  const dispatchLabel = typeof options.manualDispatch === "string"
+    ? options.manualDispatch
+    : (options.manualDispatch && options.manualDispatch.label) || "";
+  const manualDispatchId = dispatchLabel ? beginManualDispatch(dispatchLabel) : null;
   $.post(url, payload)
     .done(function (resp) {
       let out = resp;
@@ -3790,6 +3950,11 @@ function postForm(url, payload, successText, options = {}) {
     })
     .fail(function (xhr) {
       showMessage(extractErrorMessage(xhr), true);
+    })
+    .always(function () {
+      if (manualDispatchId) {
+        endManualDispatch(manualDispatchId);
+      }
     });
 }
 
@@ -3832,6 +3997,7 @@ $(function () {
   initializeSidebarBootstrapCollapse();
   setSidebarCollapsed(sidebarCollapsed);
   setActiveView(activeView);
+  renderDispatchActivity();
   refreshState();
   setInterval(refreshState, 2000);
 
@@ -3945,11 +4111,11 @@ $(function () {
   });
 
   $("#summarize").on("click", function () {
-    postForm("api/run_target.php", { target: "summarizer" }, "Summarizer ran");
+    postForm("api/start_target_job.php", { target: "summarizer" }, "Summarizer queued");
   });
 
   $("#runRound").on("click", function () {
-    postForm("api/run_round.php", {}, "Round ran");
+    postForm("api/run_round.php", {}, "Round dispatch queued");
   });
 
   $("#runLoop").on("click", function () {
@@ -4234,7 +4400,7 @@ $(function () {
       });
   });
 
-  $(document).on("input change paste", ".auth-key-input", function () {
+  $(document).on("input", ".auth-key-input", function () {
     scheduleAuthRowSave($(this), false);
   });
 
@@ -4270,7 +4436,7 @@ $(function () {
 
   $(document).on("click", ".run-target", function () {
     const target = $(this).data("target");
-    postForm("api/run_target.php", { target }, "Target ran");
+    postForm("api/start_target_job.php", { target }, target === "answer_now" ? "Partial answer queued" : "Target queued");
   });
 
   $(document).on("change", ".worker-type, .worker-temperature, .worker-model, .worker-harness-profile, .worker-harness-instruction, .summarizer-model-draft, .summarizer-harness-profile, .summarizer-harness-instruction", function () {

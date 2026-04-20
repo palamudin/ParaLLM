@@ -1,7 +1,9 @@
 <?php
 require __DIR__ . '/common.php';
+require __DIR__ . '/dispatch_runtime.php';
 ensure_data_paths();
 
+recover_dispatch_jobs_if_needed();
 $state = try_recover_loop_state_if_needed();
 $recoveryWarning = null;
 if (strpos((string)($state['loop']['lastMessage'] ?? ''), 'Recovery check deferred:') !== false) {
@@ -37,9 +39,14 @@ foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
     }
     $job = default_job($job);
     $task = $loadTask((string)($job['taskId'] ?? ''));
+    $isTargetJob = (string)($job['jobType'] ?? 'loop') === 'target';
     $jobs[] = [
         'jobId' => $job['jobId'] ?? null,
         'taskId' => $job['taskId'] ?? null,
+        'jobType' => $job['jobType'] ?? 'loop',
+        'target' => $job['target'] ?? null,
+        'batchId' => $job['batchId'] ?? null,
+        'partialSummary' => !empty($job['partialSummary']),
         'objective' => $task['objective'] ?? null,
         'status' => $job['status'] ?? null,
         'mode' => $job['mode'] ?? null,
@@ -59,9 +66,9 @@ foreach (array_slice($jobFiles, 0, $maxJobs) as $jobFile) {
         'totalTokens' => isset($job['usage']['totalTokens']) ? (int)$job['usage']['totalTokens'] : 0,
         'estimatedCostUsd' => isset($job['usage']['estimatedCostUsd']) ? (float)$job['usage']['estimatedCostUsd'] : 0.0,
         'error' => $job['error'] ?? null,
-        'canResume' => job_status_can_resume($job['status'] ?? null),
-        'canRetry' => job_status_can_retry($job['status'] ?? null),
-        'canCancel' => in_array((string)($job['status'] ?? ''), ['queued', 'interrupted'], true),
+        'canResume' => !$isTargetJob && job_status_can_resume($job['status'] ?? null),
+        'canRetry' => !$isTargetJob && job_status_can_retry($job['status'] ?? null),
+        'canCancel' => !$isTargetJob && in_array((string)($job['status'] ?? ''), ['queued', 'interrupted'], true),
     ];
 }
 
@@ -87,7 +94,7 @@ foreach ($artifactFiles as $artifactFile) {
 
     if (
         isset($entry['taskId'], $entry['roundOrStep'])
-        && in_array((string)$entry['kind'], ['worker_output', 'commander_output', 'summary_output'], true)
+        && in_array((string)$entry['kind'], ['worker_output', 'commander_output', 'summary_output', 'summary_partial_output'], true)
     ) {
         $roundKey = (string)$entry['taskId'] . ':' . (int)$entry['roundOrStep'];
         if (!isset($roundGroups[$roundKey])) {
@@ -104,7 +111,7 @@ foreach ($artifactFiles as $artifactFile) {
         }
         if (($entry['kind'] ?? null) === 'commander_output') {
             $roundGroups[$roundKey]['commanderArtifact'] = $artifactOut;
-        } elseif (($entry['kind'] ?? null) === 'summary_output') {
+        } elseif (in_array((string)($entry['kind'] ?? null), ['summary_output', 'summary_partial_output'], true)) {
             $roundGroups[$roundKey]['summaryArtifact'] = $artifactOut;
         } else {
             $roundGroups[$roundKey]['workerArtifacts'][] = $artifactOut;
@@ -138,6 +145,7 @@ unset($roundEntry);
 
 json_response([
     'jobs' => $jobs,
+    'dispatch' => current_dispatch_state($state),
     'artifacts' => $artifacts,
     'rounds' => $rounds,
     'sessions' => list_session_archives($maxSessions),

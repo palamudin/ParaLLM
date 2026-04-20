@@ -1,14 +1,21 @@
 <?php
 require __DIR__ . '/common.php';
 require __DIR__ . '/loop_runtime.php';
+require __DIR__ . '/dispatch_runtime.php';
 ensure_data_paths();
 
 $rounds = clamp_loop_rounds(post_value('rounds', 3));
 $delayMs = clamp_loop_delay_ms(post_value('delayMs', 1000));
 
 $state = recover_loop_state_if_needed();
+recover_dispatch_jobs_if_needed();
 if (empty($state['activeTask'])) {
     json_response(['message' => 'No active task. Start one first.'], 400);
+}
+if (with_lock(function () use ($state): int {
+    return active_target_job_count_unlocked((string)($state['activeTask']['taskId'] ?? ''), true);
+}) > 0) {
+    json_response(['message' => 'Target dispatch jobs are still running. Wait for them to finish before starting the autonomous loop.'], 409);
 }
 
 $task = $state['activeTask'];

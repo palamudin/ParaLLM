@@ -40,10 +40,17 @@ if (!in_array($reasoningEffort, ['none', 'low', 'medium', 'high', 'xhigh'], true
     $reasoningEffort = 'low';
 }
 
+$budgetTargetsRaw = post_value('budgetTargets', '{}');
+$budgetTargetsInput = json_decode((string)$budgetTargetsRaw, true);
+if (!is_array($budgetTargetsInput)) {
+    $budgetTargetsInput = [];
+}
+
 $budget = normalize_budget_config([
     'maxTotalTokens' => post_int_value('maxTotalTokens', default_budget_config()['maxTotalTokens']),
     'maxCostUsd' => post_float_value('maxCostUsd', default_budget_config()['maxCostUsd']),
     'maxOutputTokens' => post_int_value('maxOutputTokens', default_budget_config()['maxOutputTokens']),
+    'targets' => $budgetTargetsInput,
 ]);
 
 $research = normalize_research_config([
