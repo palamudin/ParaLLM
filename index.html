@@ -1,37 +1,72 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Loop Prototype</title>
+  <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
   <link rel="stylesheet" href="assets/app.css" />
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 </head>
-<body>
-  <div class="app-shell">
-    <aside id="sidebarPanel" class="sidebar">
-      <div class="sidebar-topbar">
+<body class="app-body">
+  <div class="app-shell page-wrapper" id="mainWrapper" data-layout="vertical" data-sidebartype="full" data-sidebar-position="fixed" data-header-position="fixed">
+    <aside id="sidebarPanel" class="sidebar left-sidebar">
+      <div class="brand-logo sidebar-topbar">
         <div class="brand-block">
           <div class="brand-mark">L</div>
-          <div>
-            <h1>AI Loop</h1>
+          <div class="sidebar-brand-copy sidebar-copy collapse collapse-horizontal show">
+            <div class="sidebar-copy-inner">
+              <div class="brand-overline">Commander Stack</div>
+              <h1>AI Loop</h1>
+              <p>Steered operator workspace</p>
+            </div>
           </div>
         </div>
-        <button type="button" id="sidebarToggle" class="sidebar-toggle" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">&#8592;</button>
+        <button type="button" id="sidebarToggle" class="sidebar-toggle" data-shell-icon="collapse" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">
+          <span class="sidebar-toggle-icon" aria-hidden="true"></span>
+        </button>
       </div>
 
-      <nav class="sidebar-nav">
-        <button class="nav-btn active" data-view="home" data-short="H">Home</button>
-        <button class="nav-btn" data-view="eval" data-short="E">Eval</button>
-        <button class="nav-btn" data-view="settings" data-short="S">Settings</button>
-        <button class="nav-btn" data-view="debug" data-short="D">Debug</button>
-        <button class="nav-btn" data-view="review" data-short="R">Review</button>
+      <nav class="sidebar-nav scroll-sidebar" aria-label="Primary">
+        <ul class="sidebarnav">
+          <li class="nav-small-cap"><span class="hide-menu sidebar-copy collapse collapse-horizontal show"><span class="sidebar-copy-inner">Workspace</span></span></li>
+          <li class="sidebar-item">
+            <button class="nav-btn sidebar-link active" data-view="home" data-short="H">
+              <span class="nav-btn-mark">H</span>
+              <span class="sidebar-label sidebar-copy collapse collapse-horizontal show"><span class="nav-btn-text">Home</span></span>
+            </button>
+          </li>
+          <li class="sidebar-item">
+            <button class="nav-btn sidebar-link" data-view="eval" data-short="E">
+              <span class="nav-btn-mark">E</span>
+              <span class="sidebar-label sidebar-copy collapse collapse-horizontal show"><span class="nav-btn-text">Eval</span></span>
+            </button>
+          </li>
+          <li class="sidebar-item">
+            <button class="nav-btn sidebar-link" data-view="settings" data-short="S">
+              <span class="nav-btn-mark">S</span>
+              <span class="sidebar-label sidebar-copy collapse collapse-horizontal show"><span class="nav-btn-text">Settings</span></span>
+            </button>
+          </li>
+          <li class="sidebar-item">
+            <button class="nav-btn sidebar-link" data-view="debug" data-short="D">
+              <span class="nav-btn-mark">D</span>
+              <span class="sidebar-label sidebar-copy collapse collapse-horizontal show"><span class="nav-btn-text">Debug</span></span>
+            </button>
+          </li>
+          <li class="sidebar-item">
+            <button class="nav-btn sidebar-link" data-view="review" data-short="R">
+              <span class="nav-btn-mark">R</span>
+              <span class="sidebar-label sidebar-copy collapse collapse-horizontal show"><span class="nav-btn-text">Review</span></span>
+            </button>
+          </li>
+        </ul>
       </nav>
     </aside>
     <button type="button" id="sidebarBackdrop" class="sidebar-backdrop" hidden aria-label="Close sidebar"></button>
 
-    <main class="workspace">
-      <header class="workspace-header">
+    <div class="body-wrapper workspace">
+      <header class="workspace-header app-header">
         <div class="workspace-heading">
           <div class="workspace-overline">Agentic workspace</div>
           <h2>Commander Chat</h2>
@@ -66,6 +101,8 @@
         </div>
       </header>
 
+      <main class="body-wrapper-inner">
+      <div class="workspace-container container-fluid px-0">
       <div id="message" class="notice-banner" aria-live="polite"></div>
 
       <section class="workspace-view active" data-view="home">
@@ -96,15 +133,6 @@
               <textarea id="objective" rows="5" placeholder="Describe what you want the lane stack to investigate, build, or write..."></textarea>
 
               <div id="composerTools" class="composer-tools">
-                <div class="composer-tool-row">
-                  <div class="composer-tool-launcher">
-                    <button type="button" id="composerToolMenuToggle" class="composer-tool-toggle" aria-expanded="false" aria-controls="composerToolMenu">+</button>
-                    <div id="composerToolMenu" class="composer-tool-menu" hidden></div>
-                    <input id="composerFileInput" type="file" multiple hidden />
-                  </div>
-                  <div id="composerToolStatus" class="composer-tool-status"></div>
-                </div>
-
                 <div id="composerSourceDrawer" class="composer-inline-drawer" hidden>
                   <div class="composer-inline-grid">
                     <div>
@@ -119,12 +147,6 @@
                       </select>
                     </div>
                   </div>
-                  <div class="section-help-row">
-                    <div class="inline-help">
-                      <button type="button" class="inline-help-trigger" aria-label="Show tool drawer guidance">Info</button>
-                      <div class="inline-help-popup">These controls mirror the runtime research settings, but they stay right beneath the chat where people expect tools to live.</div>
-                    </div>
-                  </div>
                 </div>
 
                 <div id="composerRecentDrawer" class="composer-inline-drawer" hidden></div>
@@ -132,11 +154,13 @@
               </div>
 
               <div class="composer-footer">
-                <div class="footer-help-slot">
-                  <div class="inline-help">
-                    <button type="button" class="inline-help-trigger" aria-label="Show composer guidance">Info</button>
-                    <div class="inline-help-popup">Settings still holds the full runtime sheet, but quick tools like search and file staging now live here under the chat where people naturally look for them.</div>
+                <div class="composer-tool-row composer-tool-row-inline">
+                  <div class="composer-tool-launcher">
+                    <button type="button" id="composerToolMenuToggle" class="composer-tool-toggle" aria-expanded="false" aria-controls="composerToolMenu">+</button>
+                    <div id="composerToolMenu" class="composer-tool-menu" hidden></div>
+                    <input id="composerFileInput" type="file" multiple hidden />
                   </div>
+                  <div id="composerToolStatus" class="composer-tool-status"></div>
                 </div>
                 <div class="composer-actions">
                   <button id="sendPrompt">Send</button>
@@ -658,7 +682,7 @@
           <section class="workspace-status-card">
             <div class="workspace-status-label">Current task</div>
             <div id="footerTaskId" class="workspace-status-value">none</div>
-            <div class="workspace-status-meta">Memory version <span id="footerMemoryVersion">0</span> · Workers <span id="footerWorkerCount">0</span></div>
+            <div class="workspace-status-meta">Memory version <span id="footerMemoryVersion">0</span> | Workers <span id="footerWorkerCount">0</span></div>
           </section>
 
           <section class="workspace-status-card">
@@ -683,9 +707,12 @@
           </section>
         </div>
       </footer>
-    </main>
+      </div>
+      </main>
+    </div>
   </div>
 
+  <script src="assets/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
   <script src="assets/app.js"></script>
 </body>
 </html>

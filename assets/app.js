@@ -130,6 +130,7 @@ let mobileSidebarOpen = false;
 let latestState = null;
 let latestHistoryState = null;
 let latestEvalHistory = null;
+let sidebarCopyCollapseTargets = [];
 let selectedEvalRunId = localStorage.getItem("loopSelectedEvalRunId") || "";
 let evalArtifactSelections = { left: "", right: "" };
 let composerToolMenuOpen = false;
@@ -644,7 +645,7 @@ function buildCommanderFormSource(task, draft) {
 function renderComposerContextPreview(sessionContext, constraints) {
   const contextText = truncateText(sessionContext, 220) || "No carry-forward context.";
   const constraintText = constraints && constraints.length
-    ? constraints.slice(0, 3).join(" · ")
+    ? constraints.slice(0, 3).join(" | ")
     : "No constraints configured.";
   $("#sessionContextPreview").text(contextText);
   $("#constraintsPreview").text(truncateText(constraintText, 220));
@@ -893,7 +894,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
   appendHomeRuntimeBlock(
     $summary,
     "Next send",
-    stagedProfileName + " · " + (stagedPayload.executionMode || "live") + " mode",
+    stagedProfileName + " | " + (stagedPayload.executionMode || "live") + " mode",
     [
       "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
       "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
@@ -905,7 +906,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
     appendHomeRuntimeBlock(
       $summary,
       "Active task",
-      activeProfileName + " · " + (task?.runtime?.executionMode || "live") + " mode",
+      activeProfileName + " | " + (task?.runtime?.executionMode || "live") + " mode",
       [
         "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
         "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
@@ -1038,7 +1039,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
   appendHomeRuntimeBlock(
     $summary,
     "Next send",
-    stagedProfileName + " · " + (stagedPayload.executionMode || "live") + " mode",
+    stagedProfileName + " | " + (stagedPayload.executionMode || "live") + " mode",
     [
       "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
       "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
@@ -1050,7 +1051,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
     appendHomeRuntimeBlock(
       $summary,
       "Active task",
-      activeProfileName + " · " + (task?.runtime?.executionMode || "live") + " mode",
+      activeProfileName + " | " + (task?.runtime?.executionMode || "live") + " mode",
       [
         "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
         "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
@@ -1270,7 +1271,7 @@ function renderComposerTools() {
   $recentDrawer.prop("hidden", !composerRecentDrawerOpen);
 
   if (!stagedComposerAttachments.length) {
-    $attachments.html(`<div class="fieldnote">Upload text or code files here when you want the next send to carry local source context.</div>`);
+    $attachments.empty();
     return;
   }
 
@@ -1306,7 +1307,7 @@ function isMobileShell() {
 function setTheme(theme) {
   activeTheme = theme === "light" ? "light" : "dark";
   localStorage.setItem("loopTheme", activeTheme);
-  document.documentElement.setAttribute("data-theme", activeTheme);
+  document.documentElement.setAttribute("data-bs-theme", activeTheme);
   $(".theme-toggle-btn")
     .removeClass("active")
     .attr("aria-pressed", "false");
@@ -1315,12 +1316,42 @@ function setTheme(theme) {
     .attr("aria-pressed", "true");
 }
 
+function initializeSidebarBootstrapCollapse() {
+  sidebarCopyCollapseTargets = [];
+  if (!(window.bootstrap && window.bootstrap.Collapse)) {
+    return;
+  }
+  document.querySelectorAll("#sidebarPanel .sidebar-copy.collapse").forEach(function (element) {
+    sidebarCopyCollapseTargets.push({
+      element,
+      instance: window.bootstrap.Collapse.getOrCreateInstance(element, { toggle: false })
+    });
+  });
+}
+
+function syncSidebarBootstrapCollapse() {
+  if (!sidebarCopyCollapseTargets.length) {
+    return;
+  }
+  const shouldShow = isMobileShell() || !sidebarCollapsed;
+  sidebarCopyCollapseTargets.forEach(function (target) {
+    const element = target.element;
+    const shown = element.classList.contains("show") && !element.classList.contains("collapsing");
+    if (shouldShow && !shown) {
+      target.instance.show();
+    } else if (!shouldShow && shown) {
+      target.instance.hide();
+    }
+  });
+}
+
 function syncShellChrome() {
   const mobile = isMobileShell();
   if (!mobile) {
     mobileSidebarOpen = false;
   }
   $(".app-shell")
+    .attr("data-sidebartype", mobile ? "overlay" : (sidebarCollapsed ? "mini-sidebar" : "full"))
     .toggleClass("sidebar-collapsed", !mobile && sidebarCollapsed)
     .toggleClass("show-sidebar", mobile && mobileSidebarOpen);
   $("#sidebarBackdrop").prop("hidden", !(mobile && mobileSidebarOpen));
@@ -1331,11 +1362,15 @@ function syncShellChrome() {
   const sidebarToggleLabel = mobile
     ? "Close sidebar"
     : (sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar");
+  const sidebarToggleIcon = mobile
+    ? "close"
+    : (sidebarCollapsed ? "expand" : "collapse");
   $("#sidebarToggle")
-    .html(mobile ? "&#10005;" : (sidebarCollapsed ? "&#8594;" : "&#8592;"))
+    .attr("data-shell-icon", sidebarToggleIcon)
     .attr("aria-expanded", mobile ? (mobileSidebarOpen ? "true" : "false") : (sidebarCollapsed ? "false" : "true"))
     .attr("aria-label", sidebarToggleLabel)
     .attr("title", sidebarToggleLabel);
+  syncSidebarBootstrapCollapse();
 }
 
 function setMobileSidebarOpen(open) {
@@ -1989,7 +2024,7 @@ function renderWorkerPanels(task) {
     const checkpoint = workerState[worker.id] || null;
     const $card = $("<div>").addClass("lane-card");
     const $head = $("<div>").addClass("lane-card-head");
-    $head.append($("<div>").addClass("lane-card-title").text(worker.label + " · " + worker.role));
+    $head.append($("<div>").addClass("lane-card-title").text(worker.label + " | " + worker.role));
     $head.append($("<div>").addClass("lane-card-step").text(checkpoint ? "step " + (checkpoint.step || 0) : "waiting"));
     $card.append($head);
     $card.append($("<div>").addClass("lane-card-focus").text(worker.focus + " | model: " + worker.model));
@@ -2024,7 +2059,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
 
   task.workers.forEach(function (worker) {
     const $card = $("<div>").addClass("workercontrol");
-    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + displayWorkerLabel(worker)));
+    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + displayWorkerLabel(worker)));
     $card.append($("<div>").addClass("workercontrol-meta").text(worker.role + " | " + worker.focus));
 
     const $row = $("<div>").addClass("inlineform");
@@ -2077,7 +2112,7 @@ function renderHomeWorkerControls(task, draft, loop) {
   const isActive = loop?.status === "running" || loop?.status === "queued";
   workers.forEach(function (worker) {
     const $card = $("<div>").addClass("workercontrol").attr("data-worker-id", worker.id);
-    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + displayWorkerLabel(worker)));
+    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + displayWorkerLabel(worker)));
     $card.append($("<div>").addClass("workercontrol-meta").text(worker.role + " | " + worker.focus));
 
     const $typeRow = $("<div>").addClass("workercontrol-field");
@@ -2127,14 +2162,14 @@ function buildWorkerControlCard(worker, isActive) {
 
   const $summary = $("<summary>").addClass("workercontrol-summary");
   const $summaryMain = $("<div>").addClass("workercontrol-summary-main");
-  $summaryMain.append($("<div>").addClass("workercontrol-title").text(workerId + " · " + displayWorkerLabel(worker)));
+  $summaryMain.append($("<div>").addClass("workercontrol-title").text(workerId + " | " + displayWorkerLabel(worker)));
   $summaryMain.append(
     $("<div>").addClass("workercontrol-meta").text(
       workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + modelLabel(worker.model)
     )
   );
   $summary.append($summaryMain);
-  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("⌄"));
+  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
   $card.append($summary);
 
   const $body = $("<div>").addClass("workercontrol-body");
@@ -2209,7 +2244,7 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   task.workers.forEach(function (worker) {
     const checkpoint = stateWorkers?.[worker.id] || null;
     const $card = $("<div>").addClass("workercontrol");
-    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " · " + worker.label));
+    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + worker.label));
     $card.append($("<div>").addClass("workercontrol-meta").text((checkpoint ? "step " + (checkpoint.step || 0) : "no checkpoint") + " | " + worker.model));
     $card.append(
       $("<div>").addClass("inlineform").append(
@@ -2247,7 +2282,7 @@ function renderRosterPanels(task, draft) {
     const checkpoint = workerState[worker.id] || null;
     const $card = $("<div>").addClass("lane-card");
     const $head = $("<div>").addClass("lane-card-head");
-    $head.append($("<div>").addClass("lane-card-title").text(displayWorkerLabel(worker) + " · " + (worker.type || worker.role)));
+    $head.append($("<div>").addClass("lane-card-title").text(displayWorkerLabel(worker) + " | " + (worker.type || worker.role)));
     $head.append($("<div>").addClass("lane-card-step").text(checkpoint ? "step " + (checkpoint.step || 0) : (task ? "waiting" : "ready")));
     $card.append($head);
     $card.append($("<div>").addClass("lane-card-focus").text(worker.focus + " | " + (worker.temperature || "balanced") + " | model: " + worker.model));
@@ -2942,7 +2977,7 @@ function legacyRenderConversationThreadUnused(task, summary, workerState, loop) 
     messages.push(buildThreadMessage({
       kind: "summary",
       author: "Agent",
-      tag: "Multistream summary · memory " + ($("#memoryVersion").text() || "0"),
+      tag: "Multistream summary | memory " + ($("#memoryVersion").text() || "0"),
       sections: [
         renderListSection("Stable findings", summary.stableFindings || []),
         renderListSection("Open conflicts", conflictTopics),
@@ -3257,6 +3292,7 @@ $(function () {
   applyCommanderForm(defaultDraftState());
   renderAddWorkerTypeControl(null, defaultDraftState(), null);
   setTheme(activeTheme);
+  initializeSidebarBootstrapCollapse();
   setSidebarCollapsed(sidebarCollapsed);
   setActiveView(activeView);
   refreshState();
