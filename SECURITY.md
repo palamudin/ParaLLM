@@ -33,6 +33,7 @@ These are active roadmap items, not final design decisions.
 - Prefer `env`, `docker_secret`, or `external` backends over `local_file`.
 - Treat `Auth.txt` as local-only developer fallback state, not the preferred path.
 - When a live call hits an auth-style key failure, the runtime rotates to the next non-empty key in the pool before surfacing final failure.
+- Managed backends are authoritative: empty or unreachable `env`, `docker_secret`, or `external` sources now stop live execution instead of silently falling through to another secret source or mock output.
 - Rotate any key immediately if it appears in logs, artifacts, screenshots, or pushed commits.
 
 ## Update Policy

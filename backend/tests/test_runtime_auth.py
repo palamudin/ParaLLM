@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from runtime.engine import LoopRuntime, read_api_key_pool
+from runtime.engine import LoopRuntime, RuntimeErrorWithCode, read_api_key_pool
 
 
 class _FakeHTTPResponse:
@@ -60,6 +60,20 @@ class RuntimeAuthTests(unittest.TestCase):
                 keys = read_api_key_pool(auth_path)
 
         self.assertEqual(keys, ["sk-one", "sk-two"])
+
+    def test_read_api_key_pool_honors_env_backend_without_falling_back_to_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            auth_path = Path(tmpdir) / "Auth.txt"
+            auth_path.write_text("sk-file-only\n", encoding="utf-8")
+            env = {
+                "LOOP_SECRET_BACKEND": "env",
+                "LOOP_OPENAI_API_KEYS": "",
+                "OPENAI_API_KEYS": "",
+            }
+            with mock.patch.dict("os.environ", env, clear=False):
+                keys = read_api_key_pool(auth_path)
+
+        self.assertEqual(keys, [])
 
     def test_invoke_openai_json_rotates_to_next_key_after_auth_failure(self) -> None:
         schema = {
@@ -143,6 +157,28 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(result.auth_failover_history[0]["failedKeySlot"], 1)
         self.assertEqual(result.auth_failover_history[0]["nextKeySlot"], 2)
         self.assertEqual(seen_auth_headers, ["Bearer sk-first", "Bearer sk-second"])
+
+    def test_runtime_refuses_live_fallback_when_managed_secret_backend_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {
+                "LOOP_ROOT": tmpdir,
+                "LOOP_SECRET_BACKEND": "env",
+                "LOOP_OPENAI_API_KEYS": "",
+                "OPENAI_API_KEYS": "",
+            }
+            with mock.patch.dict("os.environ", env, clear=False):
+                runtime = LoopRuntime(tmpdir)
+                runtime.ensure_data_paths()
+                with self.assertRaises(RuntimeErrorWithCode) as context:
+                    runtime.raise_if_managed_secret_backend_unavailable(
+                        "summarizer",
+                        "t-test",
+                        "gpt-5-mini",
+                        "summarizer",
+                    )
+
+        self.assertIn("env secret backend", str(context.exception))
+        self.assertIn("empty", str(context.exception))
 
 
 if __name__ == "__main__":

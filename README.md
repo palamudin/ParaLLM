@@ -314,6 +314,7 @@ The secret backend is now hosted-aware too:
 - or set `LOOP_SECRET_BACKEND=external` with `LOOP_SECRET_PROVIDER_URL`
 - and mount a newline-delimited key file at `LOOP_SECRET_FILE` such as `/run/secrets/openai_api_keys`
 - `local_file` remains available only as an explicit transitional fallback
+- managed backends are now authoritative: if `env`, `docker_secret`, or `external` is empty or unreachable, live execution fails visibly instead of silently drifting into another secret source
 
 ### First Run
 
@@ -341,6 +342,7 @@ Assignment behavior:
 - if there are fewer keys than positions, slots wrap
 - when wrapping is required, the starting slot rotates across rounds so one key does not always take commander-first traffic
 - if a live lane hits an auth-style key failure, the runtime now retries on the next non-empty key in pool order before giving up
+- if the active backend is managed and exposes no usable keys, live lanes fail loudly instead of downgrading to mock behind your back
 
 Only masked previews are shown in the UI. Raw keys stay in env vars for `env`, in the mounted file for `docker_secret`, behind a read-only HTTP provider for `external`, or in `Auth.txt` only when `local_file` is explicitly selected as a transitional fallback.
 

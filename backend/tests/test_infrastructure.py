@@ -42,6 +42,22 @@ class InfrastructureTests(unittest.TestCase):
             with self.assertRaises(RuntimeErrorWithCode):
                 settings.set_auth_keys({"apiKeys": ["sk-two"]}, self.root)
 
+    def test_env_secret_backend_reports_strict_live_failure_when_empty(self) -> None:
+        env = {
+            "LOOP_ROOT": str(self.root),
+            "LOOP_SECRET_BACKEND": "env",
+            "LOOP_OPENAI_API_KEYS": "",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            status = control.auth_pool_status(self.root)
+            infra = infrastructure.infrastructure_status(self.root)
+
+        self.assertEqual(status["backend"], "env")
+        self.assertFalse(status["available"])
+        self.assertTrue(status["strictLiveFailure"])
+        self.assertEqual(status["failureMode"], "empty")
+        self.assertEqual(infra["backends"]["secrets"]["failureMode"], "empty")
+
     def test_docker_secret_backend_reads_keys_from_mounted_file(self) -> None:
         secret_path = self.root / "secrets" / "openai_api_keys"
         secret_path.parent.mkdir(parents=True, exist_ok=True)

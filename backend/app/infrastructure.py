@@ -17,8 +17,8 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency in some ru
     redis_lib = None
 
 from .config import DeploymentTopology, deployment_topology
-from .secrets import env_secret_keys as read_env_secret_keys
-from .secrets import external_secret_keys
+from .secrets import env_secret_status
+from .secrets import external_secret_status
 
 
 def _http_probe(url: Optional[str], timeout: float = 3.0, headers: Optional[Dict[str, str]] = None) -> tuple[bool, str]:
@@ -111,14 +111,15 @@ def _local_secret_status(topology: DeploymentTopology) -> Dict[str, Any]:
 
 
 def _env_secret_status() -> Dict[str, Any]:
-    keys = read_env_secret_keys()
+    status = env_secret_status()
     return {
         "backend": "env",
-        "configured": True,
-        "ready": len(keys) > 0,
-        "detail": "Using env-provided API keys from LOOP_OPENAI_API_KEYS or OPENAI_API_KEYS.",
+        "configured": bool(status.get("configured")),
+        "ready": bool(status.get("ready")),
+        "detail": str(status.get("detail") or ""),
         "writable": False,
-        "keyCount": len(keys),
+        "keyCount": len(status.get("keys", [])) if isinstance(status.get("keys"), list) else 0,
+        "failureMode": status.get("failureMode"),
     }
 
 
@@ -140,32 +141,15 @@ def _docker_secret_status(topology: DeploymentTopology) -> Dict[str, Any]:
 
 
 def _external_secret_status(topology: DeploymentTopology) -> Dict[str, Any]:
-    provider_url = str(topology.secret_provider_url or "").strip()
-    health_url = str(topology.secret_provider_healthcheck_url or provider_url).strip()
-    if not provider_url:
-        return {
-            "backend": "external",
-            "configured": False,
-            "ready": False,
-            "detail": "LOOP_SECRET_PROVIDER_URL is not configured.",
-            "writable": False,
-            "keyCount": 0,
-        }
-    token = str(os.getenv("LOOP_SECRET_PROVIDER_TOKEN") or "").strip()
-    headers = {"Authorization": f"Bearer {token}"} if token else None
-    ready, detail = _http_probe(health_url, headers=headers)
-    key_count = 0
-    if ready:
-        key_count = len(external_secret_keys(topology.root))
-        ready = key_count > 0
-        detail = f"reachable; {key_count} keys exposed" if ready else "reachable but returned no keys"
+    status = external_secret_status(topology.root)
     return {
         "backend": "external",
-        "configured": True,
-        "ready": ready,
-        "detail": detail,
+        "configured": bool(status.get("configured")),
+        "ready": bool(status.get("ready")),
+        "detail": str(status.get("detail") or ""),
         "writable": False,
-        "keyCount": key_count,
+        "keyCount": len(status.get("keys", [])) if isinstance(status.get("keys"), list) else 0,
+        "failureMode": status.get("failureMode"),
     }
 
 

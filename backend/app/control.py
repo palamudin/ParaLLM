@@ -36,7 +36,7 @@ from runtime.engine import (
 )
 
 from .config import deployment_topology
-from .secrets import env_secret_keys, external_secret_keys, normalize_auth_key_pool
+from .secrets import env_secret_status, external_secret_status, normalize_auth_key_pool
 from . import storage
 
 
@@ -252,20 +252,82 @@ def auth_file_path(root: Optional[Path] = None) -> Path:
 
 
 def read_auth_key_pool(root: Optional[Path] = None) -> list[str]:
+    return auth_key_pool_state(root)["keys"]
+
+
+def auth_key_pool_state(root: Optional[Path] = None) -> Dict[str, Any]:
     topology = deployment_topology(root)
     if topology.secret_backend == "env":
-        return normalize_auth_key_pool(env_secret_keys())
+        status = env_secret_status()
+        return {
+            "backend": "env",
+            "keys": normalize_auth_key_pool(status.get("keys", [])),
+            "configured": bool(status.get("configured")),
+            "ready": bool(status.get("ready")),
+            "failureMode": status.get("failureMode"),
+            "failureDetail": str(status.get("detail") or ""),
+            "managed": True,
+            "writable": False,
+        }
     if topology.secret_backend == "external":
-        return normalize_auth_key_pool(external_secret_keys(root))
+        status = external_secret_status(root)
+        return {
+            "backend": "external",
+            "keys": normalize_auth_key_pool(status.get("keys", [])),
+            "configured": bool(status.get("configured")),
+            "ready": bool(status.get("ready")),
+            "failureMode": status.get("failureMode"),
+            "failureDetail": str(status.get("detail") or ""),
+            "managed": True,
+            "writable": False,
+        }
     if topology.secret_backend == "docker_secret":
         secret_path = auth_file_path(root)
         if not secret_path.is_file():
-            return []
-        return normalize_auth_key_pool(secret_path.read_text(encoding="utf-8", errors="replace"))
+            return {
+                "backend": "docker_secret",
+                "keys": [],
+                "configured": bool(secret_path),
+                "ready": False,
+                "failureMode": "misconfigured",
+                "failureDetail": f"Mounted secret file not found at {secret_path}.",
+                "managed": True,
+                "writable": False,
+            }
+        keys = normalize_auth_key_pool(secret_path.read_text(encoding="utf-8", errors="replace"))
+        return {
+            "backend": "docker_secret",
+            "keys": keys,
+            "configured": True,
+            "ready": len(keys) > 0,
+            "failureMode": None if keys else "empty",
+            "failureDetail": f"Using mounted secret file at {secret_path}." if keys else f"Mounted secret file at {secret_path} is empty.",
+            "managed": True,
+            "writable": False,
+        }
     path = auth_file_path(root)
     if not path.is_file():
-        return []
-    return normalize_auth_key_pool(path.read_text(encoding="utf-8", errors="replace"))
+        return {
+            "backend": "local_file",
+            "keys": [],
+            "configured": True,
+            "ready": False,
+            "failureMode": "empty",
+            "failureDetail": f"Local fallback secret file not found at {path}.",
+            "managed": False,
+            "writable": True,
+        }
+    keys = normalize_auth_key_pool(path.read_text(encoding="utf-8", errors="replace"))
+    return {
+        "backend": "local_file",
+        "keys": keys,
+        "configured": True,
+        "ready": len(keys) > 0,
+        "failureMode": None if keys else "empty",
+        "failureDetail": f"Using local fallback secret file at {path}." if keys else f"Local fallback secret file at {path} is empty.",
+        "managed": False,
+        "writable": True,
+    }
 
 
 def mask_auth_key(key: str) -> str:
@@ -338,7 +400,8 @@ def secret_backend_status_note(topology=None) -> str:
 
 def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
     topology = deployment_topology(root)
-    keys = read_auth_key_pool(root)
+    pool_state = auth_key_pool_state(root)
+    keys = pool_state["keys"]
     masks = [mask_auth_key(key) for key in keys]
     first = keys[0] if keys else ""
     last4 = first[-4:] if len(first) >= 4 else first
@@ -351,7 +414,12 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
         "last4": last4,
         "masked": masks[0] if masks else None,
         "masks": masks,
-        "writable": topology.secret_backend == "local_file",
+        "writable": bool(pool_state.get("writable")),
+        "available": len(keys) > 0,
+        "managed": bool(pool_state.get("managed")),
+        "failureMode": pool_state.get("failureMode"),
+        "failureDetail": pool_state.get("failureDetail"),
+        "strictLiveFailure": bool(pool_state.get("managed")) and len(keys) == 0,
         "preferred": topology.secret_backend in preferred_backends,
         "preferredBackends": preferred_backends,
         "recommendedBackend": recommended_secret_backend(topology),

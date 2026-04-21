@@ -571,6 +571,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - hosted profiles default to `docker_secret`
   - `local_file` remains explicit fallback only
 - Live model calls now rotate to the next non-empty key on auth-style failures instead of binding one lane to one dead key for the rest of the run.
+- Managed secret backends now fail loudly when empty or unreachable, so live execution no longer drifts into file/env fallthrough or quiet mock fallback when the selected backend is degraded.
 
 ### Milestone 4: Prototype Hardening
 

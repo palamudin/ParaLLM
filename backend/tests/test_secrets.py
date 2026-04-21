@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import control, infrastructure
+from backend.app.secrets import external_secret_status
 from runtime.engine import read_api_key_pool
 
 
@@ -84,6 +85,17 @@ class ExternalSecretBackendTests(unittest.TestCase):
             keys = read_api_key_pool(missing_path)
 
         self.assertEqual(keys, ["sk-one", "sk-two"])
+
+    def test_external_secret_status_reports_unreachable_provider(self) -> None:
+        env = self._env()
+        env["LOOP_SECRET_PROVIDER_URL"] = "http://127.0.0.1:1/keys"
+        env["LOOP_SECRET_PROVIDER_HEALTHCHECK_URL"] = "http://127.0.0.1:1/keys"
+        with mock.patch.dict("os.environ", env, clear=False):
+            status = external_secret_status(self.root, timeout=0.25)
+
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["failureMode"], "unreachable")
+        self.assertEqual(status["keys"], [])
 
 
 if __name__ == "__main__":

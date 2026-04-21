@@ -29,6 +29,18 @@ def env_secret_keys() -> list[str]:
     return normalize_auth_key_pool(raw.replace(",", "\n"))
 
 
+def env_secret_status() -> dict[str, Any]:
+    keys = env_secret_keys()
+    return {
+        "backend": "env",
+        "configured": True,
+        "ready": len(keys) > 0,
+        "keys": keys,
+        "failureMode": None if keys else "empty",
+        "detail": "Using env-provided API keys from LOOP_OPENAI_API_KEYS or OPENAI_API_KEYS." if keys else "No environment API keys are configured.",
+    }
+
+
 def _external_secret_request(url: str, token: str = "", timeout: float = 5.0) -> str:
     headers = {"Accept": "application/json, text/plain;q=0.9, */*;q=0.1"}
     if token:
@@ -62,15 +74,48 @@ def _parse_external_secret_payload(text: str) -> list[str]:
 
 
 def external_secret_keys(root: Optional[Path] = None, timeout: float = 5.0) -> list[str]:
+    return external_secret_status(root=root, timeout=timeout)["keys"]
+
+
+def external_secret_status(root: Optional[Path] = None, timeout: float = 5.0) -> dict[str, Any]:
     topology = deployment_topology(root)
     url = str(os.getenv("LOOP_SECRET_PROVIDER_URL") or topology.secret_provider_url or "").strip()
     if not url:
-        return []
+        return {
+            "backend": "external",
+            "configured": False,
+            "ready": False,
+            "keys": [],
+            "failureMode": "misconfigured",
+            "detail": "LOOP_SECRET_PROVIDER_URL is not configured.",
+        }
     token = str(os.getenv("LOOP_SECRET_PROVIDER_TOKEN") or "").strip()
     try:
         payload = _external_secret_request(url, token=token, timeout=timeout)
-    except urllib.error.HTTPError:
-        return []
-    except Exception:
-        return []
-    return _parse_external_secret_payload(payload)
+    except urllib.error.HTTPError as error:
+        return {
+            "backend": "external",
+            "configured": True,
+            "ready": False,
+            "keys": [],
+            "failureMode": "unreachable",
+            "detail": f"Secret provider returned HTTP {error.code}.",
+        }
+    except Exception as error:
+        return {
+            "backend": "external",
+            "configured": True,
+            "ready": False,
+            "keys": [],
+            "failureMode": "unreachable",
+            "detail": str(error),
+        }
+    keys = _parse_external_secret_payload(payload)
+    return {
+        "backend": "external",
+        "configured": True,
+        "ready": len(keys) > 0,
+        "keys": keys,
+        "failureMode": None if keys else "empty",
+        "detail": f"reachable; {len(keys)} keys exposed" if keys else "Secret provider responded but returned no keys.",
+    }

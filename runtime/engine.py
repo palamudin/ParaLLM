@@ -18,7 +18,8 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from backend.app import artifacts as artifact_store
 from backend.app import metadata as metadata_store
-from backend.app.secrets import external_secret_keys
+from backend.app.config import deployment_topology
+from backend.app.secrets import env_secret_status, external_secret_status
 
 
 MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -419,13 +420,17 @@ def read_env_api_key_pool() -> List[str]:
 def read_api_key_pool(path: Path) -> List[str]:
     secret_backend = str(os.getenv("LOOP_SECRET_BACKEND") or "").strip().lower()
     if secret_backend == "env":
-        keys = read_env_api_key_pool()
-        if keys:
-            return keys
+        return read_env_api_key_pool()
     if secret_backend == "external":
-        keys = external_secret_keys()
-        if keys:
-            return keys
+        return normalize_string_array_preserve_items(external_secret_status()["keys"])
+    if secret_backend == "docker_secret":
+        if path.exists():
+            return normalize_string_array_preserve_items(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        return []
+    if secret_backend == "local_file":
+        if path.exists():
+            return normalize_string_array_preserve_items(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        return []
     if path.exists():
         keys = normalize_string_array_preserve_items(path.read_text(encoding="utf-8", errors="replace").splitlines())
         if keys:
@@ -1894,7 +1899,106 @@ class LoopRuntime:
         return str(assignment.get("apiKey")) if assignment else None
 
     def load_api_keys(self) -> List[str]:
-        return read_api_key_pool(self.auth_path)
+        return self.load_api_key_pool_state()["keys"]
+
+    def load_api_key_pool_state(self) -> Dict[str, Any]:
+        topology = deployment_topology(self.root)
+        backend = topology.secret_backend
+        if backend == "env":
+            status = env_secret_status()
+            return {
+                "backend": "env",
+                "keys": normalize_string_array_preserve_items(status.get("keys", [])),
+                "managed": True,
+                "writable": False,
+                "configured": bool(status.get("configured")),
+                "ready": bool(status.get("ready")),
+                "failureMode": status.get("failureMode"),
+                "failureDetail": str(status.get("detail") or ""),
+            }
+        if backend == "external":
+            status = external_secret_status(self.root)
+            return {
+                "backend": "external",
+                "keys": normalize_string_array_preserve_items(status.get("keys", [])),
+                "managed": True,
+                "writable": False,
+                "configured": bool(status.get("configured")),
+                "ready": bool(status.get("ready")),
+                "failureMode": status.get("failureMode"),
+                "failureDetail": str(status.get("detail") or ""),
+            }
+        if backend == "docker_secret":
+            secret_path = self.auth_path
+            if not secret_path.is_file():
+                return {
+                    "backend": "docker_secret",
+                    "keys": [],
+                    "managed": True,
+                    "writable": False,
+                    "configured": bool(secret_path),
+                    "ready": False,
+                    "failureMode": "misconfigured",
+                    "failureDetail": f"Mounted secret file not found at {secret_path}.",
+                }
+            keys = normalize_string_array_preserve_items(secret_path.read_text(encoding="utf-8", errors="replace").splitlines())
+            return {
+                "backend": "docker_secret",
+                "keys": keys,
+                "managed": True,
+                "writable": False,
+                "configured": True,
+                "ready": len(keys) > 0,
+                "failureMode": None if keys else "empty",
+                "failureDetail": f"Using mounted secret file at {secret_path}." if keys else f"Mounted secret file at {secret_path} is empty.",
+            }
+        local_path = self.auth_path
+        if not local_path.is_file():
+            return {
+                "backend": "local_file",
+                "keys": [],
+                "managed": False,
+                "writable": True,
+                "configured": True,
+                "ready": False,
+                "failureMode": "empty",
+                "failureDetail": f"Local fallback secret file not found at {local_path}.",
+            }
+        keys = normalize_string_array_preserve_items(local_path.read_text(encoding="utf-8", errors="replace").splitlines())
+        return {
+            "backend": "local_file",
+            "keys": keys,
+            "managed": False,
+            "writable": True,
+            "configured": True,
+            "ready": len(keys) > 0,
+            "failureMode": None if keys else "empty",
+            "failureDetail": f"Using local fallback secret file at {local_path}." if keys else f"Local fallback secret file at {local_path} is empty.",
+        }
+
+    def raise_if_managed_secret_backend_unavailable(self, stage: str, task_id: str, model: str, target: str) -> None:
+        auth_state = self.load_api_key_pool_state()
+        if not bool(auth_state.get("managed")) or auth_state.get("keys"):
+            return
+        failure_mode = str(auth_state.get("failureMode") or "empty")
+        detail = str(auth_state.get("failureDetail") or f"{auth_state.get('backend')} returned no usable keys.")
+        self.append_step(
+            stage,
+            "Managed secret backend is unavailable; refusing mock fallback for live execution.",
+            {
+                "taskId": task_id,
+                "target": target,
+                "model": model,
+                "secretBackend": auth_state.get("backend"),
+                "failureMode": failure_mode,
+                "failureDetail": detail,
+            },
+        )
+        status_code = 503 if failure_mode in {"misconfigured", "unreachable"} else 409
+        raise RuntimeErrorWithCode(
+            f"Live run requires the {auth_state.get('backend')} secret backend, but it is {failure_mode}: {detail}",
+            status_code,
+        )
 
     def build_api_key_assignments(
         self,
@@ -5136,6 +5240,7 @@ class LoopRuntime:
                         },
                     )
             else:
+                self.raise_if_managed_secret_backend_unavailable("commander", str(task["taskId"]), runtime["model"], "commander")
                 self.append_step("commander", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if checkpoint is None:
             checkpoint = self.new_mock_commander(task, runtime, round_number, constraints, prior_summary)
@@ -5341,6 +5446,7 @@ class LoopRuntime:
                         },
                     )
             else:
+                self.raise_if_managed_secret_backend_unavailable("commander_review", str(task["taskId"]), runtime["model"], "commander_review")
                 self.append_step("commander_review", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if checkpoint is None:
             checkpoint = self.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
@@ -5595,6 +5701,7 @@ class LoopRuntime:
                         },
                     )
             else:
+                self.raise_if_managed_secret_backend_unavailable(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], worker_id)
                 self.append_step(
                     f"worker_{worker_id}",
                     "No API key found; falling back to mock.",
@@ -5820,6 +5927,7 @@ class LoopRuntime:
                         },
                     )
             else:
+                self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "summarizer")
                 self.append_step("summarizer", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
             summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
@@ -5995,6 +6103,7 @@ class LoopRuntime:
                         },
                     )
             else:
+                self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "answer_now")
                 self.append_step("summarizer", "No API key found for Answer Now; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
             summary = self.new_mock_summary(
