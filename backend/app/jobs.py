@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from runtime.engine import LoopRuntime, RuntimeErrorWithCode, task_workers
 
-from . import control, metadata, queueing, runtime_execution, storage
+from . import control, faults, metadata, queueing, runtime_execution, storage
 
 
 def utc_now() -> str:
@@ -580,7 +580,15 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                     target,
                 )
                 try:
+                    faults.maybe_raise_fault(
+                        "loop.execute.before_target",
+                        f"loop.execute.before_target.{target.lower()}",
+                    )
                     target_result = runtime_execution.run_target(runtime, target, task_id, {})
+                    faults.maybe_raise_fault(
+                        "loop.execute.after_target",
+                        f"loop.execute.after_target.{target.lower()}",
+                    )
                 finally:
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=1.0)

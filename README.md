@@ -422,6 +422,9 @@ python scripts/qa_live_check.py --max-cost-usd 0.08 --max-total-tokens 40000
 python scripts/quality_benchmark.py --case core --repeats 3 --loop-sweep 1,2,3
 ```
 
+Internal hardening:
+- `LOOP_FAULT_POINTS` can inject targeted dispatch/loop failures for repeatable recovery tests, for example `dispatch.execute.before_runtime.commander` or `loop.execute.before_target.commander`.
+
 ## Benchmark Philosophy
 
 The project is not trying to prove that "more agents" is automatically better.

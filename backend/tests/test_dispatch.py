@@ -123,6 +123,28 @@ class DispatchTests(unittest.TestCase):
         topology = queueing.deployment_topology(self.root)
         self.assertEqual(fake.lrange(queueing._dispatch_ready_key(topology), 0, -1), [])
 
+    def test_execute_target_job_fault_interrupts_dependent_jobs(self) -> None:
+        runtime = dispatch._runtime(self.root)
+        state = self._read_state()
+        task = state["activeTask"]
+        batch = dispatch.create_round_dispatch_jobs(runtime, task, {"roundNumber": 1})
+
+        env = {"LOOP_FAULT_POINTS": "dispatch.execute.before_runtime.commander"}
+        with mock.patch.dict("os.environ", env, clear=False):
+            with self.assertRaises(RuntimeErrorWithCode) as ctx:
+                dispatch.execute_target_job_process(batch["commander"]["jobId"], self.root)
+
+        self.assertIn("dispatch.execute.before_runtime.commander", str(ctx.exception))
+        jobs_by_id = {
+            str(job["jobId"]): job
+            for job in storage.read_jobs(storage.project_paths(self.root))
+        }
+        self.assertEqual(jobs_by_id[batch["commander"]["jobId"]]["status"], "error")
+        self.assertEqual(jobs_by_id[batch["workers"][0]["jobId"]]["status"], "interrupted")
+        self.assertEqual(jobs_by_id[batch["workers"][1]["jobId"]]["status"], "interrupted")
+        self.assertEqual(jobs_by_id[batch["commanderReview"]["jobId"]]["status"], "interrupted")
+        self.assertEqual(jobs_by_id[batch["summarizer"]["jobId"]]["status"], "interrupted")
+
 
 if __name__ == "__main__":
     unittest.main()

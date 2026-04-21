@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from runtime.engine import LoopRuntime, RuntimeErrorWithCode, task_workers
 
-from . import control, jobs, queueing, runtime_execution, storage
+from . import control, faults, jobs, queueing, runtime_execution, storage
 
 
 def utc_now() -> str:
@@ -544,7 +544,15 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
         task = storage.read_task_snapshot(task_id, storage.project_paths(runtime.root))
         if not isinstance(task, dict):
             raise RuntimeErrorWithCode("Task snapshot is missing.", 404)
+        faults.maybe_raise_fault(
+            "dispatch.execute.before_runtime",
+            f"dispatch.execute.before_runtime.{target.lower()}",
+        )
         result = runtime_execution.run_target(runtime, target, task_id, options)
+        faults.maybe_raise_fault(
+            "dispatch.execute.after_runtime",
+            f"dispatch.execute.after_runtime.{target.lower()}",
+        )
         usage_snapshot = storage.normalize_usage_state((runtime.read_state().get("usage") or {}))
         updated_job = runtime.mutate_job(
             job_id,

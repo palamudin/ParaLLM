@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import control, jobs, queueing, storage
+from runtime.engine import RuntimeErrorWithCode
 
 from .test_queueing import FakeRedis
 
@@ -189,6 +190,29 @@ class LoopJobTests(unittest.TestCase):
         job = storage.read_json_file(paths.jobs / f"{queued['jobId']}.json")
         self.assertIsInstance(job, dict)
         self.assertEqual(job["status"], "cancelled")
+
+    def test_execute_loop_job_fault_sets_explicit_error_state(self) -> None:
+        runtime = jobs._runtime(self.root)
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        task = state["activeTask"]
+        job = jobs.create_loop_job(runtime, task, 2, 0, "background")
+
+        env = {"LOOP_FAULT_POINTS": "loop.execute.before_target.commander"}
+        with mock.patch.dict("os.environ", env, clear=False):
+            with self.assertRaises(RuntimeErrorWithCode) as ctx:
+                jobs.execute_loop_job(job["jobId"], self.root)
+
+        self.assertIn("loop.execute.before_target.commander", str(ctx.exception))
+        paths = storage.project_paths(self.root)
+        updated_state = storage.read_state_payload(paths)
+        self.assertEqual(updated_state["loop"]["status"], "error")
+        self.assertIn("Loop error:", updated_state["loop"]["lastMessage"])
+        self.assertIn("loop.execute.before_target.commander", updated_state["loop"]["lastMessage"])
+
+        updated_job = storage.read_json_file(paths.jobs / f"{job['jobId']}.json")
+        self.assertIsInstance(updated_job, dict)
+        self.assertEqual(updated_job["status"], "error")
+        self.assertIn("loop.execute.before_target.commander", str(updated_job.get("error")))
 
 
 if __name__ == "__main__":

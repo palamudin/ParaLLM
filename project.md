@@ -587,6 +587,11 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - cross-process recovery semantics are verified under fault injection
   - the main runtime no longer depends on "read the logs and guess" during common failure cases
 
+#### Current progress
+
+- Dispatch and loop execution now expose explicit failpoints for repeatable hardening tests.
+- Recovery coverage now verifies stale dispatch recovery, stale loop recovery, and dependency-failure interruption instead of relying only on smoke tests.
+
 ### Milestone 5: Multi-Provider Model Abstraction
 
 - Goal:

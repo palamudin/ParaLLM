@@ -203,6 +203,104 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(artifact["artifactId"], "summary-1")
         self.assertEqual(artifact["content"]["frontAnswer"]["answer"], "Ship the thing.")
 
+    def test_recover_dispatch_jobs_view_interrupts_stale_and_dependency_failed_jobs(self) -> None:
+        jobs = [
+            storage.default_job(
+                {
+                    "jobId": "dispatch-commander",
+                    "jobType": "target",
+                    "taskId": "t-1",
+                    "target": "commander",
+                    "status": "error",
+                    "queuedAt": "2026-04-21T12:00:00+00:00",
+                }
+            ),
+            storage.default_job(
+                {
+                    "jobId": "dispatch-worker-a",
+                    "jobType": "target",
+                    "taskId": "t-1",
+                    "target": "A",
+                    "status": "queued",
+                    "dependencyJobIds": ["dispatch-commander"],
+                    "queuedAt": "2026-04-21T12:00:01+00:00",
+                }
+            ),
+            storage.default_job(
+                {
+                    "jobId": "dispatch-worker-b",
+                    "jobType": "target",
+                    "taskId": "t-1",
+                    "target": "B",
+                    "status": "running",
+                    "queuedAt": "2026-04-21T12:00:00+00:00",
+                    "startedAt": "2026-04-21T12:00:00+00:00",
+                    "lastHeartbeatAt": "2026-04-21T12:00:00+00:00",
+                }
+            ),
+        ]
+
+        with unittest.mock.patch("backend.app.storage.datetime") as fake_datetime:
+            from datetime import datetime, timezone
+
+            fake_now = datetime(2026, 4, 21, 12, 10, 0, tzinfo=timezone.utc)
+            fake_datetime.now.return_value = fake_now
+            fake_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            fake_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            recovered = storage.recover_dispatch_jobs_view(jobs)
+
+        recovered_by_id = {str(job["jobId"]): job for job in recovered}
+        self.assertEqual(recovered_by_id["dispatch-worker-a"]["status"], "interrupted")
+        self.assertIn("dependency failed", recovered_by_id["dispatch-worker-a"]["lastMessage"].lower())
+        self.assertEqual(recovered_by_id["dispatch-worker-b"]["status"], "interrupted")
+        self.assertIn("stale running dispatch job", recovered_by_id["dispatch-worker-b"]["lastMessage"].lower())
+
+    def test_coerce_loop_state_marks_stale_running_job_interrupted(self) -> None:
+        state = storage.default_state()
+        state["loop"] = {
+            **storage.default_loop_state(),
+            "status": "running",
+            "jobId": "job-loop",
+            "mode": "background",
+            "totalRounds": 2,
+            "completedRounds": 0,
+            "currentRound": 1,
+            "queuedAt": "2026-04-21T12:00:00+00:00",
+            "startedAt": "2026-04-21T12:00:00+00:00",
+            "lastHeartbeatAt": "2026-04-21T12:00:00+00:00",
+            "lastMessage": "Running round 1.",
+        }
+        jobs = [
+            storage.default_job(
+                {
+                    "jobId": "job-loop",
+                    "taskId": "t-1",
+                    "status": "running",
+                    "mode": "background",
+                    "rounds": 2,
+                    "completedRounds": 0,
+                    "currentRound": 1,
+                    "delayMs": 0,
+                    "queuedAt": "2026-04-21T12:00:00+00:00",
+                    "startedAt": "2026-04-21T12:00:00+00:00",
+                    "lastHeartbeatAt": "2026-04-21T12:00:00+00:00",
+                    "lastMessage": "Running round 1.",
+                }
+            )
+        ]
+
+        with unittest.mock.patch("backend.app.storage.datetime") as fake_datetime:
+            from datetime import datetime, timezone
+
+            fake_now = datetime(2026, 4, 21, 12, 10, 0, tzinfo=timezone.utc)
+            fake_datetime.now.return_value = fake_now
+            fake_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            fake_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            coerced = storage.coerce_loop_state(state, jobs)
+
+        self.assertEqual(coerced["loop"]["status"], "interrupted")
+        self.assertIn("stale running background loop", coerced["loop"]["lastMessage"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
