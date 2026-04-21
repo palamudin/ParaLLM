@@ -1,0 +1,2 @@
+-r requirements-ci.txt
+pip-audit==2.10.0

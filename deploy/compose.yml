@@ -1,0 +1,36 @@
+name: parallm
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/backend/Dockerfile
+    environment:
+      LOOP_DEPLOYMENT_PROFILE: local-single-node
+      LOOP_QUEUE_BACKEND: local_subprocess
+      LOOP_METADATA_BACKEND: json_files
+      LOOP_ARTIFACT_BACKEND: filesystem
+      LOOP_SECRET_BACKEND: local_file
+      LOOP_RUNTIME_EXECUTION_BACKEND: embedded_engine_subprocess
+      LOOP_AUTH_FILE: /run/loop-secrets/Auth.txt
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=2).read()",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    ports:
+      - "${LOOP_PUBLISHED_PORT:-8787}:8787"
+    volumes:
+      - loop_data:/app/data
+      - loop_auth:/run/loop-secrets
+
+volumes:
+  loop_data:
+  loop_auth:

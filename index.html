@@ -6,7 +6,7 @@
   <title>AI Loop Prototype</title>
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
   <link rel="stylesheet" href="assets/app.css" />
-  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="assets/vendor/jquery/jquery-3.7.1.min.js"></script>
 </head>
 <body class="app-body">
   <div class="app-shell page-wrapper" id="mainWrapper" data-layout="vertical" data-sidebartype="full" data-sidebar-position="fixed" data-header-position="fixed">
@@ -81,6 +81,10 @@
             </div>
           </div>
           <div class="workspace-pill-row">
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">API</span>
+              <span id="headerApiMode" class="workspace-pill-value">Python</span>
+            </div>
             <div class="workspace-pill">
               <span class="workspace-pill-label">Task</span>
               <span id="headerTaskId" class="workspace-pill-value">none</span>

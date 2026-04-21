@@ -1,9 +1,9 @@
 # ParaLLM
 
 ![Status](https://img.shields.io/badge/status-prototype-orange)
-![Platform](https://img.shields.io/badge/platform-Windows%20%2B%20XAMPP-0ea5e9)
+![Platform](https://img.shields.io/badge/platform-local%20%2B%20Docker-0ea5e9)
 ![UI](https://img.shields.io/badge/UI-Bootstrap%205-7952b3)
-![Runtime](https://img.shields.io/badge/runtime-PHP%20%2B%20resident%20Python-3776ab)
+![Runtime](https://img.shields.io/badge/runtime-Python%20control%20plane-3776ab)
 ![Reasoning](https://img.shields.io/badge/reasoning-adversarial%20lane%20stack-22c55e)
 
 Local-first adversarial reasoning workspace for testing whether structured disagreement can improve final answers.
@@ -34,6 +34,7 @@ The current prototype is built to make that test inspectable:
 - Read-only local file tools for commander and worker lanes with allow-root policy and audit logs
 - Read-only GitHub repo tools for commander and worker lanes with owner/repo allowlist and audit logs
 - Local API key pool with deterministic per-position assignment
+- Container-friendly secret backends via env keys or mounted secret files
 - Reversible QA scripts for mock, live, and eval smoke tests
 
 ## Architecture
@@ -63,21 +64,23 @@ flowchart LR
 
 | Layer | Tech |
 | --- | --- |
-| Control plane | PHP on XAMPP |
+| Control plane | Python ASGI backend |
 | Runtime | Resident Python service |
+| Self-host packaging | Docker Compose Python stack |
 | Frontend | HTML, jQuery, local Bootstrap 5.3, custom CSS |
 | Storage | Local JSON / JSONL artifacts |
 | Model path | OpenAI Responses API |
-| QA | Python harnesses + PHP lint + JS syntax check |
+| QA | Python harnesses + JS syntax check |
 
 ## Project Layout
 
 ```text
 .
-|-- api/                    PHP broker endpoints
+|-- backend/                Python-first control plane
 |-- assets/                 frontend JS, CSS, vendored Bootstrap
-|-- runtime/                resident Python runtime + eval runner
-|-- scripts/                QA harnesses and background loop runner
+|-- deploy/                 Docker Compose stack and container images
+|-- runtime/                reasoning engine + eval runner
+|-- scripts/                QA harnesses and benchmarks
 |-- data/                   local state, checkpoints, outputs, jobs, evals
 |-- index.html              app shell
 |-- project.md              running architecture notes / product log
@@ -111,7 +114,7 @@ flowchart LR
 ### Runtime / Ops
 
 - Detached background loop execution
-- Shared lock discipline between PHP and Python
+- Shared lock discipline between the Python control plane and worker subprocesses
 - Stale-job recovery
 - Output artifact persistence for every worker and summary pass
 - Read-only local workspace inspection via `local_list_dir`, `local_read_file`, and `local_search_text`
@@ -138,25 +141,177 @@ flowchart LR
 
 ### Requirements
 
-- Windows
-- XAMPP / Apache / PHP
 - Python 3
-- PHP process-launching functions enabled locally
 - Node optional, only for JS syntax checks
+- Docker optional for the self-host stack
 
 ### Install
 
-Copy the project into:
+Install dependencies:
 
-```text
-C:\xampp\htdocs\loop
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Portable local bring-up:
+
+```bash
+python scripts/run_local_stack.py
 ```
 
 Then open:
 
 ```text
-http://localhost/loop/
+http://127.0.0.1:8787/
 ```
+
+### Python Control-Plane Scaffold
+
+The repo now includes the active Python control plane under `backend/`.
+
+It now covers:
+
+- state/history/review reads
+- auth status and key mutation
+- draft save and task creation
+- session reset / replay / export
+- worker/runtime mutation
+- eval launch
+- loop/job control
+- background target dispatch
+- Python-served shell defaults at `/` and `/index.html`
+
+The Python-served shell is now the primary local path.
+
+Install and run it from the repo root:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python scripts/run_local_stack.py
+```
+
+Then check:
+
+```text
+http://127.0.0.1:8787/
+```
+
+Deployment/topology introspection now lives at:
+
+```text
+http://127.0.0.1:8787/v1/system/topology
+```
+
+Infrastructure readiness now lives at:
+
+```text
+http://127.0.0.1:8787/v1/system/infrastructure
+```
+
+If you still want the optional compatibility runtime service in the same local session:
+
+```bash
+python scripts/run_local_stack.py --with-runtime-service
+```
+
+### Docker Self-Host Path
+
+The repo now also includes a first containerized bring-up path under `deploy/`.
+
+It packages the active Python stack:
+
+- `backend`: Python ASGI shell + control plane on `:8787`
+
+Bring it up with:
+
+```bash
+docker compose -f deploy/compose.yml up --build
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8787/
+```
+
+For a hosted-dev dependency shape, the repo also includes:
+
+```bash
+docker compose -f deploy/compose.hosted-dev.yml up --build
+```
+
+Hosted-dev with a dedicated runtime container:
+
+```bash
+docker compose \
+  -f deploy/compose.hosted-dev.yml \
+  -f deploy/compose.hosted-dev.runtime-service.yml \
+  up --build
+```
+
+Portable handoff bundle for a Docker-capable rig:
+
+```bash
+python scripts/package_hosted_bundle.py
+```
+
+That compose file declares:
+
+- `postgres`
+- `redis`
+- `minio`
+
+The deploy env contract lives in `.env.example`, and the portability smoke is:
+
+```bash
+python scripts/qa_portability_check.py
+```
+
+The hosted-dev proof smoke is:
+
+```bash
+python scripts/qa_hosted_dev_stack.py
+```
+
+It is intentionally non-fake: it fails immediately if Docker is missing, otherwise it boots the hosted-dev compose stack and verifies Redis, Postgres, MinIO, mounted secrets, background loops, and artifact persistence through the live API and backing services.
+
+That topology contract now makes the current single-node shape explicit:
+
+- queue backend
+- metadata backend
+- artifact backend
+- secret backend
+- runtime execution backend
+
+The runtime execution backend is now selectable:
+
+- `embedded_engine_subprocess` for the default Python-only local stack
+- `runtime_service` when you intentionally want the backend to dispatch target execution over the separate runtime service boundary
+
+The queue backend is now partially real too:
+
+- `local_subprocess` keeps the existing JSON-and-subprocess scheduling path
+- `redis` now owns background loop ordering and ready target-dispatch launch handoff
+
+The metadata backend has also crossed the line from “declared” to “real”:
+
+- `json_files` remains the local default
+- `postgres` now owns shared control-plane state, job metadata, task snapshots, and eval run state across both the FastAPI backend and the runtime engine
+- events, steps, and eval manifests still remain filesystem-backed for this phase
+
+The artifact backend is now partially real too:
+
+- `filesystem` remains the local default
+- `object_storage` now owns runtime checkpoints, saved output artifacts, session archives, and export bundles, and Review/history reads the runtime artifacts back through the same adapter
+- eval run manifests still remain filesystem-backed for this phase
+
+The secret backend is now hosted-aware too:
+
+- set `LOOP_SECRET_BACKEND=env`
+- provide newline-delimited keys in `LOOP_OPENAI_API_KEYS`
+- or set `LOOP_SECRET_BACKEND=docker_secret`
+- or set `LOOP_SECRET_BACKEND=external` with `LOOP_SECRET_PROVIDER_URL`
+- and mount a newline-delimited key file at `LOOP_SECRET_FILE` such as `/run/secrets/openai_api_keys`
 
 ### First Run
 
@@ -183,7 +338,7 @@ Assignment behavior:
 - if there are fewer keys than positions, slots wrap
 - when wrapping is required, the starting slot rotates across rounds so one key does not always take commander-first traffic
 
-Only masked previews are shown in the UI. Raw keys stay local in `Auth.txt`.
+Only masked previews are shown in the UI. Raw keys stay local in `Auth.txt` for `local_file`, in env vars for `env`, in the mounted file for `docker_secret`, or behind a read-only HTTP provider for `external`.
 
 ## Usage Flow
 
@@ -217,8 +372,41 @@ python scripts/qa_eval_check.py
 python scripts/qa_local_tools_check.py
 python scripts/qa_github_tools_check.py
 python scripts/qa_dynamic_spinup_check.py
+python scripts/qa_supply_chain_check.py
+python scripts/qa_container_check.py
+python scripts/qa_python_crossover_check.py
 python scripts/quality_benchmark.py
+python -m unittest backend.tests.test_storage backend.tests.test_control backend.tests.test_metadata backend.tests.test_queueing backend.tests.test_artifacts backend.tests.test_jobs backend.tests.test_dispatch backend.tests.test_settings backend.tests.test_sessions backend.tests.test_evals backend.tests.test_infrastructure backend.tests.test_runtime_auth backend.tests.test_runtime_execution backend.tests.test_app
 ```
+
+CI baseline:
+
+- Python version is declared in `.python-version`
+- Node version is declared in `.nvmrc`
+- Deployment Python dependencies are pinned in `requirements-ci.txt`
+- CI/developer Python dependencies are installed from `requirements-dev.txt`
+- GitHub Actions QA lives in `.github/workflows/ci.yml`
+- Dependabot updates GitHub Actions and pip manifests through `.github/dependabot.yml`
+- Runtime browser dependencies are local-only; jQuery is vendored under `assets/vendor/jquery`
+
+Supply-chain checks:
+
+```bash
+python scripts/qa_supply_chain_check.py
+```
+
+Container packaging checks:
+
+```bash
+python scripts/qa_container_check.py
+```
+
+Security baseline:
+
+- `SECURITY.md` documents reporting expectations and the current hardening posture
+- `pip-audit` now runs as part of the repository supply-chain check
+- workflow actions are pinned to full commit SHAs
+- browser runtime dependencies are local-only instead of pulled from a public CDN
 
 Useful flags:
 
@@ -243,24 +431,41 @@ If steered output does not beat a direct baseline often enough, the logs and eva
 
 ## Roadmap
 
-Immediate blocker:
+The local stability gate is now closed:
 
-- close the round-scoping bug in the true separate path so a worker spawned by `commander review` for round `N+1` is not incorrectly required before the round `N` summary can complete
+- the true separate path completed 5 clean live 2-round runs without hanging
+- next-round spawned workers activated correctly in round 2
+- the async dispatch path also passed after the same alignment fixes
+
+The next phase is productization for an online-capable offering.
 
 Next milestone track:
 
-- reduce deployment friction by breaking the current Windows + XAMPP lock-in with portable packaging and container-friendly setup
-- harden the prototype with stronger error handling, typing discipline, unit tests, and security review
-- add multi-provider model backends beyond OpenAI, including Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
-- move from plaintext-only local API key handling toward safer secret storage and controlled runtime retrieval
-- improve the review surface and split the monolithic frontend into more maintainable modules
-- keep token burn visible and governable without weakening the full-context adversarial thesis
+- `Dynamic Lane Polish`
+  - make spawned personas more deliberate, less duplicate, and more legible in Review
+- `Deployment Portability and Online Packaging`
+  - keep the stack Python-first and define the first hosted deployment shape
+  - harden the Docker/self-host path so local and hosted deployments share one control plane
+- `Secrets, Security, and Controlled Retrieval`
+  - move beyond plaintext-only local key handling toward safer storage and hosted retrieval
+- `Prototype Hardening`
+  - add stronger error handling, typing discipline, test coverage, and recovery verification
+- `Multi-Provider Model Abstraction`
+  - add Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
+- `Review Surface and Frontend Architecture`
+  - improve review visualization and split the frontend into more maintainable modules
+- `Cost Governance Without Betraying the Thesis`
+  - keep burn visible and enforceable without starving adversarial lanes of full user context
 
 ## Known Tradeoffs
 
 - This architecture can burn tokens fast by design.
 - Full-context adversarial lanes are a feature, not a bug.
 - Summarizer quality still depends heavily on harness tuning and output-cap recovery.
+- The Docker path now packages the Python-served shell and control plane directly.
+- The Python control plane owns auth-key mutation, draft/task writes, runtime/worker settings, session/export/replay mutations, eval launch, loop/job control, and target dispatch.
+- The primary app path is `http://127.0.0.1:8787/` or the backend container on the same port.
+- The repo and runtime now operate without PHP or XAMPP.
 - The system is inspectable enough to teach us where it helps, but not yet mature enough to call "production."
 
 ## Safety / Local Data

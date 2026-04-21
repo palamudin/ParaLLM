@@ -221,7 +221,7 @@ def parse_args() -> argparse.Namespace:
         default=",".join(DEFAULT_ALLOWED_DOMAINS),
         help="Comma-separated allow-list for worker web search sources.",
     )
-    parser.add_argument("--skip-prechecks", action="store_true", help="Skip Python/PHP/JS/http prechecks and run only the live smoke.")
+    parser.add_argument("--skip-prechecks", action="store_true", help="Skip Python/JS/http prechecks and run only the live smoke.")
     parser.add_argument("--no-restart-runtime", action="store_true", help="Do not refresh the resident runtime before the live smoke.")
     return parser.parse_args()
 

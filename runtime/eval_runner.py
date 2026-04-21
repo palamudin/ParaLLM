@@ -9,6 +9,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from backend.app import metadata as metadata_store
+from backend.app.control import auth_file_path
 from engine import (
     LoopRuntime,
     RuntimeErrorWithCode,
@@ -927,7 +929,21 @@ def aggregate_run(run: Dict[str, Any]) -> Dict[str, Any]:
 
 def persist_run(run_path: Path, run: Dict[str, Any]) -> None:
     run["updatedAt"] = utc_now()
-    write_json(run_path, run)
+    root = run_path.parents[4]
+    if metadata_store.postgres_enabled(root):
+        metadata_store.write_eval_run_payload(root, run)
+    else:
+        write_json(run_path, run)
+
+
+def read_run(root: Path, run_id: str) -> Dict[str, Any]:
+    if metadata_store.postgres_enabled(root):
+        payload = metadata_store.read_eval_run_payload(root, run_id)
+        if not isinstance(payload, dict):
+            raise EvalError(f"Missing eval run metadata: {run_id}")
+        return payload
+    run_path = root / "data" / "evals" / "runs" / run_id / "run.json"
+    return read_json(run_path)
 
 
 def find_case_entry(run: Dict[str, Any], case_id: str) -> Dict[str, Any]:
@@ -1058,14 +1074,14 @@ def execute_replicate(
 def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
     run_dir = root / "data" / "evals" / "runs" / run_id
     run_path = run_dir / "run.json"
-    run = read_json(run_path)
+    run = read_run(root, run_id)
     suite_path = root / "data" / "evals" / "suites" / f"{run['suiteId']}.json"
     suite = validate_suite_manifest(read_json(suite_path), suite_path)
     arm_map: Dict[str, Dict[str, Any]] = {}
     for arm_id in run.get("armIds", []):
         arm_path = root / "data" / "evals" / "arms" / f"{arm_id}.json"
         arm_map[arm_id] = validate_arm_manifest(read_json(arm_path), arm_path)
-    auth_path = root / "Auth.txt"
+    auth_path = auth_file_path(root)
     run["suite"] = {
         "suiteId": suite["suiteId"],
         "title": suite["title"],
@@ -1185,15 +1201,18 @@ def main() -> int:
         execute_run(root, str(args.run_id).strip())
         return 0
     except Exception as error:
-        run_path = root / "data" / "evals" / "runs" / str(args.run_id).strip() / "run.json"
-        if run_path.exists():
+        run_id = str(args.run_id).strip()
+        try:
+            run = read_run(root, run_id)
+        except Exception:
+            run = None
+        if isinstance(run, dict):
             try:
-                run = read_json(run_path)
                 run["status"] = "error"
                 run["completedAt"] = utc_now()
                 run["error"] = str(error)
                 run["traceback"] = traceback.format_exc()
-                persist_run(run_path, run)
+                persist_run(root / "data" / "evals" / "runs" / run_id / "run.json", run)
             except Exception:
                 pass
         raise

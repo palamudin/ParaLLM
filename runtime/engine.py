@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from backend.app import artifacts as artifact_store
+from backend.app import metadata as metadata_store
+from backend.app.secrets import external_secret_keys
+
 
 MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
     "gpt-5.4": {"label": "GPT-5.4", "inputPer1M": 2.50, "cachedInputPer1M": 0.25, "outputPer1M": 15.00},
@@ -73,6 +77,38 @@ WORKER_TYPE_CATALOG: Dict[str, Dict[str, str]] = {
     "governance": {"label": "Governance", "role": "adversarial", "focus": "decision paralysis, review bottlenecks, process drag", "temperature": "cool"},
     "wildcard": {"label": "Wildcard", "role": "adversarial", "focus": "wildcard attack surfaces, overlooked weirdness, novel failure", "temperature": "hot"},
 }
+
+DYNAMIC_LANE_OVERLAP_GROUPS: Dict[str, str] = {
+    "security": "threat",
+    "abuse": "threat",
+    "reliability": "resilience",
+    "recovery": "resilience",
+    "data": "state",
+    "concurrency": "state",
+    "performance": "performance",
+    "latency": "performance",
+    "scalability": "performance",
+    "governance": "governance",
+    "compliance": "governance",
+    "user": "human",
+    "human": "human",
+    "product": "product",
+    "incentives": "product",
+}
+
+DYNAMIC_LANE_KEYWORD_HINTS: List[tuple[str, List[str]]] = [
+    ("abuse exploit hostile attacker privilege escalation red team spam malicious adversary threat", ["security", "abuse"]),
+    ("telemetry observability monitor trace tracing metrics alert drift blind spot instrumentation", ["observability"]),
+    ("rollback resume crash outage recover recovery corruption integrity replay publish durable", ["recovery", "reliability", "data"]),
+    ("race deadlock lock contention concurrent ordering state transition", ["concurrency", "data"]),
+    ("latency throughput hot path fan-out scale capacity load", ["latency", "performance", "scalability"]),
+    ("policy compliance approval audit governance review obligation", ["compliance", "governance"]),
+    ("privacy pii retention oversharing secret leak leakage", ["privacy", "security"]),
+    ("adoption trust confusion operator fatigue human error", ["user", "human"]),
+    ("integration boundary contract interoperability migration dependency", ["integration", "portability"]),
+    ("scope creep hidden complexity maintainability toil handoff", ["scope", "maintainability"]),
+    ("economics roi burn spend budget return incentive", ["economist", "incentives"]),
+]
 
 DEFAULT_WORKER_TYPE_SEQUENCE: List[str] = [
     "proponent",
@@ -333,10 +369,35 @@ def normalize_string_array_preserve_items(value: Any) -> List[str]:
     return ordered
 
 
-def read_api_key_pool(path: Path) -> List[str]:
-    if not path.exists():
+def read_env_api_key_pool() -> List[str]:
+    raw = str(os.getenv("LOOP_OPENAI_API_KEYS") or os.getenv("OPENAI_API_KEYS") or "").strip()
+    if not raw:
         return []
-    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    keys: List[str] = []
+    seen: Dict[str, bool] = {}
+    for entry in raw.replace(",", "\n").splitlines():
+        key = str(entry or "").strip()
+        if key and key not in seen:
+            seen[key] = True
+            keys.append(key)
+    return keys
+
+
+def read_api_key_pool(path: Path) -> List[str]:
+    secret_backend = str(os.getenv("LOOP_SECRET_BACKEND") or "").strip().lower()
+    if secret_backend == "env":
+        keys = read_env_api_key_pool()
+        if keys:
+            return keys
+    if secret_backend == "external":
+        keys = external_secret_keys()
+        if keys:
+            return keys
+    if path.exists():
+        keys = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        if keys:
+            return keys
+    return read_env_api_key_pool()
 
 
 def mask_api_key(key: str) -> str:
@@ -1217,6 +1278,7 @@ def normalize_commander_review_checkpoint(
         ),
         "controlAudit": {},
         "dynamicLaneDecision": normalize_dynamic_lane_decision(None),
+        "dynamicLaneResolution": normalize_dynamic_lane_resolution(None),
         "remainingUncertainty": limit_string_list(base_commander.get("uncertainty", []), 4, 220),
         "sourceWorkers": normalize_worker_id_list(fallback_workers or []),
     }
@@ -1238,6 +1300,7 @@ def normalize_commander_review_checkpoint(
         normalized["remainingUncertainty"] = limit_string_list(checkpoint.get("remainingUncertainty", []), 4, 220)
         normalized["sourceWorkers"] = normalize_worker_id_list(checkpoint.get("sourceWorkers", fallback_workers or []))
         normalized["dynamicLaneDecision"] = normalize_dynamic_lane_decision(checkpoint.get("dynamicLaneDecision"))
+        normalized["dynamicLaneResolution"] = normalize_dynamic_lane_resolution(checkpoint.get("dynamicLaneResolution"))
         normalized["controlAudit"] = normalize_control_audit(
             checkpoint.get("controlAudit"),
             {
@@ -1429,6 +1492,79 @@ def normalize_dynamic_lane_decision(decision: Any) -> Dict[str, Any]:
     return normalized
 
 
+def dynamic_lane_overlap_key(lane_type: Any) -> str:
+    candidate = str(lane_type or "").strip().lower()
+    return DYNAMIC_LANE_OVERLAP_GROUPS.get(candidate, candidate)
+
+
+def infer_dynamic_lane_types_from_text(*parts: Any, max_items: int = 4) -> List[str]:
+    combined = " ".join(str(part or "").strip().lower() for part in parts if str(part or "").strip())
+    if not combined:
+        return []
+    tokens = {token for token in re.findall(r"[a-z0-9_]+", combined) if token}
+    inferred: List[str] = []
+    for keywords, lane_types in DYNAMIC_LANE_KEYWORD_HINTS:
+        keyword_list = [keyword for keyword in keywords.split() if keyword]
+        if not keyword_list:
+            continue
+        if not any(keyword in tokens for keyword in keyword_list):
+            continue
+        for lane_type in lane_types:
+            if lane_type in WORKER_TYPE_CATALOG and lane_type not in inferred:
+                inferred.append(lane_type)
+                if len(inferred) >= max_items:
+                    return inferred
+    return inferred[:max_items]
+
+
+def normalize_dynamic_lane_resolution(value: Any) -> Dict[str, Any]:
+    normalized = {
+        "status": "not_requested",
+        "requestedLaneTypes": [],
+        "inferredLaneTypes": [],
+        "selectedLaneType": "",
+        "selectedBecause": "",
+        "activationRound": 0,
+        "spawnedWorkerId": "",
+        "rejectedLaneTypes": [],
+    }
+    if not isinstance(value, dict):
+        return normalized
+    status = str(value.get("status", normalized["status"])).strip().lower().replace("-", "_").replace(" ", "_")
+    if status in {
+        "not_requested",
+        "spawned",
+        "rejected_duplicate",
+        "rejected_covered",
+        "rejected_invalid",
+        "rejected_unresolved",
+    }:
+        normalized["status"] = status
+    normalized["requestedLaneTypes"] = normalize_lane_type_list(value.get("requestedLaneTypes", []), False, 4)
+    normalized["inferredLaneTypes"] = normalize_lane_type_list(value.get("inferredLaneTypes", []), False, 4)
+    selected_lane_type = str(value.get("selectedLaneType", "") or "").strip().lower()
+    if selected_lane_type in WORKER_TYPE_CATALOG:
+        normalized["selectedLaneType"] = selected_lane_type
+    normalized["selectedBecause"] = truncate_text(value.get("selectedBecause", ""), 320)
+    normalized["activationRound"] = max(0, int(value.get("activationRound", 0) or 0))
+    spawned_worker_id = str(value.get("spawnedWorkerId", "") or "").strip().upper()
+    if re.match(r"^[A-Z]$", spawned_worker_id):
+        normalized["spawnedWorkerId"] = spawned_worker_id
+    rejected: List[Dict[str, str]] = []
+    raw_rejected = value.get("rejectedLaneTypes", [])
+    if isinstance(raw_rejected, list):
+        for entry in raw_rejected[:6]:
+            if not isinstance(entry, dict):
+                continue
+            lane_type = str(entry.get("laneType", "") or "").strip().lower()
+            reason = truncate_text(entry.get("reason", ""), 220)
+            if lane_type not in WORKER_TYPE_CATALOG or not reason:
+                continue
+            rejected.append({"laneType": lane_type, "reason": reason})
+    normalized["rejectedLaneTypes"] = rejected
+    return normalized
+
+
 def normalize_review_trace(review_trace: Any) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     if not isinstance(review_trace, list):
@@ -1593,7 +1729,10 @@ class LoopRuntime:
 
     def read_state_unlocked(self) -> Dict[str, Any]:
         self.ensure_data_paths()
-        data = self._read_json_file(self.state_path, default_state())
+        if metadata_store.postgres_enabled(self.root):
+            data = metadata_store.read_state_payload(self.root, default_state())
+        else:
+            data = self._read_json_file(self.state_path, default_state())
         if not isinstance(data, dict):
             data = default_state()
         return self.normalize_state(data)
@@ -1605,7 +1744,10 @@ class LoopRuntime:
     def write_state_unlocked(self, state: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self.normalize_state(state)
         normalized["lastUpdated"] = utc_now()
-        self._write_json_file(self.state_path, normalized)
+        if metadata_store.postgres_enabled(self.root):
+            metadata_store.write_state_payload(self.root, normalized)
+        else:
+            self._write_json_file(self.state_path, normalized)
         return normalized
 
     def write_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1633,7 +1775,11 @@ class LoopRuntime:
                 handle.write(line + "\n")
 
     def read_job_unlocked(self, job_id: str) -> Optional[Dict[str, Any]]:
-        path = self._job_path(str(job_id or "").strip())
+        normalized_job_id = str(job_id or "").strip()
+        if metadata_store.postgres_enabled(self.root):
+            data = metadata_store.read_job_payload(self.root, normalized_job_id)
+            return data if isinstance(data, dict) else None
+        path = self._job_path(normalized_job_id)
         if not path.exists():
             return None
         data = self._read_json_file(path, None)
@@ -1643,9 +1789,22 @@ class LoopRuntime:
         job_id = str(job.get("jobId", "")).strip()
         if not job_id:
             raise RuntimeErrorWithCode("Job payload is missing jobId.", 500)
-        path = self._job_path(job_id)
-        self._write_json_file(path, job)
+        if metadata_store.postgres_enabled(self.root):
+            metadata_store.write_job_payload(self.root, job)
+        else:
+            path = self._job_path(job_id)
+            self._write_json_file(path, job)
         return job
+
+    def write_task_snapshot_unlocked(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_id = str(task.get("taskId") or "").strip()
+        if not task_id:
+            raise RuntimeErrorWithCode("Task payload is missing taskId.", 500)
+        if metadata_store.postgres_enabled(self.root):
+            metadata_store.write_task_payload(self.root, task)
+        else:
+            self._write_json_file(self.tasks_path / f"{task_id}.json", task)
+        return task
 
     def mutate_job(self, job_id: str, callback) -> Optional[Dict[str, Any]]:
         normalized_job_id = str(job_id or "").strip()
@@ -2525,7 +2684,7 @@ class LoopRuntime:
             active_task = state.get("activeTask")
             if isinstance(active_task, dict) and active_task.get("taskId") == task_id:
                 active_task["usage"] = usage
-                self._write_json_file(self.tasks_path / f"{task_id}.json", active_task)
+                self.write_task_snapshot_unlocked(active_task)
             self.write_state_unlocked(state)
             return usage
 
@@ -2929,33 +3088,94 @@ class LoopRuntime:
             return worker_round
         return 0
 
-    def select_dynamic_lane_type(self, task: Dict[str, Any], suggested_lane_types: Any) -> Optional[str]:
-        existing_types = {str(worker.get("type", "")).strip().lower() for worker in task_workers(task)}
-        for lane_type in normalize_lane_type_list(suggested_lane_types, include_utility=False, max_items=4):
-            if lane_type in existing_types:
-                continue
-            return lane_type
-        return None
-
-    def build_dynamic_worker(self, task: Dict[str, Any], decision: Any, active_from_round: int = 1) -> Optional[Dict[str, str]]:
+    def resolve_dynamic_lane_request(self, task: Dict[str, Any], decision: Any, active_from_round: int = 1) -> Dict[str, Any]:
         normalized_decision = normalize_dynamic_lane_decision(decision)
-        selected_type = self.select_dynamic_lane_type(task, normalized_decision.get("suggestedLaneTypes", []))
-        selected_type = str(selected_type or "").strip().lower()
+        requested_lane_types = normalize_lane_type_list(normalized_decision.get("suggestedLaneTypes", []), include_utility=False, max_items=4)
+        inferred_lane_types = infer_dynamic_lane_types_from_text(
+            normalized_decision.get("requiredPressure", ""),
+            normalized_decision.get("reason", ""),
+            normalized_decision.get("instruction", ""),
+            max_items=4,
+        )
+        existing_workers = task_workers(task)
+        existing_types = {str(worker.get("type", "")).strip().lower() for worker in existing_workers}
+        existing_overlap_keys = {dynamic_lane_overlap_key(worker.get("type")) for worker in existing_workers}
+        candidates: List[str] = []
+        for lane_type in requested_lane_types + inferred_lane_types:
+            if lane_type not in candidates:
+                candidates.append(lane_type)
+        resolution = {
+            "status": "not_requested",
+            "requestedLaneTypes": requested_lane_types,
+            "inferredLaneTypes": inferred_lane_types,
+            "selectedLaneType": "",
+            "selectedBecause": "",
+            "activationRound": max(0, int(active_from_round or 0)),
+            "spawnedWorkerId": "",
+            "rejectedLaneTypes": [],
+        }
+        if not bool(normalized_decision.get("shouldSpawn")):
+            return normalize_dynamic_lane_resolution(resolution)
+        if not candidates:
+            resolution["status"] = "rejected_invalid"
+            resolution["selectedBecause"] = "Commander review requested another lane but did not identify a valid adversarial type."
+            return normalize_dynamic_lane_resolution(resolution)
+        for lane_type in candidates:
+            overlap_key = dynamic_lane_overlap_key(lane_type)
+            if lane_type in existing_types:
+                resolution["rejectedLaneTypes"].append(
+                    {"laneType": lane_type, "reason": "Exact lane type is already active in the roster."}
+                )
+                continue
+            if overlap_key in existing_overlap_keys:
+                resolution["rejectedLaneTypes"].append(
+                    {"laneType": lane_type, "reason": "A near-duplicate adversarial lens is already active in the roster."}
+                )
+                continue
+            resolution["status"] = "spawned"
+            resolution["selectedLaneType"] = lane_type
+            if lane_type in requested_lane_types and lane_type in inferred_lane_types:
+                resolution["selectedBecause"] = "Commander review requested this lane and the unresolved pressure text independently reinforced it."
+            elif lane_type in requested_lane_types:
+                resolution["selectedBecause"] = "Commander review explicitly requested this lane type and it was not already covered."
+            else:
+                resolution["selectedBecause"] = "The unresolved pressure text matched this lane more strongly than the requested types that were already covered."
+            return normalize_dynamic_lane_resolution(resolution)
+        resolution["status"] = "rejected_covered" if resolution["rejectedLaneTypes"] else "rejected_unresolved"
+        resolution["selectedBecause"] = (
+            "Commander review requested another lane, but every viable candidate was already covered by the current roster."
+            if resolution["rejectedLaneTypes"]
+            else "Commander review requested another lane, but no sufficiently distinct adversarial lens could be resolved."
+        )
+        return normalize_dynamic_lane_resolution(resolution)
+
+    def build_dynamic_worker(
+        self,
+        task: Dict[str, Any],
+        decision: Any,
+        active_from_round: int = 1,
+    ) -> tuple[Optional[Dict[str, str]], Dict[str, Any]]:
+        normalized_decision = normalize_dynamic_lane_decision(decision)
+        resolution = self.resolve_dynamic_lane_request(task, normalized_decision, active_from_round)
+        selected_type = str(resolution.get("selectedLaneType", "") or "").strip().lower()
         catalog_entry = WORKER_TYPE_CATALOG.get(selected_type)
         if not catalog_entry or str(catalog_entry.get("role", "adversarial")) != "adversarial":
-            return None
+            return None, resolution
         existing_ids = {worker["id"] for worker in task_workers(task)}
         for worker_id in worker_slot_ids():
             if worker_id in existing_ids:
                 continue
             focus = str(catalog_entry.get("focus", "")).strip()
             required_pressure = str(normalized_decision.get("requiredPressure", "")).strip()
+            reason = str(normalized_decision.get("reason", "")).strip()
             instruction = str(normalized_decision.get("instruction", "")).strip()
             if required_pressure:
-                focus = truncate_text(f"{focus}; specifically pressure-test {required_pressure}", 220)
+                focus = truncate_text(f"{focus}; specifically attack this unresolved pressure: {required_pressure}", 220)
             harness_bits: List[str] = []
             if required_pressure:
                 harness_bits.append(f"Primary unresolved pressure: {required_pressure}.")
+            if reason:
+                harness_bits.append(f"Why this lane exists: {reason}.")
             if instruction:
                 harness_bits.append(instruction)
             worker_definition: Dict[str, Any] = {
@@ -2972,11 +3192,15 @@ class LoopRuntime:
                     "concision": default_worker_harness()["concision"],
                     "instruction": truncate_text(" ".join(harness_bits), 320),
                 }
-            return normalize_worker_definition(
+            normalized_worker = normalize_worker_definition(
                 worker_definition,
                 normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID),
             )
-        return None
+            resolution["spawnedWorkerId"] = normalized_worker["id"]
+            return normalized_worker, normalize_dynamic_lane_resolution(resolution)
+        resolution["status"] = "rejected_unresolved"
+        resolution["selectedBecause"] = "Commander review identified a useful missing lane, but no worker slots were available."
+        return None, normalize_dynamic_lane_resolution(resolution)
 
     def commander_schema(self) -> Dict[str, Any]:
         return {
@@ -3796,6 +4020,7 @@ class LoopRuntime:
                 "claimsNeedingVerification": checkpoint.get("remainingUncertainty", []),
             }),
             "dynamicLaneDecision": normalize_dynamic_lane_decision(checkpoint.get("dynamicLaneDecision")),
+            "dynamicLaneResolution": normalize_dynamic_lane_resolution(checkpoint.get("dynamicLaneResolution")),
             "remainingUncertainty": limit_string_list(checkpoint.get("remainingUncertainty", []), 4, 220),
             "sourceWorkers": normalize_worker_id_list(checkpoint.get("sourceWorkers", [])),
         }
@@ -4096,6 +4321,7 @@ class LoopRuntime:
             },
         )
         dynamic_lane_decision = normalize_dynamic_lane_decision(commander_review_projection.get("dynamicLaneDecision"))
+        dynamic_lane_resolution = normalize_dynamic_lane_resolution(commander_review_projection.get("dynamicLaneResolution"))
         return {
             "taskId": task["taskId"],
             "round": round_number,
@@ -4121,6 +4347,7 @@ class LoopRuntime:
             },
             "controlAudit": review_control_audit,
             "dynamicLaneDecision": dynamic_lane_decision,
+            "dynamicLaneResolution": dynamic_lane_resolution,
             "reviewTrace": review_trace,
             "stableFindings": [
                 "Structured checkpoints let many lanes disagree without losing continuity.",
@@ -4495,6 +4722,7 @@ class LoopRuntime:
         if has_commander_review:
             parsed["controlAudit"] = commander_review_projection.get("controlAudit", parsed.get("controlAudit"))
             parsed["dynamicLaneDecision"] = commander_review_projection.get("dynamicLaneDecision", parsed.get("dynamicLaneDecision"))
+            parsed["dynamicLaneResolution"] = commander_review_projection.get("dynamicLaneResolution", parsed.get("dynamicLaneResolution"))
             front_answer = parsed.get("frontAnswer") if isinstance(parsed.get("frontAnswer"), dict) else {}
             if not str(front_answer.get("leadDirection", "")).strip():
                 front_answer["leadDirection"] = commander_review_projection.get("leadDirection", "")
@@ -4549,6 +4777,7 @@ class LoopRuntime:
         summary["summarizerOpinion"] = normalize_summarizer_opinion(summary.get("summarizerOpinion"), summary)
         summary["controlAudit"] = normalize_control_audit(summary.get("controlAudit"), summary)
         summary["dynamicLaneDecision"] = normalize_dynamic_lane_decision(summary.get("dynamicLaneDecision"))
+        summary["dynamicLaneResolution"] = normalize_dynamic_lane_resolution(summary.get("dynamicLaneResolution"))
         summary["reviewTrace"] = normalize_review_trace(summary.get("reviewTrace", []))
         summary["stableFindings"] = normalize_string_array_preserve_items(summary.get("stableFindings", []))
         summary["conditionalTruths"] = normalize_string_array_preserve_items(summary.get("conditionalTruths", []))
@@ -4600,45 +4829,38 @@ class LoopRuntime:
         return summary
 
     def write_commander_files(self, task_id: str, round_number: int, checkpoint: Dict[str, Any]) -> tuple[Path, Path]:
-        latest = self.checkpoints_path / f"{task_id}_commander.json"
-        history = self.checkpoints_path / f"{task_id}_commander_round{round_number:03d}.json"
-        payload = json.dumps(checkpoint, indent=2, ensure_ascii=False)
-        latest.write_text(payload, encoding="utf-8")
-        history.write_text(payload, encoding="utf-8")
-        return latest, history
+        latest_name = f"{task_id}_commander.json"
+        history_name = f"{task_id}_commander_round{round_number:03d}.json"
+        artifact_store.write_json_artifact(self.root, "checkpoints", latest_name, checkpoint)
+        artifact_store.write_json_artifact(self.root, "checkpoints", history_name, checkpoint)
+        return Path(latest_name), Path(history_name)
 
     def write_commander_review_files(self, task_id: str, round_number: int, checkpoint: Dict[str, Any]) -> tuple[Path, Path]:
-        latest = self.checkpoints_path / f"{task_id}_commander_review.json"
-        history = self.checkpoints_path / f"{task_id}_commander_review_round{round_number:03d}.json"
-        payload = json.dumps(checkpoint, indent=2, ensure_ascii=False)
-        latest.write_text(payload, encoding="utf-8")
-        history.write_text(payload, encoding="utf-8")
-        return latest, history
+        latest_name = f"{task_id}_commander_review.json"
+        history_name = f"{task_id}_commander_review_round{round_number:03d}.json"
+        artifact_store.write_json_artifact(self.root, "checkpoints", latest_name, checkpoint)
+        artifact_store.write_json_artifact(self.root, "checkpoints", history_name, checkpoint)
+        return Path(latest_name), Path(history_name)
 
     def write_worker_checkpoint_files(self, task_id: str, worker_id: str, step_number: int, checkpoint: Dict[str, Any]) -> tuple[Path, Path]:
-        latest = self.checkpoints_path / f"{task_id}_{worker_id}.json"
-        history = self.checkpoints_path / f"{task_id}_{worker_id}_step{step_number:03d}.json"
-        payload = json.dumps(checkpoint, indent=2, ensure_ascii=False)
-        latest.write_text(payload, encoding="utf-8")
-        history.write_text(payload, encoding="utf-8")
-        return latest, history
+        latest_name = f"{task_id}_{worker_id}.json"
+        history_name = f"{task_id}_{worker_id}_step{step_number:03d}.json"
+        artifact_store.write_json_artifact(self.root, "checkpoints", latest_name, checkpoint)
+        artifact_store.write_json_artifact(self.root, "checkpoints", history_name, checkpoint)
+        return Path(latest_name), Path(history_name)
 
     def write_summary_files(self, task_id: str, round_number: int, summary: Dict[str, Any], suffix: str = "") -> tuple[Path, Path]:
         normalized_suffix = f"_{suffix}" if suffix else ""
-        latest = self.checkpoints_path / f"{task_id}_summary{normalized_suffix}.json"
-        history = self.checkpoints_path / f"{task_id}_summary{normalized_suffix}_round{round_number:03d}.json"
-        payload = json.dumps(summary, indent=2, ensure_ascii=False)
-        latest.write_text(payload, encoding="utf-8")
-        history.write_text(payload, encoding="utf-8")
-        return latest, history
+        latest_name = f"{task_id}_summary{normalized_suffix}.json"
+        history_name = f"{task_id}_summary{normalized_suffix}_round{round_number:03d}.json"
+        artifact_store.write_json_artifact(self.root, "checkpoints", latest_name, summary)
+        artifact_store.write_json_artifact(self.root, "checkpoints", history_name, summary)
+        return Path(latest_name), Path(history_name)
 
     def write_output_artifact(self, filename: str, history_filename: str, payload: Dict[str, Any]) -> tuple[Path, Path]:
-        latest = self.outputs_path / filename
-        history = self.outputs_path / history_filename
-        body = json.dumps(payload, indent=2, ensure_ascii=False)
-        latest.write_text(body, encoding="utf-8")
-        history.write_text(body, encoding="utf-8")
-        return latest, history
+        artifact_store.write_json_artifact(self.root, "outputs", filename, payload)
+        artifact_store.write_json_artifact(self.root, "outputs", history_filename, payload)
+        return Path(filename), Path(history_filename)
 
     def run_commander(self) -> Dict[str, Any]:
         state = self.read_state()
@@ -4931,11 +5153,11 @@ class LoopRuntime:
         )
         dynamic_spinup = self.get_dynamic_spinup_config(task)
         dynamic_lane_decision = checkpoint.get("dynamicLaneDecision") if isinstance(checkpoint.get("dynamicLaneDecision"), dict) else {}
-        selected_dynamic_worker = (
-            self.build_dynamic_worker(task, dynamic_lane_decision, commander_round + 1)
-            if dynamic_spinup["enabled"] and bool(dynamic_lane_decision.get("shouldSpawn"))
-            else None
-        )
+        dynamic_lane_resolution = normalize_dynamic_lane_resolution(None)
+        selected_dynamic_worker: Optional[Dict[str, str]] = None
+        if dynamic_spinup["enabled"] and bool(dynamic_lane_decision.get("shouldSpawn")):
+            selected_dynamic_worker, dynamic_lane_resolution = self.build_dynamic_worker(task, dynamic_lane_decision, commander_round + 1)
+        checkpoint["dynamicLaneResolution"] = dynamic_lane_resolution
         spawned_worker: Optional[Dict[str, str]] = None
 
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
@@ -4955,7 +5177,7 @@ class LoopRuntime:
 
         state = self.mutate_state(update_state)
         if spawned_worker is not None and isinstance(state.get("activeTask"), dict):
-            self._write_json_file(self.tasks_path / f"{task['taskId']}.json", state["activeTask"])
+            self.write_task_snapshot_unlocked(state["activeTask"])
         _, history_cp = self.write_commander_review_files(str(task["taskId"]), commander_round, checkpoint)
         output_artifact = {
             "taskId": str(task["taskId"]),
@@ -4976,6 +5198,7 @@ class LoopRuntime:
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "dynamicLaneDecision": dynamic_lane_decision,
+                "dynamicLaneResolution": dynamic_lane_resolution,
                 "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
             } if response else None,
             "authMeta": auth_meta,
@@ -4995,6 +5218,7 @@ class LoopRuntime:
                 "mode": mode_used,
                 "model": runtime["model"],
                 "dynamicLaneDecision": dynamic_lane_decision,
+                "dynamicLaneResolution": dynamic_lane_resolution,
                 "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
             },
         )
@@ -5014,6 +5238,21 @@ class LoopRuntime:
                     "requiredPressure": str(dynamic_lane_decision.get("requiredPressure", "")).strip(),
                     "instruction": str(dynamic_lane_decision.get("instruction", "")).strip(),
                     "suggestedLaneTypes": normalize_lane_type_list(dynamic_lane_decision.get("suggestedLaneTypes", []), False, 2),
+                    "resolution": dynamic_lane_resolution,
+                },
+            )
+        elif dynamic_spinup["enabled"] and bool(dynamic_lane_decision.get("shouldSpawn")):
+            self.append_step(
+                "dynamic_lane",
+                "Commander review requested another lane, but the request was rejected.",
+                {
+                    "taskId": task["taskId"],
+                    "round": commander_round,
+                    "reason": str(dynamic_lane_decision.get("reason", "")).strip(),
+                    "requiredPressure": str(dynamic_lane_decision.get("requiredPressure", "")).strip(),
+                    "instruction": str(dynamic_lane_decision.get("instruction", "")).strip(),
+                    "suggestedLaneTypes": normalize_lane_type_list(dynamic_lane_decision.get("suggestedLaneTypes", []), False, 2),
+                    "resolution": dynamic_lane_resolution,
                 },
             )
         self.append_step(
@@ -5031,6 +5270,7 @@ class LoopRuntime:
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "courseDecision": str((checkpoint.get("controlAudit") or {}).get("courseDecision", "")),
                 "dynamicLaneDecision": checkpoint.get("dynamicLaneDecision"),
+                "dynamicLaneResolution": checkpoint.get("dynamicLaneResolution"),
                 "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
                 "totalTokens": int(budget_totals.get("totalTokens", 0)),
                 "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
@@ -5422,6 +5662,7 @@ class LoopRuntime:
                 "model": runtime["model"],
                 "sourceWorkers": [worker["id"] for worker in workers],
                 "dynamicLaneDecision": dynamic_lane_decision,
+                "dynamicLaneResolution": summary.get("dynamicLaneResolution"),
             },
         )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
@@ -5438,6 +5679,7 @@ class LoopRuntime:
                 "workerCount": len(workers),
                 "vettingEnabled": bool(vetting_config["enabled"]),
                 "dynamicLaneDecision": dynamic_lane_decision,
+                "dynamicLaneResolution": summary.get("dynamicLaneResolution"),
                 "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),

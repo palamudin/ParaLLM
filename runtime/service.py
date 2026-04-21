@@ -111,16 +111,22 @@ def build_handler(runtime: LoopRuntime):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Resident Python runtime for the loop prototype.")
-    parser.add_argument("--root", required=True, help="Absolute project root path.")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
-    parser.add_argument("--port", type=int, default=8765, help="Bind port.")
+    parser.add_argument(
+        "--root",
+        default=os.getenv("LOOP_ROOT") or str(Path(__file__).resolve().parents[1]),
+        help="Absolute project root path.",
+    )
+    parser.add_argument("--auth-path", default=os.getenv("LOOP_AUTH_FILE"), help="Optional auth file override.")
+    parser.add_argument("--host", default=os.getenv("LOOP_RUNTIME_HOST", "127.0.0.1"), help="Bind host.")
+    parser.add_argument("--port", type=int, default=int(os.getenv("LOOP_RUNTIME_PORT", "8765")), help="Bind port.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     root = Path(args.root).resolve()
-    runtime = LoopRuntime(root)
+    auth_path = Path(args.auth_path).resolve() if args.auth_path else None
+    runtime = LoopRuntime(root, auth_path=auth_path)
     runtime.ensure_data_paths()
     server = ThreadingHTTPServer((args.host, args.port), build_handler(runtime))
     try:

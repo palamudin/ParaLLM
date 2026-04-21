@@ -22,16 +22,16 @@ def main() -> None:
 
     list_result, _ = runtime.execute_local_file_tool_call(
         "local_list_dir",
-        {"path": "api", "max_entries": 5},
-        {"enabled": True, "roots": ["api", "runtime"]},
+        {"path": "backend/app", "max_entries": 5},
+        {"enabled": True, "roots": ["backend", "runtime"]},
     )
-    assert_true(list_result["path"] == "api", "Expected api directory listing path.")
+    assert_true(list_result["path"] == "backend/app", "Expected backend/app directory listing path.")
     assert_true(len(list_result["entries"]) > 0, "Expected directory listing entries.")
 
     read_result, _ = runtime.execute_local_file_tool_call(
         "local_read_file",
-        {"path": "api/common.php", "start_line": 1, "end_line": 5},
-        {"enabled": True, "roots": ["api"]},
+        {"path": "backend/app/control.py", "start_line": 1, "end_line": 5},
+        {"enabled": True, "roots": ["backend"]},
     )
     assert_true(read_result["lineCount"] == 5, "Expected five lines from local_read_file.")
     assert_true(read_result["content"].startswith("1:"), "Expected numbered output from local_read_file.")
@@ -49,7 +49,7 @@ def main() -> None:
         runtime.execute_local_file_tool_call(
             "local_read_file",
             {"path": "../Auth.txt"},
-            {"enabled": True, "roots": ["api"]},
+            {"enabled": True, "roots": ["backend"]},
         )
     except RuntimeErrorWithCode:
         traversal_blocked = True
@@ -64,7 +64,7 @@ def main() -> None:
                     "type": "function_call",
                     "name": "local_read_file",
                     "call_id": "call_1",
-                    "arguments": json.dumps({"path": "api/common.php", "start_line": 1, "end_line": 3}),
+                    "arguments": json.dumps({"path": "backend/app/control.py", "start_line": 1, "end_line": 3}),
                 }
             ],
         },
@@ -125,13 +125,13 @@ def main() -> None:
             },
             max_output_tokens=200,
             target_kind="worker",
-            tools=runtime.build_local_file_function_tools({"enabled": True, "roots": ["api"]}),
+            tools=runtime.build_local_file_function_tools({"enabled": True, "roots": ["backend"]}),
             tool_choice="auto",
             function_handlers={
                 "local_read_file": lambda arguments: runtime.execute_local_file_tool_call(
                     "local_read_file",
                     arguments,
-                    {"enabled": True, "roots": ["api"]},
+                    {"enabled": True, "roots": ["backend"]},
                 )
             },
         )

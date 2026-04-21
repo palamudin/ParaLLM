@@ -1,0 +1,51 @@
+services:
+  backend:
+    environment:
+      LOOP_RUNTIME_EXECUTION_BACKEND: runtime_service
+      LOOP_RUNTIME_SERVICE_URL: http://runtime:8765
+    depends_on:
+      runtime:
+        condition: service_healthy
+
+  runtime:
+    build:
+      context: ..
+      dockerfile: deploy/runtime/Dockerfile
+    environment:
+      LOOP_ROOT: /app
+      LOOP_DATA_ROOT: /app/data
+      LOOP_SECRET_BACKEND: docker_secret
+      LOOP_SECRET_FILE: /run/secrets/openai_api_keys
+      LOOP_METADATA_BACKEND: postgres
+      LOOP_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/parallm
+      LOOP_ARTIFACT_BACKEND: object_storage
+      LOOP_OBJECT_STORE_URL: http://minio:9000
+      LOOP_OBJECT_STORE_BUCKET: parallm
+      LOOP_OBJECT_STORE_ACCESS_KEY: minioadmin
+      LOOP_OBJECT_STORE_SECRET_KEY: minioadmin
+      LOOP_OBJECT_STORE_REGION: us-east-1
+      LOOP_RUNTIME_HOST: 0.0.0.0
+      LOOP_RUNTIME_PORT: 8765
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    secrets:
+      - openai_api_keys
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2).read()",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    ports:
+      - "${LOOP_RUNTIME_PUBLISHED_PORT:-8765}:8765"
+    volumes:
+      - loop_data:/app/data

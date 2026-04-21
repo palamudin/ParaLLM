@@ -404,7 +404,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="gpt-5-mini", help="Worker model for the dispatch smoke.")
     parser.add_argument("--summarizer-model", default="gpt-5-mini", help="Summarizer model for the dispatch smoke.")
     parser.add_argument("--reasoning-effort", default="high", help="Reasoning effort for the dispatch smoke.")
-    parser.add_argument("--skip-prechecks", action="store_true", help="Skip Python/PHP/JS/http prechecks and run only the dispatch smoke.")
+    parser.add_argument("--skip-prechecks", action="store_true", help="Skip Python/JS/http prechecks and run only the dispatch smoke.")
     parser.add_argument("--no-restart-runtime", action="store_true", help="Do not refresh the resident runtime before the smoke.")
     return parser.parse_args()
 

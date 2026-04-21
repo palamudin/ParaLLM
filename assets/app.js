@@ -122,7 +122,7 @@ const COMPOSER_ATTACHMENT_MAX_CHARS = 6000;
 const COMPOSER_RECENT_FILES_KEY = "loopComposerRecentFiles";
 const COMPOSER_SUPPORTED_EXTENSIONS = [
   ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
-  ".php", ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
+  ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
 ];
 let latestAuthStatus = { hasKey: false, keyCount: 0, masked: null, last4: "", masks: [] };
 let authDynamicRows = [];
@@ -159,6 +159,71 @@ let threadRenderSignature = "";
 let threadRenderTaskId = "";
 let threadInspectorOpen = false;
 let exportPreviewKey = "";
+const API = {
+  artifact: "/v1/artifact",
+  draft: "/v1/draft",
+  authStatus: "/v1/auth/status",
+  authKeys: "/v1/auth/keys",
+  evalArtifact: "/v1/evals/artifact",
+  evalHistory: "/v1/evals/history",
+  exportSession: "/v1/session/export",
+  state: "/v1/state",
+  events: "/v1/events",
+  steps: "/v1/steps",
+  history: "/v1/history",
+  runtimeApply: "/v1/runtime/apply",
+  tasks: "/v1/tasks",
+  loops: "/v1/loops",
+  targetsBackground: "/v1/targets/background",
+  rounds: "/v1/rounds",
+  workersAdd: "/v1/workers/add",
+  loopsCancel: "/v1/loops/cancel",
+  evalRuns: "/v1/evals/runs",
+  sessionReset: "/v1/session/reset",
+  stateReset: "/v1/state/reset",
+  positionModel: "/v1/positions/model",
+  sessionReplay: "/v1/session/replay",
+  jobsManage: "/v1/jobs/manage",
+  workersUpdate: "/v1/workers/update"
+};
+
+function apiBase() {
+  const params = new URLSearchParams(window.location.search);
+  return String(
+    params.get("apiBase")
+    || window.LOOP_API_BASE
+    || ""
+  ).trim();
+}
+
+function apiRoute(path) {
+  const base = apiBase();
+  if (!base) return String(path || "");
+  return base.replace(/\/+$/, "") + "/" + String(path || "").replace(/^\/+/, "");
+}
+
+function apiModeDisplay() {
+  return "Python";
+}
+
+function apiModeDetails() {
+  const base = apiBase();
+  return base
+    ? ("Python control plane via " + base)
+    : "Python-served shell with same-origin /v1 routes";
+}
+
+function renderApiModeStatus() {
+  const $pill = $("#headerApiMode");
+  if (!$pill.length) return;
+  const $card = $pill.closest(".workspace-pill");
+  $pill.text(apiModeDisplay());
+  $card
+    .addClass("api-mode-pill")
+    .addClass("is-python")
+    .removeClass("is-php")
+    .attr("title", apiModeDetails());
+}
 
 function showMessage(text, isError = false) {
   $("#message").text(text || "").css({
@@ -590,7 +655,7 @@ function loadArtifactPane(side, artifactName) {
     return;
   }
 
-  $.getJSON("api/get_artifact.php", { name: artifactName })
+  $.getJSON(apiRoute(API.artifact), { name: artifactName })
     .done(function (data) {
       if (artifactSelections[side.toLowerCase()] !== artifactName) return;
       setArtifactPane(side, renderArtifactMeta(data), renderArtifactContent(data));
@@ -1305,7 +1370,7 @@ function applyQualityProfile(profileId) {
   renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
   renderQualityProfileCards();
 
-  postForm("api/save_draft.php", buildDraftSavePayload({ workerRoster }), profile.label + " profile applied", {
+  postForm(API.draft, buildDraftSavePayload({ workerRoster }), profile.label + " profile applied", {
     clearFormDirty: true,
     onSuccess: function () {
       workerControlsSignature = "";
@@ -1318,7 +1383,7 @@ function applyQualityProfile(profileId) {
 function queueDraftSave() {
   clearTimeout(draftSaveTimer);
   draftSaveTimer = setTimeout(function () {
-    $.post("api/save_draft.php", buildDraftSavePayload()).fail(function (xhr) {
+    $.post(apiRoute(API.draft), buildDraftSavePayload()).fail(function (xhr) {
       showMessage("Draft save failed: " + extractErrorMessage(xhr), true);
     });
   }, 350);
@@ -1554,6 +1619,7 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
   $("#usageTokens, #footerUsageTokens").text(usageTokens);
   $("#usageWebSearchCalls, #footerUsageWebSearchCalls").text(usageWebSearchCalls);
   $("#usageCost, #footerUsageCost").text(usageCost);
+  renderApiModeStatus();
 }
 
 function activeDispatchEntries(state) {
@@ -1777,7 +1843,7 @@ function renderAuthStatus(data) {
 }
 
 function refreshAuth() {
-  $.getJSON("api/get_auth_status.php")
+  $.getJSON(apiRoute(API.authStatus))
     .done(function (data) {
       renderAuthStatus(data);
     })
@@ -1832,7 +1898,7 @@ function persistAuthSlot(slotIndex, apiKey) {
   if (meta.inFlight || meta.lastSubmitted === trimmed) return;
   meta.inFlight = true;
   meta.pendingValue = trimmed;
-  $.post("api/set_auth.php", { replaceIndex: slotIndex, apiKey: trimmed })
+  $.post(apiRoute(API.authKeys), { replaceIndex: slotIndex, apiKey: trimmed })
     .done(function (resp) {
       meta.inFlight = false;
       meta.lastSubmitted = trimmed;
@@ -1855,7 +1921,7 @@ function appendAuthKey(rowId, apiKey) {
   if (meta.inFlight || meta.lastSubmitted === trimmed) return;
   meta.inFlight = true;
   meta.pendingValue = trimmed;
-  $.post("api/set_auth.php", { appendKey: trimmed })
+  $.post(apiRoute(API.authKeys), { appendKey: trimmed })
     .done(function (resp) {
       meta.inFlight = false;
       meta.lastSubmitted = trimmed;
@@ -1874,7 +1940,7 @@ function appendAuthKey(rowId, apiKey) {
 }
 
 function removeAuthSlot(slotIndex) {
-  $.post("api/set_auth.php", { removeIndex: slotIndex })
+  $.post(apiRoute(API.authKeys), { removeIndex: slotIndex })
     .done(function (resp) {
       handleAuthMutationSuccess(resp, "API key removed", {
         onSuccess: function () {
@@ -2280,7 +2346,7 @@ function loadEvalArtifactPane(side, artifactId) {
     setEvalArtifactPane(side, "No artifact selected.", "No artifact selected.");
     return;
   }
-  $.getJSON("api/get_eval_artifact.php", { runId: selectedEvalRunId, artifactId: artifactId })
+  $.getJSON(apiRoute(API.evalArtifact), { runId: selectedEvalRunId, artifactId: artifactId })
     .done(function (data) {
       if (evalArtifactSelections[side.toLowerCase()] !== artifactId) return;
       setEvalArtifactPane(side, renderArtifactMeta(data), renderArtifactContent(data));
@@ -2469,7 +2535,7 @@ function renderEvalRunDetail(run) {
 
 function refreshEvalHistory() {
   const params = selectedEvalRunId ? { runId: selectedEvalRunId } : {};
-  $.getJSON("api/get_eval_history.php", params)
+  $.getJSON(apiRoute(API.evalHistory), params)
     .done(function (data) {
       if (!data?.selectedRun && selectedEvalRunId && (data?.runs || []).length) {
         selectedEvalRunId = String(data.runs[0]?.runId || "");
@@ -2501,7 +2567,7 @@ function loadExportPreview(archiveFile = "") {
   $("#exportPreview").text("Loading export preview...");
 
   const params = archiveFile ? { archiveFile } : {};
-  $.getJSON("api/export_session.php", params)
+  $.getJSON(apiRoute(API.exportSession), params)
     .done(function (data) {
       if (exportPreviewKey !== requestKey) return;
       $("#exportPreview").text(pretty(data));
@@ -2973,8 +3039,9 @@ function renderFooterCheckpoints(task) {
       currentCommanderReview.whyThisDirection ? "Reason: " + truncateText(currentCommanderReview.whyThisDirection, 240) : "",
       currentCommanderReview.controlAudit?.courseDecision ? "Course: " + formatCourseDecisionLabel(currentCommanderReview.controlAudit.courseDecision) : "",
       currentCommanderReview.dynamicLaneDecision?.shouldSpawn
-        ? "Lane request: " + truncateText((currentCommanderReview.dynamicLaneDecision.suggestedLaneTypes || []).join(", ") || currentCommanderReview.dynamicLaneDecision.reason || "", 220)
-        : ""
+        ? "Lane request: " + truncateText((currentCommanderReview.dynamicLaneDecision.suggestedLaneTypes || []).map(laneTypeLabel).join(", ") || currentCommanderReview.dynamicLaneDecision.reason || "", 220)
+        : "",
+      formatDynamicLaneResolution(currentCommanderReview.dynamicLaneResolution || {})
     ]);
     $list.append($item);
   }
@@ -3422,6 +3489,30 @@ function formatCourseDecisionLabel(decision) {
   });
 }
 
+function laneTypeLabel(typeId) {
+  const normalized = String(typeId || "").trim().toLowerCase();
+  return WORKER_TYPE_CATALOG[normalized]?.label || formatCourseDecisionLabel(normalized);
+}
+
+function formatDynamicLaneResolution(resolution) {
+  const normalized = resolution && typeof resolution === "object" ? resolution : {};
+  const status = String(normalized.status || "").trim();
+  if (!status || status === "not_requested") return "";
+  const rejected = Array.isArray(normalized.rejectedLaneTypes) ? normalized.rejectedLaneTypes : [];
+  return [
+    "Status: " + formatCourseDecisionLabel(status),
+    normalized.selectedLaneType ? "Chosen lane: " + laneTypeLabel(normalized.selectedLaneType) : "",
+    normalized.spawnedWorkerId ? "Spawned worker: " + normalized.spawnedWorkerId : "",
+    Number(normalized.activationRound || 0) > 0 ? "Activation round: " + Number(normalized.activationRound) : "",
+    normalized.selectedBecause ? "Why this lane won: " + normalized.selectedBecause : "",
+    rejected.length
+      ? "Rejected candidates: " + rejected.map(function (entry) {
+          return laneTypeLabel(entry?.laneType) + " (" + String(entry?.reason || "").trim() + ")";
+        }).join("; ")
+      : ""
+  ].filter(Boolean).join("\n");
+}
+
 function renderContributionAssessments(items) {
   if (!Array.isArray(items) || !items.length) return "";
   const lines = items.map(function (item) {
@@ -3489,6 +3580,7 @@ function renderSummaryOpinion(summary) {
   const opinion = summary.summarizerOpinion || {};
   const controlAudit = summary.controlAudit || {};
   const dynamicLaneDecision = summary.dynamicLaneDecision || {};
+  const dynamicLaneResolution = summary.dynamicLaneResolution || {};
   const blocks = [
     renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary)),
     renderReviewBlock("Lead direction", frontAnswer.leadDirection || frontAnswer.stance || ""),
@@ -3516,7 +3608,7 @@ function renderSummaryOpinion(summary) {
           "Next-round lane request",
           [
             Array.isArray(dynamicLaneDecision.suggestedLaneTypes) && dynamicLaneDecision.suggestedLaneTypes.length
-              ? "Types: " + dynamicLaneDecision.suggestedLaneTypes.join(", ")
+              ? "Types: " + dynamicLaneDecision.suggestedLaneTypes.map(laneTypeLabel).join(", ")
               : "",
             dynamicLaneDecision.requiredPressure ? "Missing pressure: " + dynamicLaneDecision.requiredPressure : "",
             dynamicLaneDecision.temperature ? "Temperature: " + dynamicLaneDecision.temperature : "",
@@ -3524,6 +3616,9 @@ function renderSummaryOpinion(summary) {
             dynamicLaneDecision.reason || ""
           ].filter(Boolean).join("\n")
         )
+      : "",
+    formatDynamicLaneResolution(dynamicLaneResolution)
+      ? renderReviewBlock("Lane resolution", formatDynamicLaneResolution(dynamicLaneResolution))
       : "",
     renderReviewBlock("Uncertainty", opinion.uncertainty || frontAnswer.confidenceNote || ""),
     renderReviewBlock("Recommended next action", summary.recommendedNextAction || ""),
@@ -3950,7 +4045,7 @@ function refreshState() {
   refreshAuth();
   refreshEvalHistory();
 
-  $.getJSON("api/get_state.php")
+  $.getJSON(apiRoute(API.state))
     .done(function (data) {
       latestState = data;
       renderDispatchActivity();
@@ -3986,7 +4081,7 @@ function refreshState() {
       showMessage("State load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 
-  $.get("api/get_events.php")
+  $.get(apiRoute(API.events))
     .done(function (data) {
       $("#events").text(data || "No events.");
     })
@@ -3994,7 +4089,7 @@ function refreshState() {
       showMessage("Event load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 
-  $.get("api/get_steps.php")
+  $.get(apiRoute(API.steps))
     .done(function (data) {
       $("#steps").text(data || "No steps.");
     })
@@ -4002,7 +4097,7 @@ function refreshState() {
       showMessage("Step load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 
-  $.getJSON("api/get_history.php")
+  $.getJSON(apiRoute(API.history))
     .done(function (data) {
       latestHistoryState = data;
       $("#jobHistory").html(renderJobHistory(data.jobs || [], data.recoveryWarning || null, data.queueLimit || 0));
@@ -4078,7 +4173,7 @@ function postForm(url, payload, successText, options = {}) {
     ? options.manualDispatch
     : (options.manualDispatch && options.manualDispatch.label) || "";
   const manualDispatchId = dispatchLabel ? beginManualDispatch(dispatchLabel) : null;
-  $.post(url, payload)
+  $.post(apiRoute(url), payload)
     .done(function (resp) {
       let out = resp;
       try { out = JSON.parse(resp); } catch (_) {}
@@ -4102,7 +4197,7 @@ function postForm(url, payload, successText, options = {}) {
 }
 
 function applyCurrentRuntimeSettings(successText = "Current task runtime updated") {
-  postForm("api/apply_runtime_models.php", {
+  postForm(API.runtimeApply, {
     model: $("#model").val(),
     summarizerModel: $("#summarizerModel").val(),
     reasoningEffort: $("#reasoningEffort").val(),
@@ -4154,6 +4249,7 @@ $(function () {
   initializeSidebarBootstrapCollapse();
   setSidebarCollapsed(sidebarCollapsed);
   setActiveView(activeView);
+  renderApiModeStatus();
   renderDispatchActivity();
   refreshState();
   setInterval(refreshState, 2000);
@@ -4234,12 +4330,12 @@ $(function () {
       workers: JSON.stringify(workers)
     };
 
-    $.post("api/start_task.php", startPayload)
+    $.post(apiRoute(API.tasks), startPayload)
       .done(function (resp) {
         let out = resp;
         try { out = JSON.parse(resp); } catch (_) {}
         resetComposerSurface(true);
-        $.post("api/start_loop.php", { rounds: payload.loopRounds, delayMs: payload.loopDelayMs })
+        $.post(apiRoute(API.loops), { rounds: payload.loopRounds, delayMs: payload.loopDelayMs })
           .done(function (loopResp) {
             let loopOut = loopResp;
             try { loopOut = JSON.parse(loopResp); } catch (_) {}
@@ -4273,21 +4369,21 @@ $(function () {
   });
 
   $("#summarize").on("click", function () {
-    postForm("api/start_target_job.php", { target: "summarizer" }, "Summarizer queued");
+    postForm(API.targetsBackground, { target: "summarizer" }, "Summarizer queued");
   });
 
   $("#runRound").on("click", function () {
-    postForm("api/run_round.php", {}, "Round dispatch queued");
+    postForm(API.rounds, {}, "Round dispatch queued");
   });
 
   $("#runLoop").on("click", function () {
     const rounds = parseInt($("#loopRounds").val(), 10) || 3;
     const delayMs = parseInt($("#loopDelayMs").val(), 10) || 0;
-    postForm("api/start_loop.php", { rounds, delayMs }, "Auto loop queued");
+    postForm(API.loops, { rounds, delayMs }, "Auto loop queued");
   });
 
   $("#addAdversarial").on("click", function () {
-    postForm("api/add_adversarial.php", {
+    postForm(API.workersAdd, {
       type: $("#addWorkerType").val()
     }, "Worker added", {
       onSuccess: function () {
@@ -4311,7 +4407,7 @@ $(function () {
   });
 
   $("#cancelLoop").on("click", function () {
-    postForm("api/cancel_loop.php", {}, "Cancel sent");
+    postForm(API.loopsCancel, {}, "Cancel sent");
   });
 
   $("#refresh").on("click", refreshState);
@@ -4531,7 +4627,7 @@ $(function () {
       showMessage("Choose at least one eval arm.", true);
       return;
     }
-    $.post("api/start_eval_run.php", {
+    $.post(apiRoute(API.evalRuns), {
       suiteId: suiteId,
       armIds: JSON.stringify(armIds),
       replicates: replicates,
@@ -4555,7 +4651,7 @@ $(function () {
 
   $("#resetSession").on("click", function () {
     if (!confirm("Archive the current session and load a fresh draft with short carry-forward context?")) return;
-    postForm("api/reset_session.php", {}, "Session reset", {
+    postForm(API.sessionReset, {}, "Session reset", {
       clearFormDirty: true,
       onSuccess: function () {
         resetComposerSurface(true);
@@ -4574,7 +4670,7 @@ $(function () {
   $("#clearAuth").on("click", function () {
     if (!confirm("Clear the stored API key pool from Auth.txt?")) return;
 
-    $.post("api/set_auth.php", { clear: 1 })
+    $.post(apiRoute(API.authKeys), { clear: 1 })
       .done(function (resp) {
         handleAuthMutationSuccess(resp, "API key pool cleared", {
           onSuccess: function () {
@@ -4612,7 +4708,7 @@ $(function () {
 
   $("#resetState").on("click", function () {
     if (!confirm("Reset state and clear active task?")) return;
-    postForm("api/reset_state.php", {}, "State reset", {
+    postForm(API.stateReset, {}, "State reset", {
       clearFormDirty: true,
       onSuccess: function () {
         resetComposerSurface(true);
@@ -4624,13 +4720,13 @@ $(function () {
 
   $(document).on("click", ".run-target", function () {
     const target = $(this).data("target");
-    postForm("api/start_target_job.php", { target }, target === "answer_now" ? "Partial answer queued" : "Target queued");
+    postForm(API.targetsBackground, { target }, target === "answer_now" ? "Partial answer queued" : "Target queued");
   });
 
   $(document).on("change", ".worker-type, .worker-temperature, .worker-model, .worker-harness-profile, .worker-harness-instruction, .summarizer-model-draft, .summarizer-harness-profile, .summarizer-harness-instruction", function () {
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
     renderQualityProfileCards();
-    postForm("api/save_draft.php", buildDraftSavePayload({ summarizerConfig: collectVisibleSummarizerConfig() }), "Harness updated", {
+    postForm(API.draft, buildDraftSavePayload({ summarizerConfig: collectVisibleSummarizerConfig() }), "Harness updated", {
       onSuccess: function () {
         workerControlsSignature = "";
         debugControlsSignature = "";
@@ -4641,13 +4737,13 @@ $(function () {
   $(document).on("click", ".save-model", function () {
     const positionId = $(this).data("position");
     const model = $(this).siblings("select.position-model").val();
-    postForm("api/set_worker_model.php", { positionId, model }, "Model updated");
+    postForm(API.positionModel, { positionId, model }, "Model updated");
   });
 
   $(document).on("change", ".position-model", function () {
     const positionId = $(this).data("position");
     const model = $(this).val();
-    postForm("api/set_worker_model.php", { positionId, model }, "Model updated");
+    postForm(API.positionModel, { positionId, model }, "Model updated");
   });
 
   $(document).on("toggle", ".lane-inspector", function () {
@@ -4673,7 +4769,7 @@ $(function () {
     const archiveFile = String($(this).data("archiveFile") || "").trim();
     if (!archiveFile) return;
     if (!confirm("Replay " + archiveFile + " into the active workspace?")) return;
-    postForm("api/replay_session.php", { archiveFile }, "Archived session replayed", {
+    postForm(API.sessionReplay, { archiveFile }, "Archived session replayed", {
       clearFormDirty: true,
       onSuccess: function () {
         workerControlsSignature = "";
@@ -4689,7 +4785,7 @@ $(function () {
     const successText = action === "resume"
       ? "Interrupted loop resumed"
       : (action === "retry" ? "Loop queued for retry" : "Job cancelled");
-    postForm("api/manage_job.php", { action, jobId }, successText, {
+    postForm(API.jobsManage, { action, jobId }, successText, {
       onSuccess: function () {
         workerControlsSignature = "";
         debugControlsSignature = "";

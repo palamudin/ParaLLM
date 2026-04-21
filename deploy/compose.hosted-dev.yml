@@ -1,0 +1,100 @@
+name: parallm-hosted-dev
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/backend/Dockerfile
+    environment:
+      LOOP_DEPLOYMENT_PROFILE: hosted-single-node
+      LOOP_QUEUE_BACKEND: redis
+      LOOP_METADATA_BACKEND: postgres
+      LOOP_ARTIFACT_BACKEND: object_storage
+      LOOP_SECRET_BACKEND: docker_secret
+      LOOP_SECRET_FILE: /run/secrets/openai_api_keys
+      LOOP_RUNTIME_EXECUTION_BACKEND: embedded_engine_subprocess
+      LOOP_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/parallm
+      LOOP_REDIS_URL: redis://redis:6379/0
+      LOOP_OBJECT_STORE_URL: http://minio:9000
+      LOOP_OBJECT_STORE_BUCKET: parallm
+      LOOP_OBJECT_STORE_HEALTHCHECK_URL: http://minio:9000/minio/health/ready
+      LOOP_OBJECT_STORE_ACCESS_KEY: minioadmin
+      LOOP_OBJECT_STORE_SECRET_KEY: minioadmin
+      LOOP_OBJECT_STORE_REGION: us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    secrets:
+      - openai_api_keys
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=2).read()",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    ports:
+      - "${LOOP_PUBLISHED_PORT:-8787}:8787"
+    volumes:
+      - loop_data:/app/data
+
+  postgres:
+    image: ${LOOP_POSTGRES_IMAGE:-postgres:17}
+    environment:
+      POSTGRES_DB: parallm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d parallm"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "${LOOP_POSTGRES_PUBLISHED_PORT:-5432}:5432"
+    volumes:
+      - loop_postgres:/var/lib/postgresql/data
+
+  redis:
+    image: ${LOOP_REDIS_IMAGE:-redis:7}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "${LOOP_REDIS_PUBLISHED_PORT:-6379}:6379"
+
+  minio:
+    image: ${LOOP_MINIO_IMAGE:-minio/minio:RELEASE.2026-03-05T14-25-00Z}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "${LOOP_OBJECT_STORE_PUBLISHED_PORT:-9000}:9000"
+      - "${LOOP_OBJECT_STORE_CONSOLE_PUBLISHED_PORT:-9001}:9001"
+    volumes:
+      - loop_minio:/data
+
+volumes:
+  loop_data:
+  loop_postgres:
+  loop_minio:
+
+secrets:
+  openai_api_keys:
+    file: ${LOOP_SECRET_SOURCE_FILE:-../Auth.txt}

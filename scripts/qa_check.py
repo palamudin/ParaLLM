@@ -15,8 +15,36 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1/loop"
-DEFAULT_RUNTIME_URL = os.getenv("LOOP_RUNTIME_URL", "http://127.0.0.1:8765")
+DEFAULT_BASE_URL = "http://127.0.0.1:8787"
+DEFAULT_RUNTIME_URL = os.getenv("LOOP_RUNTIME_URL", "")
+API_ROUTE_MAP = {
+    "get_artifact.php": "/v1/artifact",
+    "save_draft.php": "/v1/draft",
+    "get_auth_status.php": "/v1/auth/status",
+    "set_auth.php": "/v1/auth/keys",
+    "get_eval_artifact.php": "/v1/evals/artifact",
+    "get_eval_history.php": "/v1/evals/history",
+    "export_session.php": "/v1/session/export",
+    "get_state.php": "/v1/state",
+    "get_events.php": "/v1/events",
+    "get_steps.php": "/v1/steps",
+    "get_history.php": "/v1/history",
+    "apply_runtime_models.php": "/v1/runtime/apply",
+    "start_task.php": "/v1/tasks",
+    "start_loop.php": "/v1/loops",
+    "start_target_job.php": "/v1/targets/background",
+    "run_round.php": "/v1/rounds",
+    "run_target.php": "/v1/targets/run",
+    "add_adversarial.php": "/v1/workers/add",
+    "cancel_loop.php": "/v1/loops/cancel",
+    "start_eval_run.php": "/v1/evals/runs",
+    "reset_session.php": "/v1/session/reset",
+    "reset_state.php": "/v1/state/reset",
+    "set_worker_model.php": "/v1/positions/model",
+    "replay_session.php": "/v1/session/replay",
+    "manage_job.php": "/v1/jobs/manage",
+    "update_worker.php": "/v1/workers/update",
+}
 
 
 class QAError(RuntimeError):
@@ -31,20 +59,6 @@ def qa_print(message: str) -> None:
     print(f"[qa] {message}")
 
 
-def find_php_binary(root: Path) -> str:
-    candidates = [
-        os.getenv("LOOP_PHP_BIN"),
-        os.getenv("PHP_BIN"),
-        shutil.which("php"),
-        str(Path("C:/xampp/php/php.exe")),
-        str(root.parents[1] / "php" / "php.exe") if len(root.parents) >= 2 else None,
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return str(Path(candidate))
-    raise QAError("PHP executable not found. Set LOOP_PHP_BIN or install PHP locally.")
-
-
 def find_node_binary() -> Optional[str]:
     candidates = [
         os.getenv("LOOP_NODE_BIN"),
@@ -57,6 +71,10 @@ def find_node_binary() -> Optional[str]:
         if candidate and Path(candidate).exists():
             return str(Path(candidate))
     return None
+
+
+def find_php_binary(root: Path) -> str:
+    return ""
 
 
 def run_command(argv: list[str], cwd: Path, label: str) -> None:
@@ -96,6 +114,10 @@ def request(
         raise QAError(f"HTTP request failed for {url}: {error}") from error
 
 
+def restart_runtime(runtime_url: str) -> None:
+    qa_print("No separate resident runtime restart is needed in the Python-only stack.")
+
+
 def request_json(
     url: str,
     method: str = "GET",
@@ -112,39 +134,6 @@ def request_json(
     if not isinstance(parsed, dict):
         raise QAError(f"Response from {url} was not a JSON object.")
     return parsed
-
-
-def wait_for_runtime_state(runtime_url: str, should_be_online: bool, timeout_seconds: float = 8.0) -> None:
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        try:
-            health = request_json(runtime_url.rstrip("/") + "/health", timeout=2)
-            if should_be_online and health.get("ok"):
-                return
-        except QAError:
-            if not should_be_online:
-                return
-        time.sleep(0.2)
-    expected = "online" if should_be_online else "offline"
-    raise QAError(f"Resident runtime did not become {expected} within {timeout_seconds:.1f}s.")
-
-
-def restart_runtime(runtime_url: str) -> None:
-    health_url = runtime_url.rstrip("/") + "/health"
-    qa_print("Refreshing resident Python runtime to avoid stale loaded code")
-    try:
-        health = request_json(health_url, timeout=2)
-    except QAError:
-        qa_print("Resident runtime is already offline")
-        return
-    pid = int(health.get("pid", 0) or 0)
-    if pid <= 0:
-        raise QAError("Resident runtime health response did not include a valid pid.")
-    if os.name == "nt":
-        run_command(["taskkill", "/PID", str(pid), "/F"], project_root(), f"Stopping resident runtime pid {pid}")
-    else:
-        os.kill(pid, 15)
-    wait_for_runtime_state(runtime_url, should_be_online=False)
 
 
 class PreservedState:
@@ -222,7 +211,8 @@ def require_sequence(value: Any, label: str) -> list[Any]:
 
 
 def api_url(base_url: str, path: str) -> str:
-    return base_url.rstrip("/") + "/api/" + path.lstrip("/")
+    target = API_ROUTE_MAP.get(path.lstrip("/"), path)
+    return base_url.rstrip("/") + "/" + str(target).lstrip("/")
 
 
 def http_url(base_url: str, path: str) -> str:
@@ -244,17 +234,56 @@ def wait_for_loop_clear(base_url: str, timeout_seconds: float = 45.0) -> Dict[st
 def run_python_checks(root: Path) -> None:
     import py_compile
 
-    qa_print("Compiling Python runtime files")
-    for path in sorted((root / "runtime").glob("*.py")):
-        py_compile.compile(str(path), doraise=True)
-        qa_print(f"Python OK: {path.relative_to(root)}")
+    qa_print("Compiling Python files")
+    for relative in ("runtime", "scripts", "backend"):
+        base = root / relative
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            py_compile.compile(str(path), doraise=True)
+            qa_print(f"Python OK: {path.relative_to(root)}")
 
 
-def run_php_checks(root: Path, php_bin: str) -> None:
-    for path in sorted((root / "api").glob("*.php")):
-        run_command([php_bin, "-l", str(path)], root, f"PHP lint {path.relative_to(root)}")
-    for path in sorted((root / "scripts").glob("*.php")):
-        run_command([php_bin, "-l", str(path)], root, f"PHP lint {path.relative_to(root)}")
+def run_backend_tests(root: Path) -> None:
+    tests_dir = root / "backend" / "tests"
+    if not tests_dir.exists():
+        qa_print("Backend tests not found; skipping backend unittest step")
+        return
+    test_modules = [
+        f"backend.tests.{path.stem}"
+        for path in sorted(tests_dir.glob("test_*.py"))
+        if path.is_file()
+    ]
+    if not test_modules:
+        qa_print("No backend test modules found; skipping backend unittest step")
+        return
+    run_command([sys.executable, "-m", "unittest", *test_modules], root, "Backend unit tests")
+
+
+def run_supply_chain_checks(root: Path) -> None:
+    supply_script = root / "scripts" / "qa_supply_chain_check.py"
+    if not supply_script.exists():
+        qa_print("Supply-chain check script not found; skipping")
+        return
+    run_command([sys.executable, str(supply_script)], root, "Supply-chain checks")
+
+
+def run_container_checks(root: Path) -> None:
+    container_script = root / "scripts" / "qa_container_check.py"
+    if not container_script.exists():
+        qa_print("Container check script not found; skipping")
+        return
+    run_command([sys.executable, str(container_script)], root, "Container packaging checks")
+
+
+def run_portability_checks(root: Path) -> None:
+    portability_script = root / "scripts" / "qa_portability_check.py"
+    if not portability_script.exists():
+        qa_print("Portability check script not found; skipping")
+        return
+    run_command([sys.executable, str(portability_script)], root, "Portability checks")
 
 
 def run_js_checks(root: Path, node_bin: Optional[str]) -> None:
@@ -272,9 +301,20 @@ def run_http_checks(base_url: str) -> None:
     status, _ = request(http_url(base_url, "/assets/app.js"), timeout=10)
     if status != 200:
         raise QAError(f"assets/app.js returned HTTP {status}.")
-    state = request_json(api_url(base_url, "get_state.php"), timeout=10)
+    state = request_json(base_url.rstrip("/") + "/v1/state", timeout=10)
     if "memoryVersion" not in state:
-        raise QAError("get_state.php response did not include memoryVersion.")
+        raise QAError("/v1/state response did not include memoryVersion.")
+
+
+def run_python_smoke(root: Path) -> None:
+    smoke_script = root / "scripts" / "qa_python_crossover_check.py"
+    if not smoke_script.exists():
+        raise QAError("Python crossover smoke script is missing.")
+    run_command([sys.executable, str(smoke_script)], root, "Python control-plane smoke")
+
+
+def run_php_checks(root: Path, php_bin: str) -> None:
+    qa_print("Legacy PHP checks removed; the active stack is Python-only.")
 
 
 def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_first: bool) -> Dict[str, Any]:
@@ -588,35 +628,32 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run local syntax checks and a reversible HTTP smoke for the loop prototype.")
     parser.add_argument("--base-url", default=os.getenv("LOOP_QA_BASE_URL", DEFAULT_BASE_URL), help="Base browser URL for the local app.")
-    parser.add_argument("--runtime-url", default=DEFAULT_RUNTIME_URL, help="Resident Python runtime URL.")
     parser.add_argument("--skip-smoke", action="store_true", help="Skip the reversible HTTP smoke and run only lint/syntax checks.")
-    parser.add_argument("--skip-http", action="store_true", help="Skip HTTP reachability checks.")
-    parser.add_argument("--no-restart-runtime", action="store_true", help="Do not refresh the resident Python runtime before the smoke.")
+    parser.add_argument("--skip-http", action="store_true", help="Skip direct HTTP reachability checks against a running Python-served shell.")
+    parser.add_argument("--no-restart-runtime", action="store_true", help="Deprecated in the Python-only stack; kept as a no-op for compatibility.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     root = project_root()
-    php_bin = find_php_binary(root)
     node_bin = find_node_binary()
 
     qa_print(f"Project root: {root}")
-    qa_print(f"PHP binary: {php_bin}")
     qa_print(f"Node binary: {node_bin or 'not found'}")
 
     try:
         run_python_checks(root)
-        run_php_checks(root, php_bin)
+        run_backend_tests(root)
+        run_supply_chain_checks(root)
+        run_container_checks(root)
+        run_portability_checks(root)
         run_js_checks(root, node_bin)
-        if not args.skip_http:
+        if not args.skip_http and args.skip_smoke:
             run_http_checks(args.base_url)
-        smoke_result = None
         if not args.skip_smoke:
-            smoke_result = run_mock_smoke(root, args.base_url, args.runtime_url, not args.no_restart_runtime)
+            run_python_smoke(root)
         qa_print("PASS")
-        if smoke_result is not None:
-            print(json.dumps(smoke_result, indent=2))
         return 0
     except QAError as error:
         qa_print(f"FAIL: {error}")

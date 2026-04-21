@@ -112,6 +112,7 @@ def main() -> None:
         worker_types = {worker["id"]: worker.get("type") for worker in active_workers}
         activation_rounds = {worker["id"]: int(worker.get("activeFromRound", 1) or 1) for worker in active_workers}
         commander_review = final_state.get("commanderReview") if isinstance(final_state.get("commanderReview"), dict) else {}
+        lane_resolution = commander_review.get("dynamicLaneResolution") if isinstance(commander_review.get("dynamicLaneResolution"), dict) else {}
 
         assert_true("C" in worker_ids, "Expected dynamic spin-up to add worker C.")
         assert_true(worker_types.get("C") == "security", "Expected worker C to use the security lane type.")
@@ -121,6 +122,51 @@ def main() -> None:
         assert_true(final_state.get("workers", {}).get("C") is None, "Expected new worker state slot to be initialized to null.")
         assert_true(bool(commander_review.get("dynamicLaneDecision", {}).get("shouldSpawn")), "Expected persisted commander review lane decision.")
         assert_true(commander_review.get("dynamicLaneDecision", {}).get("temperature") == "hot", "Expected commander review to persist lane temperature.")
+        assert_true(lane_resolution.get("status") == "spawned", "Expected lane resolution to mark the request as spawned.")
+        assert_true(lane_resolution.get("selectedLaneType") == "security", "Expected lane resolution to preserve the chosen security lane.")
+        assert_true(lane_resolution.get("spawnedWorkerId") == "C", "Expected lane resolution to persist the spawned worker id.")
+        assert_true(int(lane_resolution.get("activationRound", 0) or 0) == 2, "Expected lane resolution to persist the next activation round.")
+
+        inferred_resolution = runtime.resolve_dynamic_lane_request(
+            {
+                "runtime": {"model": "gpt-5-mini"},
+                "workers": [
+                    {"id": "A", "type": "proponent"},
+                    {"id": "B", "type": "sceptic"},
+                    {"id": "C", "type": "reliability"},
+                ],
+            },
+            {
+                "shouldSpawn": True,
+                "suggestedLaneTypes": ["reliability"],
+                "reason": "Telemetry drift is still poorly covered.",
+                "requiredPressure": "Observability gaps and metric drift remain under-covered.",
+                "temperature": "cool",
+                "instruction": "Probe blind spots in instrumentation and alerting.",
+            },
+            2,
+        )
+        assert_true(
+            inferred_resolution.get("selectedLaneType") == "observability",
+            "Expected lane resolution to infer observability when the requested lane is already covered.",
+        )
+
+        rejected_resolution = runtime.resolve_dynamic_lane_request(
+            active_task,
+            {
+                "shouldSpawn": True,
+                "suggestedLaneTypes": ["security"],
+                "reason": "The same hostile-actor lens was requested again.",
+                "requiredPressure": "No new pressure beyond the current security lane.",
+                "temperature": "hot",
+                "instruction": "Repeat the same security pressure.",
+            },
+            3,
+        )
+        assert_true(
+            rejected_resolution.get("status") in {"rejected_duplicate", "rejected_covered"},
+            "Expected duplicate lane requests to be rejected cleanly.",
+        )
 
         steps_text = Path(temp_dir, "data", "steps.jsonl").read_text(encoding="utf-8")
         assert_true('"stage": "dynamic_lane"' in steps_text, "Expected dynamic lane audit step.")
@@ -132,6 +178,9 @@ def main() -> None:
                     "workerIds": worker_ids,
                     "spawnedType": worker_types.get("C"),
                     "activeFromRound": activation_rounds.get("C"),
+                    "laneResolutionStatus": lane_resolution.get("status"),
+                    "inferredFallbackType": inferred_resolution.get("selectedLaneType"),
+                    "duplicateResolutionStatus": rejected_resolution.get("status"),
                     "memoryVersion": final_state.get("memoryVersion"),
                 },
                 ensure_ascii=False,

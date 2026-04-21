@@ -393,6 +393,7 @@ def run_steered_case(
     max_output_tokens: int,
     loop_rounds: int,
     require_live: bool,
+    dynamic_spinup: bool,
 ) -> Dict[str, Any]:
     workers = normalize_worker_list(worker_model)
     start = request_json(
@@ -413,6 +414,7 @@ def run_steered_case(
             "researchEnabled": "0",
             "researchExternalWebAccess": "1",
             "researchDomains": "[]",
+            "dynamicSpinupEnabled": "1" if dynamic_spinup else "0",
             "vettingEnabled": "1",
             "loopRounds": str(loop_rounds),
             "loopDelayMs": "0",
@@ -483,6 +485,7 @@ def run_steered_case(
         "artifact": artifact_name,
         "artifactOutput": artifact_output,
         "artifactMeta": artifact.get("summary", {}),
+        "dynamicSpinupEnabled": bool(dynamic_spinup),
         "usage": usage,
         "workerModes": worker_modes,
         "summaryMode": summary_mode or "unknown",
@@ -688,6 +691,7 @@ def execute_suite(
                 max_output_tokens=args.max_output_tokens,
                 loop_rounds=loop_rounds,
                 require_live=not args.allow_mock_fallback,
+                dynamic_spinup=bool(args.dynamic_spinup),
             )
             task_ids_to_cleanup.append(steered["taskId"])
             if steered["liveValidationError"]:
@@ -716,9 +720,11 @@ def execute_suite(
                 "steered": {
                     "taskId": steered["taskId"],
                     "artifact": steered["artifact"],
+                    "dynamicSpinupEnabled": steered["dynamicSpinupEnabled"],
                     "frontAnswer": steered["summary"]["frontAnswer"],
                     "summarizerOpinion": steered["summary"]["summarizerOpinion"],
                     "controlAudit": steered["summary"]["controlAudit"],
+                    "dynamicLaneResolution": steered["summary"].get("dynamicLaneResolution"),
                     "workerModes": steered["workerModes"],
                     "summaryMode": steered["summaryMode"],
                     "usage": steered["usage"],
@@ -814,9 +820,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cost-usd", type=float, default=4.00, help="Budget cap for each steered run.")
     parser.add_argument("--max-total-tokens", type=int, default=120000, help="Token cap for each steered run.")
     parser.add_argument("--max-output-tokens", type=int, default=2800, help="Requested max output tokens per call.")
-    parser.add_argument("--skip-prechecks", action="store_true", help="Skip Python/PHP/JS/http prechecks and run only the benchmark.")
+    parser.add_argument("--skip-prechecks", action="store_true", help="Skip Python/JS/http prechecks and run only the benchmark.")
     parser.add_argument("--no-restart-runtime", action="store_true", help="Do not refresh the resident runtime before the benchmark.")
     parser.add_argument("--keep-artifacts", action="store_true", help="Keep generated task artifacts instead of cleaning them up.")
+    parser.add_argument("--dynamic-spinup", action="store_true", help="Enable dynamic next-round lane spin-up during steered runs.")
     parser.add_argument(
         "--allow-mock-fallback",
         action="store_true",
@@ -866,6 +873,7 @@ def main() -> int:
             "maxTotalTokensPerSteeredRun": args.max_total_tokens,
             "maxOutputTokens": args.max_output_tokens,
             "keepArtifacts": bool(args.keep_artifacts),
+            "dynamicSpinup": bool(args.dynamic_spinup),
             "allowMockFallback": bool(args.allow_mock_fallback),
         },
     }
