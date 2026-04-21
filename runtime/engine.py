@@ -427,7 +427,7 @@ def read_api_key_pool(path: Path) -> List[str]:
         if keys:
             return keys
     if path.exists():
-        keys = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        keys = normalize_string_array_preserve_items(path.read_text(encoding="utf-8", errors="replace").splitlines())
         if keys:
             return keys
     return read_env_api_key_pool()
@@ -1666,6 +1666,8 @@ class OpenAIResult:
     attempts: List[int]
     recovered_from_incomplete: bool
     executed_tools: List[Dict[str, Any]]
+    auth_assignment: Optional[Dict[str, Any]]
+    auth_failover_history: List[Dict[str, Any]]
 
 
 class LoopRuntime:
@@ -1894,6 +1896,42 @@ class LoopRuntime:
     def load_api_keys(self) -> List[str]:
         return read_api_key_pool(self.auth_path)
 
+    def build_api_key_assignments(
+        self,
+        target: str = "generic",
+        task: Optional[Dict[str, Any]] = None,
+        round_number: Optional[int] = None,
+        salt: str = "",
+    ) -> List[Dict[str, Any]]:
+        keys = self.load_api_keys()
+        if not keys:
+            return []
+        normalized_target = normalize_auth_target(target)
+        target_order = self.auth_target_order(task, [normalized_target])
+        position_index = target_order.index(normalized_target) if normalized_target in target_order else 0
+        rotation_offset = self.auth_rotation_offset(len(keys), task, round_number, salt)
+        start_index = (position_index + rotation_offset) % len(keys)
+        assignments: List[Dict[str, Any]] = []
+        for failover_index in range(len(keys)):
+            key_index = (start_index + failover_index) % len(keys)
+            api_key = keys[key_index]
+            assignments.append(
+                {
+                    "apiKey": api_key,
+                    "target": normalized_target,
+                    "positionSlot": position_index + 1,
+                    "keySlot": key_index + 1,
+                    "poolSize": len(keys),
+                    "rotationOffset": rotation_offset,
+                    "reused": position_index >= len(keys),
+                    "last4": api_key[-4:] if len(api_key) >= 4 else api_key,
+                    "masked": mask_api_key(api_key),
+                    "preferred": failover_index == 0,
+                    "failoverIndex": failover_index,
+                }
+            )
+        return assignments
+
     def auth_target_order(self, task: Optional[Dict[str, Any]] = None, extra_targets: Optional[Iterable[str]] = None) -> List[str]:
         ordered: List[str] = []
         seen: Dict[str, bool] = {}
@@ -1934,26 +1972,8 @@ class LoopRuntime:
         round_number: Optional[int] = None,
         salt: str = "",
     ) -> Optional[Dict[str, Any]]:
-        keys = self.load_api_keys()
-        if not keys:
-            return None
-        normalized_target = normalize_auth_target(target)
-        target_order = self.auth_target_order(task, [normalized_target])
-        position_index = target_order.index(normalized_target) if normalized_target in target_order else 0
-        rotation_offset = self.auth_rotation_offset(len(keys), task, round_number, salt)
-        key_index = (position_index + rotation_offset) % len(keys)
-        api_key = keys[key_index]
-        return {
-            "apiKey": api_key,
-            "target": normalized_target,
-            "positionSlot": position_index + 1,
-            "keySlot": key_index + 1,
-            "poolSize": len(keys),
-            "rotationOffset": rotation_offset,
-            "reused": position_index >= len(keys),
-            "last4": api_key[-4:] if len(api_key) >= 4 else api_key,
-            "masked": mask_api_key(api_key),
-        }
+        assignments = self.build_api_key_assignments(target, task, round_number, salt)
+        return dict(assignments[0]) if assignments else None
 
     def budget_scope_key(self, target: Optional[str]) -> Optional[str]:
         normalized = normalize_auth_target(target)
@@ -2811,6 +2831,56 @@ class LoopRuntime:
         )
         return not any(marker in message for marker in fatal_markers)
 
+    def is_auth_rotation_error(self, error: RuntimeErrorWithCode) -> bool:
+        message = str(error).lower()
+        markers = (
+            "http 401",
+            "http 403",
+            "incorrect api key",
+            "invalid_api_key",
+            "organization not found",
+            "does not have access to model",
+            "expired_api_key",
+            "authentication",
+        )
+        return any(marker in message for marker in markers)
+
+    def summarize_auth_failover_history(self, history: List[Dict[str, Any]]) -> str:
+        parts: List[str] = []
+        for entry in history:
+            slot = int(entry.get("failedKeySlot", 0) or 0)
+            reason = truncate_text(entry.get("error", ""), 120)
+            if slot > 0:
+                parts.append(f"slot {slot}: {reason}")
+            elif reason:
+                parts.append(reason)
+        return " | ".join(parts)
+
+    def append_auth_failover_step(
+        self,
+        stage: str,
+        task_id: str,
+        model: str,
+        call_meta: Dict[str, Any],
+        target: str,
+    ) -> None:
+        history = call_meta.get("authFailoverHistory")
+        if not isinstance(history, list) or not history:
+            return
+        final_auth = call_meta.get("auth") if isinstance(call_meta.get("auth"), dict) else None
+        self.append_step(
+            stage,
+            "Rotated to a different API key after a live auth failure.",
+            {
+                "taskId": task_id,
+                "target": target,
+                "model": model,
+                "auth": final_auth,
+                "authFailoverHistory": history,
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", 0) or 0),
+            },
+        )
+
     def invoke_openai_json(
         self,
         api_key: str,
@@ -2826,193 +2896,232 @@ class LoopRuntime:
         tool_choice: Optional[Any] = None,
         include: Optional[List[str]] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
     ) -> OpenAIResult:
-        attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
-        last_error: Optional[RuntimeErrorWithCode] = None
-        recovered_from_incomplete = False
         handlers = function_handlers if isinstance(function_handlers, dict) else {}
+        assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
+        if not assignment_candidates and str(api_key or "").strip():
+            assignment_candidates = [{"apiKey": str(api_key).strip()}]
+        if not assignment_candidates:
+            raise RuntimeErrorWithCode("No API key available for live model call.", 401)
 
-        for index, effective_tokens in enumerate(attempts):
-            previous_response_id: Optional[str] = None
-            pending_input: Any = input_text
-            tool_turns = 0
-            web_search_queries: Dict[str, bool] = {}
-            web_search_sources: Dict[str, bool] = {}
-            url_citations: Dict[str, bool] = {}
-            executed_tools: List[Dict[str, Any]] = []
-            retry_attempt = False
+        auth_failover_history: List[Dict[str, Any]] = []
+        last_error: Optional[RuntimeErrorWithCode] = None
 
-            while True:
-                body: Dict[str, Any] = {
-                    "model": model,
-                    "instructions": instructions,
-                    "input": pending_input,
-                    "reasoning": {"effort": reasoning_effort},
-                    "text": {
-                        "verbosity": "low",
-                        "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
-                    },
-                }
-                if previous_response_id:
-                    body["previous_response_id"] = previous_response_id
-                if effective_tokens > 0:
-                    body["max_output_tokens"] = effective_tokens
-                if tools:
-                    body["tools"] = tools
-                if tool_choice is not None:
-                    body["tool_choice"] = tool_choice
-                if include:
-                    body["include"] = include
-
-                request = urllib.request.Request(
-                    "https://api.openai.com/v1/responses",
-                    data=json.dumps(body).encode("utf-8"),
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    method="POST",
-                )
-                try:
-                    with urllib.request.urlopen(request, timeout=1800) as handle:
-                        response = json.loads(handle.read().decode("utf-8"))
-                except urllib.error.HTTPError as error:
-                    body_text = error.read().decode("utf-8", errors="replace")
-                    raise RuntimeErrorWithCode(f"OpenAI API request failed: HTTP {error.code} | {body_text}", 500)
-                except Exception as error:
-                    raise RuntimeErrorWithCode(f"OpenAI API request failed: {error}", 500)
-
-                if isinstance(response.get("error"), dict):
-                    raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
-
-                for query in self.get_response_web_search_queries(response):
-                    web_search_queries[query] = True
-                for source in self.get_response_web_search_sources(response):
-                    web_search_sources[source] = True
-                for citation in self.get_response_url_citations(response):
-                    url_citations[citation] = True
-
-                incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
-                incomplete_reason = str(incomplete_details.get("reason", "")).strip()
-                if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
-                    recovered_from_incomplete = True
-                    last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
-                    retry_attempt = True
-                    break
-
-                tool_calls: List[Dict[str, Any]] = []
-                if handlers:
-                    for item in response.get("output", []):
-                        if not isinstance(item, dict):
-                            continue
-                        item_type = str(item.get("type", "")).strip()
-                        name = str(item.get("name", "")).strip()
-                        if item_type not in {"function_call", "custom_tool_call"} or name not in handlers:
-                            continue
-                        tool_calls.append(item)
-
-                if tool_calls:
-                    if tool_turns >= 8:
-                        raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
-                    continuation_items: List[Dict[str, Any]] = []
-                    for item in tool_calls:
-                        name = str(item.get("name", "")).strip()
-                        raw_arguments: Any = item.get("arguments")
-                        if item.get("type") == "custom_tool_call":
-                            raw_arguments = item.get("input")
-                        arguments: Dict[str, Any] = {}
-                        if isinstance(raw_arguments, dict):
-                            arguments = dict(raw_arguments)
-                        elif isinstance(raw_arguments, str) and raw_arguments.strip():
-                            try:
-                                decoded_arguments = json.loads(raw_arguments)
-                            except json.JSONDecodeError:
-                                decoded_arguments = None
-                            if isinstance(decoded_arguments, dict):
-                                arguments = decoded_arguments
-                        call_id = str(item.get("call_id", "")).strip()
-                        tool_output: Dict[str, Any]
-                        tool_audit: Dict[str, Any]
-                        try:
-                            tool_output, tool_audit = handlers[name](arguments)
-                        except RuntimeErrorWithCode as error:
-                            tool_output = {"ok": False, "error": str(error)}
-                            tool_audit = {
-                                "name": name,
-                                "path": str(arguments.get("path", ".")),
-                                "sources": [],
-                                "error": str(error),
-                                "summary": f"{name} failed: {truncate_text(str(error), 180)}",
-                            }
-                        except Exception as error:
-                            tool_output = {"ok": False, "error": str(error)}
-                            tool_audit = {
-                                "name": name,
-                                "path": str(arguments.get("path", ".")),
-                                "sources": [],
-                                "error": str(error),
-                                "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
-                            }
-                        audit_entry = dict(tool_audit or {})
-                        audit_entry["name"] = name
-                        audit_entry["arguments"] = arguments
-                        if call_id:
-                            audit_entry["callId"] = call_id
-                        executed_tools.append(audit_entry)
-                        continuation_items.append(
-                            {
-                                "type": "function_call_output",
-                                "call_id": call_id,
-                                "output": json.dumps(tool_output, ensure_ascii=False),
-                            }
-                        )
-                    previous_response_id = str(response.get("id", "")).strip() or previous_response_id
-                    pending_input = continuation_items
-                    tool_turns += 1
-                    continue
-
-                output_text = self.get_response_output_text(response)
-                if not output_text:
-                    if response.get("status") == "incomplete" and incomplete_reason:
-                        detail = f"Model response incomplete: {incomplete_reason}"
-                        if incomplete_reason == "max_output_tokens":
-                            detail += f" after attempts {attempts}"
-                        raise RuntimeErrorWithCode(detail, 500)
-                    raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
-
-                if response.get("status") == "incomplete" and incomplete_reason:
-                    detail = f"Model response incomplete: {incomplete_reason}"
-                    if incomplete_reason == "max_output_tokens":
-                        detail += f" after attempts {attempts}"
-                    raise RuntimeErrorWithCode(detail, 500)
-
-                try:
-                    parsed = json.loads(output_text)
-                except json.JSONDecodeError as error:
-                    if response.get("status") == "incomplete" and incomplete_reason:
-                        detail = f"Model response incomplete: {incomplete_reason}"
-                        if incomplete_reason == "max_output_tokens":
-                            detail += f" after attempts {attempts}"
-                        raise RuntimeErrorWithCode(detail, 500)
-                    raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
-
-                if not isinstance(parsed, dict):
-                    raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
-
-                return OpenAIResult(
-                    parsed=parsed,
-                    response=response,
-                    response_id=str(response.get("id", "")),
-                    output_text=output_text,
-                    web_search_queries=normalize_string_array_preserve_items(list(web_search_queries.keys())),
-                    web_search_sources=normalize_url_array_values(list(web_search_sources.keys())),
-                    url_citations=normalize_url_array_values(list(url_citations.keys())),
-                    requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
-                    effective_max_output_tokens=effective_tokens,
-                    attempts=attempts,
-                    recovered_from_incomplete=recovered_from_incomplete,
-                    executed_tools=executed_tools,
-                )
-
-            if retry_attempt:
+        for assignment_index, assignment in enumerate(assignment_candidates):
+            current_api_key = str(assignment.get("apiKey", "")).strip()
+            if not current_api_key:
                 continue
+            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            recovered_from_incomplete = False
+
+            try:
+                for index, effective_tokens in enumerate(attempts):
+                    previous_response_id: Optional[str] = None
+                    pending_input: Any = input_text
+                    tool_turns = 0
+                    web_search_queries: Dict[str, bool] = {}
+                    web_search_sources: Dict[str, bool] = {}
+                    url_citations: Dict[str, bool] = {}
+                    executed_tools: List[Dict[str, Any]] = []
+                    retry_attempt = False
+
+                    while True:
+                        body: Dict[str, Any] = {
+                            "model": model,
+                            "instructions": instructions,
+                            "input": pending_input,
+                            "reasoning": {"effort": reasoning_effort},
+                            "text": {
+                                "verbosity": "low",
+                                "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
+                            },
+                        }
+                        if previous_response_id:
+                            body["previous_response_id"] = previous_response_id
+                        if effective_tokens > 0:
+                            body["max_output_tokens"] = effective_tokens
+                        if tools:
+                            body["tools"] = tools
+                        if tool_choice is not None:
+                            body["tool_choice"] = tool_choice
+                        if include:
+                            body["include"] = include
+
+                        request = urllib.request.Request(
+                            "https://api.openai.com/v1/responses",
+                            data=json.dumps(body).encode("utf-8"),
+                            headers={"Authorization": f"Bearer {current_api_key}", "Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        try:
+                            with urllib.request.urlopen(request, timeout=1800) as handle:
+                                response = json.loads(handle.read().decode("utf-8"))
+                        except urllib.error.HTTPError as error:
+                            body_text = error.read().decode("utf-8", errors="replace")
+                            raise RuntimeErrorWithCode(f"OpenAI API request failed: HTTP {error.code} | {body_text}", 500)
+                        except Exception as error:
+                            raise RuntimeErrorWithCode(f"OpenAI API request failed: {error}", 500)
+
+                        if isinstance(response.get("error"), dict):
+                            raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+
+                        for query in self.get_response_web_search_queries(response):
+                            web_search_queries[query] = True
+                        for source in self.get_response_web_search_sources(response):
+                            web_search_sources[source] = True
+                        for citation in self.get_response_url_citations(response):
+                            url_citations[citation] = True
+
+                        incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
+                        incomplete_reason = str(incomplete_details.get("reason", "")).strip()
+                        if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
+                            recovered_from_incomplete = True
+                            last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
+                            retry_attempt = True
+                            break
+
+                        tool_calls: List[Dict[str, Any]] = []
+                        if handlers:
+                            for item in response.get("output", []):
+                                if not isinstance(item, dict):
+                                    continue
+                                item_type = str(item.get("type", "")).strip()
+                                name = str(item.get("name", "")).strip()
+                                if item_type not in {"function_call", "custom_tool_call"} or name not in handlers:
+                                    continue
+                                tool_calls.append(item)
+
+                        if tool_calls:
+                            if tool_turns >= 8:
+                                raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
+                            continuation_items: List[Dict[str, Any]] = []
+                            for item in tool_calls:
+                                name = str(item.get("name", "")).strip()
+                                raw_arguments: Any = item.get("arguments")
+                                if item.get("type") == "custom_tool_call":
+                                    raw_arguments = item.get("input")
+                                arguments: Dict[str, Any] = {}
+                                if isinstance(raw_arguments, dict):
+                                    arguments = dict(raw_arguments)
+                                elif isinstance(raw_arguments, str) and raw_arguments.strip():
+                                    try:
+                                        decoded_arguments = json.loads(raw_arguments)
+                                    except json.JSONDecodeError:
+                                        decoded_arguments = None
+                                    if isinstance(decoded_arguments, dict):
+                                        arguments = decoded_arguments
+                                call_id = str(item.get("call_id", "")).strip()
+                                tool_output: Dict[str, Any]
+                                tool_audit: Dict[str, Any]
+                                try:
+                                    tool_output, tool_audit = handlers[name](arguments)
+                                except RuntimeErrorWithCode as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} failed: {truncate_text(str(error), 180)}",
+                                    }
+                                except Exception as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
+                                    }
+                                audit_entry = dict(tool_audit or {})
+                                audit_entry["name"] = name
+                                audit_entry["arguments"] = arguments
+                                if call_id:
+                                    audit_entry["callId"] = call_id
+                                executed_tools.append(audit_entry)
+                                continuation_items.append(
+                                    {
+                                        "type": "function_call_output",
+                                        "call_id": call_id,
+                                        "output": json.dumps(tool_output, ensure_ascii=False),
+                                    }
+                                )
+                            previous_response_id = str(response.get("id", "")).strip() or previous_response_id
+                            pending_input = continuation_items
+                            tool_turns += 1
+                            continue
+
+                        output_text = self.get_response_output_text(response)
+                        if not output_text:
+                            if response.get("status") == "incomplete" and incomplete_reason:
+                                detail = f"Model response incomplete: {incomplete_reason}"
+                                if incomplete_reason == "max_output_tokens":
+                                    detail += f" after attempts {attempts}"
+                                raise RuntimeErrorWithCode(detail, 500)
+                            raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
+
+                        if response.get("status") == "incomplete" and incomplete_reason:
+                            detail = f"Model response incomplete: {incomplete_reason}"
+                            if incomplete_reason == "max_output_tokens":
+                                detail += f" after attempts {attempts}"
+                            raise RuntimeErrorWithCode(detail, 500)
+
+                        try:
+                            parsed = json.loads(output_text)
+                        except json.JSONDecodeError as error:
+                            if response.get("status") == "incomplete" and incomplete_reason:
+                                detail = f"Model response incomplete: {incomplete_reason}"
+                                if incomplete_reason == "max_output_tokens":
+                                    detail += f" after attempts {attempts}"
+                                raise RuntimeErrorWithCode(detail, 500)
+                            raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
+
+                        if not isinstance(parsed, dict):
+                            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+
+                        return OpenAIResult(
+                            parsed=parsed,
+                            response=response,
+                            response_id=str(response.get("id", "")),
+                            output_text=output_text,
+                            web_search_queries=normalize_string_array_preserve_items(list(web_search_queries.keys())),
+                            web_search_sources=normalize_url_array_values(list(web_search_sources.keys())),
+                            url_citations=normalize_url_array_values(list(url_citations.keys())),
+                            requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                            effective_max_output_tokens=effective_tokens,
+                            attempts=attempts,
+                            recovered_from_incomplete=recovered_from_incomplete,
+                            executed_tools=executed_tools,
+                            auth_assignment=auth_assignment_meta(assignment),
+                            auth_failover_history=list(auth_failover_history),
+                        )
+
+                    if retry_attempt:
+                        continue
+
+            except RuntimeErrorWithCode as error:
+                last_error = error
+                if assignment_index < len(assignment_candidates) - 1 and self.is_auth_rotation_error(error):
+                    auth_failover_history.append(
+                        {
+                            "failedTarget": str(assignment.get("target", target_kind)),
+                            "failedKeySlot": int(assignment.get("keySlot", 0) or 0),
+                            "failedMasked": str(assignment.get("masked", "")),
+                            "error": str(error),
+                            "nextKeySlot": int(assignment_candidates[assignment_index + 1].get("keySlot", 0) or 0),
+                            "nextMasked": str(assignment_candidates[assignment_index + 1].get("masked", "")),
+                        }
+                    )
+                    continue
+                if auth_failover_history and self.is_auth_rotation_error(error):
+                    history_summary = self.summarize_auth_failover_history(auth_failover_history)
+                    raise RuntimeErrorWithCode(
+                        f"{error} | auth_failover_exhausted after {len(auth_failover_history) + 1} key attempts"
+                        + (f" | {history_summary}" if history_summary else ""),
+                        error.status_code,
+                    )
+                raise
 
         if last_error is not None:
             raise last_error
@@ -3355,6 +3464,7 @@ class LoopRuntime:
     def new_live_commander(
         self,
         api_key: str,
+        auth_assignments: Optional[List[Dict[str, Any]]],
         task: Dict[str, Any],
         runtime: Dict[str, Any],
         round_number: int,
@@ -3438,6 +3548,7 @@ class LoopRuntime:
             tools=tools or None,
             tool_choice="auto" if tools else None,
             function_handlers=function_handlers if function_handlers else None,
+            auth_assignments=auth_assignments,
         )
         parsed = normalize_commander_checkpoint(dict(result.parsed), task, round_number)
         parsed["localToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("local_",)))
@@ -3449,6 +3560,8 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "auth": result.auth_assignment,
+            "authFailoverHistory": result.auth_failover_history,
             "localToolCalls": parsed["localToolCalls"],
             "localFileSources": parsed["localFileSources"],
             "githubToolCalls": parsed["githubToolCalls"],
@@ -3583,6 +3696,7 @@ class LoopRuntime:
     def new_live_commander_review(
         self,
         api_key: str,
+        auth_assignments: Optional[List[Dict[str, Any]]],
         task: Dict[str, Any],
         commander_checkpoint: Optional[Dict[str, Any]],
         workers: List[Dict[str, str]],
@@ -3643,6 +3757,7 @@ class LoopRuntime:
             schema=self.commander_review_schema(),
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="commander_review",
+            auth_assignments=auth_assignments,
         )
         parsed = normalize_commander_review_checkpoint(
             dict(result.parsed),
@@ -3656,6 +3771,8 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "auth": result.auth_assignment,
+            "authFailoverHistory": result.auth_failover_history,
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -3853,6 +3970,7 @@ class LoopRuntime:
     def new_live_checkpoint(
         self,
         api_key: str,
+        auth_assignments: Optional[List[Dict[str, Any]]],
         task: Dict[str, Any],
         worker: Dict[str, str],
         runtime: Dict[str, Any],
@@ -3963,6 +4081,7 @@ class LoopRuntime:
             tool_choice=tool_choice,
             include=include,
             function_handlers=function_handlers if function_handlers else None,
+            auth_assignments=auth_assignments,
         )
         parsed = dict(result.parsed)
         parsed["researchQueries"] = normalize_string_array_preserve_items(result.web_search_queries)
@@ -3985,6 +4104,8 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "auth": result.auth_assignment,
+            "authFailoverHistory": result.auth_failover_history,
             "localToolCalls": parsed["localToolCalls"],
             "localFileSources": parsed["localFileSources"],
             "githubToolCalls": parsed["githubToolCalls"],
@@ -4649,6 +4770,7 @@ class LoopRuntime:
     def new_live_summary(
         self,
         api_key: str,
+        auth_assignments: Optional[List[Dict[str, Any]]],
         task: Dict[str, Any],
         commander_checkpoint: Optional[Dict[str, Any]],
         commander_review_checkpoint: Optional[Dict[str, Any]],
@@ -4781,6 +4903,7 @@ class LoopRuntime:
             schema=self.summary_schema(),
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="summarizer",
+            auth_assignments=auth_assignments,
         )
         parsed = dict(result.parsed)
         authoritative_round = int(commander_review_projection.get("round", 0) or commander_projection.get("round", 0) or 0)
@@ -4804,6 +4927,8 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "auth": result.auth_assignment,
+            "authFailoverHistory": result.auth_failover_history,
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -4957,7 +5082,8 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignment = self.get_api_key_assignment("commander", task, round_number=round_number)
+        auth_assignments = self.build_api_key_assignments("commander", task, round_number=round_number)
+        auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = auth_assignment_meta(auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
@@ -4966,12 +5092,15 @@ class LoopRuntime:
                     self.assert_budget_available("commander", task)
                     checkpoint, response_id, response, call_meta = self.new_live_commander(
                         api_key,
+                        auth_assignments,
                         task,
                         runtime,
                         round_number,
                         constraints,
                         prior_summary,
                     )
+                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    self.append_auth_failover_step("commander", str(task["taskId"]), runtime["model"], call_meta, "commander")
                     usage_snapshot = self.update_usage_tracking("commander", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:
@@ -5157,7 +5286,8 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignment = self.get_api_key_assignment("commander_review", task, round_number=commander_round)
+        auth_assignments = self.build_api_key_assignments("commander_review", task, round_number=commander_round)
+        auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = auth_assignment_meta(auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
@@ -5166,6 +5296,7 @@ class LoopRuntime:
                     self.assert_budget_available("commander_review", task)
                     checkpoint, response_id, response, call_meta = self.new_live_commander_review(
                         api_key,
+                        auth_assignments,
                         task,
                         commander_checkpoint,
                         workers,
@@ -5173,6 +5304,8 @@ class LoopRuntime:
                         runtime,
                         line_catalog,
                     )
+                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    self.append_auth_failover_step("commander_review", str(task["taskId"]), runtime["model"], call_meta, "commander_review")
                     usage_snapshot = self.update_usage_tracking("commander_review", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:
@@ -5399,7 +5532,8 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignment = self.get_api_key_assignment(worker_id, task, round_number=commander_round)
+        auth_assignments = self.build_api_key_assignments(worker_id, task, round_number=commander_round)
+        auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = auth_assignment_meta(auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
@@ -5408,6 +5542,7 @@ class LoopRuntime:
                     self.assert_budget_available(worker_id, task)
                     checkpoint, response_id, response, call_meta = self.new_live_checkpoint(
                         api_key,
+                        auth_assignments,
                         task,
                         worker,
                         runtime,
@@ -5419,6 +5554,8 @@ class LoopRuntime:
                         prior_memory_version,
                         peer_messages,
                     )
+                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    self.append_auth_failover_step(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], call_meta, worker_id)
                     usage_snapshot = self.update_usage_tracking(worker_id, str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:
@@ -5626,7 +5763,8 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignment = self.get_api_key_assignment("summarizer", task, round_number=commander_round)
+        auth_assignments = self.build_api_key_assignments("summarizer", task, round_number=commander_round)
+        auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = auth_assignment_meta(auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
@@ -5635,6 +5773,7 @@ class LoopRuntime:
                     self.assert_budget_available("summarizer", task)
                     summary, response_id, response, call_meta = self.new_live_summary(
                         api_key,
+                        auth_assignments,
                         task,
                         commander_checkpoint,
                         commander_review_checkpoint,
@@ -5644,6 +5783,8 @@ class LoopRuntime:
                         vetting_config,
                         line_catalog,
                     )
+                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "summarizer")
                     usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:
@@ -5805,7 +5946,8 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignment = self.get_api_key_assignment("summarizer", task, round_number=commander_round)
+        auth_assignments = self.build_api_key_assignments("summarizer", task, round_number=commander_round)
+        auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = auth_assignment_meta(auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
@@ -5814,6 +5956,7 @@ class LoopRuntime:
                     self.assert_budget_available("summarizer", task)
                     summary, response_id, response, call_meta = self.new_live_summary(
                         api_key,
+                        auth_assignments,
                         task,
                         commander_checkpoint,
                         commander_review_checkpoint if isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) == commander_round else None,
@@ -5825,6 +5968,8 @@ class LoopRuntime:
                         partial_mode=True,
                         pending_workers=pending_workers,
                     )
+                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "answer_now")
                     usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:

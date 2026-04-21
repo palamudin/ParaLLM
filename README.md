@@ -340,6 +340,7 @@ Assignment behavior:
 - default order is `commander -> workers in letter order -> summarizer`
 - if there are fewer keys than positions, slots wrap
 - when wrapping is required, the starting slot rotates across rounds so one key does not always take commander-first traffic
+- if a live lane hits an auth-style key failure, the runtime now retries on the next non-empty key in pool order before giving up
 
 Only masked previews are shown in the UI. Raw keys stay in env vars for `env`, in the mounted file for `docker_secret`, behind a read-only HTTP provider for `external`, or in `Auth.txt` only when `local_file` is explicitly selected as a transitional fallback.
 

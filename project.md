@@ -570,6 +570,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - local profile defaults to `env`
   - hosted profiles default to `docker_secret`
   - `local_file` remains explicit fallback only
+- Live model calls now rotate to the next non-empty key on auth-style failures instead of binding one lane to one dead key for the rest of the run.
 
 ### Milestone 4: Prototype Hardening
 
