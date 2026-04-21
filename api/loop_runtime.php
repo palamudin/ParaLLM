@@ -258,7 +258,7 @@ function execute_loop_process(array $config): array {
             $workerSequence = array_map(static function (array $worker): string {
                 return (string)$worker['id'];
             }, task_workers($task));
-            $sequence = array_merge($workerSequence, ['summarizer']);
+            $sequence = array_merge(['commander'], $workerSequence, ['summarizer']);
             if (current_loop_state($snapshot)['cancelRequested']) {
                 $cancelled = true;
                 break;

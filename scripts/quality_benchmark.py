@@ -423,7 +423,7 @@ def run_steered_case(
 
     for round_number in range(1, max(1, loop_rounds) + 1):
         qa_print(f"Running steered round {round_number} for {case.case_id}")
-        for target in ("A", "B", "C", "summarizer"):
+        for target in ("commander", "A", "B", "C", "summarizer"):
             request_json(
                 api_url(base_url, "run_target.php"),
                 method="POST",

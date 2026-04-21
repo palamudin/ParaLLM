@@ -87,7 +87,7 @@ foreach ($artifactFiles as $artifactFile) {
 
     if (
         isset($entry['taskId'], $entry['roundOrStep'])
-        && in_array((string)$entry['kind'], ['worker_output', 'summary_output'], true)
+        && in_array((string)$entry['kind'], ['worker_output', 'commander_output', 'summary_output'], true)
     ) {
         $roundKey = (string)$entry['taskId'] . ':' . (int)$entry['roundOrStep'];
         if (!isset($roundGroups[$roundKey])) {
@@ -97,11 +97,14 @@ foreach ($artifactFiles as $artifactFile) {
                 'objective' => $task['objective'] ?? null,
                 'round' => (int)$entry['roundOrStep'],
                 'capturedAt' => $entry['modifiedAt'],
+                'commanderArtifact' => null,
                 'summaryArtifact' => null,
                 'workerArtifacts' => [],
             ];
         }
-        if (($entry['kind'] ?? null) === 'summary_output') {
+        if (($entry['kind'] ?? null) === 'commander_output') {
+            $roundGroups[$roundKey]['commanderArtifact'] = $artifactOut;
+        } elseif (($entry['kind'] ?? null) === 'summary_output') {
             $roundGroups[$roundKey]['summaryArtifact'] = $artifactOut;
         } else {
             $roundGroups[$roundKey]['workerArtifacts'][] = $artifactOut;

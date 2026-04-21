@@ -226,13 +226,15 @@
 
             <div class="integration-card">
               <div class="integration-header">
-                <strong>OpenAI API key</strong>
+                <strong>OpenAI API key pool</strong>
                 <span id="apiKeyMasked" class="secretmask">none</span>
               </div>
-              <div id="apiKeyStatus" class="integration-note">No key stored. Live mode needs a key.</div>
-              <div class="integration-row">
-                <input id="apiKeyInput" type="password" placeholder="Paste key to set or replace" autocomplete="off" spellcheck="false" />
-                <button id="saveAuth">Save Key</button>
+              <div id="apiKeyStatus" class="integration-note">No key pool stored. Live mode needs at least one key.</div>
+              <div id="apiKeyPreview" class="key-pool-preview"></div>
+              <div id="apiKeyAssignment" class="key-assignment-list"></div>
+              <div id="authKeyEditor" class="auth-key-editor"></div>
+              <div class="integration-actions integration-actions-split">
+                <button id="addAuthField" type="button">+ Key</button>
                 <button id="clearAuth" class="danger">Clear</button>
               </div>
             </div>

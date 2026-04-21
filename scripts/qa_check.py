@@ -346,7 +346,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             if "C" not in worker_targets:
                 raise QAError("Expanded worker roster did not carry into the active task.")
 
-            for target in [*worker_targets, "summarizer"]:
+            for target in ["commander", *worker_targets, "summarizer"]:
                 qa_print(f"Running smoke target {target}")
                 request_json(
                     api_url(base_url, "run_target.php"),

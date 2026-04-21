@@ -79,6 +79,76 @@ function normalize_worker_temperature($value, string $fallback = 'balanced'): st
     return isset($catalog[$fallback]) ? $fallback : 'balanced';
 }
 
+function harness_concision_catalog(): array {
+    return [
+        'tight' => ['label' => 'Tight'],
+        'balanced' => ['label' => 'Balanced'],
+        'expansive' => ['label' => 'Expansive'],
+    ];
+}
+
+function normalize_harness_concision($value, string $fallback = 'tight'): string {
+    $catalog = harness_concision_catalog();
+    $candidate = strtolower(trim((string)$value));
+    if (isset($catalog[$candidate])) {
+        return $candidate;
+    }
+    return isset($catalog[$fallback]) ? $fallback : 'tight';
+}
+
+function normalize_harness_instruction($value, int $maxLength = 600): string {
+    $text = preg_replace('/\s+/', ' ', trim((string)$value));
+    if ($text === '') {
+        return '';
+    }
+    if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+        if (mb_strlen($text) <= $maxLength) {
+            return $text;
+        }
+        return rtrim(mb_substr($text, 0, max(0, $maxLength - 3))) . '...';
+    }
+    if (strlen($text) <= $maxLength) {
+        return $text;
+    }
+    return rtrim(substr($text, 0, max(0, $maxLength - 3))) . '...';
+}
+
+function default_worker_harness(): array {
+    return [
+        'concision' => 'tight',
+        'instruction' => '',
+    ];
+}
+
+function default_summarizer_harness(): array {
+    return [
+        'concision' => 'balanced',
+        'instruction' => '',
+    ];
+}
+
+function normalize_harness_config($value, string $fallbackConcision = 'tight'): array {
+    if (is_string($value)) {
+        $trimmed = trim($value);
+        if ($trimmed !== '' && str_starts_with($trimmed, '{')) {
+            $decoded = json_decode($trimmed, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        } elseif (isset(harness_concision_catalog()[strtolower($trimmed)])) {
+            $value = ['concision' => $trimmed];
+        } else {
+            $value = ['instruction' => $trimmed];
+        }
+    }
+
+    $config = is_array($value) ? $value : [];
+    return [
+        'concision' => normalize_harness_concision($config['concision'] ?? null, $fallbackConcision),
+        'instruction' => normalize_harness_instruction($config['instruction'] ?? ''),
+    ];
+}
+
 function worker_type_catalog(): array {
     return [
         'proponent' => ['label' => 'Proponent', 'role' => 'utility', 'focus' => 'benefits, feasibility, leverage, momentum, practical execution', 'temperature' => 'balanced'],
@@ -175,6 +245,7 @@ function default_draft_state(): array {
         'researchExternalWebAccess' => true,
         'researchDomains' => [],
         'vettingEnabled' => true,
+        'summarizerHarness' => default_summarizer_harness(),
         'loopRounds' => $loop['rounds'],
         'loopDelayMs' => $loop['delayMs'],
         'workers' => array_slice(worker_catalog($model), 0, 2),
@@ -300,6 +371,7 @@ function normalize_draft_state(?array $draft): array {
         'researchExternalWebAccess' => coerce_bool($draft['researchExternalWebAccess'] ?? $default['researchExternalWebAccess'], $default['researchExternalWebAccess']),
         'researchDomains' => normalize_allowed_domains($draft['researchDomains'] ?? $default['researchDomains']),
         'vettingEnabled' => coerce_bool($draft['vettingEnabled'] ?? $default['vettingEnabled'], $default['vettingEnabled']),
+        'summarizerHarness' => normalize_harness_config($draft['summarizerHarness'] ?? $default['summarizerHarness'], default_summarizer_harness()['concision']),
         'loopRounds' => $loop['rounds'],
         'loopDelayMs' => $loop['delayMs'],
         'workers' => task_workers([
@@ -341,6 +413,7 @@ function build_draft_from_task(?array $task, array $overrides = [], bool $resetB
         'researchExternalWebAccess' => $research['externalWebAccess'],
         'researchDomains' => $research['domains'],
         'vettingEnabled' => $vetting['enabled'],
+        'summarizerHarness' => normalize_harness_config($summarizer['harness'] ?? $default['summarizerHarness'], default_summarizer_harness()['concision']),
         'loopRounds' => $loopPrefs['rounds'],
         'loopDelayMs' => $loopPrefs['delayMs'],
         'workers' => task_workers($task),
@@ -613,6 +686,7 @@ function normalize_worker_definition(array $worker, ?string $defaultModel = null
         'focus' => trim((string)($worker['focus'] ?? $catalogWorker['focus'])) ?: $catalogWorker['focus'],
         'temperature' => normalize_worker_temperature($worker['temperature'] ?? $catalogWorker['temperature'] ?? 'balanced', (string)($catalogWorker['temperature'] ?? 'balanced')),
         'model' => normalize_model_id($worker['model'] ?? null, $fallbackModel),
+        'harness' => normalize_harness_config($worker['harness'] ?? null, default_worker_harness()['concision']),
     ];
 }
 
@@ -691,6 +765,7 @@ function summarizer_config(array $task): array {
         'id' => 'summarizer',
         'label' => trim((string)($summary['label'] ?? 'Summarizer')) ?: 'Summarizer',
         'model' => normalize_model_id($summary['model'] ?? null, $defaultModel),
+        'harness' => normalize_harness_config($summary['harness'] ?? null, default_summarizer_harness()['concision']),
     ];
 }
 
@@ -713,17 +788,95 @@ function missing_worker_checkpoints(?array $task, array $workerState): array {
     return $missing;
 }
 
+function commander_checkpoint_from_state(array $state): ?array {
+    return isset($state['commander']) && is_array($state['commander']) ? $state['commander'] : null;
+}
+
+function summary_round_from_state(array $state): int {
+    $summary = isset($state['summary']) && is_array($state['summary']) ? $state['summary'] : [];
+    return max(0, (int)($summary['round'] ?? 0));
+}
+
+function commander_round_from_state(array $state): int {
+    $commander = commander_checkpoint_from_state($state);
+    return max(0, (int)(is_array($commander) ? ($commander['round'] ?? 0) : 0));
+}
+
+function latest_worker_round(array $workerState): int {
+    $latest = 0;
+    foreach ($workerState as $checkpoint) {
+        if (!is_array($checkpoint)) {
+            continue;
+        }
+        $latest = max($latest, (int)($checkpoint['step'] ?? 0));
+    }
+    return $latest;
+}
+
 function target_dispatch_preflight(string $target, array $state): ?array {
     $task = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
     $workerState = is_array($state['workers'] ?? null) ? $state['workers'] : [];
+    $commanderRound = commander_round_from_state($state);
+    $summaryRound = summary_round_from_state($state);
+
+    if ($target === 'commander') {
+        $openRound = max($commanderRound, latest_worker_round($workerState));
+        if ($openRound > $summaryRound) {
+            return [
+                'code' => 409,
+                'message' => 'Commander already drafted round ' . $openRound . '. Finish the current worker/summarizer pass before drafting the next round.',
+            ];
+        }
+        return null;
+    }
+
+    if (preg_match('/^[A-Z]$/', $target)) {
+        $nextRound = 1;
+        if (isset($workerState[$target]) && is_array($workerState[$target])) {
+            $nextRound = ((int)($workerState[$target]['step'] ?? 0)) + 1;
+        }
+        if ($commanderRound <= 0) {
+            return [
+                'code' => 409,
+                'message' => 'Commander is not ready yet. Run commander first.',
+            ];
+        }
+        if ($commanderRound !== $nextRound) {
+            return [
+                'code' => 409,
+                'message' => 'Worker ' . $target . ' expects commander round ' . $nextRound . ', but the active commander draft is round ' . $commanderRound . '.',
+            ];
+        }
+    }
 
     if ($target === 'summarizer') {
+        if ($commanderRound <= 0) {
+            return [
+                'code' => 409,
+                'message' => 'Summarizer is not ready yet. Run commander first.',
+            ];
+        }
         $missing = missing_worker_checkpoints($task, $workerState);
         if ($missing) {
             return [
                 'code' => 409,
                 'message' => 'Summarizer is not ready yet. Run worker checkpoint(s) first: ' . implode(', ', $missing) . '.',
                 'missingWorkers' => $missing
+            ];
+        }
+        $stale = [];
+        foreach (task_workers($task) as $worker) {
+            $workerId = (string)($worker['id'] ?? '');
+            $checkpoint = $workerState[$workerId] ?? null;
+            if (!is_array($checkpoint) || (int)($checkpoint['step'] ?? 0) !== $commanderRound) {
+                $stale[] = $workerId;
+            }
+        }
+        if ($stale) {
+            return [
+                'code' => 409,
+                'message' => 'Summarizer is waiting on worker checkpoint(s) aligned to commander round ' . $commanderRound . ': ' . implode(', ', $stale) . '.',
+                'missingWorkers' => $stale,
             ];
         }
     }
@@ -753,6 +906,7 @@ function default_state(): array {
     return [
         'activeTask' => null,
         'draft' => default_draft_state(),
+        'commander' => null,
         'workers' => [],
         'summary' => null,
         'memoryVersion' => 0,
@@ -766,6 +920,7 @@ function normalize_state(array $state): array {
     $normalized = default_state();
     $normalized['activeTask'] = $state['activeTask'] ?? null;
     $normalized['draft'] = normalize_draft_state(isset($state['draft']) && is_array($state['draft']) ? $state['draft'] : []);
+    $normalized['commander'] = isset($state['commander']) && is_array($state['commander']) ? $state['commander'] : null;
     $normalized['summary'] = $state['summary'] ?? null;
     $normalized['memoryVersion'] = isset($state['memoryVersion']) ? (int)$state['memoryVersion'] : 0;
     $normalized['usage'] = normalize_usage_state(isset($state['usage']) && is_array($state['usage']) ? $state['usage'] : []);
@@ -1549,6 +1704,59 @@ function write_session_archive_unlocked(array $archive): string {
     return $archiveId . '.json';
 }
 
+function auth_file_path(): string {
+    return ROOT_PATH . DIRECTORY_SEPARATOR . 'Auth.txt';
+}
+
+function normalize_auth_key_pool($value): array {
+    $raw = is_array($value) ? $value : preg_split('/\r\n|\r|\n/', (string)$value);
+    $keys = [];
+    foreach ($raw as $entry) {
+        $key = trim((string)$entry);
+        if ($key !== '') {
+            $keys[] = $key;
+        }
+    }
+    return $keys;
+}
+
+function read_auth_key_pool(?string $path = null): array {
+    $authPath = $path ?: auth_file_path();
+    if (!is_file($authPath)) {
+        return [];
+    }
+    return normalize_auth_key_pool((string)file_get_contents($authPath));
+}
+
+function write_auth_key_pool(array $keys, ?string $path = null): void {
+    $authPath = $path ?: auth_file_path();
+    $normalized = normalize_auth_key_pool($keys);
+    $payload = $normalized ? implode(PHP_EOL, $normalized) . PHP_EOL : '';
+    file_put_contents($authPath, $payload, LOCK_EX);
+}
+
+function mask_auth_key(string $key): string {
+    $last4 = strlen($key) >= 4 ? substr($key, -4) : $key;
+    return str_repeat('*', max(4, strlen($key) - strlen($last4))) . $last4;
+}
+
+function auth_pool_status(?string $path = null): array {
+    $authPath = $path ?: auth_file_path();
+    $keys = read_auth_key_pool($authPath);
+    $masks = array_map(static function (string $key): string {
+        return mask_auth_key($key);
+    }, $keys);
+    $first = $keys[0] ?? '';
+    $last4 = strlen($first) >= 4 ? substr($first, -4) : $first;
+    return [
+        'hasKey' => count($keys) > 0,
+        'keyCount' => count($keys),
+        'last4' => $last4,
+        'masked' => $masks[0] ?? null,
+        'masks' => array_values($masks),
+    ];
+}
+
 function json_response($data, int $code = 200): void {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
@@ -1572,13 +1780,14 @@ function post_int_value(string $key, int $default): int {
 
 function available_targets(?array $task): array {
     if (!$task) {
-        return ['summarizer'];
+        return ['commander', 'summarizer'];
     }
     $targets = array_map(static function (array $worker): string {
         return (string)$worker['id'];
     }, task_workers($task));
+    array_unshift($targets, 'commander');
     $targets[] = 'summarizer';
-    return $targets;
+    return array_values(array_unique($targets));
 }
 
 function is_valid_target(string $target, ?array $task): bool {
@@ -1851,6 +2060,11 @@ function build_artifact_history_entry(string $artifactFile): ?array {
         $entry['worker'] = $matches[2];
         $entry['kind'] = 'worker_output';
         $entry['roundOrStep'] = (int)$matches[3];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_round(\d+)_output\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'commander';
+        $entry['kind'] = 'commander_output';
+        $entry['roundOrStep'] = (int)$matches[2];
     } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)_output\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = 'summary';
@@ -1861,6 +2075,11 @@ function build_artifact_history_entry(string $artifactFile): ?array {
         $entry['worker'] = $matches[2];
         $entry['kind'] = 'worker_step';
         $entry['roundOrStep'] = (int)$matches[3];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_round(\d+)\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'commander';
+        $entry['kind'] = 'commander_round';
+        $entry['roundOrStep'] = (int)$matches[2];
     } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = 'summary';

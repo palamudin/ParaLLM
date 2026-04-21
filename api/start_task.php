@@ -23,6 +23,10 @@ $workersRaw = post_value('workers', '[]');
 $workersInput = json_decode((string)$workersRaw, true);
 if (!is_array($workersInput)) $workersInput = [];
 
+$summarizerHarnessRaw = post_value('summarizerHarness', '{}');
+$summarizerHarnessInput = json_decode((string)$summarizerHarnessRaw, true);
+if (!is_array($summarizerHarnessInput)) $summarizerHarnessInput = [];
+
 $executionMode = trim((string)post_value('executionMode', 'live'));
 if (!in_array($executionMode, ['live', 'mock'], true)) {
     $executionMode = 'live';
@@ -88,7 +92,8 @@ $task = [
     'summarizer' => [
         'id' => 'summarizer',
         'label' => 'Summarizer',
-        'model' => $summarizerModel
+        'model' => $summarizerModel,
+        'harness' => normalize_harness_config($summarizerHarnessInput, default_summarizer_harness()['concision'])
     ],
     'syncPolicy' => [
         'mode' => 'checkpoint',
@@ -102,6 +107,7 @@ $task = [
 $state = mutate_state(function (array $state) use ($task): array {
     $state['activeTask'] = $task;
     $state['draft'] = build_draft_from_task($task);
+    $state['commander'] = null;
     $state['workers'] = empty_worker_state_map(task_workers($task));
     $state['summary'] = null;
     $state['memoryVersion'] = ($state['memoryVersion'] ?? 0) + 1;

@@ -20,6 +20,15 @@ if ($workersRaw !== null) {
     }
 }
 
+$summarizerHarness = $existingDraft['summarizerHarness'];
+$summarizerHarnessRaw = post_value('summarizerHarness', null);
+if ($summarizerHarnessRaw !== null) {
+    $decodedHarness = json_decode((string)$summarizerHarnessRaw, true);
+    if (is_array($decodedHarness)) {
+        $summarizerHarness = $decodedHarness;
+    }
+}
+
 $draft = normalize_draft_state(array_merge($existingDraft, [
     'objective' => trim((string)post_value('objective', $existingDraft['objective'])),
     'constraints' => $constraints,
@@ -35,6 +44,7 @@ $draft = normalize_draft_state(array_merge($existingDraft, [
     'researchExternalWebAccess' => post_value('researchExternalWebAccess', $existingDraft['researchExternalWebAccess']),
     'researchDomains' => post_value('researchDomains', $existingDraft['researchDomains']),
     'vettingEnabled' => post_value('vettingEnabled', $existingDraft['vettingEnabled']),
+    'summarizerHarness' => $summarizerHarness,
     'loopRounds' => post_value('loopRounds', $existingDraft['loopRounds']),
     'loopDelayMs' => post_value('loopDelayMs', $existingDraft['loopDelayMs']),
     'workers' => $workers,

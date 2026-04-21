@@ -63,9 +63,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Optional grounded worker research with `web_search`, live-web toggle, and domain allow-lists
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
-- API key can be managed locally through the UI and is only displayed as a masked last-4 preview
+- API keys can be managed locally through the UI as a local key pool, with per-slot inputs, masked previews, and deterministic per-position assignment
 - Form draft state is persisted locally so edits, roster changes, and loop settings do not get stomped by polling refreshes
-- Secrets stay in `Auth.txt` locally and should never be logged
+- Secrets stay in `Auth.txt` locally as a one-key-per-line pool and should never be logged
 
 ## Sync Model
 
@@ -112,7 +112,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Review now exposes side-by-side round history cards, session archive replay/export controls, and a visible artifact exception policy for raw review-only outputs
 - Review and artifact meta now surface requested vs effective output-token caps, retry attempts, and incomplete-output recovery notes directly in the UI
 - URL/source normalization now drops malformed non-URL entries and canonicalizes saved source links in fresh artifacts
-- Sidebar workspace shell now splits `Home`, `Settings`, `Debug`, and `Review`, with a chat-first center pane and the API key moved into Settings / Integrations
+- Sidebar workspace shell now splits `Home`, `Settings`, `Debug`, and `Review`, with a chat-first center pane and the API key pool moved into Settings / Integrations
 - The frontend shell now rides a local Bootstrap 5 baseline instead of a purely bespoke spacing/layout stack, which gives the app a tighter admin-style canvas and a saner light/dark foundation
 - The sidebar is now a true collapsible admin rail with a header-anchored collapse control on desktop and slide-in behavior on smaller screens
 - The Home composer footer is now intentionally compressed: quick tools and `Send` share one row, redundant composer help is removed, and empty attachment filler text no longer consumes vertical space
@@ -131,7 +131,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Usage spend now follows a conservative chargeable-search assumption: web-search-related model tokens are treated as billable and tool calls remain separately priced
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
-- Masked API key management in the top bar for local test-key swapping
+- Masked API-key-pool status in the top bar for local test-key swapping without exposing secrets
 - Reset Session archives the current state to `data/sessions`, clears the active task, and reloads a fresh draft with short carry-forward context
 - Per-round checkpoint snapshots such as `*_A_step002.json` and `*_summary_round002.json`
 - UI history panels for recent jobs and checkpoint artifacts
@@ -210,5 +210,5 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Notes
 
-- `Auth.txt` currently contains the API key for local testing. It must not be copied into logs, responses, or version control.
+- `Auth.txt` now acts as a local API key pool for testing, with one key per line. It must not be copied into logs, responses, or version control.
 - Before committing, the repo should ignore secrets and volatile runtime data.

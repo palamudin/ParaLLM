@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from engine import (
     LoopRuntime,
     RuntimeErrorWithCode,
+    auth_assignment_meta,
     coerce_bool,
     default_budget_config,
     default_loop_state,
@@ -365,10 +366,12 @@ def build_mock_direct_answer(case: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_direct_answer(
     runtime: LoopRuntime,
-    api_key: Optional[str],
+    auth_assignment: Optional[Dict[str, Any]],
     case: Dict[str, Any],
     arm: Dict[str, Any],
 ) -> Dict[str, Any]:
+    api_key = str(auth_assignment.get("apiKey")) if isinstance(auth_assignment, dict) else None
+    auth_meta = auth_assignment_meta(auth_assignment)
     runtime_config = arm["runtime"]
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
@@ -418,6 +421,7 @@ def run_direct_answer(
                     "maxOutputTokenAttempts": result.attempts,
                     "recoveredFromIncomplete": result.recovered_from_incomplete,
                 },
+                "authMeta": auth_meta,
             }
         except RuntimeErrorWithCode:
             if not runtime_config["allowMockFallback"]:
@@ -430,6 +434,7 @@ def run_direct_answer(
         "responseId": None,
         "rawOutputText": None,
         "responseMeta": None,
+        "authMeta": auth_meta,
     }
 
 
@@ -448,6 +453,7 @@ def run_steered_answer(
     initialize_steered_workspace(runtime, task)
     worker_ids = [worker["id"] for worker in task_workers(task)]
     for _round in range(1, max(1, loop_rounds) + 1):
+        runtime.run_target("commander", task["taskId"])
         for worker_id in worker_ids:
             runtime.run_target(worker_id, task["taskId"])
         runtime.run_target("summarizer", task["taskId"])
@@ -957,11 +963,12 @@ def execute_replicate(
     replicate_dir.mkdir(parents=True, exist_ok=True)
     seed = f"{run['runId']}:{case['caseId']}:{variant_id}:{replicate_index}"
     judge_runtime = LoopRuntime(replicate_dir / "_judge_runtime", auth_path=auth_path)
-    api_key = auth_path.read_text(encoding="utf-8").strip() if auth_path.exists() else None
+    judge_auth_assignment = judge_runtime.get_api_key_assignment("judge", salt=seed + ":judge")
+    api_key = str(judge_auth_assignment.get("apiKey")) if judge_auth_assignment else None
     result: Dict[str, Any]
     if arm["type"] == "direct":
         runtime = LoopRuntime(replicate_dir / "_direct_runtime", auth_path=auth_path)
-        direct = run_direct_answer(runtime, api_key or None, case, arm)
+        direct = run_direct_answer(runtime, runtime.get_api_key_assignment("direct", salt=seed + ":direct"), case, arm)
         output_payload = {
             "taskId": None,
             "artifactType": "eval_direct_output",
@@ -972,6 +979,7 @@ def execute_replicate(
             "capturedAt": utc_now(),
             "responseId": direct["responseId"],
             "responseMeta": direct["responseMeta"],
+            "authMeta": direct.get("authMeta"),
             "rawOutputText": direct["rawOutputText"],
             "output": direct["answer"],
         }

@@ -1383,6 +1383,8 @@ textarea {
 .settings-panel select,
 .composer-actions select,
 .integration-row input,
+.workercontrol-field select,
+.workercontrol-field textarea,
 .inlineform select,
 .artifact-pane select {
   width: 100%;
@@ -2036,10 +2038,103 @@ textarea {
   margin-top: 14px;
 }
 
+.integration-row-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.integration-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.integration-actions-split {
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+}
+
 .secretmask {
   font-family: "JetBrains Mono", Consolas, monospace;
   color: var(--accent);
   letter-spacing: 0.08em;
+}
+
+.auth-key-editor {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.auth-key-row {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(128, 186, 224, 0.14);
+  background: rgba(10, 23, 36, 0.74);
+}
+
+.auth-key-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-key-row-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted-strong);
+}
+
+.auth-key-row-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.auth-key-row-inputs {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.auth-key-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.auth-key-remove {
+  flex: 0 0 auto;
+  min-width: 44px;
+  padding-inline: 12px;
+}
+
+.key-pool-preview,
+.key-assignment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.key-slot-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 186, 224, 0.18);
+  background: rgba(8, 18, 29, 0.76);
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.key-slot-chip.reused {
+  border-color: rgba(245, 158, 11, 0.28);
+  color: #fcd34d;
 }
 
 .artifact-review-grid {

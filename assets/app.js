@@ -55,6 +55,12 @@ const WORKER_TEMPERATURE_CATALOG = {
   hot: { label: "Hot" }
 };
 const WORKER_TEMPERATURE_ORDER = Object.keys(WORKER_TEMPERATURE_CATALOG);
+const HARNESS_CONCISION_CATALOG = {
+  tight: { label: "Tight" },
+  balanced: { label: "Balanced" },
+  expansive: { label: "Expansive" }
+};
+const HARNESS_CONCISION_ORDER = Object.keys(HARNESS_CONCISION_CATALOG);
 const QUALITY_PROFILE_CATALOG = {
   low: {
     label: "Low",
@@ -118,7 +124,10 @@ const COMPOSER_SUPPORTED_EXTENSIONS = [
   ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
   ".php", ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
 ];
-let latestAuthStatus = { hasKey: false, masked: null, last4: "" };
+let latestAuthStatus = { hasKey: false, keyCount: 0, masked: null, last4: "", masks: [] };
+let authDynamicRows = [];
+let authRowSequence = 0;
+let authSaveTimers = {};
 let latestLoopActive = false;
 let artifactSelections = { left: "", right: "" };
 let formDirty = false;
@@ -268,6 +277,7 @@ function markComposerConfigDirty() {
   renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
   renderQualityProfileCards();
   renderComposerTools();
+  renderAuthStatus(latestAuthStatus);
   queueDraftSave();
 }
 
@@ -364,11 +374,12 @@ function defaultDraftState() {
     researchExternalWebAccess: true,
     researchDomains: [],
     vettingEnabled: true,
+    summarizerHarness: { concision: "balanced", instruction: "" },
     loopRounds: 3,
     loopDelayMs: 1000,
     workers: [
-      { id: "A", type: "proponent", label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced", model: "gpt-5-mini" },
-      { id: "B", type: "sceptic", label: "Sceptic", role: "adversarial", focus: "failure modes, downside, hidden coupling, consequences, externalities", temperature: "cool", model: "gpt-5-mini" }
+      { id: "A", type: "proponent", label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced", model: "gpt-5-mini", harness: { concision: "tight", instruction: "" } },
+      { id: "B", type: "sceptic", label: "Sceptic", role: "adversarial", focus: "failure modes, downside, hidden coupling, consequences, externalities", temperature: "cool", model: "gpt-5-mini", harness: { concision: "tight", instruction: "" } }
     ],
     updatedAt: ""
   };
@@ -386,6 +397,27 @@ function buildWorkerTemperatureOptions(selectedValue) {
     const selected = id === selectedValue ? " selected" : "";
     return `<option value="${id}"${selected}>${WORKER_TEMPERATURE_CATALOG[id].label}</option>`;
   }).join("");
+}
+
+function buildHarnessConcisionOptions(selectedValue) {
+  return HARNESS_CONCISION_ORDER.map(function (id) {
+    const selected = id === selectedValue ? " selected" : "";
+    return `<option value="${id}"${selected}>${HARNESS_CONCISION_CATALOG[id].label}</option>`;
+  }).join("");
+}
+
+function normalizeHarnessConfig(config, fallback = "tight") {
+  const source = config && typeof config === "object" ? config : {};
+  const concision = HARNESS_CONCISION_CATALOG[source.concision] ? source.concision : fallback;
+  return {
+    concision,
+    instruction: String(source.instruction || "").trim()
+  };
+}
+
+function harnessConcisionLabel(config, fallback = "tight") {
+  const normalized = normalizeHarnessConfig(config, fallback);
+  return HARNESS_CONCISION_CATALOG[normalized.concision]?.label || normalized.concision;
 }
 
 function buildModelOptions(selectedValue) {
@@ -546,12 +578,12 @@ function syncArtifactReview(artifacts) {
   const names = new Set(list.map(function (artifact) { return artifact.name; }));
 
   if (!artifactSelections.left || !names.has(artifactSelections.left)) {
-    const leftDefault = pickArtifact(list, ["summary_output", "summary_round", "worker_output", "worker_step"], "");
+    const leftDefault = pickArtifact(list, ["summary_output", "commander_output", "summary_round", "commander_round", "worker_output", "worker_step"], "");
     artifactSelections.left = leftDefault ? leftDefault.name : "";
   }
 
   if (!artifactSelections.right || !names.has(artifactSelections.right) || artifactSelections.right === artifactSelections.left) {
-    const rightDefault = pickArtifact(list, ["worker_output", "worker_step", "summary_output", "summary_round"], artifactSelections.left);
+    const rightDefault = pickArtifact(list, ["commander_output", "worker_output", "worker_step", "summary_output", "commander_round", "summary_round"], artifactSelections.left);
     artifactSelections.right = rightDefault ? rightDefault.name : "";
   }
 
@@ -587,6 +619,7 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.researchExternalWebAccess === false ? 0 : 1,
         JSON.stringify(safeDraft.researchDomains || []),
         safeDraft.vettingEnabled === false ? 0 : 1,
+        JSON.stringify(safeDraft.summarizerHarness || {}),
         safeDraft.loopRounds ?? 3,
         safeDraft.loopDelayMs ?? 1000,
         JSON.stringify(safeDraft.workers || [])
@@ -614,6 +647,7 @@ function buildCommanderFormSource(task, draft) {
         task.runtime?.research?.externalWebAccess === false ? 0 : 1,
         JSON.stringify(task.runtime?.research?.domains || []),
         task.runtime?.vetting?.enabled === false ? 0 : 1,
+        JSON.stringify(task.summarizer?.harness || {}),
         task.preferredLoop?.rounds ?? 3,
         task.preferredLoop?.delayMs ?? 1000,
         JSON.stringify(task.workers || [])
@@ -633,6 +667,7 @@ function buildCommanderFormSource(task, draft) {
         researchExternalWebAccess: task.runtime?.research?.externalWebAccess === false ? false : true,
         researchDomains: task.runtime?.research?.domains || [],
         vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true,
+        summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "balanced"),
         loopRounds: task.preferredLoop?.rounds ?? 3,
         loopDelayMs: task.preferredLoop?.delayMs ?? 1000,
         workers: task.workers || []
@@ -721,9 +756,35 @@ function stagedWorkerSource(draft, task) {
   return defaultDraftState().workers;
 }
 
+function stagedSummarizerSource(draft, task) {
+  const fallback = defaultDraftState();
+  return {
+    id: "summarizer",
+    label: "Commander / Summarizer",
+    model: String(draft?.summarizerModel || task?.summarizer?.model || task?.runtime?.model || fallback.summarizerModel || fallback.model),
+    harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "balanced")
+  };
+}
+
+function collectVisibleSummarizerConfig() {
+  const $card = $("#workerControls .summarizer-control-card").first();
+  if (!$card.length) {
+    return stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null);
+  }
+  return {
+    id: "summarizer",
+    label: "Commander / Summarizer",
+    model: String($card.find(".summarizer-model-draft").val() || stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null).model),
+    harness: {
+      concision: String($card.find(".summarizer-harness-profile").val() || "balanced"),
+      instruction: String($card.find(".summarizer-harness-instruction").val() || "").trim()
+    }
+  };
+}
+
 function collectVisibleWorkerRoster() {
   const workers = [];
-  $("#workerControls .workercontrol").each(function () {
+  $("#workerControls .workercontrol[data-worker-id]").each(function () {
     const $card = $(this);
     const id = String($card.data("workerId") || "").trim();
     if (!id) return;
@@ -735,7 +796,11 @@ function collectVisibleWorkerRoster() {
       model: $card.find(".worker-model").val(),
       label: fallback.label,
       role: fallback.role,
-      focus: fallback.focus
+      focus: fallback.focus,
+      harness: {
+        concision: String($card.find(".worker-harness-profile").val() || "tight"),
+        instruction: String($card.find(".worker-harness-instruction").val() || "").trim()
+      }
     });
   });
   return workers;
@@ -756,8 +821,18 @@ function buildDraftSavePayload(options = {}) {
   const roster = overrideRoster && overrideRoster.length
     ? overrideRoster
     : collectVisibleWorkerRoster();
+  const fallbackSummarizer = stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null);
+  const visibleSummarizer = collectVisibleSummarizerConfig();
+  const summarizerConfig = options.summarizerConfig && typeof options.summarizerConfig === "object"
+    ? options.summarizerConfig
+    : {
+        model: String(payload.summarizerModel || payload.model || fallbackSummarizer.model || ""),
+        harness: visibleSummarizer?.harness || fallbackSummarizer.harness
+      };
   payload.constraints = JSON.stringify(payload.constraints);
   payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
+  payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
+  payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
   return payload;
 }
 
@@ -783,9 +858,10 @@ function buildQualityProfileSnapshot() {
   const roster = workerSource.length
     ? workerSource
     : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
+  const summarizerSource = collectVisibleSummarizerConfig();
   return {
     model: String(payload.model || ""),
-    summarizerModel: String(payload.summarizerModel || payload.model || ""),
+    summarizerModel: String(summarizerSource?.model || payload.summarizerModel || payload.model || ""),
     reasoningEffort: String(payload.reasoningEffort || ""),
     maxCostUsd: Number(payload.maxCostUsd || 0),
     maxTotalTokens: Number(payload.maxTotalTokens || 0),
@@ -1416,23 +1492,192 @@ function closeInlineHelpPopovers($except = $()) {
 }
 
 function updateAuthButtons() {
-  $("#saveAuth").prop("disabled", latestLoopActive);
+  $("#addAuthField").prop("disabled", latestLoopActive);
   $("#clearAuth").prop("disabled", latestLoopActive || !latestAuthStatus.hasKey);
+  $(".auth-key-input, .auth-key-remove").prop("disabled", latestLoopActive);
+}
+
+function formatKeyCountLabel(count) {
+  const total = Math.max(0, Number(count || 0));
+  if (!total) return "none";
+  return total === 1 ? "1 key" : total + " keys";
+}
+
+function nextAuthRowId() {
+  authRowSequence += 1;
+  return "auth-row-" + authRowSequence;
+}
+
+function compactMaskedKey(masked) {
+  const text = String(masked || "").trim();
+  if (!text) return "masked";
+  const last4 = text.slice(-4);
+  return "\u2022\u2022\u2022\u2022" + last4;
+}
+
+function ensureAuthDynamicRow() {
+  if (latestAuthStatus.hasKey || authDynamicRows.length) return;
+  authDynamicRows.push({ id: nextAuthRowId(), value: "" });
+}
+
+function resetAuthDynamicRows() {
+  authDynamicRows = [];
+  ensureAuthDynamicRow();
+}
+
+function updateAuthDynamicRow(rowId, value) {
+  authDynamicRows = authDynamicRows.map(function (row) {
+    return row.id === rowId ? Object.assign({}, row, { value: value }) : row;
+  });
+}
+
+function removeAuthDynamicRow(rowId) {
+  authDynamicRows = authDynamicRows.filter(function (row) {
+    return row.id !== rowId;
+  });
+  ensureAuthDynamicRow();
+}
+
+function authPreviewRotationOffset(keyCount) {
+  const total = Math.max(0, Number(keyCount || 0));
+  if (total <= 1) return 0;
+  const taskId = String(latestState?.activeTask?.taskId || "").trim();
+  const commanderRound = Number(latestState?.commander?.round || 0);
+  const summaryRound = Number(latestState?.summary?.round || 0);
+  const roundBase = Math.max(commanderRound, summaryRound, 1) - 1;
+  let hash = 0;
+  for (let index = 0; index < taskId.length; index += 1) {
+    hash = (hash * 31 + taskId.charCodeAt(index)) >>> 0;
+  }
+  return (hash + Math.max(0, roundBase)) % total;
+}
+
+function authPositionPlan() {
+  const visibleWorkers = $("#workerControls .workercontrol[data-worker-id]").length
+    ? collectVisibleWorkerRoster()
+    : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
+  const positions = [{ id: "commander", label: "Commander" }];
+  (visibleWorkers || []).forEach(function (worker) {
+    const workerId = String(worker?.id || "").trim().toUpperCase();
+    if (!workerId) return;
+    positions.push({
+      id: workerId,
+      label: workerId + " / " + displayWorkerLabel(worker)
+    });
+  });
+  positions.push({ id: "summarizer", label: "Summarizer" });
+  return positions;
+}
+
+function buildAuthAssignments(status) {
+  const masks = Array.isArray(status?.masks) ? status.masks.filter(Boolean) : [];
+  const keyCount = Math.max(0, Number(status?.keyCount || masks.length || 0));
+  if (!keyCount || !masks.length) return [];
+  const rotationOffset = authPreviewRotationOffset(keyCount);
+  return authPositionPlan().map(function (position, index) {
+    const keyIndex = (index + rotationOffset) % keyCount;
+    return {
+      label: position.label,
+      keySlot: keyIndex + 1,
+      masked: compactMaskedKey(masks[keyIndex] || ("slot " + (keyIndex + 1))),
+      reused: index >= keyCount
+    };
+  });
+}
+
+function renderAuthEditor(force = false) {
+  const $editor = $("#authKeyEditor");
+  if (!$editor.length) return;
+  ensureAuthDynamicRow();
+  if (!force && hasFocusWithin("#authKeyEditor")) return;
+
+  const masks = Array.isArray(latestAuthStatus.masks) ? latestAuthStatus.masks.filter(Boolean) : [];
+  const rows = [];
+
+  masks.forEach(function (masked, index) {
+    rows.push(`
+      <div class="auth-key-row" data-auth-mode="stored" data-slot-index="${index}">
+        <div class="auth-key-row-head">
+          <div>
+            <div class="auth-key-row-label">Slot ${index + 1}</div>
+            <div class="auth-key-row-meta">Stored now as ${escapeHtml(compactMaskedKey(masked))}. Paste a replacement to swap it.</div>
+          </div>
+        </div>
+        <div class="auth-key-row-inputs">
+          <input class="auth-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste replacement key for slot ${index + 1}" ${latestLoopActive ? "disabled" : ""} />
+          <button type="button" class="auth-key-remove danger" data-remove-mode="stored" data-slot-index="${index}" ${latestLoopActive ? "disabled" : ""}>Remove</button>
+        </div>
+      </div>
+    `);
+  });
+
+  authDynamicRows.forEach(function (row, index) {
+    rows.push(`
+      <div class="auth-key-row" data-auth-mode="new" data-row-id="${escapeHtml(row.id)}">
+        <div class="auth-key-row-head">
+          <div>
+            <div class="auth-key-row-label">New key ${index + 1}</div>
+            <div class="auth-key-row-meta">Paste a key here and it will append into the local pool automatically.</div>
+          </div>
+        </div>
+        <div class="auth-key-row-inputs">
+          <input class="auth-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste new API key" value="${escapeHtml(row.value || "")}" ${latestLoopActive ? "disabled" : ""} />
+          <button type="button" class="auth-key-remove" data-remove-mode="new" data-row-id="${escapeHtml(row.id)}" ${latestLoopActive ? "disabled" : ""}>Remove</button>
+        </div>
+      </div>
+    `);
+  });
+
+  $editor.html(rows.join(""));
+}
+
+function renderAuthPoolPreview() {
+  const $preview = $("#apiKeyPreview").empty();
+  const $assignment = $("#apiKeyAssignment").empty();
+
+  if (!latestAuthStatus.hasKey) {
+    $preview.text("Store one or more local keys here when you want live mode.");
+    $assignment.text("When the pool is smaller than the lane count, the runtime rotates the starting slot so one key does not always take commander-first traffic.");
+    return;
+  }
+
+  (latestAuthStatus.masks || []).forEach(function (masked, index) {
+    $preview.append(
+      $("<span>")
+        .addClass("key-slot-chip")
+        .text("Slot " + (index + 1) + " " + compactMaskedKey(masked))
+    );
+  });
+
+  buildAuthAssignments(latestAuthStatus).forEach(function (assignment) {
+    const $chip = $("<span>")
+      .addClass("key-slot-chip")
+      .text(assignment.label + " -> slot " + assignment.keySlot + " " + assignment.masked);
+    if (assignment.reused) {
+      $chip.addClass("reused");
+      $chip.attr("title", "This position reuses an earlier key because the pool is smaller than the lane count.");
+    }
+    $assignment.append($chip);
+  });
 }
 
 function renderAuthStatus(data) {
   latestAuthStatus = {
     hasKey: !!data?.hasKey,
+    keyCount: Number(data?.keyCount || 0),
     masked: data?.masked || null,
-    last4: data?.last4 || ""
+    last4: data?.last4 || "",
+    masks: Array.isArray(data?.masks) ? data.masks.filter(Boolean) : []
   };
 
-  $("#apiKeyMasked").text(latestAuthStatus.masked || "none");
+  $("#apiKeyMasked").text(formatKeyCountLabel(latestAuthStatus.keyCount));
   $("#apiKeyStatus").text(
     latestAuthStatus.hasKey
-      ? "Stored locally. Only the last 4 characters are shown in the UI."
-      : "No key stored. Live mode needs a key."
+      ? "Stored locally. Pasting into a slot replaces it, and limited pools rotate their starting slot across the lane order."
+      : "No key pool stored. Live mode needs at least one key."
   );
+  renderAuthPoolPreview();
+  renderAuthEditor();
   updateAuthButtons();
 }
 
@@ -1442,11 +1687,111 @@ function refreshAuth() {
       renderAuthStatus(data);
     })
     .fail(function () {
-      latestAuthStatus = { hasKey: false, masked: null, last4: "" };
+      latestAuthStatus = { hasKey: false, keyCount: 0, masked: null, last4: "", masks: [] };
       $("#apiKeyMasked").text("unavailable");
       $("#apiKeyStatus").text("Auth status could not be loaded.");
+      $("#apiKeyPreview").text("Auth status could not be loaded.");
+      $("#apiKeyAssignment").text("");
+      renderAuthEditor(true);
       updateAuthButtons();
     });
+}
+
+function clearAuthSaveTimer(timerKey) {
+  if (!timerKey || !authSaveTimers[timerKey]) return;
+  clearTimeout(authSaveTimers[timerKey]);
+  delete authSaveTimers[timerKey];
+}
+
+function handleAuthMutationSuccess(resp, successText, options = {}) {
+  let out = resp;
+  try { out = JSON.parse(resp); } catch (_) {}
+  showMessage(successText + (out.message ? " | " + out.message : ""));
+  if (typeof options.onSuccess === "function") {
+    options.onSuccess(out);
+  }
+  refreshState();
+}
+
+function persistAuthSlot(slotIndex, apiKey) {
+  const trimmed = String(apiKey || "").trim();
+  if (!trimmed || latestLoopActive) return;
+  $.post("api/set_auth.php", { replaceIndex: slotIndex, apiKey: trimmed })
+    .done(function (resp) {
+      handleAuthMutationSuccess(resp, "API key slot updated", {
+        onSuccess: function () {
+          renderAuthEditor(true);
+        }
+      });
+    })
+    .fail(function (xhr) {
+      showMessage("API key slot update failed: " + extractErrorMessage(xhr), true);
+    });
+}
+
+function appendAuthKey(rowId, apiKey) {
+  const trimmed = String(apiKey || "").trim();
+  if (!trimmed || latestLoopActive) return;
+  $.post("api/set_auth.php", { appendKey: trimmed })
+    .done(function (resp) {
+      handleAuthMutationSuccess(resp, "API key added", {
+        onSuccess: function () {
+          removeAuthDynamicRow(rowId);
+          renderAuthEditor(true);
+        }
+      });
+    })
+    .fail(function (xhr) {
+      showMessage("API key append failed: " + extractErrorMessage(xhr), true);
+    });
+}
+
+function removeAuthSlot(slotIndex) {
+  $.post("api/set_auth.php", { removeIndex: slotIndex })
+    .done(function (resp) {
+      handleAuthMutationSuccess(resp, "API key removed", {
+        onSuccess: function () {
+          renderAuthEditor(true);
+        }
+      });
+    })
+    .fail(function (xhr) {
+      showMessage("API key removal failed: " + extractErrorMessage(xhr), true);
+    });
+}
+
+function scheduleAuthRowSave($input, immediate = false) {
+  if (!$input || !$input.length) return;
+  const $row = $input.closest(".auth-key-row");
+  const mode = String($row.data("authMode") || "");
+  const rowId = String($row.data("rowId") || "");
+  const slotIndex = Number($row.data("slotIndex"));
+  const value = String($input.val() || "");
+  const timerKey = mode === "stored" ? "stored-" + slotIndex : rowId;
+
+  if (mode === "new" && rowId) {
+    updateAuthDynamicRow(rowId, value);
+  }
+
+  clearAuthSaveTimer(timerKey);
+
+  const runner = function () {
+    if (mode === "stored") {
+      persistAuthSlot(slotIndex, value);
+      return;
+    }
+    appendAuthKey(rowId, value);
+  };
+
+  if (immediate) {
+    runner();
+    return;
+  }
+
+  authSaveTimers[timerKey] = setTimeout(function () {
+    delete authSaveTimers[timerKey];
+    runner();
+  }, 450);
 }
 
 function applyArtifactSelectionPair(leftArtifact, rightArtifact) {
@@ -1457,11 +1802,11 @@ function applyArtifactSelectionPair(leftArtifact, rightArtifact) {
   artifactSelections.right = rightArtifact && names.has(rightArtifact) ? rightArtifact : "";
 
   if (!artifactSelections.left) {
-    const fallbackLeft = pickArtifact(artifacts, ["summary_output", "worker_output", "summary_round", "worker_step"], "");
+    const fallbackLeft = pickArtifact(artifacts, ["summary_output", "commander_output", "worker_output", "summary_round", "commander_round", "worker_step"], "");
     artifactSelections.left = fallbackLeft ? fallbackLeft.name : "";
   }
   if (!artifactSelections.right || artifactSelections.right === artifactSelections.left) {
-    const fallbackRight = pickArtifact(artifacts, ["worker_output", "summary_output", "worker_step", "summary_round"], artifactSelections.left);
+    const fallbackRight = pickArtifact(artifacts, ["commander_output", "worker_output", "summary_output", "commander_round", "worker_step", "summary_round"], artifactSelections.left);
     artifactSelections.right = fallbackRight ? fallbackRight.name : "";
   }
 
@@ -1562,11 +1907,15 @@ function renderRoundHistory(rounds) {
   return `
     <div class="round-history-stack">
       ${rounds.map(function (roundEntry) {
+        const commanderArtifact = roundEntry.commanderArtifact || null;
         const summaryArtifact = roundEntry.summaryArtifact || null;
         const previousSummary = summaryByTaskRound[String(roundEntry.taskId || "") + ":" + String(Number(roundEntry.round || 0) - 1)] || null;
         const primaryWorker = Array.isArray(roundEntry.workerArtifacts) && roundEntry.workerArtifacts.length ? roundEntry.workerArtifacts[0] : null;
         const topActions = [];
 
+        if (summaryArtifact && commanderArtifact) {
+          topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(commanderArtifact.name)}">Summary vs commander</button>`);
+        }
         if (summaryArtifact && primaryWorker) {
           topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(primaryWorker.name)}">Summary vs lane</button>`);
         }
@@ -1585,6 +1934,7 @@ function renderRoundHistory(rounds) {
             </div>
             <div class="round-history-meta">${escapeHtml(truncateText(roundEntry.objective || "No objective recorded.", 180))}</div>
             <div class="round-history-meta">${escapeHtml("Captured " + (roundEntry.capturedAt || "n/a") + (summaryArtifact ? " | summary " + summaryArtifact.name + " | " + artifactOutputCapSummary(summaryArtifact) : ""))}</div>
+            ${commanderArtifact ? `<div class="round-history-meta">${escapeHtml("Commander draft " + commanderArtifact.name + " | " + artifactOutputCapSummary(commanderArtifact))}</div>` : ""}
             ${topActions.length ? `<div class="round-history-actions">${topActions.join("")}</div>` : ""}
             <div class="round-history-workers">
               ${(roundEntry.workerArtifacts || []).map(function (artifact) {
@@ -2045,6 +2395,32 @@ function allWorkerCheckpointsReady(task, stateWorkers) {
   });
 }
 
+function commanderRound(task) {
+  return Number(task?.stateCommander?.round || 0);
+}
+
+function workerExpectedRound(task, workerId, stateWorkers) {
+  const checkpoint = stateWorkers?.[workerId] || null;
+  return Number(checkpoint?.step || 0) + 1;
+}
+
+function workerReadyForCommanderRound(task, workerId, stateWorkers) {
+  const currentCommanderRound = commanderRound(task);
+  if (currentCommanderRound <= 0) return false;
+  return currentCommanderRound === workerExpectedRound(task, workerId, stateWorkers);
+}
+
+function summarizerReadyForCommanderRound(task, stateWorkers) {
+  const currentCommanderRound = commanderRound(task);
+  if (currentCommanderRound <= 0) return false;
+  const workers = task?.workers || [];
+  if (!workers.length) return false;
+  return workers.every(function (worker) {
+    const checkpoint = stateWorkers?.[worker.id] || null;
+    return Number(checkpoint?.step || 0) === currentCommanderRound;
+  });
+}
+
 function renderWorkerControls(task, loop, stateWorkers) {
   const $controls = $("#workerControls");
   $controls.empty();
@@ -2095,9 +2471,11 @@ function renderWorkerControls(task, loop, stateWorkers) {
 function renderHomeWorkerControls(task, draft, loop) {
   const $controls = $("#workerControls");
   const workers = stagedWorkerSource(draft, task);
+  const summarizer = stagedSummarizerSource(draft, task);
   const signature = JSON.stringify({
     mode: "draft",
     workers,
+    summarizer,
     loopStatus: loop?.status || "idle"
   });
   if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
@@ -2202,9 +2580,11 @@ function buildWorkerControlCard(worker, isActive) {
 function renderHomeWorkerControls(task, draft, loop) {
   const $controls = $("#workerControls");
   const workers = stagedWorkerSource(draft, task);
+  const summarizer = stagedSummarizerSource(draft, task);
   const signature = JSON.stringify({
     mode: "draft",
     workers,
+    summarizer,
     loopStatus: loop?.status || "idle"
   });
   if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
@@ -2220,15 +2600,18 @@ function renderHomeWorkerControls(task, draft, loop) {
   workers.forEach(function (worker) {
     $controls.append(buildWorkerControlCard(worker, isActive));
   });
+  $controls.append(buildSummarizerControlCard(summarizer, isActive));
 }
 
 function renderDebugTargetControls(task, loop, stateWorkers) {
   const $controls = $("#debugTargetControls");
+  const currentCommander = task?.stateCommander || null;
   const signature = JSON.stringify({
     taskId: task?.taskId || "",
+    commanderRound: currentCommander?.round || 0,
     workers: task?.workers || [],
     loopStatus: loop?.status || "idle",
-    summaryReady: allWorkerCheckpointsReady(task, stateWorkers || {})
+    summaryReady: summarizerReadyForCommanderRound(task, stateWorkers || {})
   });
   if (signature === debugControlsSignature || hasFocusWithin("#debugTargetControls")) return;
   debugControlsSignature = signature;
@@ -2240,24 +2623,52 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   }
 
   const isActive = loop?.status === "running" || loop?.status === "queued";
-  const summaryReady = allWorkerCheckpointsReady(task, stateWorkers || {});
+  const currentCommanderRound = commanderRound(task);
+  const summaryReady = summarizerReadyForCommanderRound(task, stateWorkers || {});
+  const commanderModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
+
+  const $commanderCard = $("<div>").addClass("workercontrol");
+  $commanderCard.append($("<div>").addClass("workercontrol-title").text("Commander"));
+  $commanderCard.append(
+    $("<div>").addClass("workercontrol-meta").text(
+      (currentCommanderRound > 0 ? "round " + currentCommanderRound : "ready for round 1") + " | " + commanderModel
+    )
+  );
+  $commanderCard.append(
+    $("<div>").addClass("inlineform").append(
+      $("<button>").addClass("run-target").attr("data-target", "commander").prop("disabled", isActive).text("Run commander")
+    )
+  );
+  $controls.append($commanderCard);
+
   task.workers.forEach(function (worker) {
     const checkpoint = stateWorkers?.[worker.id] || null;
+    const expectedRound = workerExpectedRound(task, worker.id, stateWorkers || {});
     const $card = $("<div>").addClass("workercontrol");
     $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + worker.label));
-    $card.append($("<div>").addClass("workercontrol-meta").text((checkpoint ? "step " + (checkpoint.step || 0) : "no checkpoint") + " | " + worker.model));
+    $card.append(
+      $("<div>").addClass("workercontrol-meta").text(
+        (checkpoint ? "step " + (checkpoint.step || 0) : "no checkpoint")
+        + " | expects commander round " + expectedRound
+        + " | " + worker.model
+      )
+    );
     $card.append(
       $("<div>").addClass("inlineform").append(
-        $("<button>").addClass("run-target").attr("data-target", worker.id).prop("disabled", isActive).text("Run " + worker.id)
+        $("<button>").addClass("run-target").attr("data-target", worker.id).prop("disabled", isActive || !workerReadyForCommanderRound(task, worker.id, stateWorkers || {})).text("Run " + worker.id)
       )
     );
     $controls.append($card);
   });
 
-  const summarizerModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
   const $summaryCard = $("<div>").addClass("workercontrol");
   $summaryCard.append($("<div>").addClass("workercontrol-title").text("Summarizer"));
-  $summaryCard.append($("<div>").addClass("workercontrol-meta").text((summaryReady ? "ready" : "waiting on workers") + " | " + summarizerModel));
+  $summaryCard.append(
+    $("<div>").addClass("workercontrol-meta").text(
+      (summaryReady ? "ready for commander round " + currentCommanderRound : "waiting on commander-aligned workers")
+      + " | " + commanderModel
+    )
+  );
   $summaryCard.append(
     $("<div>").addClass("inlineform").append(
       $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize")
@@ -2301,7 +2712,8 @@ function renderFooterCheckpoints(task) {
   $list.empty();
 
   const workers = task?.workers || [];
-  if (!workers.length) {
+  const currentCommander = task?.stateCommander || null;
+  if (!workers.length && !currentCommander) {
     $list.append($("<div>").addClass("footer-checkpoint-empty").text("No checkpoints yet."));
     return;
   }
@@ -2317,8 +2729,27 @@ function renderFooterCheckpoints(task) {
   });
 
   if (!entries.some(function (entry) { return !!entry.checkpoint; })) {
-    $list.append($("<div>").addClass("footer-checkpoint-empty").text("Waiting for the first worker checkpoints."));
-    return;
+    if (!currentCommander) {
+      $list.append($("<div>").addClass("footer-checkpoint-empty").text("Waiting for the first worker checkpoints."));
+      return;
+    }
+  }
+
+  if (currentCommander) {
+    const commanderPreview = truncateText(currentCommander.answerDraft || currentCommander.leadDirection || "Commander draft available.", 88);
+    const $item = $("<div>").addClass("footer-checkpoint-item compact-hover-card");
+    const $head = $("<div>").addClass("footer-checkpoint-head");
+    $head.append($("<div>").addClass("footer-checkpoint-title").text("Commander"));
+    $head.append($("<div>").addClass("footer-checkpoint-step").text("round " + Number(currentCommander.round || 0)));
+    $item.append($head);
+    $item.append($("<div>").addClass("footer-checkpoint-copy").text(commanderPreview));
+    appendCompactHoverPopup($item, [
+      currentCommander.stance ? "Stance: " + truncateText(currentCommander.stance, 220) : "",
+      currentCommander.leadDirection ? "Lead direction: " + truncateText(currentCommander.leadDirection, 280) : "",
+      currentCommander.answerDraft ? "Draft: " + truncateText(currentCommander.answerDraft, 320) : "",
+      currentCommander.whyThisDirection ? "Reason: " + truncateText(currentCommander.whyThisDirection, 240) : ""
+    ]);
+    $list.append($item);
   }
 
   entries.forEach(function (entry) {
@@ -2345,6 +2776,7 @@ function renderFooterCheckpoints(task) {
 function buildWorkerControlCard(worker, isActive) {
   const workerId = String(worker.id || "").trim();
   const workerKey = normalizeWorkerControlKey(workerId);
+  const harness = normalizeHarnessConfig(worker?.harness, "tight");
   const $card = $("<details>")
     .addClass("workercontrol workercontrol-collapsible")
     .attr("data-worker-id", workerId);
@@ -2357,7 +2789,7 @@ function buildWorkerControlCard(worker, isActive) {
   $summaryMain.append($("<div>").addClass("workercontrol-title").text(workerId + " | " + displayWorkerLabel(worker)));
   $summaryMain.append(
     $("<div>").addClass("workercontrol-meta").text(
-      workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + modelLabel(worker.model)
+      workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + harnessConcisionLabel(harness, "tight") + " | " + modelLabel(worker.model)
     )
   );
   $summary.append($summaryMain);
@@ -2386,6 +2818,80 @@ function buildWorkerControlCard(worker, isActive) {
     $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model))
   );
   $body.append($modelRow);
+
+  const $harnessRow = $("<div>").addClass("workercontrol-field");
+  $harnessRow.append($("<label>").text("Harness"));
+  $harnessRow.append(
+    $("<select>").addClass("worker-harness-profile").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildHarnessConcisionOptions(harness.concision))
+  );
+  $body.append($harnessRow);
+
+  const $instructionRow = $("<div>").addClass("workercontrol-field");
+  $instructionRow.append($("<label>").text("Harness note"));
+  $instructionRow.append(
+    $("<textarea>")
+      .addClass("worker-harness-instruction")
+      .attr("data-worker-id", workerId)
+      .prop("disabled", isActive)
+      .attr("rows", "3")
+      .attr("placeholder", "Optional extra instruction for this lane's harness.")
+      .val(harness.instruction || "")
+  );
+  $body.append($instructionRow);
+
+  $card.append($body);
+  return $card;
+}
+
+function buildSummarizerControlCard(summarizer, isActive) {
+  const summarizerKey = normalizeWorkerControlKey("summarizer");
+  const harness = normalizeHarnessConfig(summarizer?.harness, "balanced");
+  const $card = $("<details>")
+    .addClass("workercontrol workercontrol-collapsible summarizer-control-card")
+    .attr("data-position-id", "summarizer");
+  if (workerControlExpanded[summarizerKey]) {
+    $card.attr("open", "open");
+  }
+
+  const $summary = $("<summary>").addClass("workercontrol-summary");
+  const $summaryMain = $("<div>").addClass("workercontrol-summary-main");
+  $summaryMain.append($("<div>").addClass("workercontrol-title").text("Commander / Summarizer"));
+  $summaryMain.append(
+    $("<div>").addClass("workercontrol-meta").text(
+      "Lead voice | " + harnessConcisionLabel(harness, "balanced") + " | " + modelLabel(summarizer?.model || "gpt-5-mini")
+    )
+  );
+  $summary.append($summaryMain);
+  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
+  $card.append($summary);
+
+  const $body = $("<div>").addClass("workercontrol-body");
+
+  const $modelRow = $("<div>").addClass("workercontrol-field");
+  $modelRow.append($("<label>").text("Model"));
+  $modelRow.append(
+    $("<select>").addClass("summarizer-model-draft").prop("disabled", isActive).html(buildModelOptions(summarizer?.model || "gpt-5-mini"))
+  );
+  $body.append($modelRow);
+
+  const $harnessRow = $("<div>").addClass("workercontrol-field");
+  $harnessRow.append($("<label>").text("Harness"));
+  $harnessRow.append(
+    $("<select>").addClass("summarizer-harness-profile").prop("disabled", isActive).html(buildHarnessConcisionOptions(harness.concision))
+  );
+  $body.append($harnessRow);
+
+  const $instructionRow = $("<div>").addClass("workercontrol-field");
+  $instructionRow.append($("<label>").text("Harness note"));
+  $instructionRow.append(
+    $("<textarea>")
+      .addClass("summarizer-harness-instruction")
+      .prop("disabled", isActive)
+      .attr("rows", "3")
+      .attr("placeholder", "Optional extra instruction for the lead answer harness.")
+      .val(harness.instruction || "")
+  );
+  $body.append($instructionRow);
 
   $card.append($body);
   return $card;
@@ -2681,6 +3187,28 @@ function renderReviewBlock(label, text) {
   `;
 }
 
+function formatCourseDecisionLabel(decision) {
+  const normalized = String(decision || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+  if (!normalized) return "";
+  return normalized.replace(/\b\w/g, function (match) {
+    return match.toUpperCase();
+  });
+}
+
+function renderContributionAssessments(items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  const lines = items.map(function (item) {
+    const contribution = String(item?.contribution || "").trim();
+    if (!contribution) return "";
+    const value = String(item?.value || "").trim().toLowerCase();
+    const effect = String(item?.effect || "").trim().toLowerCase();
+    const reason = String(item?.reason || "").trim();
+    const prefix = [effect ? formatCourseDecisionLabel(effect) : "", value ? value.toUpperCase() : ""].filter(Boolean).join(" | ");
+    return [prefix, contribution, reason].filter(Boolean).join("\n");
+  }).filter(Boolean);
+  return lines.length ? renderReviewBlock("Contribution value checks", lines.join("\n\n")) : "";
+}
+
 function renderReviewLineSnippet(ref, entry) {
   if (!entry) {
     return `
@@ -2742,6 +3270,9 @@ function renderSummaryOpinion(summary) {
     renderReviewBlock("Integration mode", opinion.integrationMode || ""),
     renderReviewBlock("Lead draft before pressure", controlAudit.leadDraft || ""),
     renderReviewBlock("Control question", controlAudit.integrationQuestion || ""),
+    renderReviewBlock("Course decision", formatCourseDecisionLabel(controlAudit.courseDecision || "")),
+    renderReviewBlock("Why course changed or held", controlAudit.courseDecisionReason || ""),
+    renderContributionAssessments(controlAudit.contributionAssessments || []),
     Array.isArray(controlAudit.acceptedAdversarialPoints) && controlAudit.acceptedAdversarialPoints.length
       ? renderReviewBlock("Accepted adversarial points", controlAudit.acceptedAdversarialPoints.join("\n"))
       : "",
@@ -3171,11 +3702,17 @@ function refreshState() {
   $.getJSON("api/get_state.php")
     .done(function (data) {
       latestState = data;
-      const task = data.activeTask ? Object.assign({}, data.activeTask, { stateWorkers: data.workers || {} }) : null;
+      const task = data.activeTask
+        ? Object.assign({}, data.activeTask, {
+            stateWorkers: data.workers || {},
+            stateCommander: data.commander || null
+          })
+        : null;
       syncCommanderForm(data.activeTask || null, data.draft || null);
       applyLoopUi(data);
       renderAddWorkerTypeControl(data.activeTask || null, data.draft || null, data.loop || null);
       renderHomeWorkerControls(data.activeTask || null, data.draft || null, data.loop || null);
+      renderAuthStatus(latestAuthStatus);
       renderHomeRuntimeControls(data.activeTask || null, data.draft || null, data.loop || null);
       renderQualityProfileCards();
       renderDebugTargetControls(data.activeTask || null, data.loop || null, data.workers || {});
@@ -3326,7 +3863,7 @@ $(function () {
   });
 
   $(document).on("toggle", ".workercontrol-collapsible", function () {
-    setWorkerControlExpandedState($(this).data("workerId"), this.open);
+    setWorkerControlExpandedState($(this).data("workerId") || $(this).data("positionId"), this.open);
   });
 
   $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
@@ -3341,6 +3878,7 @@ $(function () {
     const payload = collectCommanderPayload();
     const visibleWorkers = collectVisibleWorkerRoster();
     const workers = visibleWorkers.length ? visibleWorkers : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
+    const summarizerConfig = collectVisibleSummarizerConfig();
 
     if (!payload.objective) {
       showMessage("Objective is required.", true);
@@ -3353,7 +3891,8 @@ $(function () {
       constraints: JSON.stringify(payload.constraints),
       executionMode: payload.executionMode,
       model: payload.model,
-      summarizerModel: payload.summarizerModel,
+      summarizerModel: summarizerConfig.model || payload.summarizerModel,
+      summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "balanced")),
       reasoningEffort: payload.reasoningEffort,
       maxCostUsd: payload.maxCostUsd,
       maxTotalTokens: payload.maxTotalTokens,
@@ -3673,40 +4212,48 @@ $(function () {
     });
   });
 
-  $("#saveAuth").on("click", function () {
-    const apiKey = $("#apiKeyInput").val().trim();
-    if (!apiKey) {
-      showMessage("Enter an API key to save.", true);
-      return;
-    }
-
-    $.post("api/set_auth.php", { apiKey })
-      .done(function (resp) {
-        let out = resp;
-        try { out = JSON.parse(resp); } catch (_) {}
-        $("#apiKeyInput").val("");
-        showMessage("API key saved" + (out.message ? " | " + out.message : ""));
-        refreshState();
-      })
-      .fail(function (xhr) {
-        showMessage("API key update failed: " + extractErrorMessage(xhr), true);
-      });
+  $("#addAuthField").on("click", function () {
+    authDynamicRows.push({ id: nextAuthRowId(), value: "" });
+    renderAuthEditor(true);
   });
 
   $("#clearAuth").on("click", function () {
-    if (!confirm("Clear the stored API key from Auth.txt?")) return;
+    if (!confirm("Clear the stored API key pool from Auth.txt?")) return;
 
     $.post("api/set_auth.php", { clear: 1 })
       .done(function (resp) {
-        let out = resp;
-        try { out = JSON.parse(resp); } catch (_) {}
-        $("#apiKeyInput").val("");
-        showMessage("API key cleared" + (out.message ? " | " + out.message : ""));
-        refreshState();
+        handleAuthMutationSuccess(resp, "API key pool cleared", {
+          onSuccess: function () {
+            resetAuthDynamicRows();
+            renderAuthEditor(true);
+          }
+        });
       })
       .fail(function (xhr) {
-        showMessage("API key clear failed: " + extractErrorMessage(xhr), true);
+        showMessage("API key pool clear failed: " + extractErrorMessage(xhr), true);
       });
+  });
+
+  $(document).on("input change paste", ".auth-key-input", function () {
+    scheduleAuthRowSave($(this), false);
+  });
+
+  $(document).on("blur", ".auth-key-input", function () {
+    scheduleAuthRowSave($(this), true);
+  });
+
+  $(document).on("click", ".auth-key-remove", function () {
+    const mode = String($(this).data("removeMode") || "");
+    if (mode === "stored") {
+      const slotIndex = Number($(this).data("slotIndex"));
+      if (Number.isNaN(slotIndex)) return;
+      removeAuthSlot(slotIndex);
+      return;
+    }
+    const rowId = String($(this).data("rowId") || "");
+    clearAuthSaveTimer(rowId);
+    removeAuthDynamicRow(rowId);
+    renderAuthEditor(true);
   });
 
   $("#resetState").on("click", function () {
@@ -3726,18 +4273,10 @@ $(function () {
     postForm("api/run_target.php", { target }, "Target ran");
   });
 
-  $(document).on("change", ".worker-type, .worker-temperature, .worker-model", function () {
-    const $card = $(this).closest(".workercontrol");
-    const workerId = String($card.data("workerId") || "").trim();
-    if (!workerId) return;
+  $(document).on("change", ".worker-type, .worker-temperature, .worker-model, .worker-harness-profile, .worker-harness-instruction, .summarizer-model-draft, .summarizer-harness-profile, .summarizer-harness-instruction", function () {
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
     renderQualityProfileCards();
-    postForm("api/update_worker.php", {
-      workerId,
-      type: $card.find(".worker-type").val(),
-      temperature: $card.find(".worker-temperature").val(),
-      model: $card.find(".worker-model").val()
-    }, "Worker updated", {
+    postForm("api/save_draft.php", buildDraftSavePayload({ summarizerConfig: collectVisibleSummarizerConfig() }), "Harness updated", {
       onSuccess: function () {
         workerControlsSignature = "";
         debugControlsSignature = "";

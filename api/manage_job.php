@@ -124,6 +124,7 @@ if ($shouldRestoreSnapshot) {
     mutate_state(function (array $state) use ($taskSnapshot): array {
         $state['activeTask'] = $taskSnapshot;
         $state['draft'] = build_draft_from_task($taskSnapshot);
+        $state['commander'] = null;
         $state['workers'] = empty_worker_state_map(task_workers($taskSnapshot));
         $state['summary'] = null;
         $state['memoryVersion'] = (int)($state['memoryVersion'] ?? 0) + 1;
