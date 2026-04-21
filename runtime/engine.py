@@ -4358,12 +4358,12 @@ class LoopRuntime:
         prior_summary = state.get("summary") if isinstance(state.get("summary"), dict) else None
         commander_checkpoint = state.get("commander") if isinstance(state.get("commander"), dict) else None
         prior_memory_version = int(state.get("memoryVersion", 0) or 0)
-        step_number = 1
+        commander_round = int((commander_checkpoint or {}).get("round", 0) or 0)
+        step_number = commander_round if commander_round > 0 else 1
         checkpoint_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
         existing = checkpoint_state.get(worker_id)
         if isinstance(existing, dict):
             step_number = int(existing.get("step", 0) or 0) + 1
-        commander_round = int((commander_checkpoint or {}).get("round", 0) or 0)
         if commander_round <= 0:
             raise RuntimeErrorWithCode("Commander draft is required before workers can run.", 409)
         if commander_round != step_number:
