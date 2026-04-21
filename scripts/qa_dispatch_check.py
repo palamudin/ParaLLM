@@ -304,7 +304,7 @@ def run_dispatch_smoke(
             if not dispatch_non_idle_seen:
                 raise QAError("Dispatch smoke never showed a non-idle dispatch state while target jobs were active.")
 
-            required_targets = {"commander", "A", "B", "C", "D", "summarizer"}
+            required_targets = {"commander", "A", "B", "C", "D", "commander_review", "summarizer"}
             seen_targets = {str(job.get("target") or "") for job in final_jobs}
             missing_targets = sorted(required_targets - seen_targets)
             if missing_targets:
@@ -341,9 +341,14 @@ def run_dispatch_smoke(
             final_history = request_json(api_url(base_url, "get_history.php"), timeout=20)
             artifacts = [artifact for artifact in final_history.get("artifacts", []) if isinstance(artifact, dict) and str(artifact.get("taskId") or "") == task_id]
             partial_artifacts = [artifact for artifact in artifacts if str(artifact.get("kind") or "") == "summary_partial_output"]
+            commander_review_artifacts = [
+                artifact for artifact in artifacts if str(artifact.get("kind") or "") == "commander_review_output"
+            ]
             summary_artifacts = [artifact for artifact in artifacts if str(artifact.get("kind") or "") == "summary_output"]
             if not partial_artifacts:
                 raise QAError("Answer Now did not leave a summary_partial_output artifact.")
+            if not commander_review_artifacts:
+                raise QAError("Commander review did not leave a commander_review_output artifact.")
             if not summary_artifacts:
                 raise QAError("Full summarizer did not leave a summary_output artifact.")
 
@@ -374,6 +379,7 @@ def run_dispatch_smoke(
                     for job in final_jobs
                 ],
                 "partialArtifacts": [artifact.get("name") for artifact in partial_artifacts],
+                "commanderReviewArtifacts": [artifact.get("name") for artifact in commander_review_artifacts],
                 "summaryArtifacts": [artifact.get("name") for artifact in summary_artifacts],
                 "authAssignments": assignments,
                 "uniqueKeySlots": unique_slots,

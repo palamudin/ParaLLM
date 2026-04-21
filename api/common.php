@@ -868,6 +868,7 @@ function normalize_worker_definition(array $worker, ?string $defaultModel = null
         'temperature' => 'balanced',
     ];
     $fallbackModel = $defaultModel !== null ? $defaultModel : default_model_id();
+    $activeFromRound = max(1, (int)($worker['activeFromRound'] ?? 1));
 
     return [
         'id' => $workerId,
@@ -877,11 +878,12 @@ function normalize_worker_definition(array $worker, ?string $defaultModel = null
         'focus' => trim((string)($worker['focus'] ?? $catalogWorker['focus'])) ?: $catalogWorker['focus'],
         'temperature' => normalize_worker_temperature($worker['temperature'] ?? $catalogWorker['temperature'] ?? 'balanced', (string)($catalogWorker['temperature'] ?? 'balanced')),
         'model' => normalize_model_id($worker['model'] ?? null, $fallbackModel),
+        'activeFromRound' => $activeFromRound,
         'harness' => normalize_harness_config($worker['harness'] ?? null, default_worker_harness()['concision']),
     ];
 }
 
-function task_workers(array $task): array {
+function task_workers(array $task, ?int $roundNumber = null): array {
     $defaultModel = normalize_model_id($task['runtime']['model'] ?? null, default_model_id());
     $workers = [];
     if (isset($task['workers']) && is_array($task['workers'])) {
@@ -902,7 +904,14 @@ function task_workers(array $task): array {
     }
 
     ksort($workers);
-    return array_values($workers);
+    $ordered = array_values($workers);
+    if ($roundNumber === null) {
+        return $ordered;
+    }
+    $activeRound = max(1, (int)$roundNumber);
+    return array_values(array_filter($ordered, static function (array $worker) use ($activeRound): bool {
+        return max(1, (int)($worker['activeFromRound'] ?? 1)) <= $activeRound;
+    }));
 }
 
 function empty_worker_state_map(array $workers): array {
@@ -960,13 +969,13 @@ function summarizer_config(array $task): array {
     ];
 }
 
-function missing_worker_checkpoints(?array $task, array $workerState): array {
+function missing_worker_checkpoints(?array $task, array $workerState, ?int $roundNumber = null): array {
     if (!$task) {
         return [];
     }
 
     $missing = [];
-    foreach (task_workers($task) as $worker) {
+    foreach (task_workers($task, $roundNumber) as $worker) {
         $workerId = (string)($worker['id'] ?? '');
         if ($workerId === '') {
             continue;
@@ -983,6 +992,10 @@ function commander_checkpoint_from_state(array $state): ?array {
     return isset($state['commander']) && is_array($state['commander']) ? $state['commander'] : null;
 }
 
+function commander_review_checkpoint_from_state(array $state): ?array {
+    return isset($state['commanderReview']) && is_array($state['commanderReview']) ? $state['commanderReview'] : null;
+}
+
 function summary_round_from_state(array $state): int {
     $summary = isset($state['summary']) && is_array($state['summary']) ? $state['summary'] : [];
     return max(0, (int)($summary['round'] ?? 0));
@@ -991,6 +1004,11 @@ function summary_round_from_state(array $state): int {
 function commander_round_from_state(array $state): int {
     $commander = commander_checkpoint_from_state($state);
     return max(0, (int)(is_array($commander) ? ($commander['round'] ?? 0) : 0));
+}
+
+function commander_review_round_from_state(array $state): int {
+    $checkpoint = commander_review_checkpoint_from_state($state);
+    return max(0, (int)(is_array($checkpoint) ? ($checkpoint['round'] ?? 0) : 0));
 }
 
 function latest_worker_round(array $workerState): int {
@@ -1008,10 +1026,11 @@ function target_dispatch_preflight(string $target, array $state): ?array {
     $task = is_array($state['activeTask'] ?? null) ? $state['activeTask'] : null;
     $workerState = is_array($state['workers'] ?? null) ? $state['workers'] : [];
     $commanderRound = commander_round_from_state($state);
+    $commanderReviewRound = commander_review_round_from_state($state);
     $summaryRound = summary_round_from_state($state);
 
     if ($target === 'commander') {
-        $openRound = max($commanderRound, latest_worker_round($workerState));
+        $openRound = max($commanderRound, $commanderReviewRound, latest_worker_round($workerState));
         if ($openRound > $summaryRound) {
             return [
                 'code' => 409,
@@ -1022,9 +1041,20 @@ function target_dispatch_preflight(string $target, array $state): ?array {
     }
 
     if (preg_match('/^[A-Z]$/', $target)) {
+        $worker = $task ? find_task_worker($task, $target) : null;
+        if (!$worker) {
+            return [
+                'code' => 404,
+                'message' => 'Unknown worker target ' . $target . '.',
+            ];
+        }
+        $activationRound = max(1, (int)($worker['activeFromRound'] ?? 1));
         $nextRound = 1;
         if (isset($workerState[$target]) && is_array($workerState[$target])) {
             $nextRound = ((int)($workerState[$target]['step'] ?? 0)) + 1;
+        }
+        if ($nextRound < $activationRound) {
+            $nextRound = $activationRound;
         }
         if ($commanderRound <= 0) {
             return [
@@ -1040,6 +1070,45 @@ function target_dispatch_preflight(string $target, array $state): ?array {
         }
     }
 
+    if ($target === 'commander_review') {
+        if ($commanderRound <= 0) {
+            return [
+                'code' => 409,
+                'message' => 'Commander review is not ready yet. Run commander first.',
+            ];
+        }
+        if ($commanderReviewRound === $commanderRound) {
+            return [
+                'code' => 409,
+                'message' => 'Commander review already exists for commander round ' . $commanderRound . '. Run summarizer or start the next round.',
+            ];
+        }
+        $activeWorkers = task_workers($task, $commanderRound);
+        $missing = missing_worker_checkpoints($task, $workerState, $commanderRound);
+        if ($missing) {
+            return [
+                'code' => 409,
+                'message' => 'Commander review is not ready yet. Run worker checkpoint(s) first: ' . implode(', ', $missing) . '.',
+                'missingWorkers' => $missing
+            ];
+        }
+        $stale = [];
+        foreach ($activeWorkers as $worker) {
+            $workerId = (string)($worker['id'] ?? '');
+            $checkpoint = $workerState[$workerId] ?? null;
+            if (!is_array($checkpoint) || (int)($checkpoint['step'] ?? 0) !== $commanderRound) {
+                $stale[] = $workerId;
+            }
+        }
+        if ($stale) {
+            return [
+                'code' => 409,
+                'message' => 'Commander review is waiting on worker checkpoint(s) aligned to commander round ' . $commanderRound . ': ' . implode(', ', $stale) . '.',
+                'missingWorkers' => $stale,
+            ];
+        }
+    }
+
     if ($target === 'summarizer') {
         if ($commanderRound <= 0) {
             return [
@@ -1047,7 +1116,20 @@ function target_dispatch_preflight(string $target, array $state): ?array {
                 'message' => 'Summarizer is not ready yet. Run commander first.',
             ];
         }
-        $missing = missing_worker_checkpoints($task, $workerState);
+        if ($commanderReviewRound <= 0) {
+            return [
+                'code' => 409,
+                'message' => 'Summarizer is not ready yet. Run commander review first.',
+            ];
+        }
+        if ($commanderReviewRound !== $commanderRound) {
+            return [
+                'code' => 409,
+                'message' => 'Summarizer is waiting on a commander review aligned to commander round ' . $commanderRound . '.',
+            ];
+        }
+        $activeWorkers = task_workers($task, $commanderRound);
+        $missing = missing_worker_checkpoints($task, $workerState, $commanderRound);
         if ($missing) {
             return [
                 'code' => 409,
@@ -1056,7 +1138,7 @@ function target_dispatch_preflight(string $target, array $state): ?array {
             ];
         }
         $stale = [];
-        foreach (task_workers($task) as $worker) {
+        foreach ($activeWorkers as $worker) {
             $workerId = (string)($worker['id'] ?? '');
             $checkpoint = $workerState[$workerId] ?? null;
             if (!is_array($checkpoint) || (int)($checkpoint['step'] ?? 0) !== $commanderRound) {
@@ -1098,6 +1180,7 @@ function default_state(): array {
         'activeTask' => null,
         'draft' => default_draft_state(),
         'commander' => null,
+        'commanderReview' => null,
         'workers' => [],
         'summary' => null,
         'memoryVersion' => 0,
@@ -1112,6 +1195,7 @@ function normalize_state(array $state): array {
     $normalized['activeTask'] = $state['activeTask'] ?? null;
     $normalized['draft'] = normalize_draft_state(isset($state['draft']) && is_array($state['draft']) ? $state['draft'] : []);
     $normalized['commander'] = isset($state['commander']) && is_array($state['commander']) ? $state['commander'] : null;
+    $normalized['commanderReview'] = isset($state['commanderReview']) && is_array($state['commanderReview']) ? $state['commanderReview'] : null;
     $normalized['summary'] = $state['summary'] ?? null;
     $normalized['memoryVersion'] = isset($state['memoryVersion']) ? (int)$state['memoryVersion'] : 0;
     $normalized['usage'] = normalize_usage_state(isset($state['usage']) && is_array($state['usage']) ? $state['usage'] : []);
@@ -1980,12 +2064,13 @@ function post_int_value(string $key, int $default): int {
 
 function available_targets(?array $task): array {
     if (!$task) {
-        return ['commander', 'summarizer', 'answer_now'];
+        return ['commander', 'commander_review', 'summarizer', 'answer_now'];
     }
     $targets = array_map(static function (array $worker): string {
         return (string)$worker['id'];
     }, task_workers($task));
     array_unshift($targets, 'commander');
+    $targets[] = 'commander_review';
     $targets[] = 'summarizer';
     $targets[] = 'answer_now';
     return array_values(array_unique($targets));
@@ -2287,6 +2372,11 @@ function build_artifact_history_entry(string $artifactFile): ?array {
         $entry['worker'] = 'commander';
         $entry['kind'] = 'commander_output';
         $entry['roundOrStep'] = (int)$matches[2];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_review_round(\d+)_output\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'commander-review';
+        $entry['kind'] = 'commander_review_output';
+        $entry['roundOrStep'] = (int)$matches[2];
     } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_partial_round(\d+)_output\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = 'summary-partial';
@@ -2306,6 +2396,11 @@ function build_artifact_history_entry(string $artifactFile): ?array {
         $entry['taskId'] = $matches[1];
         $entry['worker'] = 'commander';
         $entry['kind'] = 'commander_round';
+        $entry['roundOrStep'] = (int)$matches[2];
+    } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_review_round(\d+)\.json$/i', $name, $matches)) {
+        $entry['taskId'] = $matches[1];
+        $entry['worker'] = 'commander-review';
+        $entry['kind'] = 'commander_review_round';
         $entry['roundOrStep'] = (int)$matches[2];
     } elseif (preg_match('/^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_partial_round(\d+)\.json$/i', $name, $matches)) {
         $entry['taskId'] = $matches[1];

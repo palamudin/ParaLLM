@@ -64,7 +64,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Optional grounded worker research with `web_search`, live-web toggle, and domain allow-lists
 - Optional read-only local file tools for commander and worker lanes with repo-relative allow-roots
 - Optional read-only GitHub repo tools for commander and worker lanes with owner/repo allow-lists
-- Optional summarizer-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
+- Optional commander-review-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
 - API keys can be managed locally through the UI as a local key pool, with per-slot inputs, masked previews, and deterministic per-position assignment
@@ -111,7 +111,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Worker checkpoints now carry evidence ledgers, research queries, consulted source URLs, and evidence gaps
 - Commander and worker lanes can now call audited local tools (`local_list_dir`, `local_read_file`, `local_search_text`) against explicit repo-relative roots, and those reads are logged into steps, checkpoints, and artifact metadata
 - Commander and worker lanes can now call audited GitHub tools (`github_list_paths`, `github_read_file`, `github_get_issue`, `github_get_pull_request`, `github_get_commit`) against explicit owner/repo allow-lists, and those reads are logged into steps, checkpoints, and artifact metadata
-- The summarizer can now request one additional adversarial lane for the next round, and when dynamic spin-up is enabled the runtime appends that worker with a visible audit step instead of silently mutating the roster
+- The separate commander review pass can now request one additional adversarial lane for the next round, and when dynamic spin-up is enabled the runtime appends that worker with a visible audit step instead of silently mutating the roster
 - Summarizer now acts as a vetter, preserving conflicts while scoring supported, mixed, weak, or disputed claims
 - Each worker and summarizer run now saves a dedicated output artifact so quality can be inspected separately from canonical state
 - Artifact Review UI supports side-by-side inspection of saved checkpoints and output artifacts
@@ -214,9 +214,74 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Immediate Milestones
 
-- All eight milestone items from the previous pass are now closed in the product surface or resolved as explicit policy.
-- Pricing policy now uses a conservative `assume_chargeable` stance for web-search-related model tokens, while still acknowledging that OpenAI-owned pages conflicted on April 19, 2026.
-- The next exploration is no longer milestone debt but tuning: calibrate how strongly adversarial objections can narrow, redirect, or reverse the lead answer on difficult prompts without making the public voice collapse into hesitation, then validate those changes against the blind steer-vs-direct benchmark.
+- The previous product-surface milestone set is no longer the main blocker. The next work is split into an alignment blocker plus a new roadmap track.
+- Pricing policy still uses a conservative `assume_chargeable` stance for web-search-related model tokens, while acknowledging the OpenAI-owned pricing-page conflict from April 19, 2026.
+
+### Alignment Blocker: True Separate Pass Closure
+
+- The true separate path is now wired as `commander -> workers -> commander_review -> summarizer`, and a live run on April 20, 2026 proved that commander review can:
+  - preserve its own course decision
+  - emit a polished `dynamicLaneDecision`
+  - spin a concrete next-round persona such as `Abuse Cases`
+  - attach a purpose-built pressure instruction instead of a generic template
+- The remaining blocker is round scoping:
+  - when commander review appends a new worker for the next round, the autonomous loop currently treats that worker as if it were required for the current round before summarization
+  - that causes the loop to fail with `All configured worker checkpoints are required before summarizing.` even though the new lane was intentionally meant for the following round
+- The next patch needs to make roster requirements round-aware:
+  - freeze the worker roster at round start
+  - let commander review append `activeFromRound = currentRound + 1`
+  - require summarizer alignment only against the round-start roster, not the newly expanded roster
+  - reflect the same rule in PHP preflight, Python runtime checks, Review, and QA
+- Do not call the true separate milestone closed until a real 2-round live loop completes with:
+  - commander review present
+  - a spun worker active in round 2
+  - a successful final summary after round 1 and round 2
+
+### Roadmap Track
+
+1. Deployment portability and packaging
+   - Highest-priority product milestone after the alignment blocker
+   - Break the hard Windows + XAMPP lock-in
+   - Add a supported local dev/runtime path for Linux and macOS
+   - Add a containerized path so setup is not tied to a manually tended XAMPP stack
+   - Keep the current Windows path working during the transition instead of forcing a rewrite-first migration
+
+2. Secret storage and secure retrieval
+   - Move beyond plaintext local `Auth.txt` as the only secret store
+   - Add secure local key storage plus controlled retrieval into the runtime
+   - Preserve the key-pool UX, but back it with safer storage, masking, rotation metadata, and clearer secret-handling policy
+   - Treat this as a real security milestone, not just frontend cleanup
+
+3. Prototype hardening
+   - The repo is still prototype-grade despite the feature surface
+   - Add better error handling, stronger typing discipline, unit tests, and security hardening
+   - Expand QA from reversible smoke into repeatable component coverage for dispatch, round alignment, tool loops, and recovery semantics
+   - Use the new true-separate path as a forcing function for this cleanup
+
+4. Multi-provider model abstraction
+   - Remove the OpenAI-only runtime assumption
+   - Add a provider layer that can support Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
+   - Make mixed-model experiments first-class so we can test same-model lanes against mixed-model lanes honestly
+   - Local inference support matters here because there is already waiting local GPU capacity and that changes the economics of adversarial fan-out
+
+5. Review-surface and frontend architecture
+   - The frontend is still too monolithic and the review surface deserves better visualization
+   - Break the current app surface into more maintainable frontend modules
+   - Improve review visualization for:
+     - round-by-round lead direction changes
+     - commander-review vs final-summary comparison
+     - dynamic lane spawn reason and activation round
+     - tool usage, evidence, and cost overlays
+   - Treat this as both UX work and code-organization work
+
+6. Cost governance without betraying the thesis
+   - Token burn remains inherent to the architecture and should stay treated as a known product tradeoff, not a bug
+   - The milestone is not “make it cheap at any cost”
+   - The milestone is:
+     - keep burn visible
+     - keep budgets enforceable
+     - keep evals honest about whether the extra pressure earns its spend
+     - add fast-lane or guardrail options only around the primary reasoning path, not by starving workers of shared user context
 
 ## Notes
 

@@ -20,22 +20,25 @@ if (with_lock(function () use ($state): int {
 }
 
 try {
+    $nextRound = max(1, summary_round_from_state($state) + 1);
     $batch = create_round_dispatch_jobs($state['activeTask'], [
         'timeoutSeconds' => 1800,
+        'roundNumber' => $nextRound,
     ]);
     launch_dispatch_job_runner($batch['commander']);
-    json_response([
+        json_response([
         'message' => 'Round dispatch queued.',
         'batchId' => $batch['batchId'],
         'jobIds' => array_merge(
             [$batch['commander']['jobId']],
             array_map(static function (array $job): string { return (string)$job['jobId']; }, $batch['workers']),
+            [$batch['commanderReview']['jobId']],
             [$batch['summarizer']['jobId']]
         ),
     ]);
 } catch (Throwable $ex) {
     if (is_array($batch)) {
-        foreach (array_merge([$batch['commander']], $batch['workers'], [$batch['summarizer']]) as $job) {
+        foreach (array_merge([$batch['commander']], $batch['workers'], [$batch['commanderReview']], [$batch['summarizer']]) as $job) {
             mutate_job((string)($job['jobId'] ?? ''), function (?array $existing) use ($ex): ?array {
                 if (!is_array($existing)) {
                     return $existing;

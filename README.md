@@ -26,7 +26,7 @@ The current prototype is built to make that test inspectable:
 ## What It Does
 
 - Chat-first workflow where `Send` creates a task and starts the configured loop
-- Commander-first runtime: `commander -> workers -> summarizer`
+- Commander-first runtime evolving toward: `commander -> workers -> commander review -> summarizer`
 - Dynamic adversarial worker roster starting from `Proponent` and `Sceptic`
 - Summarizer-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Review-only control audit showing accepted, rejected, and held-out objections
@@ -240,6 +240,21 @@ It is trying to measure whether:
 - the final answer is better enough to justify the extra burn
 
 If steered output does not beat a direct baseline often enough, the logs and eval traces should make that failure obvious.
+
+## Roadmap
+
+Immediate blocker:
+
+- close the round-scoping bug in the true separate path so a worker spawned by `commander review` for round `N+1` is not incorrectly required before the round `N` summary can complete
+
+Next milestone track:
+
+- reduce deployment friction by breaking the current Windows + XAMPP lock-in with portable packaging and container-friendly setup
+- harden the prototype with stronger error handling, typing discipline, unit tests, and security review
+- add multi-provider model backends beyond OpenAI, including Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
+- move from plaintext-only local API key handling toward safer secret storage and controlled runtime retrieval
+- improve the review surface and split the monolithic frontend into more maintainable modules
+- keep token burn visible and governable without weakening the full-context adversarial thesis
 
 ## Known Tradeoffs
 

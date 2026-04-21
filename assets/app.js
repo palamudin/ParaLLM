@@ -605,12 +605,12 @@ function syncArtifactReview(artifacts) {
   const names = new Set(list.map(function (artifact) { return artifact.name; }));
 
   if (!artifactSelections.left || !names.has(artifactSelections.left)) {
-    const leftDefault = pickArtifact(list, ["summary_output", "commander_output", "summary_round", "commander_round", "worker_output", "worker_step"], "");
+    const leftDefault = pickArtifact(list, ["summary_output", "commander_review_output", "commander_output", "summary_round", "commander_review_round", "commander_round", "worker_output", "worker_step"], "");
     artifactSelections.left = leftDefault ? leftDefault.name : "";
   }
 
   if (!artifactSelections.right || !names.has(artifactSelections.right) || artifactSelections.right === artifactSelections.left) {
-    const rightDefault = pickArtifact(list, ["commander_output", "worker_output", "worker_step", "summary_output", "commander_round", "summary_round"], artifactSelections.left);
+    const rightDefault = pickArtifact(list, ["commander_review_output", "commander_output", "worker_output", "worker_step", "summary_output", "commander_review_round", "commander_round", "summary_round"], artifactSelections.left);
     artifactSelections.right = rightDefault ? rightDefault.name : "";
   }
 
@@ -1659,6 +1659,7 @@ function authPositionPlan() {
       label: workerId + " / " + displayWorkerLabel(worker)
     });
   });
+  positions.push({ id: "commander_review", label: "Commander Review" });
   positions.push({ id: "summarizer", label: "Summarizer" });
   return positions;
 }
@@ -1936,11 +1937,11 @@ function applyArtifactSelectionPair(leftArtifact, rightArtifact) {
   artifactSelections.right = rightArtifact && names.has(rightArtifact) ? rightArtifact : "";
 
   if (!artifactSelections.left) {
-    const fallbackLeft = pickArtifact(artifacts, ["summary_output", "commander_output", "worker_output", "summary_round", "commander_round", "worker_step"], "");
+    const fallbackLeft = pickArtifact(artifacts, ["summary_output", "commander_review_output", "commander_output", "worker_output", "summary_round", "commander_review_round", "commander_round", "worker_step"], "");
     artifactSelections.left = fallbackLeft ? fallbackLeft.name : "";
   }
   if (!artifactSelections.right || artifactSelections.right === artifactSelections.left) {
-    const fallbackRight = pickArtifact(artifacts, ["commander_output", "worker_output", "summary_output", "commander_round", "worker_step", "summary_round"], artifactSelections.left);
+    const fallbackRight = pickArtifact(artifacts, ["commander_review_output", "commander_output", "worker_output", "summary_output", "commander_review_round", "commander_round", "worker_step", "summary_round"], artifactSelections.left);
     artifactSelections.right = fallbackRight ? fallbackRight.name : "";
   }
 
@@ -2055,11 +2056,15 @@ function renderRoundHistory(rounds) {
     <div class="round-history-stack">
       ${rounds.map(function (roundEntry) {
         const commanderArtifact = roundEntry.commanderArtifact || null;
+        const commanderReviewArtifact = roundEntry.commanderReviewArtifact || null;
         const summaryArtifact = roundEntry.summaryArtifact || null;
         const previousSummary = summaryByTaskRound[String(roundEntry.taskId || "") + ":" + String(Number(roundEntry.round || 0) - 1)] || null;
         const primaryWorker = Array.isArray(roundEntry.workerArtifacts) && roundEntry.workerArtifacts.length ? roundEntry.workerArtifacts[0] : null;
         const topActions = [];
 
+        if (summaryArtifact && commanderReviewArtifact) {
+          topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(commanderReviewArtifact.name)}">Summary vs review</button>`);
+        }
         if (summaryArtifact && commanderArtifact) {
           topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(commanderArtifact.name)}">Summary vs commander</button>`);
         }
@@ -2082,6 +2087,7 @@ function renderRoundHistory(rounds) {
             <div class="round-history-meta">${escapeHtml(truncateText(roundEntry.objective || "No objective recorded.", 180))}</div>
             <div class="round-history-meta">${escapeHtml("Captured " + (roundEntry.capturedAt || "n/a") + (summaryArtifact ? " | summary " + summaryArtifact.name + " | " + artifactOutputCapSummary(summaryArtifact) : ""))}</div>
             ${commanderArtifact ? `<div class="round-history-meta">${escapeHtml("Commander draft " + commanderArtifact.name + " | " + artifactOutputCapSummary(commanderArtifact))}</div>` : ""}
+            ${commanderReviewArtifact ? `<div class="round-history-meta">${escapeHtml("Commander review " + commanderReviewArtifact.name + " | " + artifactOutputCapSummary(commanderReviewArtifact))}</div>` : ""}
             ${topActions.length ? `<div class="round-history-actions">${topActions.join("")}</div>` : ""}
             <div class="round-history-workers">
               ${(roundEntry.workerArtifacts || []).map(function (artifact) {
@@ -2556,6 +2562,10 @@ function commanderRound(task) {
   return Number(task?.stateCommander?.round || 0);
 }
 
+function commanderReviewRound(task) {
+  return Number(task?.stateCommanderReview?.round || 0);
+}
+
 function workerExpectedRound(task, workerId, stateWorkers) {
   const checkpoint = stateWorkers?.[workerId] || null;
   return Number(checkpoint?.step || 0) + 1;
@@ -2568,6 +2578,19 @@ function workerReadyForCommanderRound(task, workerId, stateWorkers) {
 }
 
 function summarizerReadyForCommanderRound(task, stateWorkers) {
+  const currentCommanderRound = commanderRound(task);
+  const currentCommanderReviewRound = commanderReviewRound(task);
+  if (currentCommanderRound <= 0) return false;
+  if (currentCommanderReviewRound !== currentCommanderRound) return false;
+  const workers = task?.workers || [];
+  if (!workers.length) return false;
+  return workers.every(function (worker) {
+    const checkpoint = stateWorkers?.[worker.id] || null;
+    return Number(checkpoint?.step || 0) === currentCommanderRound;
+  });
+}
+
+function commanderReviewReadyForCommanderRound(task, stateWorkers) {
   const currentCommanderRound = commanderRound(task);
   if (currentCommanderRound <= 0) return false;
   const workers = task?.workers || [];
@@ -2765,9 +2788,11 @@ function renderHomeWorkerControls(task, draft, loop) {
 function renderDebugTargetControls(task, loop, stateWorkers) {
   const $controls = $("#debugTargetControls");
   const currentCommander = task?.stateCommander || null;
+  const currentCommanderReview = task?.stateCommanderReview || null;
   const signature = JSON.stringify({
     taskId: task?.taskId || "",
     commanderRound: currentCommander?.round || 0,
+    commanderReviewRound: currentCommanderReview?.round || 0,
     workers: task?.workers || [],
     loopStatus: loop?.status || "idle",
     dispatchStatus: latestState?.dispatch?.status || "idle",
@@ -2784,6 +2809,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
 
   const isActive = isWorkspaceBusy(loop, latestState);
   const currentCommanderRound = commanderRound(task);
+  const currentCommanderReviewRound = commanderReviewRound(task);
+  const commanderReviewReady = commanderReviewReadyForCommanderRound(task, stateWorkers || {});
   const summaryReady = summarizerReadyForCommanderRound(task, stateWorkers || {});
   const commanderModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
   const partialAnswerActive = hasActiveDispatchTarget(latestState, "answer_now");
@@ -2822,11 +2849,28 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
     $controls.append($card);
   });
 
+  const $reviewCard = $("<div>").addClass("workercontrol");
+  $reviewCard.append($("<div>").addClass("workercontrol-title").text("Commander Review"));
+  $reviewCard.append(
+    $("<div>").addClass("workercontrol-meta").text(
+      (currentCommanderReviewRound === currentCommanderRound && currentCommanderRound > 0
+        ? "ready to summarize round " + currentCommanderRound
+        : (commanderReviewReady ? "ready for round " + currentCommanderRound : "waiting on commander-aligned workers"))
+      + " | " + commanderModel
+    )
+  );
+  $reviewCard.append(
+    $("<div>").addClass("inlineform").append(
+      $("<button>").addClass("run-target").attr("data-target", "commander_review").prop("disabled", isActive || !commanderReviewReady).text("Run review")
+    )
+  );
+  $controls.append($reviewCard);
+
   const $summaryCard = $("<div>").addClass("workercontrol");
   $summaryCard.append($("<div>").addClass("workercontrol-title").text("Summarizer"));
   $summaryCard.append(
     $("<div>").addClass("workercontrol-meta").text(
-      (summaryReady ? "ready for commander round " + currentCommanderRound : "waiting on commander-aligned workers")
+      (summaryReady ? "ready after review round " + currentCommanderRound : "waiting on commander review")
       + " | " + commanderModel
     )
   );
@@ -2875,7 +2919,8 @@ function renderFooterCheckpoints(task) {
 
   const workers = task?.workers || [];
   const currentCommander = task?.stateCommander || null;
-  if (!workers.length && !currentCommander) {
+  const currentCommanderReview = task?.stateCommanderReview || null;
+  if (!workers.length && !currentCommander && !currentCommanderReview) {
     $list.append($("<div>").addClass("footer-checkpoint-empty").text("No checkpoints yet."));
     return;
   }
@@ -2910,6 +2955,26 @@ function renderFooterCheckpoints(task) {
       currentCommander.leadDirection ? "Lead direction: " + truncateText(currentCommander.leadDirection, 280) : "",
       currentCommander.answerDraft ? "Draft: " + truncateText(currentCommander.answerDraft, 320) : "",
       currentCommander.whyThisDirection ? "Reason: " + truncateText(currentCommander.whyThisDirection, 240) : ""
+    ]);
+    $list.append($item);
+  }
+
+  if (currentCommanderReview) {
+    const reviewPreview = truncateText(currentCommanderReview.answerDraft || currentCommanderReview.leadDirection || "Commander review available.", 88);
+    const $item = $("<div>").addClass("footer-checkpoint-item compact-hover-card");
+    const $head = $("<div>").addClass("footer-checkpoint-head");
+    $head.append($("<div>").addClass("footer-checkpoint-title").text("Commander Review"));
+    $head.append($("<div>").addClass("footer-checkpoint-step").text("round " + Number(currentCommanderReview.round || 0)));
+    $item.append($head);
+    $item.append($("<div>").addClass("footer-checkpoint-copy").text(reviewPreview));
+    appendCompactHoverPopup($item, [
+      currentCommanderReview.stance ? "Stance: " + truncateText(currentCommanderReview.stance, 220) : "",
+      currentCommanderReview.leadDirection ? "Lead direction: " + truncateText(currentCommanderReview.leadDirection, 280) : "",
+      currentCommanderReview.whyThisDirection ? "Reason: " + truncateText(currentCommanderReview.whyThisDirection, 240) : "",
+      currentCommanderReview.controlAudit?.courseDecision ? "Course: " + formatCourseDecisionLabel(currentCommanderReview.controlAudit.courseDecision) : "",
+      currentCommanderReview.dynamicLaneDecision?.shouldSpawn
+        ? "Lane request: " + truncateText((currentCommanderReview.dynamicLaneDecision.suggestedLaneTypes || []).join(", ") || currentCommanderReview.dynamicLaneDecision.reason || "", 220)
+        : ""
     ]);
     $list.append($item);
   }
@@ -3453,6 +3518,9 @@ function renderSummaryOpinion(summary) {
             Array.isArray(dynamicLaneDecision.suggestedLaneTypes) && dynamicLaneDecision.suggestedLaneTypes.length
               ? "Types: " + dynamicLaneDecision.suggestedLaneTypes.join(", ")
               : "",
+            dynamicLaneDecision.requiredPressure ? "Missing pressure: " + dynamicLaneDecision.requiredPressure : "",
+            dynamicLaneDecision.temperature ? "Temperature: " + dynamicLaneDecision.temperature : "",
+            dynamicLaneDecision.instruction ? "Harness: " + dynamicLaneDecision.instruction : "",
             dynamicLaneDecision.reason || ""
           ].filter(Boolean).join("\n")
         )
@@ -3889,7 +3957,8 @@ function refreshState() {
       const task = data.activeTask
         ? Object.assign({}, data.activeTask, {
             stateWorkers: data.workers || {},
-            stateCommander: data.commander || null
+            stateCommander: data.commander || null,
+            stateCommanderReview: data.commanderReview || null
           })
         : null;
       syncCommanderForm(data.activeTask || null, data.draft || null);
@@ -3899,10 +3968,10 @@ function refreshState() {
       renderAuthStatus(latestAuthStatus);
       renderHomeRuntimeControls(data.activeTask || null, data.draft || null, data.loop || null);
       renderQualityProfileCards();
-      renderDebugTargetControls(data.activeTask || null, data.loop || null, data.workers || {});
+      renderDebugTargetControls(task, data.loop || null, data.workers || {});
       renderFooterCheckpoints(task);
-      renderConversationThread(data.activeTask || null, data.summary || null, data.workers || {}, data.loop || null);
-      renderSummaryReview(data.summary || null, data.activeTask || null, data.workers || {});
+      renderConversationThread(task, data.summary || null, data.workers || {}, data.loop || null);
+      renderSummaryReview(data.summary || null, task, data.workers || {});
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,

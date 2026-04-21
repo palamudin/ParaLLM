@@ -52,6 +52,9 @@ function dispatch_target_label(array $job): string {
     if ($target === 'commander') {
         return 'Commander';
     }
+    if ($target === 'commander_review') {
+        return 'Commander review';
+    }
     if ($target === 'summarizer') {
         return !empty($job['partialSummary']) ? 'Summarizer (partial)' : 'Summarizer';
     }
@@ -180,11 +183,14 @@ function recover_dispatch_jobs_if_needed(): void {
             $heartbeatTs = parse_job_ts($job['lastHeartbeatAt'] ?? null)
                 ?? parse_job_ts($job['startedAt'] ?? null)
                 ?? $queueTs;
+            $dependencyIds = dispatch_dependency_ids($job);
+            $hasDependencies = !empty($dependencyIds);
             $waitingOnDependencies = $status === 'queued'
-                && dispatch_dependency_ids($job)
+                && $hasDependencies
                 && dispatch_dependency_failure_message_unlocked($job) === null
                 && !dispatch_dependencies_completed_unlocked($job);
             $queueStale = $status === 'queued'
+                && !$hasDependencies
                 && !$waitingOnDependencies
                 && $queueTs !== null
                 && ($now - $queueTs) > JOB_QUEUE_STALE_SECONDS;
@@ -205,6 +211,7 @@ function recover_dispatch_jobs_if_needed(): void {
         }
         interrupt_unrunnable_dispatch_jobs_unlocked();
     });
+    promote_ready_dispatch_jobs();
 }
 
 function current_dispatch_state(?array $state = null): array {
@@ -300,7 +307,7 @@ function create_target_job(array $task, string $target, array $overrides = []): 
         'attempt' => max(1, (int)($overrides['attempt'] ?? 1)),
         'rounds' => 0,
         'delayMs' => 0,
-        'workerCount' => count(task_workers($task)),
+        'workerCount' => max(0, (int)($overrides['workerCount'] ?? count(task_workers($task)))),
         'dependencyJobIds' => $dependencyIds,
         'partialSummary' => (bool)($overrides['partialSummary'] ?? false),
         'timeoutSeconds' => max(30, (int)($overrides['timeoutSeconds'] ?? 1800)),
@@ -321,19 +328,23 @@ function create_target_job(array $task, string $target, array $overrides = []): 
 }
 
 function create_round_dispatch_jobs(array $task, array $overrides = []): array {
+    $roundNumber = max(1, (int)($overrides['roundNumber'] ?? 1));
+    $roundWorkers = task_workers($task, $roundNumber);
     $batchId = 'batch-' . date('Ymd-His') . '-' . substr(md5(uniqid('', true)), 0, 6);
     $commanderJob = create_target_job($task, 'commander', [
         'batchId' => $batchId,
         'timeoutSeconds' => $overrides['timeoutSeconds'] ?? 1800,
+        'workerCount' => count($roundWorkers),
         'lastMessage' => 'Queued commander dispatch.',
         'metadata' => ['trigger' => 'round'],
     ]);
     $workerJobs = [];
-    foreach (task_workers($task) as $worker) {
+    foreach ($roundWorkers as $worker) {
         $workerJobs[] = create_target_job($task, (string)$worker['id'], [
             'batchId' => $batchId,
             'dependencyJobIds' => [$commanderJob['jobId']],
             'timeoutSeconds' => $overrides['timeoutSeconds'] ?? 1800,
+            'workerCount' => count($roundWorkers),
             'lastMessage' => 'Waiting for commander.',
             'metadata' => ['trigger' => 'round'],
         ]);
@@ -341,17 +352,27 @@ function create_round_dispatch_jobs(array $task, array $overrides = []): array {
     $summaryDependencies = array_map(static function (array $job): string {
         return (string)$job['jobId'];
     }, $workerJobs);
-    $summaryJob = create_target_job($task, 'summarizer', [
+    $commanderReviewJob = create_target_job($task, 'commander_review', [
         'batchId' => $batchId,
         'dependencyJobIds' => $summaryDependencies,
         'timeoutSeconds' => $overrides['timeoutSeconds'] ?? 1800,
+        'workerCount' => count($roundWorkers),
         'lastMessage' => $summaryDependencies ? 'Waiting for workers.' : 'Waiting for commander.',
+        'metadata' => ['trigger' => 'round'],
+    ]);
+    $summaryJob = create_target_job($task, 'summarizer', [
+        'batchId' => $batchId,
+        'dependencyJobIds' => [$commanderReviewJob['jobId']],
+        'timeoutSeconds' => $overrides['timeoutSeconds'] ?? 1800,
+        'workerCount' => count($roundWorkers),
+        'lastMessage' => 'Waiting for commander review.',
         'metadata' => ['trigger' => 'round'],
     ]);
     return [
         'batchId' => $batchId,
         'commander' => $commanderJob,
         'workers' => $workerJobs,
+        'commanderReview' => $commanderReviewJob,
         'summarizer' => $summaryJob,
     ];
 }

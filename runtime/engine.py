@@ -210,6 +210,7 @@ def default_state() -> Dict[str, Any]:
         "activeTask": None,
         "draft": {},
         "commander": None,
+        "commanderReview": None,
         "workers": {},
         "summary": None,
         "memoryVersion": 0,
@@ -575,6 +576,7 @@ def normalize_worker_definition(worker: Dict[str, Any], default_model: Optional[
         },
     )
     fallback_model = normalize_model_id(default_model, DEFAULT_MODEL_ID)
+    active_from_round = max(1, int(worker.get("activeFromRound", 1) or 1))
     return {
         "id": worker_id,
         "type": worker_type,
@@ -583,11 +585,12 @@ def normalize_worker_definition(worker: Dict[str, Any], default_model: Optional[
         "focus": str(worker.get("focus", catalog_worker["focus"])).strip() or catalog_worker["focus"],
         "temperature": normalize_worker_temperature(worker.get("temperature"), str(catalog_worker.get("temperature", "balanced"))),
         "model": normalize_model_id(worker.get("model"), fallback_model),
+        "activeFromRound": active_from_round,
         "harness": normalize_harness_config(worker.get("harness"), default_worker_harness()["concision"]),
     }
 
 
-def task_workers(task: Dict[str, Any]) -> List[Dict[str, str]]:
+def task_workers(task: Dict[str, Any], round_number: Optional[int] = None) -> List[Dict[str, str]]:
     default_model = normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID)
     workers: Dict[str, Dict[str, str]] = {}
     raw_workers = task.get("workers")
@@ -600,7 +603,11 @@ def task_workers(task: Dict[str, Any]) -> List[Dict[str, str]]:
         for worker in worker_catalog(default_model)[:2]:
             normalized = normalize_worker_definition(worker, default_model)
             workers[normalized["id"]] = normalized
-    return [workers[key] for key in sorted(workers)]
+    ordered = [workers[key] for key in sorted(workers)]
+    if round_number is None:
+        return ordered
+    active_round = max(1, int(round_number or 1))
+    return [worker for worker in ordered if int(worker.get("activeFromRound", 1) or 1) <= active_round]
 
 
 def find_task_worker(task: Dict[str, Any], worker_id: str) -> Optional[Dict[str, str]]:
@@ -609,6 +616,10 @@ def find_task_worker(task: Dict[str, Any], worker_id: str) -> Optional[Dict[str,
         if worker["id"] == target:
             return worker
     return None
+
+
+def worker_active_from_round(worker: Dict[str, Any]) -> int:
+    return max(1, int(worker.get("activeFromRound", 1) or 1))
 
 
 def summarizer_config(task: Dict[str, Any]) -> Dict[str, str]:
@@ -627,6 +638,16 @@ def commander_config(task: Dict[str, Any]) -> Dict[str, str]:
     return {
         "id": "commander",
         "label": "Commander",
+        "model": summary["model"],
+        "harness": summary["harness"],
+    }
+
+
+def commander_review_config(task: Dict[str, Any]) -> Dict[str, str]:
+    summary = summarizer_config(task)
+    return {
+        "id": "commander_review",
+        "label": "Commander Review",
         "model": summary["model"],
         "harness": summary["harness"],
     }
@@ -1176,6 +1197,117 @@ def normalize_commander_checkpoint(checkpoint: Any, fallback_task: Optional[Dict
     return normalized
 
 
+def normalize_commander_review_checkpoint(
+    checkpoint: Any,
+    fallback_task: Optional[Dict[str, Any]] = None,
+    fallback_round: int = 1,
+    fallback_commander: Optional[Dict[str, Any]] = None,
+    fallback_workers: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    base_commander = normalize_commander_checkpoint(fallback_commander or {}, fallback_task, fallback_round)
+    normalized = {
+        "taskId": str(base_commander.get("taskId", "")),
+        "round": max(1, int(fallback_round or 1)),
+        "stance": truncate_text(base_commander.get("stance", ""), 260) or "No reviewed stance was captured.",
+        "leadDirection": truncate_text(base_commander.get("leadDirection", ""), 280) or "No reviewed lead direction was captured.",
+        "answerDraft": truncate_text(base_commander.get("answerDraft", ""), 1800) or "No reviewed answer draft was captured.",
+        "whyThisDirection": (
+            truncate_text(base_commander.get("whyThisDirection", ""), 360)
+            or "No commander reevaluation rationale was captured."
+        ),
+        "controlAudit": {},
+        "dynamicLaneDecision": normalize_dynamic_lane_decision(None),
+        "remainingUncertainty": limit_string_list(base_commander.get("uncertainty", []), 4, 220),
+        "sourceWorkers": normalize_worker_id_list(fallback_workers or []),
+    }
+    if isinstance(checkpoint, dict):
+        normalized["taskId"] = str(checkpoint.get("taskId", normalized["taskId"]))
+        normalized["round"] = max(1, int(fallback_round or normalized["round"]))
+        stance = truncate_text(checkpoint.get("stance", ""), 260)
+        lead_direction = truncate_text(checkpoint.get("leadDirection", ""), 280)
+        answer_draft = truncate_text(checkpoint.get("answerDraft", ""), 1800)
+        why_this_direction = truncate_text(checkpoint.get("whyThisDirection", ""), 360)
+        if stance:
+            normalized["stance"] = stance
+        if lead_direction:
+            normalized["leadDirection"] = lead_direction
+        if answer_draft:
+            normalized["answerDraft"] = answer_draft
+        if why_this_direction:
+            normalized["whyThisDirection"] = why_this_direction
+        normalized["remainingUncertainty"] = limit_string_list(checkpoint.get("remainingUncertainty", []), 4, 220)
+        normalized["sourceWorkers"] = normalize_worker_id_list(checkpoint.get("sourceWorkers", fallback_workers or []))
+        normalized["dynamicLaneDecision"] = normalize_dynamic_lane_decision(checkpoint.get("dynamicLaneDecision"))
+        normalized["controlAudit"] = normalize_control_audit(
+            checkpoint.get("controlAudit"),
+            {
+                "frontAnswer": {
+                    "answer": normalized["answerDraft"],
+                    "stance": normalized["stance"],
+                    "leadDirection": normalized["leadDirection"],
+                    "adversarialPressure": "",
+                    "confidenceNote": "",
+                },
+                "summarizerOpinion": {
+                    "stance": normalized["stance"],
+                    "because": normalized["whyThisDirection"],
+                    "uncertainty": (
+                        normalized["remainingUncertainty"][0]
+                        if normalized["remainingUncertainty"]
+                        else "The lead answer should stay revisable if stronger objections land."
+                    ),
+                    "integrationMode": "The lead thread re-evaluates adversarial pressure before the public answer is formed.",
+                },
+                "claimsNeedingVerification": normalized["remainingUncertainty"],
+            },
+        )
+    if not normalized["sourceWorkers"]:
+        normalized["sourceWorkers"] = normalize_worker_id_list(fallback_workers or [])
+    if not normalized["controlAudit"]:
+        normalized["controlAudit"] = normalize_control_audit(
+            {
+                "leadDraft": normalized["answerDraft"],
+                "courseDecision": "maintain",
+                "courseDecisionReason": (
+                    "No commander reevaluation audit was captured, so the lead thread maintained its initial course by default."
+                ),
+                "acceptedAdversarialPoints": [],
+                "rejectedAdversarialPoints": [],
+                "heldOutConcerns": normalized["remainingUncertainty"],
+                "selfCheck": "Before speaking, the lead thread should explicitly compare the revised draft against the user's actual request.",
+            },
+            {
+                "frontAnswer": {
+                    "answer": normalized["answerDraft"],
+                    "stance": normalized["stance"],
+                    "leadDirection": normalized["leadDirection"],
+                    "adversarialPressure": "",
+                    "confidenceNote": "",
+                },
+                "summarizerOpinion": {
+                    "stance": normalized["stance"],
+                    "because": normalized["whyThisDirection"],
+                    "uncertainty": (
+                        normalized["remainingUncertainty"][0]
+                        if normalized["remainingUncertainty"]
+                        else "The lead answer should stay revisable if stronger objections land."
+                    ),
+                    "integrationMode": "The lead thread re-evaluates adversarial pressure before the public answer is formed.",
+                },
+                "claimsNeedingVerification": normalized["remainingUncertainty"],
+            },
+        )
+    if not normalized["answerDraft"]:
+        normalized["answerDraft"] = normalized["leadDirection"] or normalized["stance"]
+    if not normalized["leadDirection"]:
+        normalized["leadDirection"] = normalized["stance"] or truncate_text(normalized["answerDraft"], 260)
+    if not normalized["stance"]:
+        normalized["stance"] = normalized["leadDirection"] or truncate_text(normalized["answerDraft"], 260)
+    if not normalized["whyThisDirection"]:
+        normalized["whyThisDirection"] = "No commander reevaluation rationale was captured."
+    return normalized
+
+
 def normalize_control_audit(control_audit: Any, fallback_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     fallback_summary = fallback_summary or {}
     fallback_front_answer = normalize_front_answer(fallback_summary.get("frontAnswer"), fallback_summary)
@@ -1272,14 +1404,26 @@ def normalize_dynamic_lane_decision(decision: Any) -> Dict[str, Any]:
         "shouldSpawn": False,
         "suggestedLaneTypes": [],
         "reason": "No additional adversarial lane is needed yet.",
+        "requiredPressure": "",
+        "temperature": "",
+        "instruction": "",
     }
     if not isinstance(decision, dict):
         return normalized
     normalized["shouldSpawn"] = bool(decision.get("shouldSpawn", normalized["shouldSpawn"]))
     normalized["suggestedLaneTypes"] = normalize_lane_type_list(decision.get("suggestedLaneTypes", []), False, 2)
     reason = truncate_text(decision.get("reason", ""), 320)
+    required_pressure = truncate_text(decision.get("requiredPressure", ""), 240)
+    instruction = truncate_text(decision.get("instruction", ""), 320)
+    temperature = str(decision.get("temperature", "")).strip().lower().replace("-", "_").replace(" ", "_")
     if reason:
         normalized["reason"] = reason
+    if required_pressure:
+        normalized["requiredPressure"] = required_pressure
+    if instruction:
+        normalized["instruction"] = instruction
+    if temperature in WORKER_TEMPERATURE_CATALOG:
+        normalized["temperature"] = temperature
     if not normalized["suggestedLaneTypes"]:
         normalized["shouldSpawn"] = False
     return normalized
@@ -1538,6 +1682,7 @@ class LoopRuntime:
         normalized["activeTask"] = state.get("activeTask")
         normalized["draft"] = state.get("draft") if isinstance(state.get("draft"), dict) else normalized["draft"]
         normalized["commander"] = state.get("commander") if isinstance(state.get("commander"), dict) else None
+        normalized["commanderReview"] = state.get("commanderReview") if isinstance(state.get("commanderReview"), dict) else None
         normalized["summary"] = state.get("summary")
         normalized["memoryVersion"] = int(state.get("memoryVersion", 0) or 0)
         normalized["usage"] = normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
@@ -1571,6 +1716,7 @@ class LoopRuntime:
             add_target("commander")
             for worker in task_workers(task):
                 add_target(worker.get("id"))
+            add_target("commander_review")
             add_target("summarizer")
         for target in extra_targets or []:
             add_target(target)
@@ -1619,7 +1765,7 @@ class LoopRuntime:
 
     def budget_scope_key(self, target: Optional[str]) -> Optional[str]:
         normalized = normalize_auth_target(target)
-        if normalized == "commander":
+        if normalized in {"commander", "commander_review"}:
             return "commander"
         if normalized == "summarizer":
             return "summarizer"
@@ -2681,8 +2827,8 @@ class LoopRuntime:
                 deduped.append(value)
         return deduped
 
-    def get_default_request_targets(self, task: Dict[str, Any], current_worker_id: str) -> List[str]:
-        peer_ids = [worker["id"] for worker in task_workers(task) if worker["id"] != current_worker_id]
+    def get_default_request_targets(self, task: Dict[str, Any], current_worker_id: str, round_number: Optional[int] = None) -> List[str]:
+        peer_ids = [worker["id"] for worker in task_workers(task, round_number) if worker["id"] != current_worker_id]
         if not peer_ids:
             return []
         if current_worker_id == "A" and "B" in peer_ids:
@@ -2691,10 +2837,10 @@ class LoopRuntime:
             return ["A"]
         return [peer_ids[0]]
 
-    def normalize_request_targets(self, targets: Any, task: Dict[str, Any], current_worker_id: str) -> List[str]:
+    def normalize_request_targets(self, targets: Any, task: Dict[str, Any], current_worker_id: str, round_number: Optional[int] = None) -> List[str]:
         valid_targets = {
             worker["id"]: True
-            for worker in task_workers(task)
+            for worker in task_workers(task, round_number)
             if worker["id"] != current_worker_id
         }
         normalized: List[str] = []
@@ -2705,12 +2851,12 @@ class LoopRuntime:
                     normalized.append(candidate)
         if normalized:
             return list(dict.fromkeys(normalized).keys())
-        return self.get_default_request_targets(task, current_worker_id)
+        return self.get_default_request_targets(task, current_worker_id, round_number)
 
-    def get_peer_steer_messages(self, state: Dict[str, Any], task: Dict[str, Any], worker_id: str) -> List[Dict[str, str]]:
+    def get_peer_steer_messages(self, state: Dict[str, Any], task: Dict[str, Any], worker_id: str, round_number: Optional[int] = None) -> List[Dict[str, str]]:
         messages: List[Dict[str, str]] = []
         workers_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
-        for peer in task_workers(task):
+        for peer in task_workers(task, round_number):
             if peer["id"] == worker_id:
                 continue
             checkpoint = workers_state.get(peer["id"])
@@ -2726,10 +2872,10 @@ class LoopRuntime:
             messages.append({"from": peer["id"], "message": message})
         return messages
 
-    def expand_peer_steer_packets(self, task: Dict[str, Any], state: Dict[str, Any]) -> List[Dict[str, str]]:
+    def expand_peer_steer_packets(self, task: Dict[str, Any], state: Dict[str, Any], round_number: Optional[int] = None) -> List[Dict[str, str]]:
         packets: List[Dict[str, str]] = []
         workers_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
-        roster = task_workers(task)
+        roster = task_workers(task, round_number)
         for worker in roster:
             checkpoint = workers_state.get(worker["id"])
             if not isinstance(checkpoint, dict):
@@ -2758,6 +2904,10 @@ class LoopRuntime:
         commander = state.get("commander") if isinstance(state.get("commander"), dict) else None
         return max(0, int((commander or {}).get("round", 0) or 0))
 
+    def get_latest_commander_review_round(self, state: Dict[str, Any]) -> int:
+        checkpoint = state.get("commanderReview") if isinstance(state.get("commanderReview"), dict) else None
+        return max(0, int((checkpoint or {}).get("round", 0) or 0))
+
     def get_latest_worker_round(self, state: Dict[str, Any]) -> int:
         workers_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
         latest = 0
@@ -2769,9 +2919,12 @@ class LoopRuntime:
     def get_open_round(self, state: Dict[str, Any]) -> int:
         completed_round = self.get_latest_summary_round(state)
         commander_round = self.get_latest_commander_round(state)
+        commander_review_round = self.get_latest_commander_review_round(state)
         worker_round = self.get_latest_worker_round(state)
         if commander_round > completed_round:
             return commander_round
+        if commander_review_round > completed_round:
+            return commander_review_round
         if worker_round > completed_round:
             return worker_round
         return 0
@@ -2784,8 +2937,10 @@ class LoopRuntime:
             return lane_type
         return None
 
-    def build_dynamic_worker(self, task: Dict[str, Any], lane_type: str) -> Optional[Dict[str, str]]:
-        selected_type = str(lane_type or "").strip().lower()
+    def build_dynamic_worker(self, task: Dict[str, Any], decision: Any, active_from_round: int = 1) -> Optional[Dict[str, str]]:
+        normalized_decision = normalize_dynamic_lane_decision(decision)
+        selected_type = self.select_dynamic_lane_type(task, normalized_decision.get("suggestedLaneTypes", []))
+        selected_type = str(selected_type or "").strip().lower()
         catalog_entry = WORKER_TYPE_CATALOG.get(selected_type)
         if not catalog_entry or str(catalog_entry.get("role", "adversarial")) != "adversarial":
             return None
@@ -2793,7 +2948,34 @@ class LoopRuntime:
         for worker_id in worker_slot_ids():
             if worker_id in existing_ids:
                 continue
-            return normalize_worker_definition({"id": worker_id, "type": selected_type}, normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID))
+            focus = str(catalog_entry.get("focus", "")).strip()
+            required_pressure = str(normalized_decision.get("requiredPressure", "")).strip()
+            instruction = str(normalized_decision.get("instruction", "")).strip()
+            if required_pressure:
+                focus = truncate_text(f"{focus}; specifically pressure-test {required_pressure}", 220)
+            harness_bits: List[str] = []
+            if required_pressure:
+                harness_bits.append(f"Primary unresolved pressure: {required_pressure}.")
+            if instruction:
+                harness_bits.append(instruction)
+            worker_definition: Dict[str, Any] = {
+                "id": worker_id,
+                "type": selected_type,
+                "focus": focus or str(catalog_entry.get("focus", "")).strip(),
+                "activeFromRound": max(1, int(active_from_round or 1)),
+            }
+            temperature = str(normalized_decision.get("temperature", "")).strip().lower()
+            if temperature in WORKER_TEMPERATURE_CATALOG:
+                worker_definition["temperature"] = temperature
+            if harness_bits:
+                worker_definition["harness"] = {
+                    "concision": default_worker_harness()["concision"],
+                    "instruction": truncate_text(" ".join(harness_bits), 320),
+                }
+            return normalize_worker_definition(
+                worker_definition,
+                normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID),
+            )
         return None
 
     def commander_schema(self) -> Dict[str, Any]:
@@ -2983,6 +3165,209 @@ class LoopRuntime:
         }
         return parsed, result.response_id, result.response, call_meta
 
+    def commander_review_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "taskId",
+                "round",
+                "stance",
+                "leadDirection",
+                "answerDraft",
+                "whyThisDirection",
+                "controlAudit",
+                "dynamicLaneDecision",
+                "remainingUncertainty",
+                "sourceWorkers",
+            ],
+            "properties": {
+                "taskId": {"type": "string"},
+                "round": {"type": "integer"},
+                "stance": {"type": "string"},
+                "leadDirection": {"type": "string"},
+                "answerDraft": {"type": "string"},
+                "whyThisDirection": {"type": "string"},
+                "controlAudit": self.summary_schema()["properties"]["controlAudit"],
+                "dynamicLaneDecision": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "shouldSpawn",
+                        "suggestedLaneTypes",
+                        "reason",
+                        "requiredPressure",
+                        "temperature",
+                        "instruction",
+                    ],
+                    "properties": {
+                        "shouldSpawn": {"type": "boolean"},
+                        "suggestedLaneTypes": {"type": "array", "items": {"type": "string"}},
+                        "reason": {"type": "string"},
+                        "requiredPressure": {"type": "string"},
+                        "temperature": {"type": "string"},
+                        "instruction": {"type": "string"},
+                    },
+                },
+                "remainingUncertainty": {"type": "array", "items": {"type": "string"}},
+                "sourceWorkers": {"type": "array", "items": {"type": "string"}},
+            },
+        }
+
+    def new_mock_commander_review(
+        self,
+        task: Dict[str, Any],
+        commander_checkpoint: Optional[Dict[str, Any]],
+        workers: List[Dict[str, str]],
+        worker_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        commander_projection = self.project_commander_for_summary(commander_checkpoint)
+        round_number = int(commander_projection.get("round", 0) or 1)
+        source_workers = [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)]
+        strongest_points: List[str] = []
+        held_out: List[str] = []
+        for worker in workers:
+            checkpoint = self.project_worker_checkpoint_for_summary(worker_state.get(worker["id"]))
+            if checkpoint is None:
+                continue
+            challenge = (
+                limit_string_list(checkpoint.get("invalidatingCircumstances", []), 1, 180)
+                + limit_string_list(checkpoint.get("evidenceGaps", []), 1, 180)
+                + limit_string_list(checkpoint.get("uncertainty", []), 1, 180)
+            )
+            if challenge:
+                strongest_points.append(f"{worker['label']}: {challenge[0]}")
+            if checkpoint.get("requestToPeer"):
+                held_out.append(str(checkpoint.get("requestToPeer")))
+        strongest_points = strongest_points[:3]
+        held_out = limit_string_list(held_out, 3, 220)
+        answer_draft = truncate_text(commander_projection.get("answerDraft", ""), 1600)
+        lead_direction = truncate_text(commander_projection.get("leadDirection", ""), 260)
+        return normalize_commander_review_checkpoint(
+            {
+                "taskId": str(task.get("taskId", "")),
+                "round": round_number,
+                "stance": truncate_text(commander_projection.get("stance", ""), 240) or lead_direction,
+                "leadDirection": lead_direction,
+                "answerDraft": answer_draft or lead_direction,
+                "whyThisDirection": (
+                    "The lead thread kept the clearest answer direction, then checked whether the strongest objections only qualified it or actually forced a course change."
+                ),
+                "controlAudit": {
+                    "leadDraft": answer_draft or lead_direction,
+                    "integrationQuestion": "Does this adversarial point materially improve correctness, scope, safety, or usefulness, or is it mostly noise?",
+                    "courseDecision": "maintain",
+                    "courseDecisionReason": "Mock reevaluation defaults to maintaining course unless a worker checkpoint clearly invalidates the lead direction.",
+                    "contributionAssessments": [
+                        {
+                            "contribution": point,
+                            "value": "high",
+                            "effect": "qualify",
+                            "reason": "This objection should sharpen the lead answer without automatically replacing it."
+                        }
+                        for point in strongest_points
+                    ][:4],
+                    "acceptedAdversarialPoints": strongest_points,
+                    "rejectedAdversarialPoints": [],
+                    "heldOutConcerns": held_out,
+                    "selfCheck": "Before speaking, the lead thread checked that the revised draft still answered the user's request directly.",
+                },
+                "dynamicLaneDecision": {
+                    "shouldSpawn": False,
+                    "suggestedLaneTypes": [],
+                    "reason": "Mock commander review did not identify a clearly missing adversarial lane.",
+                    "requiredPressure": "",
+                    "temperature": "",
+                    "instruction": "",
+                },
+                "remainingUncertainty": limit_string_list(commander_projection.get("uncertainty", []), 3, 220),
+                "sourceWorkers": source_workers,
+            },
+            task,
+            round_number,
+            commander_checkpoint,
+            source_workers,
+        )
+
+    def new_live_commander_review(
+        self,
+        api_key: str,
+        task: Dict[str, Any],
+        commander_checkpoint: Optional[Dict[str, Any]],
+        workers: List[Dict[str, str]],
+        worker_state: Dict[str, Any],
+        runtime: Dict[str, Any],
+        line_catalog: List[Dict[str, Any]],
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
+        review_config = commander_review_config(task)
+        harness_lines = summarizer_harness_instruction_lines(review_config.get("harness"))
+        constraints = limit_string_list(task.get("constraints", []), 24, 400)
+        session_context = str(task.get("sessionContext", "")).strip()
+        commander_projection = self.project_commander_for_summary(commander_checkpoint)
+        round_number = int(commander_projection.get("round", 0) or 1)
+        worker_projection = self.project_worker_state_for_summary(worker_state, workers)
+        source_workers = [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)]
+        instructions = (
+            "You are the commander_review stage in a sparse multi-lane reasoning loop.\n"
+            "The commander already produced a first-pass direction. The workers have now pressure-tested it.\n"
+            "Your job is to decide whether the lead thread should maintain, qualify, redirect, or reverse before any public answer is written.\n"
+            "This is the authoritative lead-thread reevaluation for the round.\n"
+            "Read the full current user input, the original commander draft, and the worker checkpoints.\n"
+            "Do not write the final public answer yet. Produce the revised lead answer that the summarizer will later present cleanly.\n"
+            "Use stance, leadDirection, answerDraft, and whyThisDirection for the revised lead position after adversarial pressure.\n"
+            "Use controlAudit to show that the lead thread explicitly judged the value of each strong adversarial contribution instead of submitting to it.\n"
+            "Default to maintain when objections only add evidence, conditions, or guardrails.\n"
+            "Use qualify when the lead stays on course but needs narrower scope, stronger conditions, or sharper caveats.\n"
+            "Use redirect when the destination changes while still serving the user's core goal.\n"
+            "Use reverse only when the current lead answer would now be materially wrong, unsafe, or misleading.\n"
+            "Indecisive drift is worse than a clear qualified answer when reversal is not justified.\n"
+            "Use dynamicLaneDecision only when the current roster still lacks one materially missing adversarial lens for the NEXT round.\n"
+            "dynamicLaneDecision.suggestedLaneTypes may contain up to 2 known adversarial lane types from the catalog.\n"
+            "dynamicLaneDecision.requiredPressure should name the unresolved uncertainty or pressure that the next lane must attack.\n"
+            "dynamicLaneDecision.temperature may be cool, balanced, or hot when the next lane needs a deliberate reasoning style.\n"
+            "dynamicLaneDecision.instruction should be one short lane-specific harness instruction for that spawned worker.\n"
+            "Leave shouldSpawn false when the current roster already covers the relevant pressure.\n"
+            "remainingUncertainty should capture what still stays unresolved after this reevaluation.\n"
+            "sourceWorkers should list the workers whose checkpoints materially informed the reevaluation.\n"
+            + "\n".join(harness_lines)
+            + "\nReturn JSON only that matches the schema exactly."
+        )
+        input_text = (
+            f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
+            f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
+            f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
+            f"Initial commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
+            f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
+            f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
+            f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
+            f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
+        )
+        result = self.invoke_openai_json(
+            api_key=api_key,
+            model=runtime["model"],
+            reasoning_effort=runtime["reasoningEffort"],
+            instructions=instructions,
+            input_text=input_text,
+            schema_name="loop_commander_review",
+            schema=self.commander_review_schema(),
+            max_output_tokens=int(runtime["maxOutputTokens"]),
+            target_kind="commander_review",
+        )
+        parsed = normalize_commander_review_checkpoint(
+            dict(result.parsed),
+            task,
+            round_number,
+            commander_checkpoint,
+            source_workers,
+        )
+        call_meta = {
+            "requestedMaxOutputTokens": result.requested_max_output_tokens,
+            "effectiveMaxOutputTokens": result.effective_max_output_tokens,
+            "attempts": result.attempts,
+            "recoveredFromIncomplete": result.recovered_from_incomplete,
+        }
+        return parsed, result.response_id, result.response, call_meta
+
     def new_mock_checkpoint(
         self,
         task: Dict[str, Any],
@@ -3082,7 +3467,7 @@ class LoopRuntime:
             ],
             "confidence": 0.72 if worker["role"] == "utility" else 0.77,
             "requestToPeer": request_to_peer,
-            "requestTargets": self.get_default_request_targets(task, worker["id"]),
+            "requestTargets": self.get_default_request_targets(task, worker["id"], step_number),
             "constraintsSeen": constraints,
             "updatedAt": utc_now(),
         }
@@ -3188,7 +3573,7 @@ class LoopRuntime:
         prior_memory_version: int,
         peer_messages: List[Dict[str, str]],
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
-        peer_targets = [item["id"] for item in task_workers(task) if item["id"] != worker["id"]]
+        peer_targets = [item["id"] for item in task_workers(task, step_number) if item["id"] != worker["id"]]
         peer_text = "\n".join(f"{item['from']}: {item['message']}" for item in peer_messages) if peer_messages else "No peer steer received yet."
         session_context = str(task.get("sessionContext", "")).strip()
         summary_projection = self.project_prior_summary_for_worker(prior_summary)
@@ -3234,7 +3619,7 @@ class LoopRuntime:
             f"Objective:\n{task['objective']}\n\n"
             f"Session context:\n{session_context or 'none'}\n\n"
             f"Constraints:\n{chr(10).join(constraints)}\n\n"
-            f"Worker roster:\n{json.dumps(task.get('workers', []), ensure_ascii=False, indent=2)}\n\n"
+            f"Worker roster:\n{json.dumps(task_workers(task, step_number), ensure_ascii=False, indent=2)}\n\n"
             f"Research policy:\n{research_description}\n"
             f"externalWebAccess: {research_config['externalWebAccess']}\n"
             f"allowedDomains: {research_domains_text}\n\n"
@@ -3370,6 +3755,49 @@ class LoopRuntime:
             "suggestedLaneTypes": normalize_lane_type_list(checkpoint.get("suggestedLaneTypes", []), False, 2),
             "suggestedLaneReason": truncate_text(checkpoint.get("suggestedLaneReason", ""), 240),
             "constraintsSeen": limit_string_list(checkpoint.get("constraintsSeen", []), 6, 180),
+        }
+
+    def project_commander_review_for_summary(
+        self,
+        commander_review: Optional[Dict[str, Any]],
+        fallback_task: Optional[Dict[str, Any]] = None,
+        fallback_round: int = 1,
+        fallback_commander: Optional[Dict[str, Any]] = None,
+        fallback_workers: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        checkpoint = normalize_commander_review_checkpoint(
+            commander_review or {},
+            fallback_task,
+            fallback_round,
+            fallback_commander,
+            fallback_workers,
+        )
+        return {
+            "taskId": str(checkpoint.get("taskId", "")),
+            "round": int(checkpoint.get("round", 0) or 0),
+            "stance": truncate_text(checkpoint.get("stance", ""), 240),
+            "leadDirection": truncate_text(checkpoint.get("leadDirection", ""), 260),
+            "answerDraft": truncate_text(checkpoint.get("answerDraft", ""), 900),
+            "whyThisDirection": truncate_text(checkpoint.get("whyThisDirection", ""), 320),
+            "controlAudit": normalize_control_audit(checkpoint.get("controlAudit"), {
+                "frontAnswer": {
+                    "answer": checkpoint.get("answerDraft", ""),
+                    "stance": checkpoint.get("stance", ""),
+                    "leadDirection": checkpoint.get("leadDirection", ""),
+                    "adversarialPressure": "",
+                    "confidenceNote": "",
+                },
+                "summarizerOpinion": {
+                    "stance": checkpoint.get("stance", ""),
+                    "because": checkpoint.get("whyThisDirection", ""),
+                    "uncertainty": (checkpoint.get("remainingUncertainty") or [""])[0],
+                    "integrationMode": "The lead thread re-evaluates adversarial pressure before the public answer is formed.",
+                },
+                "claimsNeedingVerification": checkpoint.get("remainingUncertainty", []),
+            }),
+            "dynamicLaneDecision": normalize_dynamic_lane_decision(checkpoint.get("dynamicLaneDecision")),
+            "remainingUncertainty": limit_string_list(checkpoint.get("remainingUncertainty", []), 4, 220),
+            "sourceWorkers": normalize_worker_id_list(checkpoint.get("sourceWorkers", [])),
         }
 
     def project_prior_summary_for_worker(self, prior_summary: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3553,6 +3981,7 @@ class LoopRuntime:
         self,
         task: Dict[str, Any],
         commander_checkpoint: Optional[Dict[str, Any]],
+        commander_review_checkpoint: Optional[Dict[str, Any]],
         workers: List[Dict[str, str]],
         worker_state: Dict[str, Any],
         vetting_config: Dict[str, Any],
@@ -3563,12 +3992,19 @@ class LoopRuntime:
             checkpoint = worker_state.get(worker["id"])
             if isinstance(checkpoint, dict):
                 round_number = max(round_number, int(checkpoint.get("step", 0) or 0))
-        packets = self.expand_peer_steer_packets(task, {"workers": worker_state})
+        packets = self.expand_peer_steer_packets(task, {"workers": worker_state}, round_number)
         conflicts: List[Dict[str, Any]] = []
         review_trace: List[Dict[str, Any]] = []
         primary = next((worker for worker in workers if worker["id"] == "A"), workers[0] if workers else None)
         challengers = [worker for worker in workers if worker["id"] != "A"][:3]
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
+        commander_review_projection = self.project_commander_review_for_summary(
+            commander_review_checkpoint,
+            task,
+            max(round_number, int(commander_projection.get("round", 0) or 1)),
+            commander_checkpoint,
+            [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)],
+        )
         primary_checkpoint = self.project_worker_checkpoint_for_summary(worker_state.get(primary["id"])) if primary else None
 
         def pick_refs(worker_id: str, prefixes: List[str], limit: int = 3) -> List[str]:
@@ -3613,7 +4049,10 @@ class LoopRuntime:
                 }
             )
         lead_direction = truncate_text(
-            commander_projection.get("leadDirection", "") or (primary_checkpoint or {}).get("observation", "") or task.get("objective", ""),
+            commander_review_projection.get("leadDirection", "")
+            or commander_projection.get("leadDirection", "")
+            or (primary_checkpoint or {}).get("observation", "")
+            or task.get("objective", ""),
             320,
         ) or "Use the current task as the lead direction and keep the answer evidence-aware."
         strongest_pressure = truncate_text(
@@ -3637,13 +4076,33 @@ class LoopRuntime:
             "This is a provisional fallback answer because live summarization did not complete cleanly."
         )
         front_answer_text = "\n\n".join(front_answer_parts)
+        review_control_audit = normalize_control_audit(
+            commander_review_projection.get("controlAudit"),
+            {
+                "frontAnswer": {
+                    "answer": commander_review_projection.get("answerDraft", "") or lead_direction,
+                    "stance": commander_review_projection.get("stance", "") or lead_direction,
+                    "leadDirection": commander_review_projection.get("leadDirection", "") or lead_direction,
+                    "adversarialPressure": strongest_pressure,
+                    "confidenceNote": "",
+                },
+                "summarizerOpinion": {
+                    "stance": commander_review_projection.get("stance", "") or lead_direction,
+                    "because": commander_review_projection.get("whyThisDirection", ""),
+                    "uncertainty": (commander_review_projection.get("remainingUncertainty") or [""])[0],
+                    "integrationMode": "The lead thread re-evaluates adversarial pressure before the public answer is formed.",
+                },
+                "claimsNeedingVerification": commander_review_projection.get("remainingUncertainty", []),
+            },
+        )
+        dynamic_lane_decision = normalize_dynamic_lane_decision(commander_review_projection.get("dynamicLaneDecision"))
         return {
             "taskId": task["taskId"],
             "round": round_number,
             "frontAnswer": {
-                "answer": front_answer_text,
-                "stance": lead_direction,
-                "leadDirection": lead_direction,
+                "answer": truncate_text(commander_review_projection.get("answerDraft", ""), 3200) or front_answer_text,
+                "stance": truncate_text(commander_review_projection.get("stance", ""), 260) or lead_direction,
+                "leadDirection": truncate_text(commander_review_projection.get("leadDirection", ""), 260) or lead_direction,
                 "adversarialPressure": strongest_pressure,
                 "confidenceNote": (
                     "This is a fallback summary based on task and checkpoint structure, so the reasoning shape is stronger than the factual validation."
@@ -3652,42 +4111,16 @@ class LoopRuntime:
                 ),
             },
             "summarizerOpinion": {
-                "stance": "I would keep the lead direction grounded in the current task and let adversarial pressure narrow it only where it materially improves the answer.",
-                "because": "Even in fallback mode, the strongest available grounding comes from the current task, the current commander draft, and the latest worker checkpoints, not from generic lane mythology.",
-                "uncertainty": "Live summarization failed, so the output is weaker than a completed live merge and should be treated as provisional.",
-                "integrationMode": "Start from the current task and commander draft, then absorb only the strongest surviving objections before answering.",
+                "stance": truncate_text(commander_review_projection.get("stance", ""), 260)
+                or "I would keep the lead direction grounded in the current task and let adversarial pressure narrow it only where it materially improves the answer.",
+                "because": truncate_text(commander_review_projection.get("whyThisDirection", ""), 360)
+                or "Even in fallback mode, the strongest available grounding comes from the current task, the current commander review, and the latest worker checkpoints, not from generic lane mythology.",
+                "uncertainty": truncate_text((commander_review_projection.get("remainingUncertainty") or [""])[0], 260)
+                or "Live summarization failed, so the output is weaker than a completed live merge and should be treated as provisional.",
+                "integrationMode": "Start from the commander review, then preserve its course decision while packaging the answer for the user.",
             },
-            "controlAudit": {
-                "leadDraft": truncate_text(commander_projection.get("answerDraft", "") or lead_direction, 280),
-                "integrationQuestion": "Does this adversarial point make the visible answer truer or safer, or is it only making the hidden process louder?",
-                "courseDecision": "qualify" if strongest_pressure and strongest_pressure != "No strong adversarial pressure was captured." else "maintain",
-                "courseDecisionReason": (
-                    "Fallback mode keeps the current lead direction unless the surviving checkpoint pressure clearly shows it needs narrowing."
-                ),
-                "contributionAssessments": [
-                    {
-                        "contribution": strongest_pressure,
-                        "value": "high",
-                        "effect": "qualify" if strongest_pressure and strongest_pressure != "No strong adversarial pressure was captured." else "support",
-                        "reason": "This was the strongest retained pressure available when live summarization failed."
-                    }
-                ] if strongest_pressure and strongest_pressure != "No strong adversarial pressure was captured." else [],
-                "acceptedAdversarialPoints": [
-                    strongest_pressure
-                ] if strongest_pressure and strongest_pressure != "No strong adversarial pressure was captured." else [],
-                "rejectedAdversarialPoints": [
-                    "Do not let the fallback answer drift into generic process talk when the current task and checkpoint content are more relevant."
-                ],
-                "heldOutConcerns": [
-                    "Live summarization did not finish cleanly, so factual confidence should stay conservative."
-                ],
-                "selfCheck": "Before finalizing, I check that the fallback answer is still anchored to the current task instead of stale session drift or generic system rhetoric.",
-            },
-            "dynamicLaneDecision": {
-                "shouldSpawn": False,
-                "suggestedLaneTypes": [],
-                "reason": "Fallback summary does not have enough confidence to request a new adversarial lane automatically.",
-            },
+            "controlAudit": review_control_audit,
+            "dynamicLaneDecision": dynamic_lane_decision,
             "reviewTrace": review_trace,
             "stableFindings": [
                 "Structured checkpoints let many lanes disagree without losing continuity.",
@@ -3728,7 +4161,7 @@ class LoopRuntime:
             },
             "peerSteerPackets": packets,
             "recommendedNextAction": "Keep the default live model cheap, override only the lanes that need stronger reasoning, and review cost deltas after each round.",
-            "sourceWorkers": [worker["id"] for worker in workers],
+            "sourceWorkers": normalize_worker_id_list(commander_review_projection.get("sourceWorkers", [])) or [worker["id"] for worker in workers],
             "mergedAt": utc_now(),
         }
 
@@ -3839,11 +4272,14 @@ class LoopRuntime:
                 "dynamicLaneDecision": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["shouldSpawn", "suggestedLaneTypes", "reason"],
+                    "required": ["shouldSpawn", "suggestedLaneTypes", "reason", "requiredPressure", "temperature", "instruction"],
                     "properties": {
                         "shouldSpawn": {"type": "boolean"},
                         "suggestedLaneTypes": {"type": "array", "items": {"type": "string"}},
                         "reason": {"type": "string"},
+                        "requiredPressure": {"type": "string"},
+                        "temperature": {"type": "string"},
+                        "instruction": {"type": "string"},
                     },
                 },
                 "stableFindings": {"type": "array", "items": {"type": "string"}},
@@ -3921,6 +4357,7 @@ class LoopRuntime:
         api_key: str,
         task: Dict[str, Any],
         commander_checkpoint: Optional[Dict[str, Any]],
+        commander_review_checkpoint: Optional[Dict[str, Any]],
         workers: List[Dict[str, str]],
         worker_state: Dict[str, Any],
         runtime: Dict[str, Any],
@@ -3934,7 +4371,15 @@ class LoopRuntime:
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
         session_context = str(task.get("sessionContext", "")).strip()
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
+        commander_review_projection = self.project_commander_review_for_summary(
+            commander_review_checkpoint,
+            task,
+            int(commander_projection.get("round", 0) or 1),
+            commander_checkpoint,
+            [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)],
+        )
         pending_workers = normalize_worker_id_list(pending_workers or [])
+        has_commander_review = isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) > 0
         instructions = (
             "You are the summarizer in a sparse multi-lane reasoning loop.\n"
             "Merge all worker checkpoints into a structured adjudication.\n"
@@ -3945,6 +4390,14 @@ class LoopRuntime:
             "Form an opinion from the worker evidence and arguments instead of narrating the process.\n"
             "Treat the public answer as a lead thought, not a consensus blend.\n"
             "The lead thread stays in control at all times.\n"
+        )
+        instructions += (
+            "The supplied commander review is the authoritative lead-thread reevaluation for this round.\n"
+            "Preserve its controlAudit and dynamicLaneDecision in your output instead of making a fresh lane request.\n"
+            "Start from the supplied commander review answerDraft when forming the visible answer.\n"
+            "Let the public answer reflect that reevaluated course cleanly, without re-running the course decision from scratch.\n"
+            if has_commander_review
+            else
             "Start from the supplied commander draft for this round unless the surviving objections justify changing it.\n"
             "Write that commander-facing starting point into controlAudit.leadDraft.\n"
             "Then question each strong adversarial contribution against one control question: does it improve correctness, scope, safety, or usefulness, or does it merely pull the answer off course?\n"
@@ -3964,6 +4417,8 @@ class LoopRuntime:
             "Put concerns you are keeping visible but not letting dominate the answer into controlAudit.heldOutConcerns.\n"
             "Before you finalize frontAnswer.answer, compare the final wording against your own lead draft and the user's actual request.\n"
             "Write that last self-audit into controlAudit.selfCheck.\n"
+        )
+        instructions += (
             "Use adversarial pressure to improve the answer, not to speak directly through it.\n"
             "Do not let the summarizer behave like a funnel that merely forwards or averages lane output.\n"
             "frontAnswer.answer must read like a normal single-assistant reply to the user.\n"
@@ -3979,30 +4434,40 @@ class LoopRuntime:
             "summarizerOpinion.integrationMode should explain how the strongest objections changed the lead direction.\n"
             "controlAudit is review-facing and should show that the lead thread actively interrogated adversarial pressure instead of submitting to it.\n"
             "reviewTrace is for review operations, not for the public answer.\n"
+        )
+        instructions += (
+            "Copy dynamicLaneDecision from the commander review unchanged unless the supplied value is malformed.\n"
+            if has_commander_review
+            else
             "Use dynamicLaneDecision to decide whether the next round needs one additional adversarial lane.\n"
             "Only set dynamicLaneDecision.shouldSpawn to true when a materially missing adversarial lens remains unresolved after the current round.\n"
             "dynamicLaneDecision.suggestedLaneTypes may contain up to 2 adversarial lane types from the known catalog.\n"
+            "dynamicLaneDecision.requiredPressure should name the unresolved pressure the next lane must attack.\n"
+            "dynamicLaneDecision.temperature may be cool, balanced, or hot when the next lane needs a specific reasoning temperature.\n"
+            "dynamicLaneDecision.instruction should be one short harness instruction for the next spawned lane.\n"
             "Prefer false when the current roster already covers the relevant pressure.\n"
+        )
+        instructions += (
             "Every reviewTrace line ref must come from the supplied line catalog exactly as written.\n"
             "Do not upgrade weak evidence into a supported fact.\n"
             "Do not do new research.\n"
             "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
-            + (
+        )
+        if partial_mode:
+            instructions += (
                 "This is a partial summary request.\n"
                 "Some worker checkpoints are still missing or still running.\n"
                 "Use only the currently available checkpoints.\n"
                 "The public answer should still be useful and decisive, but its confidence note must clearly reflect the missing evidence.\n"
-                if partial_mode
-                else ""
             )
-            + "\n".join(harness_lines)
-            + "\nReturn JSON only that matches the schema exactly."
-        )
+        instructions += "\n".join(harness_lines)
+        instructions += "\nReturn JSON only that matches the schema exactly."
         input_text = (
             f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
             f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
             f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
             f"Commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
+            f"Commander review for this round:\n{json.dumps(commander_review_projection, ensure_ascii=False, indent=2)}\n\n"
             f"Task brief:\n{json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)}\n\n"
             f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
             f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
@@ -4024,6 +4489,18 @@ class LoopRuntime:
             target_kind="summarizer",
         )
         parsed = dict(result.parsed)
+        authoritative_round = int(commander_review_projection.get("round", 0) or commander_projection.get("round", 0) or 0)
+        if authoritative_round > 0:
+            parsed["round"] = authoritative_round
+        if has_commander_review:
+            parsed["controlAudit"] = commander_review_projection.get("controlAudit", parsed.get("controlAudit"))
+            parsed["dynamicLaneDecision"] = commander_review_projection.get("dynamicLaneDecision", parsed.get("dynamicLaneDecision"))
+            front_answer = parsed.get("frontAnswer") if isinstance(parsed.get("frontAnswer"), dict) else {}
+            if not str(front_answer.get("leadDirection", "")).strip():
+                front_answer["leadDirection"] = commander_review_projection.get("leadDirection", "")
+            if not str(front_answer.get("stance", "")).strip():
+                front_answer["stance"] = commander_review_projection.get("stance", "")
+            parsed["frontAnswer"] = front_answer
         parsed["evidenceVerdicts"] = normalize_evidence_verdicts(parsed.get("evidenceVerdicts", []))
         parsed["claimsNeedingVerification"] = normalize_string_array_preserve_items(parsed.get("claimsNeedingVerification", []))
         parsed["mergedAt"] = utc_now()
@@ -4063,7 +4540,7 @@ class LoopRuntime:
         checkpoint["evidenceLedger"] = normalize_evidence_ledger(checkpoint.get("evidenceLedger", []))
         checkpoint["localToolCalls"] = normalize_local_tool_calls(checkpoint.get("localToolCalls", []))
         checkpoint["githubToolCalls"] = normalize_local_tool_calls(checkpoint.get("githubToolCalls", []))
-        checkpoint["requestTargets"] = self.normalize_request_targets(checkpoint.get("requestTargets", []), task, worker_id)
+        checkpoint["requestTargets"] = self.normalize_request_targets(checkpoint.get("requestTargets", []), task, worker_id, step_number)
         checkpoint["updatedAt"] = utc_now()
         return checkpoint
 
@@ -4125,6 +4602,14 @@ class LoopRuntime:
     def write_commander_files(self, task_id: str, round_number: int, checkpoint: Dict[str, Any]) -> tuple[Path, Path]:
         latest = self.checkpoints_path / f"{task_id}_commander.json"
         history = self.checkpoints_path / f"{task_id}_commander_round{round_number:03d}.json"
+        payload = json.dumps(checkpoint, indent=2, ensure_ascii=False)
+        latest.write_text(payload, encoding="utf-8")
+        history.write_text(payload, encoding="utf-8")
+        return latest, history
+
+    def write_commander_review_files(self, task_id: str, round_number: int, checkpoint: Dict[str, Any]) -> tuple[Path, Path]:
+        latest = self.checkpoints_path / f"{task_id}_commander_review.json"
+        history = self.checkpoints_path / f"{task_id}_commander_review_round{round_number:03d}.json"
         payload = json.dumps(checkpoint, indent=2, ensure_ascii=False)
         latest.write_text(payload, encoding="utf-8")
         history.write_text(payload, encoding="utf-8")
@@ -4343,6 +4828,223 @@ class LoopRuntime:
         )
         return {"target": "commander", "output": "Commander draft written.", "exitCode": 0}
 
+    def run_commander_review(self) -> Dict[str, Any]:
+        state = self.read_state()
+        task = state.get("activeTask")
+        if not isinstance(task, dict):
+            raise RuntimeErrorWithCode("No active task.", 400)
+        commander_checkpoint = state.get("commander") if isinstance(state.get("commander"), dict) else None
+        if not isinstance(commander_checkpoint, dict):
+            raise RuntimeErrorWithCode("Commander draft is required before commander review.", 409)
+        commander_round = int(commander_checkpoint.get("round", 0) or 0)
+        if commander_round <= 0:
+            raise RuntimeErrorWithCode("Commander draft is required before commander review.", 409)
+        existing_review = state.get("commanderReview") if isinstance(state.get("commanderReview"), dict) else None
+        if isinstance(existing_review, dict) and int(existing_review.get("round", 0) or 0) == commander_round:
+            raise RuntimeErrorWithCode(
+                f"Commander review already completed for round {commander_round}. Run the summarizer or start the next round first.",
+                409,
+            )
+        workers = task_workers(task, commander_round)
+        worker_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
+        for worker in workers:
+            checkpoint = worker_state.get(worker["id"])
+            if not isinstance(checkpoint, dict) or int(checkpoint.get("step", 0) or 0) != commander_round:
+                raise RuntimeErrorWithCode(
+                    f"Worker {worker['id']} is not aligned with commander round {commander_round}.",
+                    409,
+                )
+        review_config = commander_review_config(task)
+        runtime = self.get_task_runtime(task, review_config["model"], "commander_review")
+        line_catalog = self.build_summary_line_catalog(worker_state, workers)
+        checkpoint: Optional[Dict[str, Any]] = None
+        response_id: Optional[str] = None
+        response: Optional[Dict[str, Any]] = None
+        usage_snapshot: Optional[Dict[str, Any]] = None
+        call_meta: Dict[str, Any] = {
+            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "effectiveMaxOutputTokens": int(runtime["maxOutputTokens"]),
+            "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
+            "recoveredFromIncomplete": False,
+        }
+        mode_used = "mock"
+        auth_assignment = self.get_api_key_assignment("commander_review", task, round_number=commander_round)
+        auth_meta = auth_assignment_meta(auth_assignment)
+        if runtime["executionMode"] == "live":
+            api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
+            if api_key:
+                try:
+                    self.assert_budget_available("commander_review", task)
+                    checkpoint, response_id, response, call_meta = self.new_live_commander_review(
+                        api_key,
+                        task,
+                        commander_checkpoint,
+                        workers,
+                        worker_state,
+                        runtime,
+                        line_catalog,
+                    )
+                    usage_snapshot = self.update_usage_tracking("commander_review", str(task["taskId"]), runtime["model"], response_id, response)
+                    mode_used = "live"
+                except RuntimeErrorWithCode as error:
+                    if str(error).startswith("Budget limit reached:"):
+                        self.append_step(
+                            "budget",
+                            "Budget stopped commander review before another live call.",
+                            {"taskId": task["taskId"], "model": runtime["model"], "error": str(error), "auth": auth_meta},
+                        )
+                        raise
+                    if not self.should_fallback_to_mock(error):
+                        self.append_step(
+                            "commander_review",
+                            "Live API call failed and was not downgraded to mock.",
+                            {
+                                "taskId": task["taskId"],
+                                "model": runtime["model"],
+                                "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+                                "error": str(error),
+                                "auth": auth_meta,
+                            },
+                        )
+                        raise RuntimeErrorWithCode(f"Live run failed for commander review: {error}", error.status_code)
+                    self.append_step(
+                        "commander_review",
+                        "Live API call failed; falling back to mock.",
+                        {
+                            "taskId": task["taskId"],
+                            "model": runtime["model"],
+                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
+                            "error": str(error),
+                            "auth": auth_meta,
+                        },
+                    )
+            else:
+                self.append_step("commander_review", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+        if checkpoint is None:
+            checkpoint = self.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
+        checkpoint = normalize_commander_review_checkpoint(
+            checkpoint,
+            task,
+            commander_round,
+            commander_checkpoint,
+            [worker["id"] for worker in workers],
+        )
+        dynamic_spinup = self.get_dynamic_spinup_config(task)
+        dynamic_lane_decision = checkpoint.get("dynamicLaneDecision") if isinstance(checkpoint.get("dynamicLaneDecision"), dict) else {}
+        selected_dynamic_worker = (
+            self.build_dynamic_worker(task, dynamic_lane_decision, commander_round + 1)
+            if dynamic_spinup["enabled"] and bool(dynamic_lane_decision.get("shouldSpawn"))
+            else None
+        )
+        spawned_worker: Optional[Dict[str, str]] = None
+
+        def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal spawned_worker
+            current["commanderReview"] = checkpoint
+            if selected_dynamic_worker is not None and isinstance(current.get("activeTask"), dict):
+                current_task = current["activeTask"]
+                existing_workers = task_workers(current_task)
+                if selected_dynamic_worker["id"] not in {worker["id"] for worker in existing_workers}:
+                    current_task["workers"] = existing_workers + [selected_dynamic_worker]
+                    workers_state = current.get("workers") if isinstance(current.get("workers"), dict) else {}
+                    workers_state[selected_dynamic_worker["id"]] = None
+                    current["workers"] = workers_state
+                    current["activeTask"] = current_task
+                    spawned_worker = selected_dynamic_worker
+            return current
+
+        state = self.mutate_state(update_state)
+        if spawned_worker is not None and isinstance(state.get("activeTask"), dict):
+            self._write_json_file(self.tasks_path / f"{task['taskId']}.json", state["activeTask"])
+        _, history_cp = self.write_commander_review_files(str(task["taskId"]), commander_round, checkpoint)
+        output_artifact = {
+            "taskId": str(task["taskId"]),
+            "artifactType": "commander_review_output",
+            "target": "commander_review",
+            "label": review_config["label"],
+            "mode": mode_used,
+            "model": runtime["model"],
+            "round": commander_round,
+            "capturedAt": utc_now(),
+            "responseId": response_id,
+            "rawOutputText": self.get_response_output_text(response) if response else None,
+            "responseMeta": {
+                "status": str(response.get("status", "completed")),
+                "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "dynamicLaneDecision": dynamic_lane_decision,
+                "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
+            } if response else None,
+            "authMeta": auth_meta,
+            "output": checkpoint,
+        }
+        _, history_output = self.write_output_artifact(
+            f"{task['taskId']}_commander_review_output.json",
+            f"{task['taskId']}_commander_review_round{commander_round:03d}_output.json",
+            output_artifact,
+        )
+        budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
+        self.append_event(
+            "commander_review_checkpoint",
+            {
+                "taskId": task["taskId"],
+                "round": commander_round,
+                "mode": mode_used,
+                "model": runtime["model"],
+                "dynamicLaneDecision": dynamic_lane_decision,
+                "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
+            },
+        )
+        if spawned_worker is not None:
+            self.append_step(
+                "dynamic_lane",
+                f"Spawned {spawned_worker['label']} for the next round.",
+                {
+                    "taskId": task["taskId"],
+                    "round": commander_round,
+                    "workerId": spawned_worker["id"],
+                    "workerType": spawned_worker.get("type"),
+                    "temperature": spawned_worker.get("temperature"),
+                    "focus": spawned_worker.get("focus"),
+                    "harness": spawned_worker.get("harness"),
+                    "reason": str(dynamic_lane_decision.get("reason", "")).strip(),
+                    "requiredPressure": str(dynamic_lane_decision.get("requiredPressure", "")).strip(),
+                    "instruction": str(dynamic_lane_decision.get("instruction", "")).strip(),
+                    "suggestedLaneTypes": normalize_lane_type_list(dynamic_lane_decision.get("suggestedLaneTypes", []), False, 2),
+                },
+            )
+        self.append_step(
+            "commander_review",
+            "Commander reevaluated the lead answer after worker pressure.",
+            {
+                "taskId": task["taskId"],
+                "round": commander_round,
+                "mode": mode_used,
+                "model": runtime["model"],
+                "responseId": response_id,
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "courseDecision": str((checkpoint.get("controlAudit") or {}).get("courseDecision", "")),
+                "dynamicLaneDecision": checkpoint.get("dynamicLaneDecision"),
+                "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
+                "totalTokens": int(budget_totals.get("totalTokens", 0)),
+                "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
+                "checkpointFile": history_cp.name,
+                "outputFile": history_output.name,
+                "auth": auth_meta,
+            },
+        )
+        self.append_event(
+            "runtime_run",
+            {"target": "commander_review", "backend": "python", "exitCode": 0, "output": "Commander review written."},
+        )
+        return {"target": "commander_review", "output": "Commander review written.", "exitCode": 0}
+
     def run_worker(self, worker_id: str) -> Dict[str, Any]:
         worker_id = worker_id.strip().upper()
         if not re.match(r"^[A-Z]$", worker_id):
@@ -4373,7 +5075,12 @@ class LoopRuntime:
                 f"Commander draft is not aligned for {worker['label']}. Expected commander round {step_number}, found round {commander_round}.",
                 409,
             )
-        peer_messages = self.get_peer_steer_messages(state, task, worker_id)
+        if commander_round < worker_active_from_round(worker):
+            raise RuntimeErrorWithCode(
+                f"{worker['label']} activates in round {worker_active_from_round(worker)} and is not ready for commander round {commander_round}.",
+                409,
+            )
+        peer_messages = self.get_peer_steer_messages(state, task, worker_id, commander_round)
         checkpoint: Optional[Dict[str, Any]] = None
         response_id: Optional[str] = None
         response: Optional[Dict[str, Any]] = None
@@ -4574,10 +5281,19 @@ class LoopRuntime:
         commander_checkpoint = state.get("commander") if isinstance(state.get("commander"), dict) else None
         if not isinstance(commander_checkpoint, dict):
             raise RuntimeErrorWithCode("Commander draft is required before summarizing.", 409)
-        workers = task_workers(task)
+        commander_review_checkpoint = state.get("commanderReview") if isinstance(state.get("commanderReview"), dict) else None
+        if not isinstance(commander_review_checkpoint, dict):
+            raise RuntimeErrorWithCode("Commander review is required before summarizing.", 409)
         worker_state: Dict[str, Any] = {}
         state_workers = state.get("workers") if isinstance(state.get("workers"), dict) else {}
         commander_round = int(commander_checkpoint.get("round", 0) or 0)
+        commander_review_round = int(commander_review_checkpoint.get("round", 0) or 0)
+        workers = task_workers(task, commander_round)
+        if commander_review_round != commander_round:
+            raise RuntimeErrorWithCode(
+                f"Commander review is not aligned with commander round {commander_round}.",
+                409,
+            )
         for worker in workers:
             checkpoint = state_workers.get(worker["id"])
             if not isinstance(checkpoint, dict):
@@ -4610,7 +5326,17 @@ class LoopRuntime:
             if api_key:
                 try:
                     self.assert_budget_available("summarizer", task)
-                    summary, response_id, response, call_meta = self.new_live_summary(api_key, task, commander_checkpoint, workers, worker_state, runtime, vetting_config, line_catalog)
+                    summary, response_id, response, call_meta = self.new_live_summary(
+                        api_key,
+                        task,
+                        commander_checkpoint,
+                        commander_review_checkpoint,
+                        workers,
+                        worker_state,
+                        runtime,
+                        vetting_config,
+                        line_catalog,
+                    )
                     usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
                 except RuntimeErrorWithCode as error:
@@ -4648,36 +5374,16 @@ class LoopRuntime:
             else:
                 self.append_step("summarizer", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
-            summary = self.new_mock_summary(task, commander_checkpoint, workers, worker_state, vetting_config, line_catalog)
+            summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
         summary = self.normalize_summary(summary, line_catalog)
-        dynamic_spinup = self.get_dynamic_spinup_config(task)
+        summary["round"] = commander_round
         dynamic_lane_decision = summary.get("dynamicLaneDecision") if isinstance(summary.get("dynamicLaneDecision"), dict) else {}
-        selected_lane_type = self.select_dynamic_lane_type(task, dynamic_lane_decision.get("suggestedLaneTypes", []))
-        selected_dynamic_worker = (
-            self.build_dynamic_worker(task, selected_lane_type)
-            if dynamic_spinup["enabled"] and bool(dynamic_lane_decision.get("shouldSpawn")) and selected_lane_type
-            else None
-        )
-        spawned_worker: Optional[Dict[str, str]] = None
 
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
-            nonlocal spawned_worker
             current["summary"] = summary
             current["memoryVersion"] = int(current.get("memoryVersion", 0) or 0) + 1
-            if selected_dynamic_worker is not None and isinstance(current.get("activeTask"), dict):
-                current_task = current["activeTask"]
-                existing_workers = task_workers(current_task)
-                if selected_dynamic_worker["id"] not in {worker["id"] for worker in existing_workers}:
-                    current_task["workers"] = existing_workers + [selected_dynamic_worker]
-                    workers_state = current.get("workers") if isinstance(current.get("workers"), dict) else {}
-                    workers_state[selected_dynamic_worker["id"]] = None
-                    current["workers"] = workers_state
-                    current["activeTask"] = current_task
-                    spawned_worker = selected_dynamic_worker
             return current
         state = self.mutate_state(update_state)
-        if spawned_worker is not None and isinstance(state.get("activeTask"), dict):
-            self._write_json_file(self.tasks_path / f"{task['taskId']}.json", state["activeTask"])
         current_memory_version = int(state.get("memoryVersion", 0) or 0)
         latest_summary, history_summary = self.write_summary_files(str(task["taskId"]), int(summary.get("round", 0) or 0), summary)
         output_artifact = {
@@ -4716,22 +5422,8 @@ class LoopRuntime:
                 "model": runtime["model"],
                 "sourceWorkers": [worker["id"] for worker in workers],
                 "dynamicLaneDecision": dynamic_lane_decision,
-                "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
             },
         )
-        if spawned_worker is not None:
-            self.append_step(
-                "dynamic_lane",
-                f"Spawned {spawned_worker['label']} for the next round.",
-                {
-                    "taskId": task["taskId"],
-                    "round": int(summary.get("round", 0) or 0),
-                    "workerId": spawned_worker["id"],
-                    "workerType": spawned_worker.get("type"),
-                    "reason": str(dynamic_lane_decision.get("reason", "")).strip(),
-                    "suggestedLaneTypes": normalize_lane_type_list(dynamic_lane_decision.get("suggestedLaneTypes", []), False, 2),
-                },
-            )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         self.append_step(
             "summarizer",
@@ -4746,7 +5438,6 @@ class LoopRuntime:
                 "workerCount": len(workers),
                 "vettingEnabled": bool(vetting_config["enabled"]),
                 "dynamicLaneDecision": dynamic_lane_decision,
-                "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
                 "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
@@ -4770,11 +5461,12 @@ class LoopRuntime:
         if not isinstance(task, dict):
             raise RuntimeErrorWithCode("No active task.", 400)
         commander_checkpoint = state.get("commander") if isinstance(state.get("commander"), dict) else None
+        commander_review_checkpoint = state.get("commanderReview") if isinstance(state.get("commanderReview"), dict) else None
         if not isinstance(commander_checkpoint, dict):
             raise RuntimeErrorWithCode("Commander draft is required before forcing an answer.", 409)
-        workers = task_workers(task)
         state_workers = state.get("workers") if isinstance(state.get("workers"), dict) else {}
         commander_round = int(commander_checkpoint.get("round", 0) or 0)
+        workers = task_workers(task, commander_round)
         worker_state: Dict[str, Any] = {}
         pending_workers: List[str] = []
         for worker in workers:
@@ -4815,6 +5507,7 @@ class LoopRuntime:
                         api_key,
                         task,
                         commander_checkpoint,
+                        commander_review_checkpoint if isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) == commander_round else None,
                         workers,
                         worker_state,
                         runtime,
@@ -4850,8 +5543,17 @@ class LoopRuntime:
             else:
                 self.append_step("summarizer", "No API key found for Answer Now; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
-            summary = self.new_mock_summary(task, commander_checkpoint, workers, worker_state, vetting_config, line_catalog)
+            summary = self.new_mock_summary(
+                task,
+                commander_checkpoint,
+                commander_review_checkpoint if isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) == commander_round else None,
+                workers,
+                worker_state,
+                vetting_config,
+                line_catalog,
+            )
         summary = self.normalize_summary(summary, line_catalog)
+        summary["round"] = commander_round
         summary = self.annotate_partial_summary(summary, list(worker_state.keys()), pending_workers)
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             current["summary"] = summary
@@ -4929,6 +5631,8 @@ class LoopRuntime:
             raise RuntimeErrorWithCode("Requested task does not match the active task.", 409)
         if target == "commander":
             return self.run_commander()
+        if target == "commander_review":
+            return self.run_commander_review()
         if target == "summarizer":
             return self.run_summarizer()
         if target == "answer_now" or (isinstance(options, dict) and options.get("partialSummary") and target == "summarizer"):

@@ -65,12 +65,15 @@ def main() -> None:
         runtime.update_usage_tracking = lambda *args, **kwargs: None  # type: ignore[method-assign]
         runtime.get_api_key_assignment = lambda *args, **kwargs: {"apiKey": "test-key", "slot": 1, "masked": "sk-test"}  # type: ignore[method-assign]
 
-        def fake_live_summary(api_key, task_arg, commander_arg, workers_arg, worker_state_arg, runtime_arg, vetting_arg, line_catalog_arg, partial_mode=False, pending_workers=None):
-            summary = runtime.new_mock_summary(task_arg, commander_arg, workers_arg, worker_state_arg, vetting_arg, line_catalog_arg)
-            summary["dynamicLaneDecision"] = {
+        def fake_live_commander_review(api_key, task_arg, commander_arg, workers_arg, worker_state_arg, runtime_arg, line_catalog_arg):
+            checkpoint = runtime.new_mock_commander_review(task_arg, commander_arg, workers_arg, worker_state_arg)
+            checkpoint["dynamicLaneDecision"] = {
                 "shouldSpawn": True,
                 "suggestedLaneTypes": ["security"],
                 "reason": "The current round still lacks a dedicated hostile-actor lane.",
+                "requiredPressure": "Explicit hostile-actor abuse testing remains under-covered.",
+                "temperature": "hot",
+                "instruction": "Pressure-test abuse paths and escalation mechanics before the next merge.",
             }
             response = {
                 "id": "resp_dynamic",
@@ -81,7 +84,7 @@ def main() -> None:
                         "content": [
                             {
                                 "type": "output_text",
-                                "text": json.dumps(summary, ensure_ascii=False),
+                                "text": json.dumps(checkpoint, ensure_ascii=False),
                             }
                         ],
                     }
@@ -93,24 +96,31 @@ def main() -> None:
                 "attempts": [int(runtime_arg["maxOutputTokens"])],
                 "recoveredFromIncomplete": False,
             }
-            return summary, "resp_dynamic", response, call_meta
+            return checkpoint, "resp_dynamic", response, call_meta
 
-        runtime.new_live_summary = fake_live_summary  # type: ignore[method-assign]
+        runtime.new_live_commander_review = fake_live_commander_review  # type: ignore[method-assign]
 
-        result = runtime.run_summarizer()
-        assert_true(result["exitCode"] == 0, "Expected summarizer run to complete.")
+        result = runtime.run_commander_review()
+        assert_true(result["exitCode"] == 0, "Expected commander review run to complete.")
 
         final_state = runtime.read_state()
         active_task = final_state.get("activeTask") if isinstance(final_state.get("activeTask"), dict) else {}
         active_workers = task_workers(active_task)
+        round_one_workers = task_workers(active_task, 1)
+        round_two_workers = task_workers(active_task, 2)
         worker_ids = [worker["id"] for worker in active_workers]
         worker_types = {worker["id"]: worker.get("type") for worker in active_workers}
-        summary = final_state.get("summary") if isinstance(final_state.get("summary"), dict) else {}
+        activation_rounds = {worker["id"]: int(worker.get("activeFromRound", 1) or 1) for worker in active_workers}
+        commander_review = final_state.get("commanderReview") if isinstance(final_state.get("commanderReview"), dict) else {}
 
         assert_true("C" in worker_ids, "Expected dynamic spin-up to add worker C.")
         assert_true(worker_types.get("C") == "security", "Expected worker C to use the security lane type.")
+        assert_true(activation_rounds.get("C") == 2, "Expected spawned worker C to activate in round 2.")
+        assert_true("C" not in [worker["id"] for worker in round_one_workers], "Expected spawned worker C to stay out of the current round roster.")
+        assert_true("C" in [worker["id"] for worker in round_two_workers], "Expected spawned worker C to join the next round roster.")
         assert_true(final_state.get("workers", {}).get("C") is None, "Expected new worker state slot to be initialized to null.")
-        assert_true(bool(summary.get("dynamicLaneDecision", {}).get("shouldSpawn")), "Expected persisted summary lane decision.")
+        assert_true(bool(commander_review.get("dynamicLaneDecision", {}).get("shouldSpawn")), "Expected persisted commander review lane decision.")
+        assert_true(commander_review.get("dynamicLaneDecision", {}).get("temperature") == "hot", "Expected commander review to persist lane temperature.")
 
         steps_text = Path(temp_dir, "data", "steps.jsonl").read_text(encoding="utf-8")
         assert_true('"stage": "dynamic_lane"' in steps_text, "Expected dynamic lane audit step.")
@@ -121,6 +131,7 @@ def main() -> None:
                     "status": "ok",
                     "workerIds": worker_ids,
                     "spawnedType": worker_types.get("C"),
+                    "activeFromRound": activation_rounds.get("C"),
                     "memoryVersion": final_state.get("memoryVersion"),
                 },
                 ensure_ascii=False,
