@@ -221,7 +221,6 @@ function renderApiModeStatus() {
   $card
     .addClass("api-mode-pill")
     .addClass("is-python")
-    .removeClass("is-php")
     .attr("title", apiModeDetails());
 }
 

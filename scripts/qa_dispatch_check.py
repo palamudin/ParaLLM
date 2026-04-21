@@ -13,14 +13,12 @@ from qa_check import (
     QAError,
     api_url,
     find_node_binary,
-    find_php_binary,
     project_root,
     qa_print,
     request_json,
     restart_runtime,
     run_http_checks,
     run_js_checks,
-    run_php_checks,
     run_python_checks,
 )
 from qa_live_check import ensure_auth_available
@@ -113,7 +111,7 @@ def wait_for_idle_workspace(base_url: str, timeout_seconds: float = 120.0) -> Di
     deadline = time.time() + timeout_seconds
     last_state: Dict[str, Any] | None = None
     while time.time() < deadline:
-        last_state = request_json(api_url(base_url, "get_state.php"), timeout=20)
+        last_state = request_json(api_url(base_url, "state"), timeout=20)
         loop = last_state.get("loop") if isinstance(last_state.get("loop"), dict) else {}
         dispatch = last_state.get("dispatch") if isinstance(last_state.get("dispatch"), dict) else {}
         if loop.get("status") not in {"queued", "running"} and dispatch.get("status") == "idle":
@@ -125,7 +123,7 @@ def wait_for_idle_workspace(base_url: str, timeout_seconds: float = 120.0) -> Di
 def wait_for_task_dispatch_terminal(base_url: str, task_id: str, timeout_seconds: float = 180.0) -> None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        history = request_json(api_url(base_url, "get_history.php"), timeout=20)
+        history = request_json(api_url(base_url, "history"), timeout=20)
         active_jobs = [
             job
             for job in history.get("jobs", [])
@@ -196,7 +194,7 @@ def run_dispatch_smoke(
         try:
             qa_print("Starting fresh dispatch smoke task")
             start = request_json(
-                api_url(base_url, "start_task.php"),
+                api_url(base_url, "task_start"),
                 method="POST",
                 form_data={
                     "objective": build_objective(readme_excerpt),
@@ -237,7 +235,7 @@ def run_dispatch_smoke(
             if not task_id:
                 raise QAError("Dispatch smoke taskId was missing.")
 
-            round_start = request_json(api_url(base_url, "run_round.php"), method="POST", form_data={}, timeout=30)
+            round_start = request_json(api_url(base_url, "round_run"), method="POST", form_data={}, timeout=30)
             batch_id = str(round_start.get("batchId") or "").strip()
             if not batch_id:
                 raise QAError("Round dispatch batchId was missing.")
@@ -251,8 +249,8 @@ def run_dispatch_smoke(
 
             while time.time() < deadline:
                 time.sleep(2.0)
-                state = request_json(api_url(base_url, "get_state.php"), timeout=20)
-                history = request_json(api_url(base_url, "get_history.php"), timeout=20)
+                state = request_json(api_url(base_url, "state"), timeout=20)
+                history = request_json(api_url(base_url, "history"), timeout=20)
                 jobs = [
                     job
                     for job in history.get("jobs", [])
@@ -274,7 +272,7 @@ def run_dispatch_smoke(
                 )
                 if commander_done and non_commander_active and not answer_triggered:
                     answer = request_json(
-                        api_url(base_url, "start_target_job.php"),
+                        api_url(base_url, "target_background"),
                         method="POST",
                         form_data={"target": "answer_now"},
                         timeout=30,
@@ -328,7 +326,7 @@ def run_dispatch_smoke(
             if answer_status != "completed":
                 raise QAError(f"Answer Now job did not complete cleanly: {answer_status or 'missing'}")
 
-            final_state = request_json(api_url(base_url, "get_state.php"), timeout=20)
+            final_state = request_json(api_url(base_url, "state"), timeout=20)
             if str((final_state.get("dispatch") or {}).get("status") or "") != "idle":
                 raise QAError("Dispatch state did not return to idle after the smoke.")
             summary = final_state.get("summary")
@@ -338,7 +336,7 @@ def run_dispatch_smoke(
             if not str(front_answer.get("answer") or "").strip():
                 raise QAError("Final summary frontAnswer.answer was empty.")
 
-            final_history = request_json(api_url(base_url, "get_history.php"), timeout=20)
+            final_history = request_json(api_url(base_url, "history"), timeout=20)
             artifacts = [artifact for artifact in final_history.get("artifacts", []) if isinstance(artifact, dict) and str(artifact.get("taskId") or "") == task_id]
             partial_artifacts = [artifact for artifact in artifacts if str(artifact.get("kind") or "") == "summary_partial_output"]
             commander_review_artifacts = [
@@ -412,7 +410,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = project_root()
-    php_bin = find_php_binary(root)
     node_bin = find_node_binary()
 
     qa_print(f"Project root: {root}")
@@ -432,7 +429,6 @@ def main() -> int:
     try:
         if not args.skip_prechecks:
             run_python_checks(root)
-            run_php_checks(root, php_bin)
             run_js_checks(root, node_bin)
             run_http_checks(args.base_url)
         result = run_dispatch_smoke(

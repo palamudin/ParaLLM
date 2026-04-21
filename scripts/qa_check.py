@@ -18,32 +18,32 @@ from typing import Any, Dict, Optional
 DEFAULT_BASE_URL = "http://127.0.0.1:8787"
 DEFAULT_RUNTIME_URL = os.getenv("LOOP_RUNTIME_URL", "")
 API_ROUTE_MAP = {
-    "get_artifact.php": "/v1/artifact",
-    "save_draft.php": "/v1/draft",
-    "get_auth_status.php": "/v1/auth/status",
-    "set_auth.php": "/v1/auth/keys",
-    "get_eval_artifact.php": "/v1/evals/artifact",
-    "get_eval_history.php": "/v1/evals/history",
-    "export_session.php": "/v1/session/export",
-    "get_state.php": "/v1/state",
-    "get_events.php": "/v1/events",
-    "get_steps.php": "/v1/steps",
-    "get_history.php": "/v1/history",
-    "apply_runtime_models.php": "/v1/runtime/apply",
-    "start_task.php": "/v1/tasks",
-    "start_loop.php": "/v1/loops",
-    "start_target_job.php": "/v1/targets/background",
-    "run_round.php": "/v1/rounds",
-    "run_target.php": "/v1/targets/run",
-    "add_adversarial.php": "/v1/workers/add",
-    "cancel_loop.php": "/v1/loops/cancel",
-    "start_eval_run.php": "/v1/evals/runs",
-    "reset_session.php": "/v1/session/reset",
-    "reset_state.php": "/v1/state/reset",
-    "set_worker_model.php": "/v1/positions/model",
-    "replay_session.php": "/v1/session/replay",
-    "manage_job.php": "/v1/jobs/manage",
-    "update_worker.php": "/v1/workers/update",
+    "artifact": "/v1/artifact",
+    "draft": "/v1/draft",
+    "auth_status": "/v1/auth/status",
+    "auth_keys": "/v1/auth/keys",
+    "eval_artifact": "/v1/evals/artifact",
+    "eval_history": "/v1/evals/history",
+    "session_export": "/v1/session/export",
+    "state": "/v1/state",
+    "events": "/v1/events",
+    "steps": "/v1/steps",
+    "history": "/v1/history",
+    "runtime_apply": "/v1/runtime/apply",
+    "task_start": "/v1/tasks",
+    "loop_start": "/v1/loops",
+    "target_background": "/v1/targets/background",
+    "round_run": "/v1/rounds",
+    "target_run": "/v1/targets/run",
+    "worker_add": "/v1/workers/add",
+    "loop_cancel": "/v1/loops/cancel",
+    "eval_run_start": "/v1/evals/runs",
+    "session_reset": "/v1/session/reset",
+    "state_reset": "/v1/state/reset",
+    "position_model": "/v1/positions/model",
+    "session_replay": "/v1/session/replay",
+    "job_manage": "/v1/jobs/manage",
+    "worker_update": "/v1/workers/update",
 }
 
 
@@ -71,10 +71,6 @@ def find_node_binary() -> Optional[str]:
         if candidate and Path(candidate).exists():
             return str(Path(candidate))
     return None
-
-
-def find_php_binary(root: Path) -> str:
-    return ""
 
 
 def run_command(argv: list[str], cwd: Path, label: str) -> None:
@@ -223,7 +219,7 @@ def wait_for_loop_clear(base_url: str, timeout_seconds: float = 45.0) -> Dict[st
     deadline = time.time() + timeout_seconds
     last_state: Dict[str, Any] | None = None
     while time.time() < deadline:
-        last_state = request_json(api_url(base_url, "get_state.php"), timeout=10)
+        last_state = request_json(api_url(base_url, "state"), timeout=10)
         loop = last_state.get("loop") if isinstance(last_state.get("loop"), dict) else {}
         if loop.get("status") not in {"queued", "running"}:
             return last_state
@@ -313,10 +309,6 @@ def run_python_smoke(root: Path) -> None:
     run_command([sys.executable, str(smoke_script)], root, "Python control-plane smoke")
 
 
-def run_php_checks(root: Path, php_bin: str) -> None:
-    qa_print("Legacy PHP checks removed; the active stack is Python-only.")
-
-
 def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_first: bool) -> Dict[str, Any]:
     if restart_runtime_first:
         restart_runtime(runtime_url)
@@ -330,20 +322,20 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
     with PreservedState(root) as preserved:
         try:
             qa_print("Resetting workspace for deterministic reversible smoke")
-            request_json(api_url(base_url, "reset_state.php"), method="POST", timeout=20)
+            request_json(api_url(base_url, "state_reset"), method="POST", timeout=20)
 
             qa_print("Adding a templated security lane to the staged draft")
             added_worker = request_json(
-                api_url(base_url, "add_adversarial.php"),
+                api_url(base_url, "worker_add"),
                 method="POST",
                 form_data={"type": "security"},
                 timeout=20,
             )
             added_worker_info = added_worker.get("worker")
             if not isinstance(added_worker_info, dict) or added_worker_info.get("type") != "security":
-                raise QAError("add_adversarial.php did not create the requested security worker.")
+                raise QAError("worker_add did not create the requested security worker.")
 
-            draft_state = request_json(api_url(base_url, "get_state.php"), timeout=10)
+            draft_state = request_json(api_url(base_url, "state"), timeout=10)
             draft = draft_state.get("draft")
             if not isinstance(draft, dict):
                 raise QAError("Draft state was missing after adding a worker.")
@@ -353,7 +345,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
 
             qa_print("Starting reversible mock smoke task")
             start = request_json(
-                api_url(base_url, "start_task.php"),
+                api_url(base_url, "task_start"),
                 method="POST",
                 form_data={
                     "objective": "Smoke test the adjudicated summary surface, queue controls, review export, and replay flow. The public answer should read as one normal assistant reply while the trace stays review-only.",
@@ -377,7 +369,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             )
             task_id = require_text(start.get("taskId"), "start_task taskId")
 
-            active_state = request_json(api_url(base_url, "get_state.php"), timeout=10)
+            active_state = request_json(api_url(base_url, "state"), timeout=10)
             active_task = active_state.get("activeTask")
             if not isinstance(active_task, dict):
                 raise QAError("Active task was missing after start_task.")
@@ -389,13 +381,13 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             for target in ["commander", *worker_targets, "summarizer"]:
                 qa_print(f"Running smoke target {target}")
                 request_json(
-                    api_url(base_url, "run_target.php"),
+                    api_url(base_url, "target_run"),
                     method="POST",
                     form_data={"target": target},
                     timeout=120,
                 )
 
-            state = request_json(api_url(base_url, "get_state.php"), timeout=10)
+            state = request_json(api_url(base_url, "state"), timeout=10)
             summary = state.get("summary")
             if not isinstance(summary, dict):
                 raise QAError("Smoke summary was missing from state.")
@@ -413,7 +405,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
 
             artifact_name = f"{task_id}_summary_round001_output.json"
             artifact = request_json(
-                api_url(base_url, "get_artifact.php") + "?name=" + urllib.parse.quote(artifact_name),
+                api_url(base_url, "artifact") + "?name=" + urllib.parse.quote(artifact_name),
                 timeout=10,
             )
             output = artifact.get("content", {}).get("output")
@@ -423,7 +415,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             require_sequence(output.get("reviewTrace"), "artifact.output.reviewTrace")
 
             qa_print("Verifying current-session export bundle")
-            current_export = request_json(api_url(base_url, "export_session.php"), timeout=20)
+            current_export = request_json(api_url(base_url, "session_export"), timeout=20)
             if current_export.get("source") != "current":
                 raise QAError("Current export did not report source=current.")
             if not isinstance(current_export.get("artifactPolicy"), dict):
@@ -431,7 +423,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             if not isinstance(current_export.get("state"), dict):
                 raise QAError("Current export did not include current state.")
 
-            history_before_reset = request_json(api_url(base_url, "get_history.php"), timeout=20)
+            history_before_reset = request_json(api_url(base_url, "history"), timeout=20)
             prior_archives = {
                 str(entry.get("file") or "")
                 for entry in history_before_reset.get("sessions", [])
@@ -439,8 +431,8 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             }
 
             qa_print("Archiving the current session and verifying replay/export endpoints")
-            request_json(api_url(base_url, "reset_session.php"), method="POST", timeout=20)
-            history_after_reset = request_json(api_url(base_url, "get_history.php"), timeout=20)
+            request_json(api_url(base_url, "session_reset"), method="POST", timeout=20)
+            history_after_reset = request_json(api_url(base_url, "history"), timeout=20)
             sessions = require_sequence(history_after_reset.get("sessions"), "history.sessions")
             archive_file = ""
             for entry in sessions:
@@ -453,7 +445,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
                 archive_file = require_text(sessions[0].get("file"), "latest archive file")
 
             archive_export = request_json(
-                api_url(base_url, "export_session.php") + "?archiveFile=" + urllib.parse.quote(archive_file),
+                api_url(base_url, "session_export") + "?archiveFile=" + urllib.parse.quote(archive_file),
                 timeout=20,
             )
             if archive_export.get("source") != "archive":
@@ -462,7 +454,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
                 raise QAError("Archive export returned an unexpected archive file.")
 
             replay = request_json(
-                api_url(base_url, "replay_session.php"),
+                api_url(base_url, "session_replay"),
                 method="POST",
                 form_data={"archiveFile": archive_file},
                 timeout=20,
@@ -476,14 +468,14 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
 
             qa_print("Queueing two background loops to verify bounded queueing")
             first_loop = request_json(
-                api_url(base_url, "start_loop.php"),
+                api_url(base_url, "loop_start"),
                 method="POST",
                 form_data={"rounds": "2", "delayMs": "50"},
                 timeout=20,
             )
             queued_job_id = require_text(first_loop.get("jobId"), "first queued jobId")
             second_loop = request_json(
-                api_url(base_url, "start_loop.php"),
+                api_url(base_url, "loop_start"),
                 method="POST",
                 form_data={"rounds": "2", "delayMs": "50"},
                 timeout=20,
@@ -491,12 +483,12 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             if int(second_loop.get("queuePosition", 0) or 0) < 1:
                 raise QAError("Second background loop did not enter the queue behind the active job.")
 
-            cancel_result = request_json(api_url(base_url, "cancel_loop.php"), method="POST", timeout=20)
+            cancel_result = request_json(api_url(base_url, "loop_cancel"), method="POST", timeout=20)
             if int(cancel_result.get("queuedJobsCancelled", 0) or 0) < 1:
-                raise QAError("cancel_loop.php did not report draining the queued background jobs.")
+                raise QAError("loop_cancel did not report draining the queued background jobs.")
             wait_for_loop_clear(base_url)
 
-            history_after_cancel = request_json(api_url(base_url, "get_history.php"), timeout=20)
+            history_after_cancel = request_json(api_url(base_url, "history"), timeout=20)
             retry_source = None
             for job in history_after_cancel.get("jobs", []):
                 if not isinstance(job, dict):
@@ -509,9 +501,9 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             if retry_source is None:
                 raise QAError("History did not expose a retryable job after cancellation.")
 
-            qa_print("Retrying a cancelled background job through manage_job.php")
+            qa_print("Retrying a cancelled background job through job_manage")
             retry_result = request_json(
-                api_url(base_url, "manage_job.php"),
+                api_url(base_url, "job_manage"),
                 method="POST",
                 form_data={"jobId": retry_source["jobId"], "action": "retry"},
                 timeout=20,
@@ -519,7 +511,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             retried_job_id = require_text(retry_result.get("jobId"), "retry jobId")
             wait_for_loop_clear(base_url)
 
-            history_after_retry = request_json(api_url(base_url, "get_history.php"), timeout=20)
+            history_after_retry = request_json(api_url(base_url, "history"), timeout=20)
             retry_entry = None
             for job in history_after_retry.get("jobs", []):
                 if isinstance(job, dict) and str(job.get("jobId") or "") == retried_job_id:
@@ -574,7 +566,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             }
             interrupted_job_path.write_text(json.dumps(interrupted_job, indent=2), encoding="utf-8")
 
-            history_with_interrupted = request_json(api_url(base_url, "get_history.php"), timeout=20)
+            history_with_interrupted = request_json(api_url(base_url, "history"), timeout=20)
             interrupted_entry = None
             for job in history_with_interrupted.get("jobs", []):
                 if isinstance(job, dict) and str(job.get("jobId") or "") == interrupted_job_id:
@@ -584,7 +576,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
                 raise QAError("Interrupted job was not exposed as resumable in history.")
 
             resume_result = request_json(
-                api_url(base_url, "manage_job.php"),
+                api_url(base_url, "job_manage"),
                 method="POST",
                 form_data={"jobId": interrupted_job_id, "action": "resume"},
                 timeout=20,
@@ -594,7 +586,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
                 raise QAError("Resume response did not preserve the expected resumeFromRound.")
             wait_for_loop_clear(base_url)
 
-            history_after_resume = request_json(api_url(base_url, "get_history.php"), timeout=20)
+            history_after_resume = request_json(api_url(base_url, "history"), timeout=20)
             resume_entry = None
             for job in history_after_resume.get("jobs", []):
                 if isinstance(job, dict) and str(job.get("jobId") or "") == resumed_job_id:

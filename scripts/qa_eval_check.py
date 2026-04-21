@@ -12,13 +12,11 @@ from qa_check import (
     QAError,
     api_url,
     find_node_binary,
-    find_php_binary,
     project_root,
     qa_print,
     request_json,
     run_http_checks,
     run_js_checks,
-    run_php_checks,
     run_python_checks,
 )
 
@@ -31,7 +29,7 @@ def wait_for_eval_run(base_url: str, run_id: str, timeout_seconds: float = 120.0
     deadline = time.time() + timeout_seconds
     last_payload: dict | None = None
     while time.time() < deadline:
-        last_payload = request_json(api_url(base_url, "get_eval_history.php") + f"?runId={run_id}", timeout=20)
+        last_payload = request_json(api_url(base_url, "eval_history") + f"?runId={run_id}", timeout=20)
         selected = last_payload.get("selectedRun")
         if isinstance(selected, dict) and selected.get("status") in {"completed", "error"}:
             return last_payload
@@ -59,7 +57,6 @@ def main() -> int:
     root = project_root()
     if not args.skip_prechecks:
         run_python_checks(root)
-        run_php_checks(root, find_php_binary(root))
         run_js_checks(root, find_node_binary())
         run_http_checks(args.base_url)
 
@@ -69,7 +66,7 @@ def main() -> int:
     with PreservedState(root):
         qa_print("Starting isolated mock eval smoke")
         start = request_json(
-            api_url(args.base_url, "start_eval_run.php"),
+            api_url(args.base_url, "eval_run_start"),
             method="POST",
             form_data={
                 "suiteId": "smoke-mock",
@@ -81,7 +78,7 @@ def main() -> int:
         )
         run_id = str(start.get("runId") or "").strip()
         if not run_id:
-            raise QAError("start_eval_run.php did not return a runId.")
+            raise QAError("eval_run_start did not return a runId.")
 
         payload = wait_for_eval_run(args.base_url, run_id)
         selected = payload.get("selectedRun")
@@ -105,7 +102,7 @@ def main() -> int:
             raise QAError("Eval artifact list did not contain artifact ids.")
 
         artifact = request_json(
-            api_url(args.base_url, "get_eval_artifact.php") + f"?runId={run_id}&artifactId={artifact_id}",
+            api_url(args.base_url, "eval_artifact") + f"?runId={run_id}&artifactId={artifact_id}",
             timeout=20,
         )
         if artifact.get("storage") != "eval":

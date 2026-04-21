@@ -17,7 +17,6 @@ from qa_check import (
     QAError,
     api_url,
     find_node_binary,
-    find_php_binary,
     project_root,
     qa_print,
     request_json,
@@ -25,7 +24,6 @@ from qa_check import (
     restart_runtime,
     run_http_checks,
     run_js_checks,
-    run_php_checks,
     run_python_checks,
 )
 
@@ -397,7 +395,7 @@ def run_steered_case(
 ) -> Dict[str, Any]:
     workers = normalize_worker_list(worker_model)
     start = request_json(
-        api_url(base_url, "start_task.php"),
+        api_url(base_url, "task_start"),
         method="POST",
         form_data={
             "objective": case.objective,
@@ -427,13 +425,13 @@ def run_steered_case(
         qa_print(f"Running steered round {round_number} for {case.case_id}")
         for target in ("commander", "A", "B", "C", "summarizer"):
             request_json(
-                api_url(base_url, "run_target.php"),
+                api_url(base_url, "target_run"),
                 method="POST",
                 form_data={"target": target},
                 timeout=300,
             )
 
-    state = request_json(api_url(base_url, "get_state.php"), timeout=20)
+    state = request_json(api_url(base_url, "state"), timeout=20)
     summary = state.get("summary")
     if not isinstance(summary, dict):
         raise QAError("Steered summary was missing from state.")
@@ -449,7 +447,7 @@ def run_steered_case(
 
     artifact_name = f"{task_id}_summary_round{max(1, loop_rounds):03d}_output.json"
     artifact = request_json(
-        api_url(base_url, "get_artifact.php") + "?name=" + quote(artifact_name),
+        api_url(base_url, "artifact") + "?name=" + quote(artifact_name),
         timeout=20,
     )
     artifact_output = artifact.get("content", {}).get("output")
@@ -462,7 +460,7 @@ def run_steered_case(
     for worker_id in ("A", "B", "C"):
         worker_artifact_name = f"{task_id}_{worker_id}_step{max(1, loop_rounds):03d}_output.json"
         worker_artifact = request_json(
-            api_url(base_url, "get_artifact.php") + f"?name={quote(worker_artifact_name)}",
+            api_url(base_url, "artifact") + f"?name={quote(worker_artifact_name)}",
             timeout=20,
         )
         worker_mode = str(worker_artifact.get("content", {}).get("mode") or "").strip().lower()
@@ -670,7 +668,7 @@ def execute_suite(
         trials: List[Dict[str, Any]] = []
         for trial_number in range(1, args.repeats + 1):
             qa_print(f"Trial {trial_number}/{args.repeats} for {case.case_id}")
-            request_json(api_url(args.base_url, "reset_state.php"), method="POST", timeout=20)
+            request_json(api_url(args.base_url, "state_reset"), method="POST", timeout=20)
 
             baseline = run_direct_baseline(
                 runtime=runtime,
@@ -850,7 +848,6 @@ def main() -> int:
 
     if not args.skip_prechecks:
         run_python_checks(root)
-        run_php_checks(root, find_php_binary(root))
         run_js_checks(root, find_node_binary())
         run_http_checks(args.base_url)
 
@@ -912,7 +909,7 @@ def main() -> int:
                 report["runs"] = runs
                 report["loopSweepComparison"] = build_loop_sweep_comparison(runs)
         finally:
-            request_json(api_url(args.base_url, "reset_state.php"), method="POST", timeout=20)
+            request_json(api_url(args.base_url, "state_reset"), method="POST", timeout=20)
             if not args.keep_artifacts:
                 for task_id in task_ids_to_cleanup:
                     if task_id:

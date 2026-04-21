@@ -465,7 +465,7 @@ Next milestone track:
 - The Docker path now packages the Python-served shell and control plane directly.
 - The Python control plane owns auth-key mutation, draft/task writes, runtime/worker settings, session/export/replay mutations, eval launch, loop/job control, and target dispatch.
 - The primary app path is `http://127.0.0.1:8787/` or the backend container on the same port.
-- The repo and runtime now operate without PHP or XAMPP.
+- The repo and runtime now operate without the legacy web-server stack.
 - The system is inspectable enough to teach us where it helps, but not yet mature enough to call "production."
 
 ## Safety / Local Data

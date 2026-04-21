@@ -613,14 +613,6 @@ textarea {
   color: color-mix(in srgb, var(--accent-2) 62%, var(--text) 38%);
 }
 
-.workspace-pill.api-mode-pill.is-php {
-  border-color: color-mix(in srgb, var(--warn) 28%, var(--border) 72%);
-}
-
-.workspace-pill.api-mode-pill.is-php .workspace-pill-value {
-  color: color-mix(in srgb, var(--warn) 56%, var(--text) 44%);
-}
-
 .workspace-footer {
   margin-top: auto;
   padding: 14px;

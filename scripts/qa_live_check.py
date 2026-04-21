@@ -13,7 +13,6 @@ from qa_check import (
     QAError,
     api_url,
     find_node_binary,
-    find_php_binary,
     project_root,
     qa_print,
     request_json,
@@ -22,7 +21,6 @@ from qa_check import (
     restart_runtime,
     run_http_checks,
     run_js_checks,
-    run_php_checks,
     run_python_checks,
 )
 
@@ -50,7 +48,7 @@ def domain_is_allowed(url: str, allowed_domains: list[str]) -> bool:
 
 
 def ensure_auth_available(base_url: str) -> None:
-    status = request_json(api_url(base_url, "get_auth_status.php"), timeout=10)
+    status = request_json(api_url(base_url, "auth_status"), timeout=10)
     if not status.get("hasKey"):
         raise QAError("SKIP: no API key is stored locally, so the live QA smoke was not run.")
 
@@ -96,7 +94,7 @@ def run_live_smoke(
         try:
             qa_print("Starting reversible live smoke task")
             start = request_json(
-                api_url(base_url, "start_task.php"),
+                api_url(base_url, "task_start"),
                 method="POST",
                 form_data={
                     "objective": (
@@ -133,13 +131,13 @@ def run_live_smoke(
             for target in ("commander", "A", "B", "summarizer"):
                 qa_print(f"Running live smoke target {target}")
                 request_json(
-                    api_url(base_url, "run_target.php"),
+                    api_url(base_url, "target_run"),
                     method="POST",
                     form_data={"target": target},
                     timeout=300,
                 )
 
-            state = request_json(api_url(base_url, "get_state.php"), timeout=15)
+            state = request_json(api_url(base_url, "state"), timeout=15)
             summary = state.get("summary")
             if not isinstance(summary, dict):
                 raise QAError("Live smoke summary was missing from state.")
@@ -161,7 +159,7 @@ def run_live_smoke(
             worker_artifacts: dict[str, Dict[str, Any]] = {}
             for worker_id in ("A", "B"):
                 artifact = request_json(
-                    api_url(base_url, "get_artifact.php") + f"?name={task_id}_{worker_id}_step001_output.json",
+                    api_url(base_url, "artifact") + f"?name={task_id}_{worker_id}_step001_output.json",
                     timeout=15,
                 )
                 worker_artifacts[worker_id] = artifact
@@ -180,7 +178,7 @@ def run_live_smoke(
 
             summary_artifact_name = f"{task_id}_summary_round001_output.json"
             summary_artifact = request_json(
-                api_url(base_url, "get_artifact.php") + f"?name={summary_artifact_name}",
+                api_url(base_url, "artifact") + f"?name={summary_artifact_name}",
                 timeout=15,
             )
             if str(summary_artifact.get("content", {}).get("mode", "")) != "live":
@@ -245,7 +243,6 @@ def main() -> int:
         qa_print(f"FAIL: {message}")
         return 1
 
-    php_bin = find_php_binary(root)
     node_bin = find_node_binary()
 
     qa_print(f"Project root: {root}")
@@ -257,7 +254,6 @@ def main() -> int:
     try:
         if not args.skip_prechecks:
             run_python_checks(root)
-            run_php_checks(root, php_bin)
             run_js_checks(root, node_bin)
             run_http_checks(args.base_url)
         result = run_live_smoke(

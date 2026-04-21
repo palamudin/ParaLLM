@@ -24,7 +24,7 @@ def wait_for_idle_workspace(base_url: str, timeout_seconds: float = 180.0) -> Di
     deadline = time.time() + timeout_seconds
     last_state: Dict[str, Any] | None = None
     while time.time() < deadline:
-        last_state = request_json(api_url(base_url, "get_state.php"), timeout=30)
+        last_state = request_json(api_url(base_url, "state"), timeout=30)
         loop = last_state.get("loop") if isinstance(last_state.get("loop"), dict) else {}
         dispatch = last_state.get("dispatch") if isinstance(last_state.get("dispatch"), dict) else {}
         loop_status = str(loop.get("status") or "")
@@ -83,8 +83,8 @@ def wait_for_task_completion(base_url: str, task_id: str, timeout_seconds: float
     last_history: Dict[str, Any] | None = None
     while time.time() < deadline:
         time.sleep(4.0)
-        last_state = request_json(api_url(base_url, "get_state.php"), timeout=30)
-        last_history = request_json(api_url(base_url, "get_history.php"), timeout=30)
+        last_state = request_json(api_url(base_url, "state"), timeout=30)
+        last_history = request_json(api_url(base_url, "history"), timeout=30)
         active_task = last_state.get("activeTask") if isinstance(last_state.get("activeTask"), dict) else {}
         if str(active_task.get("taskId") or "") != task_id:
             continue
@@ -111,7 +111,7 @@ def run_single_alignment_case(root: Path, base_url: str, model: str, reasoning_e
     with PreservedState(root) as preserved:
         try:
             start = request_json(
-                api_url(base_url, "start_task.php"),
+                api_url(base_url, "task_start"),
                 method="POST",
                 form_data={
                     "objective": live_objective(),
@@ -154,7 +154,7 @@ def run_single_alignment_case(root: Path, base_url: str, model: str, reasoning_e
                 raise QAError("Task creation did not return a taskId.")
 
             start_loop = request_json(
-                api_url(base_url, "start_loop.php"),
+                api_url(base_url, "loop_start"),
                 method="POST",
                 form_data={"rounds": "2", "delayMs": "0"},
                 timeout=60,

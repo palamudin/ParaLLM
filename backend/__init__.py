@@ -1,2 +1,1 @@
-"""Python-first backend scaffold for the post-PHP control plane."""
-
+"""Python-first backend scaffold for the active control plane."""

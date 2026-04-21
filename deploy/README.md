@@ -155,7 +155,7 @@ Two named volumes are created by `compose.yml`:
 ## Notes
 
 - The backend service serves both the shell and the `/v1/*` control-plane routes.
-- Docker is now the packaging path; XAMPP is not part of the active stack anymore.
+- Docker is now the packaging path; the legacy web-server stack is no longer part of the active runtime path.
 - Hosted-dev now defaults to `LOOP_SECRET_BACKEND=docker_secret` with `/run/secrets/openai_api_keys`.
 - Env-backed secrets are still supported through `LOOP_SECRET_BACKEND=env` and `LOOP_OPENAI_API_KEYS`.
 - External read-only secret providers are now supported through `LOOP_SECRET_BACKEND=external`, `LOOP_SECRET_PROVIDER_URL`, and optional bearer auth via `LOOP_SECRET_PROVIDER_TOKEN`.

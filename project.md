@@ -142,9 +142,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - The repo now carries a first self-hostable Python deployment path under `deploy/`, with:
   - the Python-served shell and control plane in one service
   - named volumes for runtime data and the transitional auth file
-- Runtime/storage/auth paths now accept environment overrides so the stack no longer assumes one Windows/XAMPP-local filesystem shape
+- Runtime/storage/auth paths now accept environment overrides so the stack no longer assumes one legacy Windows-local filesystem shape
 - The Python control plane can now serve the shell itself at `/` and `/index.html`, so the app no longer depends on an external web server for normal local use
-- The frontend now calls `/v1/*` routes directly, so the active shell no longer depends on `api/*.php` route names
+- The frontend now calls `/v1/*` routes directly, so the active shell no longer depends on legacy route naming
 - Session usage accounting with token, web-search-call, and estimated-spend tracking in state, jobs, and the top-bar counters
 - Usage spend now follows a conservative chargeable-search assumption: web-search-related model tokens are treated as billable and tool calls remain separately priced
 - Budget stop behavior that marks work as `budget_exhausted` instead of running past configured limits
@@ -184,7 +184,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - live `start_task` plus `start_loop` smoke completed end to end through the resident Python runtime
   - the live release-validation smoke used `6,422` total tokens for an estimated `$0.006562`
 - Verified PowerShell removal on April 19, 2026:
-  - manual target dispatch now uses `api/run_target.php` instead of the old `api/run_ps.php`
+  - manual target dispatch now uses the active control-plane route instead of the old PowerShell shim
   - background loop launch and Python service startup still work without any `.ps1` worker scripts in the repo
   - after killing the resident Python service, both manual dispatch and a 1-round background live loop successfully relaunched it
 - Verified reusable QA harness on April 19, 2026:
@@ -205,7 +205,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - Review now renders round-history drill-down with direct side-by-side compare actions into the artifact panes
   - Review now renders session-archive replay/export controls plus the raw-artifact exception policy
   - requested vs effective output-token caps now render in review history and artifact meta, not only in saved JSON
-  - `python scripts/qa_check.py` passed after exercising lane templates, export/replay, bounded queueing, retry, and resume through the real PHP endpoints
+  - `python scripts/qa_check.py` passed after exercising lane templates, export/replay, bounded queueing, retry, and resume through the active control-plane endpoints
 - Verified lead-answer architecture and profile-depth pass on April 19, 2026:
   - summary schema now records `leadDirection`, absorbed adversarial pressure, and integration mode alongside the public answer
   - live summarizer instructions now force one directional answer voice that privately pressure-tests itself against the strongest objections
@@ -238,7 +238,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - freeze the worker roster at round start
   - let commander review append `activeFromRound = currentRound + 1`
   - require summarizer alignment only against the round-start roster, not the newly expanded roster
-  - reflect the same rule in PHP preflight, Python runtime checks, Review, and QA
+  - reflect the same rule in control-plane preflight, runtime checks, Review, and QA
 - Do not call the true separate milestone closed until a real 2-round live loop completes with:
   - commander review present
   - a spun worker active in round 2
@@ -248,9 +248,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 1. Deployment portability and packaging
    - Highest-priority product milestone after the alignment blocker
-   - Break the hard Windows + XAMPP lock-in
+   - Break the hard legacy Windows web-server lock-in
    - Add a supported local dev/runtime path for Linux and macOS
-   - Add a containerized path so setup is not tied to a manually tended XAMPP stack
+   - Add a containerized path so setup is not tied to a manually tended local web-server stack
    - Keep the current Windows path working during the transition instead of forcing a rewrite-first migration
 
 2. Secret storage and secure retrieval
@@ -319,14 +319,14 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 ### Milestone 2: Deployment Portability and Online Packaging
 
 - Goal:
-  - Break the hard Windows + XAMPP lock-in and define the first deployment shape that could credibly become an online offering
+  - Break the hard legacy Windows web-server lock-in and define the first deployment shape that could credibly become an online offering
 - Scope:
   - add a supported Linux/macOS local path
   - add a containerized path for single-node deployment
-  - separate "dev convenience" from "runtime requirement" so XAMPP is no longer the product boundary
+  - separate "dev convenience" from "runtime requirement" so the old local web-server stack is no longer the product boundary
   - define the first online topology for control plane, runtime service, queueing, state, and artifacts
 - Acceptance criteria:
-  - a fresh environment can boot the app without XAMPP-specific handholding
+  - a fresh environment can boot the app without legacy local-server handholding
   - Docker-based local bring-up works for the main app path
   - runtime state, jobs, and artifacts have a documented service boundary
   - the repo contains a documented path from local single-node deployment to hosted deployment
@@ -379,7 +379,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - the runtime image now installs the full Python dependency set instead of assuming a pre-warmed environment
 - A portable handoff bundle can now be produced with `python scripts/package_hosted_bundle.py`:
   - it stages the Docker files, env contract, shell assets, runtime/backend code, and QA scripts under `build/hosted-bundle/`
-- That means XAMPP is no longer required for local use or controlled end-to-end testing
+- That means the legacy local web-server stack is no longer required for local use or controlled end-to-end testing
 - Remaining work for this milestone is no longer "invent Docker support"; it is:
   - prove the stack on a real Docker host
   - keep reducing compatibility-only legacy surfaces like the standalone runtime service
@@ -389,7 +389,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 - Transitional local path
   - Python-only local launcher via `scripts/run_local_stack.py`
-  - Goal: one cross-platform bring-up path for Windows, Linux, and macOS without XAMPP
+  - Goal: one cross-platform bring-up path for Windows, Linux, and macOS without the legacy local stack
 - Portable single-node path
   - Static frontend served by the Python app itself
   - Python ASGI control plane for task creation, polling, history, auth status, eval launch, and job control
@@ -406,48 +406,24 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - managed secret store for provider keys and customer credentials
   - audit/telemetry pipeline for usage, job events, tool calls, and review actions
 
-#### PHP Assessment
-
-- Current reality:
-  - PHP is not just serving static files; it currently owns a large amount of orchestration, state mutation, draft normalization, job queueing, recovery checks, and endpoint shaping
-  - The frontend currently calls roughly 30-plus PHP endpoints directly, so dropping PHP is not a free flip
-- Do we need PHP for the hosted product?
-  - No, not if the team is willing to migrate the control plane
-  - The hosted architecture does not inherently benefit from keeping PHP once XAMPP is gone
-- What we gain by dropping PHP as a runtime dependency:
-  - one control-plane language instead of split PHP/Python orchestration
-  - less duplicated normalization and state logic across `api/common.php` and `runtime/engine.py`
-  - fewer round-alignment and drift bugs caused by cross-language orchestration
-  - easier typed contracts, async job handling, queue integration, and test coverage
-  - simpler Linux/container deployment story
-  - easier integration with hosted auth, secrets, SSE/WebSockets, and operator tooling
-- What we lose:
-  - the easiest local XAMPP bring-up path
-  - a working API surface that the frontend already knows how to call
-  - some migration speed in the short term
-- Recommendation:
-  - for the enterprise/offline-hosted offering, move to a Python-first control plane and treat PHP as a transition shim or local compatibility layer, not a long-term core dependency
-  - only keep PHP if there is a strong team/org reason to preserve it operationally, not because the product architecture needs it
-
-#### File-Structure Review and PHP Drop Map
+#### Python-First Architecture Snapshot
 
 - Current filesystem responsibilities
   - `index.html` plus `assets/`
     - the current static shell, frontend state management, and review UI
-  - `api/`
-    - the current HTTP control plane
-    - task creation, draft persistence, loop/job launch, auth management, history reads, eval launch, replay/export, and state mutation
+  - `backend/`
+    - the active HTTP control plane, shell serving, job orchestration, settings/auth mutation, eval launch, replay/export, and state mutation
   - `runtime/`
-    - the actual reasoning engine, runtime service, and eval runner
+    - the reasoning engine, runtime service, and eval runner
   - `scripts/`
-    - QA harnesses plus PHP background runners
+    - QA harnesses, portability helpers, bundle packaging, and local bring-up tools
   - `data/`
     - canonical state, artifacts, jobs, eval runs, and volatile local runtime outputs
-- Immediate structural observation
-  - the current repo is already conceptually split into `frontend`, `control plane`, and `runtime`
-  - the problem is that the control plane is PHP while the runtime is Python, so orchestration is split across languages
+- Structural observation
+  - the repo is now cleanly split into `frontend`, `control plane`, and `runtime`
+  - the main remaining architecture work is replacing transitional local-file seams with hosted-grade queue, metadata, artifact, and secret backends
 
-#### Recommended Post-PHP Target Layout
+#### Target Layout
 
 - `frontend/`
   - static app shell
@@ -457,7 +433,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - Python ASGI app
   - routers for tasks, loops, jobs, auth/integrations, history, eval, and admin/review operations
 - `backend/core/`
-  - shared domain logic currently duplicated between PHP and Python
+  - shared domain logic
   - task normalization
   - worker roster logic
   - budget/profile logic
@@ -475,31 +451,31 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `deploy/`
   - Dockerfiles
   - compose for single-node self-host
-  - first hosted deployment manifests
+  - hosted deployment manifests
 
-#### Phase 1 Now Started
+#### Current Cutover Status
 
-- A Python-first scaffold now lives under `backend/`
+- The Python-first scaffold now lives under `backend/`
   - `backend/app/main.py`
-    - FastAPI app exposing mirrored read endpoints plus write/job endpoints for auth management, draft save, task start, runtime/worker settings, loop control, and target dispatch
+    - FastAPI app exposing the active read, write, job, and settings surfaces
   - `backend/app/storage.py`
-    - Python read-model/storage layer for local JSON and eval artifacts
+    - storage layer for local JSON, hosted seams, and eval artifacts
   - `backend/app/control.py`
-    - Python control-plane module for draft normalization, task creation, auth-pool status, and state/task/event writes using the same lock discipline as the resident runtime
+    - draft normalization, task creation, auth-pool status, and state/task/event writes using the same lock discipline as the resident runtime
   - `backend/app/jobs.py`
-    - Python control-plane module for background loop creation, cancellation, retry/resume, queue bookkeeping, and the first Python-native loop runner launch path
+    - background loop creation, cancellation, retry/resume, queue bookkeeping, and the Python-native loop runner launch path
   - `backend/app/dispatch.py`
-    - Python control-plane module for commander/worker/commander-review/summarizer background dispatch, round batching, and sync target execution
+    - commander/worker/commander-review/summarizer background dispatch, round batching, and sync target execution
   - `backend/workers/loop_job.py`
-    - Python background worker entrypoint for autonomous loop jobs so the hosted migration is no longer blocked on PHP runner scripts for this path
+    - background worker entrypoint for autonomous loop jobs
   - `backend/workers/dispatch_job.py`
-    - Python background worker entrypoint for target dispatch jobs so the hosted migration no longer depends on PHP dispatch runners for that path
+    - background worker entrypoint for target dispatch jobs
   - `backend/tests/test_storage.py`
-    - first regression guard for the scaffolded read-model behavior
+    - regression guard for the read-model behavior
   - `backend/tests/test_control.py`
-    - first regression guard for the scaffolded write-path behavior
+    - regression guard for the write-path behavior
   - `backend/tests/test_app.py`
-    - route-registration smoke for the ASGI surface once dependencies are installed
+    - route-registration smoke for the ASGI surface
   - `backend/tests/test_dispatch.py`
     - regression coverage for round batching, partial answer queueing, and sync target execution
   - `backend/tests/test_settings.py`
@@ -508,10 +484,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
     - regression coverage for session reset, state reset, session replay, and export bundle generation
   - `backend/tests/test_evals.py`
     - regression coverage for eval-run queueing and manifest validation
-- This is intentionally parallel to PHP, not a replacement yet
-  - it lets us validate payload shapes and storage semantics before the frontend is cut over
-  - it keeps the current local prototype usable while the hosted architecture is proved in the same repo
-- The Python control plane now owns the first real job and dispatch paths in addition to reads/task writes
+- The Python control plane now owns the active route surface
   - `POST /v1/auth/keys`
   - `POST /v1/session/reset`
   - `POST /v1/state/reset`
@@ -528,69 +501,20 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - `POST /v1/targets/background`
   - `POST /v1/rounds`
   - `POST /v1/targets/run`
-  - these are still migration endpoints, not the default UI path yet
 - The frontend now calls `/v1/*` routes directly in `assets/app.js`
 - The Python backend serves the shell directly at `GET /` and `GET /index.html`
-- `scripts/qa_python_crossover_check.py` now proves that path with reversible state preservation
-- CI/dependency baseline is now explicit instead of machine-local
+- `scripts/qa_python_crossover_check.py` proves that path with reversible state preservation
+- CI/dependency baseline is explicit instead of machine-local
   - `.python-version` pins the Python family
   - `.nvmrc` pins the Node family used for syntax checks
   - `requirements-ci.txt` pins the deployment Python graph
   - `requirements-dev.txt` adds CI/developer audit tooling on top of the pinned runtime graph
-  - `.github/workflows/ci.yml` runs the repo QA on Linux with Python, PHP, and Node installed deliberately
+  - `.github/workflows/ci.yml` runs the repo QA on Linux with Python and Node installed deliberately
   - `.github/dependabot.yml` keeps GitHub Actions and pip dependencies under automated update review
   - `scripts/qa_supply_chain_check.py` enforces local browser assets, SHA-pinned workflows, pinned Python manifests, and a clean `pip-audit` result
-  - `SECURITY.md` now records the current reporting and dependency-hardening posture for the repo
+  - `SECURITY.md` records the current reporting and dependency-hardening posture for the repo
 
-#### PHP-to-Python Responsibility Map
-
-- `api/common.php`
-  - move into `backend/core/`
-  - this is the biggest migration target because it owns normalization, default config, file/state helpers, auth-pool handling, and a lot of shared business logic
-- `api/loop_runtime.php` and `api/dispatch_runtime.php`
-  - move into `backend/core/jobs/` and `backend/workers/`
-  - these should become queue/job orchestration modules, not request-layer code
-- task/draft/session endpoints
-  - `start_task.php`
-  - `save_draft.php`
-  - `reset_state.php`
-  - `reset_session.php`
-  - `replay_session.php`
-  - `export_session.php`
-  - move into a Python `tasks` / `session` router
-- loop/job control endpoints
-  - `start_loop.php`
-  - `start_target_job.php`
-  - `run_round.php`
-  - `cancel_loop.php`
-  - `manage_job.php`
-  - move into a Python `jobs` / `dispatch` router backed by a real queue
-- state/history read endpoints
-  - `get_state.php`
-  - `get_history.php`
-  - `get_events.php`
-  - `get_steps.php`
-  - `get_artifact.php`
-  - move into Python `state` / `review` routers
-- auth/settings endpoints
-  - `set_auth.php`
-  - `get_auth_status.php`
-  - `set_worker_model.php`
-  - `update_worker.php`
-  - `apply_runtime_models.php`
-  - `add_adversarial.php`
-  - move into Python `settings` / `integrations` routers
-- eval endpoints
-  - `start_eval_run.php`
-  - `get_eval_history.php`
-  - `get_eval_artifact.php`
-  - move into a Python `eval` router
-- PHP runner scripts
-  - `scripts/loop_runner.php`
-  - `scripts/dispatch_runner.php`
-  - replace with Python worker processes or queue consumers
-
-#### Improvements Unlocked By Removing PHP
+#### Improvements Unlocked By The Cutover
 
 - Unify orchestration rules in one language
   - worker activation rounds
@@ -602,29 +526,27 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - SSE or WebSockets for live run status
   - direct queue/job introspection
   - cleaner partial-answer progress reporting
-- Replace local JSON as the primary source of truth
+- Replace local JSON as the primary source of truth over time
   - Postgres for tasks, drafts, jobs, and metadata
   - object storage for artifacts and eval outputs
   - Redis for queueing / ephemeral coordination
 - Reduce frontend duplication
   - move shared config catalogs out of `assets/app.js` into backend-served config endpoints
 - Improve testability
-  - one control-plane test harness instead of PHP endpoint smoke plus Python runtime smoke glued together
+  - one control-plane test harness instead of split legacy endpoint smoke plus runtime smoke
 
-#### Migration Recommendation
+#### Ongoing Migration Plan
 
 - Phase 1
   - keep the existing frontend
-  - introduce a Python API that mirrors the current PHP endpoint surface
-  - leave PHP in place only as compatibility or local fallback
+  - keep strengthening the Python API and hosted seams
 - Phase 2
-  - move shared normalization/business logic out of PHP-first files into Python core modules
-  - switch the frontend to the Python API
+  - move more shared normalization and business logic into `backend/core`
+  - keep shrinking transitional local-file dependencies
 - Phase 3
-  - retire PHP runners and PHP endpoints from the default stack
-  - keep a minimal legacy local path only if still worth the maintenance cost
+  - replace remaining local metadata/artifact/secrets seams with hosted-grade backends
 - Phase 4
-  - move state off JSON-first local files into queue + DB + object storage for hosted deployments
+  - move from single-node self-host to repeatable hosted deployment profiles
 
 ### Milestone 3: Secrets, Security, and Controlled Retrieval
 
@@ -648,7 +570,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Scope:
   - add better error handling, typing discipline, and component tests
   - expand QA from reversible smoke into repeatable coverage for dispatch, round alignment, tool loops, and recovery semantics
-  - harden state transitions and failure messaging across PHP and Python
+  - harden state transitions and failure messaging across backend and runtime services
 - Acceptance criteria:
   - core runtime paths have repeatable automated tests beyond smoke level
   - failure modes become explicit, logged, and user-legible
