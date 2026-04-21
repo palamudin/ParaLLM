@@ -144,10 +144,10 @@ http://127.0.0.1:8787/v1/system/infrastructure
   - `filesystem` for the local default
   - `object_storage` for real runtime checkpoints, saved output artifacts, session archives, and export bundles
 - selectable secret backend:
-  - `local_file` for the transitional local `Auth.txt` path
-  - `env` for env-provided key pools from `LOOP_OPENAI_API_KEYS` / `OPENAI_API_KEYS`
+  - `env` for env-provided key pools from `LOOP_OPENAI_API_KEYS` / `OPENAI_API_KEYS` and the default local profile path
   - `docker_secret` for mounted read-only secret files such as `/run/secrets/openai_api_keys`
   - `external` for a read-only HTTP secret provider that returns newline-delimited keys or JSON `{ "keys": [...] }`
+  - `local_file` only as a transitional fallback for explicit local-first testing with `Auth.txt`
 - infrastructure readiness probes for redis, postgres, object storage, env/local/docker-secret backends, and runtime-service execution
 
 ## What Is Not Done Yet

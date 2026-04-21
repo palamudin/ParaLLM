@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.app import control, storage
 from runtime.engine import RuntimeErrorWithCode
@@ -22,13 +23,17 @@ class ControlPlaneTests(unittest.TestCase):
         auth_path = self.root / "Auth.txt"
         auth_path.write_text("sk-one-1234\nsk-two-5678\nsk-one-1234\n", encoding="utf-8")
 
-        status = control.auth_pool_status(self.root)
+        with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
+            status = control.auth_pool_status(self.root)
 
         self.assertTrue(status["hasKey"])
         self.assertEqual(status["keyCount"], 2)
         self.assertEqual(status["last4"], "1234")
         self.assertEqual(len(status["masks"]), 2)
         self.assertTrue(status["masks"][0].endswith("1234"))
+        self.assertTrue(status["deprecated"])
+        self.assertFalse(status["preferred"])
+        self.assertEqual(status["recommendedBackend"], "env")
 
     def test_auth_pool_status_honors_loop_auth_file_override(self) -> None:
         auth_path = self.root / "secrets" / "Auth.txt"
@@ -36,6 +41,8 @@ class ControlPlaneTests(unittest.TestCase):
         auth_path.write_text("sk-env-9999\n", encoding="utf-8")
         previous = os.environ.get("LOOP_AUTH_FILE")
         os.environ["LOOP_AUTH_FILE"] = str(auth_path)
+        previous_backend = os.environ.get("LOOP_SECRET_BACKEND")
+        os.environ["LOOP_SECRET_BACKEND"] = "local_file"
         try:
             status = control.auth_pool_status(self.root)
         finally:
@@ -43,6 +50,10 @@ class ControlPlaneTests(unittest.TestCase):
                 os.environ.pop("LOOP_AUTH_FILE", None)
             else:
                 os.environ["LOOP_AUTH_FILE"] = previous
+            if previous_backend is None:
+                os.environ.pop("LOOP_SECRET_BACKEND", None)
+            else:
+                os.environ["LOOP_SECRET_BACKEND"] = previous_backend
 
         self.assertTrue(status["hasKey"])
         self.assertEqual(status["last4"], "9999")

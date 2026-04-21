@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from backend.app import control, infrastructure, settings
+from backend.app import config, control, infrastructure, settings
 from runtime.engine import RuntimeErrorWithCode
 
 
@@ -80,6 +80,21 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual(status["profile"], "local-single-node")
         self.assertTrue(status["backends"]["queue"]["ready"])
         self.assertTrue(status["backends"]["runtimeExecution"]["ready"])
+
+    def test_local_profile_defaults_to_env_secret_backend(self) -> None:
+        env = {"LOOP_ROOT": str(self.root)}
+        with mock.patch.dict("os.environ", env, clear=True):
+            topology = config.deployment_topology(self.root)
+        self.assertEqual(topology.secret_backend, "env")
+
+    def test_hosted_profile_defaults_to_docker_secret_backend(self) -> None:
+        env = {
+            "LOOP_ROOT": str(self.root),
+            "LOOP_DEPLOYMENT_PROFILE": "hosted-single-node",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            topology = config.deployment_topology(self.root)
+        self.assertEqual(topology.secret_backend, "docker_secret")
 
 
 if __name__ == "__main__":

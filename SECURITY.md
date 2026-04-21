@@ -22,7 +22,7 @@ Report it privately to the maintainers through the repository security advisory 
 
 ## Known Prototype Constraints
 
-- Local secrets still exist in `Auth.txt` for the current prototype flow.
+- Local fallback secrets can still exist in `Auth.txt` when `local_file` is explicitly selected.
 - Local JSON/JSONL state is still the main persistence layer.
 
 These are active roadmap items, not final design decisions.
@@ -30,7 +30,8 @@ These are active roadmap items, not final design decisions.
 ## Local Secret Handling
 
 - Never commit real API keys.
-- Treat `Auth.txt` as local-only developer state.
+- Prefer `env`, `docker_secret`, or `external` backends over `local_file`.
+- Treat `Auth.txt` as local-only developer fallback state, not the preferred path.
 - Rotate any key immediately if it appears in logs, artifacts, screenshots, or pushed commits.
 
 ## Update Policy

@@ -308,29 +308,31 @@ The artifact backend is now partially real too:
 
 The secret backend is now hosted-aware too:
 
-- set `LOOP_SECRET_BACKEND=env`
+- local development now defaults to `LOOP_SECRET_BACKEND=env`
 - provide newline-delimited keys in `LOOP_OPENAI_API_KEYS`
 - or set `LOOP_SECRET_BACKEND=docker_secret`
 - or set `LOOP_SECRET_BACKEND=external` with `LOOP_SECRET_PROVIDER_URL`
 - and mount a newline-delimited key file at `LOOP_SECRET_FILE` such as `/run/secrets/openai_api_keys`
+- `local_file` remains available only as an explicit transitional fallback
 
 ### First Run
 
 1. Open `Settings / Integrations`
-2. Paste at least one OpenAI API key into the local key pool
-3. Pick a runtime profile in `Home` or `Settings`
-4. Write a prompt in `Home`
-5. Press `Send`
-6. Inspect `Review` if you want the internal adjudication trace
+2. Prefer setting `LOOP_OPENAI_API_KEYS` before launch so the default env backend is live
+3. If you explicitly start with `LOOP_SECRET_BACKEND=local_file`, paste at least one OpenAI API key into the local fallback pool
+4. Pick a runtime profile in `Home` or `Settings`
+5. Write a prompt in `Home`
+6. Press `Send`
+7. Inspect `Review` if you want the internal adjudication trace
 
 ## Local API Key Pool
 
-ParaLLM now supports a local key pool through the UI.
+ParaLLM still supports a local key pool through the UI, but only when you explicitly run with `LOOP_SECRET_BACKEND=local_file`.
 
 - One key slot per input row
 - `+ Key` adds another slot
 - Pasting into a stored slot replaces it immediately
-- Pasting into a new slot appends it to `Auth.txt`
+- Pasting into a new slot appends it to the local fallback `Auth.txt`
 - `Clear` wipes the local pool
 
 Assignment behavior:
@@ -339,7 +341,7 @@ Assignment behavior:
 - if there are fewer keys than positions, slots wrap
 - when wrapping is required, the starting slot rotates across rounds so one key does not always take commander-first traffic
 
-Only masked previews are shown in the UI. Raw keys stay local in `Auth.txt` for `local_file`, in env vars for `env`, in the mounted file for `docker_secret`, or behind a read-only HTTP provider for `external`.
+Only masked previews are shown in the UI. Raw keys stay in env vars for `env`, in the mounted file for `docker_secret`, behind a read-only HTTP provider for `external`, or in `Auth.txt` only when `local_file` is explicitly selected as a transitional fallback.
 
 ## Usage Flow
 

@@ -65,7 +65,7 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(payload["queueBackend"], "local_subprocess")
         self.assertEqual(payload["metadataBackend"], "json_files")
         self.assertEqual(payload["artifactBackend"], "filesystem")
-        self.assertEqual(payload["secretBackend"], "local_file")
+        self.assertEqual(payload["secretBackend"], "env")
         self.assertEqual(payload["runtimeExecutionBackend"], "embedded_engine_subprocess")
 
     def test_infrastructure_endpoint_reports_local_defaults_ready(self) -> None:

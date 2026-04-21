@@ -71,7 +71,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
 - API keys can be managed locally through the UI as a local key pool, with per-slot inputs, masked previews, and deterministic per-position assignment
 - Form draft state is persisted locally so edits, roster changes, and loop settings do not get stomped by polling refreshes
-- Secrets stay in `Auth.txt` locally as a one-key-per-line pool and should never be logged
+- The transitional local fallback can still store secrets in `Auth.txt` as a one-key-per-line pool, but the preferred paths are now `env`, `docker_secret`, or `external`
 
 ## Sync Model
 
@@ -366,7 +366,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - `object_storage` now owns runtime checkpoints, saved output artifacts, session archives, and export bundles, and Review/history reads the runtime artifacts back through the same adapter
   - eval suite/arm manifests remain filesystem-backed in this phase
 - The secret backend is no longer only transitional local-file handling:
-  - `LOOP_SECRET_BACKEND=env` now works through the runtime as well as the control plane via `LOOP_OPENAI_API_KEYS`
+  - `LOOP_SECRET_BACKEND=env` now works through the runtime as well as the control plane via `LOOP_OPENAI_API_KEYS`, and the local profile now defaults to it
   - `LOOP_SECRET_BACKEND=docker_secret` now supports mounted newline-delimited key files such as `/run/secrets/openai_api_keys`
   - `LOOP_SECRET_BACKEND=external` now works as a real read-only HTTP provider path through both the backend and runtime when `LOOP_SECRET_PROVIDER_URL` is configured
   - local `Auth.txt` remains only the transitional writable path for local-first testing
@@ -566,7 +566,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 #### Current progress
 
 - Secret-shaped local and GitHub files are now filtered out of retrieval listings and blocked from direct reads/searches by default.
-- Hosted/runtime secret backends already exist for `env`, `docker_secret`, and `external`; the next work is making those the preferred paths instead of transitional local-file storage.
+- Hosted/runtime secret backends already exist for `env`, `docker_secret`, and `external`, and the default backend selection is now profile-aware:
+  - local profile defaults to `env`
+  - hosted profiles default to `docker_secret`
+  - `local_file` remains explicit fallback only
 
 ### Milestone 4: Prototype Hardening
 
@@ -630,5 +633,5 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Notes
 
-- `Auth.txt` now acts as a local API key pool for testing, with one key per line. It must not be copied into logs, responses, or version control.
+- `Auth.txt` now acts only as a local fallback API key pool for testing, with one key per line. It must not be copied into logs, responses, or version control.
 - Before committing, the repo should ignore secrets and volatile runtime data.

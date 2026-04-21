@@ -24,6 +24,13 @@ def _optional_env(name: str) -> Optional[str]:
     return value or None
 
 
+def default_secret_backend_for_profile(profile: str) -> str:
+    normalized = _clean_choice(profile, DEPLOYMENT_PROFILES, "local-single-node")
+    if normalized in {"hosted-single-node", "hosted-distributed"}:
+        return "docker_secret"
+    return "env"
+
+
 @dataclass(frozen=True)
 class DeploymentTopology:
     profile: str
@@ -119,10 +126,11 @@ def deployment_topology(root: Optional[Path] = None) -> DeploymentTopology:
         ARTIFACT_BACKENDS,
         "filesystem",
     )
+    default_secret_backend = default_secret_backend_for_profile(profile)
     secret_backend = _clean_choice(
-        str(os.getenv("LOOP_SECRET_BACKEND") or "local_file"),
+        str(os.getenv("LOOP_SECRET_BACKEND") or default_secret_backend),
         SECRET_BACKENDS,
-        "local_file",
+        default_secret_backend,
     )
     secret_file_override = _optional_env("LOOP_SECRET_FILE")
     secret_file = Path(secret_file_override).resolve() if secret_file_override else None

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.app import control, settings, storage
 
@@ -17,21 +18,22 @@ class SettingsTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_set_auth_keys_supports_append_replace_remove_and_clear(self) -> None:
-        appended = settings.set_auth_keys({"appendKey": "sk-one-1111"}, self.root)
-        self.assertEqual(appended["keyCount"], 1)
+        with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
+            appended = settings.set_auth_keys({"appendKey": "sk-one-1111"}, self.root)
+            self.assertEqual(appended["keyCount"], 1)
 
-        replaced = settings.set_auth_keys({"replaceIndex": 0, "apiKey": "sk-two-2222"}, self.root)
-        self.assertEqual(replaced["last4"], "2222")
-        self.assertEqual(control.read_auth_key_pool(self.root), ["sk-two-2222"])
+            replaced = settings.set_auth_keys({"replaceIndex": 0, "apiKey": "sk-two-2222"}, self.root)
+            self.assertEqual(replaced["last4"], "2222")
+            self.assertEqual(control.read_auth_key_pool(self.root), ["sk-two-2222"])
 
-        settings.set_auth_keys({"appendKey": "sk-three-3333"}, self.root)
-        removed = settings.set_auth_keys({"removeIndex": 0}, self.root)
-        self.assertEqual(removed["keyCount"], 1)
-        self.assertEqual(control.read_auth_key_pool(self.root), ["sk-three-3333"])
+            settings.set_auth_keys({"appendKey": "sk-three-3333"}, self.root)
+            removed = settings.set_auth_keys({"removeIndex": 0}, self.root)
+            self.assertEqual(removed["keyCount"], 1)
+            self.assertEqual(control.read_auth_key_pool(self.root), ["sk-three-3333"])
 
-        cleared = settings.set_auth_keys({"clear": 1}, self.root)
-        self.assertFalse(cleared["hasKey"])
-        self.assertEqual(control.read_auth_key_pool(self.root), [])
+            cleared = settings.set_auth_keys({"clear": 1}, self.root)
+            self.assertFalse(cleared["hasKey"])
+            self.assertEqual(control.read_auth_key_pool(self.root), [])
 
     def test_apply_runtime_settings_updates_task_snapshot_and_draft(self) -> None:
         result = settings.apply_runtime_settings(

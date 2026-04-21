@@ -124,7 +124,21 @@ const COMPOSER_SUPPORTED_EXTENSIONS = [
   ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
   ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
 ];
-let latestAuthStatus = { hasKey: false, keyCount: 0, masked: null, last4: "", masks: [] };
+let latestAuthStatus = {
+  hasKey: false,
+  keyCount: 0,
+  masked: null,
+  last4: "",
+  masks: [],
+  backend: "env",
+  writable: false,
+  preferred: true,
+  deprecated: false,
+  preferredBackends: ["env", "external"],
+  recommendedBackend: "env",
+  statusNote: "",
+  rotationPolicy: null
+};
 let authDynamicRows = [];
 let authRowSequence = 0;
 let authSaveTimers = {};
@@ -1651,8 +1665,9 @@ function closeInlineHelpPopovers($except = $()) {
 
 function updateAuthButtons() {
   const inputsLocked = latestLoopActive || activeDispatchCount(latestState) > 0;
-  $("#addAuthField").prop("disabled", inputsLocked);
-  $("#clearAuth").prop("disabled", inputsLocked || !latestAuthStatus.hasKey);
+  const writable = !!latestAuthStatus.writable;
+  $("#addAuthField").prop("disabled", inputsLocked || !writable);
+  $("#clearAuth").prop("disabled", inputsLocked || !writable || !latestAuthStatus.hasKey);
   $(".auth-key-input, .auth-key-remove").prop("disabled", inputsLocked);
 }
 
@@ -1675,6 +1690,7 @@ function compactMaskedKey(masked) {
 }
 
 function ensureAuthDynamicRow() {
+  if (!latestAuthStatus.writable) return;
   if (latestAuthStatus.hasKey || authDynamicRows.length) return;
   authDynamicRows.push({ id: nextAuthRowId(), value: "" });
 }
@@ -1751,6 +1767,26 @@ function renderAuthEditor(force = false) {
   ensureAuthDynamicRow();
   if (!force && hasFocusWithin("#authKeyEditor")) return;
 
+  if (!latestAuthStatus.writable) {
+    const backend = String(latestAuthStatus.backend || "env");
+    const recommended = String(latestAuthStatus.recommendedBackend || "env");
+    const note = String(latestAuthStatus.statusNote || "").trim();
+    $editor.html(`
+      <div class="auth-key-row auth-key-row-readonly">
+        <div class="auth-key-row-head">
+          <div>
+            <div class="auth-key-row-label">Read-only secret backend</div>
+            <div class="auth-key-row-meta">${escapeHtml(note || ("This backend is not editable from the browser."))}</div>
+          </div>
+        </div>
+        <div class="auth-key-row-inputs">
+          <input class="auth-key-input" type="text" value="${escapeHtml("Backend: " + backend + " | Recommended: " + recommended)}" disabled />
+        </div>
+      </div>
+    `);
+    return;
+  }
+
   const masks = Array.isArray(latestAuthStatus.masks) ? latestAuthStatus.masks.filter(Boolean) : [];
   const rows = [];
 
@@ -1777,7 +1813,7 @@ function renderAuthEditor(force = false) {
         <div class="auth-key-row-head">
           <div>
             <div class="auth-key-row-label">New key ${index + 1}</div>
-            <div class="auth-key-row-meta">Paste a key here and it will append into the local pool automatically.</div>
+            <div class="auth-key-row-meta">Paste a key here and it will append into the transitional local fallback pool automatically.</div>
           </div>
         </div>
         <div class="auth-key-row-inputs">
@@ -1796,7 +1832,16 @@ function renderAuthPoolPreview() {
   const $assignment = $("#apiKeyAssignment").empty();
 
   if (!latestAuthStatus.hasKey) {
-    $preview.text("Store one or more local keys here when you want live mode.");
+    const backend = String(latestAuthStatus.backend || "env");
+    if (backend === "env") {
+      $preview.text("No environment key pool detected. Set LOOP_OPENAI_API_KEYS outside the workspace to enable live mode.");
+    } else if (backend === "docker_secret") {
+      $preview.text("No mounted secret file detected. Provide openai_api_keys through the Docker secret backend to enable live mode.");
+    } else if (backend === "external") {
+      $preview.text("No external secret payload detected. Check the configured secret provider to enable live mode.");
+    } else {
+      $preview.text("No local fallback key pool stored. Live mode needs at least one key.");
+    }
     $assignment.text("When the pool is smaller than the lane count, the runtime rotates the starting slot so one key does not always take commander-first traffic.");
     return;
   }
@@ -1827,15 +1872,24 @@ function renderAuthStatus(data) {
     keyCount: Number(data?.keyCount || 0),
     masked: data?.masked || null,
     last4: data?.last4 || "",
-    masks: Array.isArray(data?.masks) ? data.masks.filter(Boolean) : []
+    masks: Array.isArray(data?.masks) ? data.masks.filter(Boolean) : [],
+    backend: String(data?.backend || "env"),
+    writable: !!data?.writable,
+    preferred: data?.preferred !== false,
+    deprecated: !!data?.deprecated,
+    preferredBackends: Array.isArray(data?.preferredBackends) ? data.preferredBackends : [],
+    recommendedBackend: String(data?.recommendedBackend || "env"),
+    statusNote: String(data?.statusNote || ""),
+    rotationPolicy: data?.rotationPolicy || null
   };
 
   $("#apiKeyMasked").text(formatKeyCountLabel(latestAuthStatus.keyCount));
-  $("#apiKeyStatus").text(
-    latestAuthStatus.hasKey
-      ? "Stored locally. Pasting into a slot replaces it, and limited pools rotate their starting slot across the lane order."
-      : "No key pool stored. Live mode needs at least one key."
-  );
+  const statusParts = [];
+  if (latestAuthStatus.statusNote) statusParts.push(latestAuthStatus.statusNote);
+  if (latestAuthStatus.deprecated) statusParts.push("Browser mutation stays enabled only for this transitional backend.");
+  if (latestAuthStatus.rotationPolicy?.summary) statusParts.push("Rotation: " + latestAuthStatus.rotationPolicy.summary);
+  if (!latestAuthStatus.hasKey) statusParts.push("Live mode needs at least one key.");
+  $("#apiKeyStatus").text(statusParts.join(" "));
   renderAuthPoolPreview();
   renderAuthEditor();
   updateAuthButtons();
@@ -1847,7 +1901,21 @@ function refreshAuth() {
       renderAuthStatus(data);
     })
     .fail(function () {
-      latestAuthStatus = { hasKey: false, keyCount: 0, masked: null, last4: "", masks: [] };
+      latestAuthStatus = {
+        hasKey: false,
+        keyCount: 0,
+        masked: null,
+        last4: "",
+        masks: [],
+        backend: "env",
+        writable: false,
+        preferred: true,
+        deprecated: false,
+        preferredBackends: ["env", "external"],
+        recommendedBackend: "env",
+        statusNote: "",
+        rotationPolicy: null
+      };
       $("#apiKeyMasked").text("unavailable");
       $("#apiKeyStatus").text("Auth status could not be loaded.");
       $("#apiKeyPreview").text("Auth status could not be loaded.");
@@ -4667,7 +4735,7 @@ $(function () {
   });
 
   $("#clearAuth").on("click", function () {
-    if (!confirm("Clear the stored API key pool from Auth.txt?")) return;
+    if (!confirm("Clear the stored transitional local API key pool?")) return;
 
     $.post(apiRoute(API.authKeys), { clear: 1 })
       .done(function (resp) {

@@ -2140,6 +2140,11 @@ textarea {
   background: rgba(10, 23, 36, 0.74);
 }
 
+.auth-key-row-readonly {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border) 82%);
+  background: color-mix(in srgb, var(--panel-2) 82%, var(--accent) 18%);
+}
+
 .auth-key-row-head {
   display: flex;
   justify-content: space-between;

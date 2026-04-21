@@ -23,7 +23,7 @@ def build_env(args: argparse.Namespace, root: Path) -> dict[str, str]:
     env.setdefault("LOOP_QUEUE_BACKEND", "local_subprocess")
     env.setdefault("LOOP_METADATA_BACKEND", "json_files")
     env.setdefault("LOOP_ARTIFACT_BACKEND", "filesystem")
-    env.setdefault("LOOP_SECRET_BACKEND", "local_file")
+    env.setdefault("LOOP_SECRET_BACKEND", args.secret_backend)
     env.setdefault("LOOP_RUNTIME_EXECUTION_BACKEND", "embedded_engine_subprocess")
     env.setdefault("LOOP_RUNTIME_HOST", args.runtime_host)
     env.setdefault("LOOP_RUNTIME_PORT", str(args.runtime_port))
@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-root", default=os.getenv("LOOP_DATA_ROOT", ""), help="Optional data directory override.")
     parser.add_argument("--auth-file", default=os.getenv("LOOP_AUTH_FILE", ""), help="Optional auth file override.")
+    parser.add_argument(
+        "--secret-backend",
+        default=os.getenv("LOOP_SECRET_BACKEND", "env"),
+        choices=["env", "local_file", "docker_secret", "external"],
+        help="Secret backend for the local stack. Defaults to env; local_file is transitional.",
+    )
     parser.add_argument("--reload", action="store_true", help="Enable backend auto-reload for local development.")
     parser.add_argument(
         "--with-runtime-service",

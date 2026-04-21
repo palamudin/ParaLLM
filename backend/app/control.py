@@ -273,12 +273,77 @@ def mask_auth_key(key: str) -> str:
     return "*" * max(4, len(key) - len(last4)) + last4
 
 
+def preferred_secret_backends(topology=None) -> list[str]:
+    current = topology or deployment_topology()
+    if current.profile in {"hosted-single-node", "hosted-distributed"}:
+        return ["docker_secret", "external"]
+    return ["env", "external"]
+
+
+def recommended_secret_backend(topology=None) -> str:
+    current = topology or deployment_topology()
+    return "docker_secret" if current.profile in {"hosted-single-node", "hosted-distributed"} else "env"
+
+
+def secret_rotation_policy(backend: str, topology=None) -> Dict[str, Any]:
+    current = topology or deployment_topology()
+    backend_name = str(backend or "").strip().lower()
+    base = {
+        "immediateOnExposure": True,
+        "recommendedDays": 30,
+        "hostedApproved": backend_name in {"docker_secret", "external"},
+    }
+    if backend_name == "local_file":
+        return {
+            **base,
+            "recommendedDays": 7,
+            "hostedApproved": False,
+            "summary": "Transitional local-file fallback only. Rotate quickly and move to env, docker_secret, or external before hosted use.",
+        }
+    if backend_name == "env":
+        return {
+            **base,
+            "hostedApproved": current.profile == "local-single-node",
+            "summary": "Preferred for local development when keys are injected outside the workspace.",
+        }
+    if backend_name == "docker_secret":
+        return {
+            **base,
+            "summary": "Preferred for Docker and self-hosted deployments through mounted read-only secret files.",
+        }
+    if backend_name == "external":
+        return {
+            **base,
+            "summary": "Preferred for hosted deployments behind a managed secret provider.",
+        }
+    return {
+        **base,
+        "summary": "Secret rotation should be explicit, regular, and immediate on exposure.",
+    }
+
+
+def secret_backend_status_note(topology=None) -> str:
+    current = topology or deployment_topology()
+    backend = current.secret_backend
+    if backend == "local_file":
+        return "Transitional local-file fallback only. Prefer env for local work and docker_secret or external for hosted use."
+    if backend == "env":
+        return "Using environment-injected keys. This is the preferred local path."
+    if backend == "docker_secret":
+        return "Using mounted Docker secrets. This is the preferred hosted/self-host path."
+    if backend == "external":
+        return "Using an external read-only secret provider."
+    return "Using a custom secret backend."
+
+
 def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
     topology = deployment_topology(root)
     keys = read_auth_key_pool(root)
     masks = [mask_auth_key(key) for key in keys]
     first = keys[0] if keys else ""
     last4 = first[-4:] if len(first) >= 4 else first
+    preferred_backends = preferred_secret_backends(topology)
+    rotation_policy = secret_rotation_policy(topology.secret_backend, topology)
     return {
         "backend": topology.secret_backend,
         "hasKey": len(keys) > 0,
@@ -287,6 +352,12 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
         "masked": masks[0] if masks else None,
         "masks": masks,
         "writable": topology.secret_backend == "local_file",
+        "preferred": topology.secret_backend in preferred_backends,
+        "preferredBackends": preferred_backends,
+        "recommendedBackend": recommended_secret_backend(topology),
+        "deprecated": topology.secret_backend == "local_file",
+        "statusNote": secret_backend_status_note(topology),
+        "rotationPolicy": rotation_policy,
     }
 
 
