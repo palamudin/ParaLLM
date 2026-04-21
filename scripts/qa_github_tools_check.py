@@ -131,6 +131,17 @@ def main() -> None:
         blocked = True
     assert_true(blocked, "Expected GitHub allowlist rejection.")
 
+    secret_blocked = False
+    try:
+        runtime.execute_github_tool_call(
+            "github_read_file",
+            {"repo": "openai/openai-cookbook", "path": ".env"},
+            config,
+        )
+    except RuntimeErrorWithCode:
+        secret_blocked = True
+    assert_true(secret_blocked, "Expected secret-shaped GitHub files to be rejected.")
+
     responses = [
         {
             "id": "resp_1",

@@ -18,6 +18,7 @@ Report it privately to the maintainers through the repository security advisory 
 - Python CI/developer dependencies live in `requirements-dev.txt`.
 - `pip-audit` is part of the repository supply-chain check.
 - Dependabot is configured for GitHub Actions and pip manifests.
+- Local and GitHub retrieval tools now block secret-shaped files by default and filter them from directory listings.
 
 ## Known Prototype Constraints
 

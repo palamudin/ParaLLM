@@ -141,6 +141,21 @@ DEFAULT_WORKER_TYPE_SEQUENCE: List[str] = [
 
 DEFAULT_MODEL_ID = "gpt-5-mini"
 WEB_SEARCH_TOOL_CALL_PRICE_USD = 0.01
+SENSITIVE_PATH_SEGMENTS = {"secrets", ".ssh", ".aws", ".gnupg"}
+SENSITIVE_FILE_NAMES = {
+    "auth.txt",
+    "openai_api_keys",
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.development",
+    "id_rsa",
+    "id_ed25519",
+    "credentials",
+    ".npmrc",
+    ".pypirc",
+}
+SENSITIVE_FILE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx", ".asc")
 
 
 class RuntimeErrorWithCode(Exception):
@@ -221,6 +236,24 @@ def default_usage_state() -> Dict[str, Any]:
     usage["byTarget"] = {}
     usage["byModel"] = {}
     return usage
+
+
+def is_sensitive_repo_path(value: Any) -> bool:
+    raw = str(value or "").strip().replace("\\", "/").strip("/")
+    if not raw or raw == ".":
+        return False
+    parts = [part for part in raw.split("/") if part and part != "."]
+    if not parts:
+        return False
+    lowered_parts = [part.lower() for part in parts]
+    if any(part in SENSITIVE_PATH_SEGMENTS for part in lowered_parts[:-1]):
+        return True
+    basename = lowered_parts[-1]
+    if basename in SENSITIVE_PATH_SEGMENTS:
+        return True
+    if basename in SENSITIVE_FILE_NAMES or basename.startswith(".env."):
+        return True
+    return basename.endswith(SENSITIVE_FILE_SUFFIXES)
 
 
 def default_loop_state() -> Dict[str, Any]:
@@ -2062,6 +2095,13 @@ class LoopRuntime:
         except Exception:
             return resolved.as_posix()
 
+    def is_sensitive_tool_path(self, value: Any) -> bool:
+        return is_sensitive_repo_path(value)
+
+    def assert_tool_path_not_sensitive(self, value: Any, tool_name: str) -> None:
+        if self.is_sensitive_tool_path(value):
+            raise RuntimeErrorWithCode(f"{tool_name} is blocked from accessing secret-shaped files or directories.", 403)
+
     def resolve_local_tool_roots(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         resolved_roots: List[Dict[str, Any]] = []
         seen: Dict[str, bool] = {}
@@ -2177,15 +2217,21 @@ class LoopRuntime:
         if name == "local_list_dir":
             max_entries = min(50, max(1, int(arguments.get("max_entries", 20) or 20)))
             resolved, repo_path = self.resolve_local_tool_path(arguments.get("path", "."), config, allow_file=False, allow_dir=True)
+            self.assert_tool_path_not_sensitive(repo_path, name)
             entries: List[Dict[str, Any]] = []
+            filtered_sensitive = 0
             children = sorted(
                 resolved.iterdir(),
                 key=lambda item: (0 if item.is_dir() else 1, item.name.lower()),
             )
             for child in children[:max_entries]:
+                child_repo_path = self.repo_relative_path(child)
+                if self.is_sensitive_tool_path(child_repo_path):
+                    filtered_sensitive += 1
+                    continue
                 item: Dict[str, Any] = {
                     "name": child.name,
-                    "path": self.repo_relative_path(child),
+                    "path": child_repo_path,
                     "kind": "dir" if child.is_dir() else "file",
                 }
                 if child.is_file():
@@ -2199,12 +2245,14 @@ class LoopRuntime:
                 "allowedRoots": allowed_roots,
                 "entries": entries,
                 "truncated": len(children) > max_entries,
+                "filteredSensitiveEntries": filtered_sensitive,
             }
             audit = {
                 "name": name,
                 "path": repo_path,
                 "sources": [repo_path],
                 "entryCount": len(entries),
+                "filteredSensitiveEntries": filtered_sensitive,
                 "truncated": bool(result["truncated"]),
                 "summary": f"Listed {len(entries)} entries under {repo_path}.",
             }
@@ -2212,6 +2260,7 @@ class LoopRuntime:
 
         if name == "local_read_file":
             resolved, repo_path = self.resolve_local_tool_path(arguments.get("path", ""), config, allow_file=True, allow_dir=False)
+            self.assert_tool_path_not_sensitive(repo_path, name)
             if not self.is_probably_text_file(resolved):
                 raise RuntimeErrorWithCode("Local read only supports probable text files.", 400)
             start_line = max(1, int(arguments.get("start_line", 1) or 1))
@@ -2252,14 +2301,20 @@ class LoopRuntime:
                 raise RuntimeErrorWithCode("local_search_text requires a non-empty pattern.", 400)
             max_matches = min(20, max(1, int(arguments.get("max_matches", 12) or 12)))
             resolved, repo_path = self.resolve_local_tool_path(arguments.get("path", "."), config, allow_file=True, allow_dir=True)
+            self.assert_tool_path_not_sensitive(repo_path, name)
             candidates: List[Path] = [resolved] if resolved.is_file() else [path for path in resolved.rglob("*") if path.is_file()]
             matches: List[Dict[str, Any]] = []
             source_paths: Dict[str, bool] = {}
             files_scanned = 0
+            filtered_sensitive = 0
             pattern_lower = pattern.lower()
             for file_path in candidates:
                 if len(matches) >= max_matches:
                     break
+                relative = self.repo_relative_path(file_path)
+                if self.is_sensitive_tool_path(relative):
+                    filtered_sensitive += 1
+                    continue
                 if not self.is_probably_text_file(file_path):
                     continue
                 files_scanned += 1
@@ -2268,7 +2323,6 @@ class LoopRuntime:
                         for line_number, line in enumerate(handle, start=1):
                             if pattern_lower not in line.lower():
                                 continue
-                            relative = self.repo_relative_path(file_path)
                             source_paths[relative] = True
                             matches.append(
                                 {
@@ -2288,6 +2342,7 @@ class LoopRuntime:
                 "matches": matches,
                 "filesScanned": files_scanned,
                 "truncated": len(matches) >= max_matches,
+                "filteredSensitiveFiles": filtered_sensitive,
             }
             audit = {
                 "name": name,
@@ -2295,6 +2350,7 @@ class LoopRuntime:
                 "sources": list(source_paths.keys())[:10],
                 "matchCount": len(matches),
                 "filesScanned": files_scanned,
+                "filteredSensitiveFiles": filtered_sensitive,
                 "truncated": bool(result["truncated"]),
                 "summary": f"Found {len(matches)} matches for '{truncate_text(pattern, 80)}' under {repo_path}.",
             }
@@ -2446,22 +2502,30 @@ class LoopRuntime:
         if name == "github_list_paths":
             max_entries = min(50, max(1, int(arguments.get("max_entries", 20) or 20)))
             path = str(arguments.get("path", "") or "").strip().strip("/")
+            self.assert_tool_path_not_sensitive(path or ".", name)
             ref = str(arguments.get("ref", "HEAD") or "HEAD").strip() or "HEAD"
             payload = self.github_request_json(self.github_api_contents_url(repo, path, ref))
             entries_payload = payload if isinstance(payload, list) else [payload] if isinstance(payload, dict) else []
             entries: List[Dict[str, Any]] = []
-            for item in entries_payload[:max_entries]:
+            filtered_sensitive = 0
+            for item in entries_payload:
                 if not isinstance(item, dict):
+                    continue
+                item_path = str(item.get("path", ""))
+                if self.is_sensitive_tool_path(item_path):
+                    filtered_sensitive += 1
                     continue
                 entries.append(
                     {
                         "name": str(item.get("name", "")),
-                        "path": str(item.get("path", "")),
+                        "path": item_path,
                         "kind": str(item.get("type", "")),
                         "size": int(item.get("size", 0) or 0),
                         "htmlUrl": str(item.get("html_url", "")),
                     }
                 )
+                if len(entries) >= max_entries:
+                    break
             result = {
                 "repo": repo,
                 "path": path or ".",
@@ -2469,12 +2533,14 @@ class LoopRuntime:
                 "allowedRepos": allowed_repos,
                 "entries": entries,
                 "truncated": len(entries_payload) > max_entries,
+                "filteredSensitiveEntries": filtered_sensitive,
             }
             audit = {
                 "name": name,
                 "path": f"{repo}:{path or '.'}@{ref}",
                 "sources": [self.github_html_tree_url(repo, ref, path)],
                 "entryCount": len(entries),
+                "filteredSensitiveEntries": filtered_sensitive,
                 "truncated": bool(result["truncated"]),
                 "summary": f"Listed {len(entries)} GitHub paths under {repo}:{path or '.'}@{ref}.",
             }
@@ -2484,6 +2550,7 @@ class LoopRuntime:
             path = str(arguments.get("path", "") or "").strip().strip("/")
             if not path:
                 raise RuntimeErrorWithCode("github_read_file requires a file path.", 400)
+            self.assert_tool_path_not_sensitive(path, name)
             ref = str(arguments.get("ref", "HEAD") or "HEAD").strip() or "HEAD"
             payload = self.github_request_json(self.github_api_contents_url(repo, path, ref))
             if not isinstance(payload, dict) or str(payload.get("type", "")) != "file":

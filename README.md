@@ -119,6 +119,7 @@ flowchart LR
 - Output artifact persistence for every worker and summary pass
 - Read-only local workspace inspection via `local_list_dir`, `local_read_file`, and `local_search_text`
 - Read-only GitHub inspection via `github_list_paths`, `github_read_file`, `github_get_issue`, `github_get_pull_request`, and `github_get_commit`
+- Secret-shaped files are filtered from retrieval listings and blocked from direct local/GitHub reads by default
 - Local/GitHub tool audit in step logs, worker checkpoints, and artifact metadata
 - Summarizer-driven next-round lane requests with audited worker spawn events
 - Budget, token, and estimated-spend tracking

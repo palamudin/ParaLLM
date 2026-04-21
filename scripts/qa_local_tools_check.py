@@ -55,6 +55,17 @@ def main() -> None:
         traversal_blocked = True
     assert_true(traversal_blocked, "Expected path traversal to be rejected.")
 
+    secret_blocked = False
+    try:
+        runtime.execute_local_file_tool_call(
+            "local_read_file",
+            {"path": "Auth.txt"},
+            {"enabled": True, "roots": ["."]},
+        )
+    except RuntimeErrorWithCode:
+        secret_blocked = True
+    assert_true(secret_blocked, "Expected secret-shaped local files to be rejected.")
+
     responses = [
         {
             "id": "resp_1",

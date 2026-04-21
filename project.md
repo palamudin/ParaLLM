@@ -563,6 +563,11 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - secrets never appear in artifacts, steps, or browser-visible debug surfaces
   - secret rotation, masking, and retrieval failure behavior are explicit and test-covered
 
+#### Current progress
+
+- Secret-shaped local and GitHub files are now filtered out of retrieval listings and blocked from direct reads/searches by default.
+- Hosted/runtime secret backends already exist for `env`, `docker_secret`, and `external`; the next work is making those the preferred paths instead of transitional local-file storage.
+
 ### Milestone 4: Prototype Hardening
 
 - Goal:
