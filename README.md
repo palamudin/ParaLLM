@@ -28,8 +28,11 @@ The current prototype is built to make that test inspectable:
 - Chat-first workflow where `Send` creates a task and starts the configured loop
 - Commander-first runtime: `commander -> workers -> summarizer`
 - Dynamic adversarial worker roster starting from `Proponent` and `Sceptic`
+- Summarizer-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Review-only control audit showing accepted, rejected, and held-out objections
 - Isolated eval subsystem for side-by-side benchmark runs
+- Read-only local file tools for commander and worker lanes with allow-root policy and audit logs
+- Read-only GitHub repo tools for commander and worker lanes with owner/repo allowlist and audit logs
 - Local API key pool with deterministic per-position assignment
 - Reversible QA scripts for mock, live, and eval smoke tests
 
@@ -111,6 +114,10 @@ flowchart LR
 - Shared lock discipline between PHP and Python
 - Stale-job recovery
 - Output artifact persistence for every worker and summary pass
+- Read-only local workspace inspection via `local_list_dir`, `local_read_file`, and `local_search_text`
+- Read-only GitHub inspection via `github_list_paths`, `github_read_file`, `github_get_issue`, `github_get_pull_request`, and `github_get_commit`
+- Local/GitHub tool audit in step logs, worker checkpoints, and artifact metadata
+- Summarizer-driven next-round lane requests with audited worker spawn events
 - Budget, token, and estimated-spend tracking
 - Requested-vs-effective output-token cap visibility
 
@@ -123,6 +130,9 @@ flowchart LR
   - mock smoke
   - live smoke
   - isolated eval smoke
+  - local file tool smoke
+  - GitHub tool smoke
+  - dynamic lane spin-up smoke
 
 ## Quick Start
 
@@ -204,6 +214,9 @@ From the repo root:
 python scripts/qa_check.py
 python scripts/qa_live_check.py
 python scripts/qa_eval_check.py
+python scripts/qa_local_tools_check.py
+python scripts/qa_github_tools_check.py
+python scripts/qa_dynamic_spinup_check.py
 python scripts/quality_benchmark.py
 ```
 

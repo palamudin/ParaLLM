@@ -2057,6 +2057,10 @@ textarea {
   gap: 12px;
 }
 
+.settings-span-2 {
+  grid-column: span 2;
+}
+
 .integration-card {
   padding: 16px;
   border-radius: 20px;

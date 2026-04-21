@@ -387,6 +387,11 @@ function defaultDraftState() {
     researchEnabled: false,
     researchExternalWebAccess: true,
     researchDomains: [],
+    localFilesEnabled: false,
+    localFileRoots: ["."],
+    githubToolsEnabled: false,
+    githubAllowedRepos: [],
+    dynamicSpinupEnabled: false,
     vettingEnabled: true,
     summarizerHarness: { concision: "balanced", instruction: "" },
     loopRounds: 3,
@@ -535,6 +540,10 @@ function artifactOutputCapSummary(artifact) {
 
 function renderArtifactMeta(data) {
   const summary = data?.summary || {};
+  const localToolCalls = Array.isArray(summary.localToolCalls) ? summary.localToolCalls : [];
+  const localFileSources = Array.isArray(summary.localFileSources) ? summary.localFileSources : [];
+  const githubToolCalls = Array.isArray(summary.githubToolCalls) ? summary.githubToolCalls : [];
+  const githubSources = Array.isArray(summary.githubSources) ? summary.githubSources : [];
   const bits = [
     data?.name || "artifact",
     "kind: " + (data?.kind || "artifact") + " | storage: " + (data?.storage || "unknown"),
@@ -544,6 +553,10 @@ function renderArtifactMeta(data) {
     "step: " + (summary.step ?? "-") + " | round: " + (summary.round ?? "-"),
     "responseId: " + (summary.responseId || "none"),
     "output cap: " + artifactOutputCapSummary(summary),
+    "local tools: " + (localToolCalls.length ? localToolCalls.length + " call" + (localToolCalls.length === 1 ? "" : "s") : "none")
+      + " | local sources: " + (localFileSources.length ? localFileSources.length : 0),
+    "GitHub tools: " + (githubToolCalls.length ? githubToolCalls.length + " call" + (githubToolCalls.length === 1 ? "" : "s") : "none")
+      + " | GitHub sources: " + (githubSources.length ? githubSources.length : 0),
     "raw output policy: " + (data?.policy?.reviewSurface || "review_only") + " | public thread: " + (data?.policy?.publicThread || "structured_only")
   ];
   return bits.join("\n");
@@ -632,6 +645,11 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.researchEnabled ? 1 : 0,
         safeDraft.researchExternalWebAccess === false ? 0 : 1,
         JSON.stringify(safeDraft.researchDomains || []),
+        safeDraft.localFilesEnabled ? 1 : 0,
+        JSON.stringify(safeDraft.localFileRoots || []),
+        safeDraft.githubToolsEnabled ? 1 : 0,
+        JSON.stringify(safeDraft.githubAllowedRepos || []),
+        safeDraft.dynamicSpinupEnabled ? 1 : 0,
         safeDraft.vettingEnabled === false ? 0 : 1,
         JSON.stringify(safeDraft.summarizerHarness || {}),
         safeDraft.loopRounds ?? 3,
@@ -660,6 +678,11 @@ function buildCommanderFormSource(task, draft) {
         task.runtime?.research?.enabled ? 1 : 0,
         task.runtime?.research?.externalWebAccess === false ? 0 : 1,
         JSON.stringify(task.runtime?.research?.domains || []),
+        task.runtime?.localFiles?.enabled ? 1 : 0,
+        JSON.stringify(task.runtime?.localFiles?.roots || []),
+        task.runtime?.githubTools?.enabled ? 1 : 0,
+        JSON.stringify(task.runtime?.githubTools?.repos || []),
+        task.runtime?.dynamicSpinup?.enabled ? 1 : 0,
         task.runtime?.vetting?.enabled === false ? 0 : 1,
         JSON.stringify(task.summarizer?.harness || {}),
         task.preferredLoop?.rounds ?? 3,
@@ -680,6 +703,11 @@ function buildCommanderFormSource(task, draft) {
         researchEnabled: task.runtime?.research?.enabled ? true : false,
         researchExternalWebAccess: task.runtime?.research?.externalWebAccess === false ? false : true,
         researchDomains: task.runtime?.research?.domains || [],
+        localFilesEnabled: task.runtime?.localFiles?.enabled ? true : false,
+        localFileRoots: task.runtime?.localFiles?.roots || ["."],
+        githubToolsEnabled: task.runtime?.githubTools?.enabled ? true : false,
+        githubAllowedRepos: task.runtime?.githubTools?.repos || [],
+        dynamicSpinupEnabled: task.runtime?.dynamicSpinup?.enabled ? true : false,
         vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true,
         summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "balanced"),
         loopRounds: task.preferredLoop?.rounds ?? 3,
@@ -716,6 +744,11 @@ function applyCommanderForm(values) {
   $("#loopDelayMs").val(safe.loopDelayMs ?? 1000);
   $("#researchEnabled").val(safe.researchEnabled ? "1" : "0");
   $("#researchExternalWebAccess").val(safe.researchExternalWebAccess === false ? "0" : "1");
+  $("#localFilesEnabled").val(safe.localFilesEnabled ? "1" : "0");
+  $("#localFileRoots").val((safe.localFileRoots || ["."]).join(", "));
+  $("#githubToolsEnabled").val(safe.githubToolsEnabled ? "1" : "0");
+  $("#githubAllowedRepos").val((safe.githubAllowedRepos || []).join(", "));
+  $("#dynamicSpinupEnabled").val(safe.dynamicSpinupEnabled ? "1" : "0");
   $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
   $("#researchDomains").val((safe.researchDomains || []).join(", "));
   renderQualityProfileCards();
@@ -748,6 +781,11 @@ function collectCommanderPayload() {
     loopDelayMs: parseInt($("#loopDelayMs").val(), 10) || 0,
     researchEnabled: $("#researchEnabled").val(),
     researchExternalWebAccess: $("#researchExternalWebAccess").val(),
+    localFilesEnabled: $("#localFilesEnabled").val(),
+    localFileRoots: $("#localFileRoots").val().trim(),
+    githubToolsEnabled: $("#githubToolsEnabled").val(),
+    githubAllowedRepos: $("#githubAllowedRepos").val().trim(),
+    dynamicSpinupEnabled: $("#dynamicSpinupEnabled").val(),
     vettingEnabled: $("#vettingEnabled").val(),
     researchDomains: $("#researchDomains").val().trim()
   };
@@ -1299,6 +1337,12 @@ function renderComposerTools() {
 
   const researchEnabled = $("#researchEnabled").val() === "1";
   const externalWeb = $("#researchExternalWebAccess").val() !== "0";
+  const localFilesEnabled = $("#localFilesEnabled").val() === "1";
+  const localFileRootsValue = String($("#localFileRoots").val() || "").trim();
+  const localRootCount = localFileRootsValue ? localFileRootsValue.split(",").map(function (item) { return item.trim(); }).filter(Boolean).length : 0;
+  const githubToolsEnabled = $("#githubToolsEnabled").val() === "1";
+  const githubReposValue = String($("#githubAllowedRepos").val() || "").trim();
+  const githubRepoCount = githubReposValue ? githubReposValue.split(",").map(function (item) { return item.trim(); }).filter(Boolean).length : 0;
   const vettingEnabled = $("#vettingEnabled").val() !== "0";
   const domainsValue = String($("#researchDomains").val() || "").trim();
   const sourceCount = domainsValue ? domainsValue.split(",").map(function (item) { return item.trim(); }).filter(Boolean).length : 0;
@@ -1310,6 +1354,12 @@ function renderComposerTools() {
   }
   if (sourceCount > 0) {
     toolChips.push(`<span class="composer-tool-chip">${sourceCount} source${sourceCount === 1 ? "" : "s"}</span>`);
+  }
+  if (localFilesEnabled) {
+    toolChips.push(`<span class="composer-tool-chip">${localRootCount || 1} local root${(localRootCount || 1) === 1 ? "" : "s"}</span>`);
+  }
+  if (githubToolsEnabled) {
+    toolChips.push(`<span class="composer-tool-chip">${githubRepoCount || 1} GitHub repo${(githubRepoCount || 1) === 1 ? "" : "s"}</span>`);
   }
   if (stagedComposerAttachments.length > 0) {
     toolChips.push(`<span class="composer-tool-chip">${stagedComposerAttachments.length} file${stagedComposerAttachments.length === 1 ? "" : "s"}</span>`);
@@ -1326,6 +1376,8 @@ function renderComposerTools() {
     <button type="button" class="composer-tool-action" data-tool-action="upload">Upload files</button>
     <button type="button" class="composer-tool-action" data-tool-action="recent">Recent files</button>
     <button type="button" class="composer-tool-action${researchEnabled ? " active" : ""}" data-tool-action="web-search">${researchEnabled ? "Web search on" : "Web search off"}</button>
+    <button type="button" class="composer-tool-action${localFilesEnabled ? " active" : ""}" data-tool-action="local-files">${localFilesEnabled ? "Local files on" : "Local files off"}</button>
+    <button type="button" class="composer-tool-action${githubToolsEnabled ? " active" : ""}" data-tool-action="github-tools">${githubToolsEnabled ? "GitHub on" : "GitHub off"}</button>
     <button type="button" class="composer-tool-action${composerSourceDrawerOpen ? " active" : ""}" data-tool-action="sources">Add sources</button>
     <button type="button" class="composer-tool-action${vettingEnabled ? " active" : ""}" data-tool-action="vetting">${vettingEnabled ? "Vetting on" : "Vetting off"}</button>
   `);
@@ -2472,7 +2524,17 @@ function renderWorkerPanels(task) {
     $head.append($("<div>").addClass("lane-card-title").text(worker.label + " | " + worker.role));
     $head.append($("<div>").addClass("lane-card-step").text(checkpoint ? "step " + (checkpoint.step || 0) : "waiting"));
     $card.append($head);
-    $card.append($("<div>").addClass("lane-card-focus").text(worker.focus + " | model: " + worker.model));
+    const focusBits = [worker.focus, "model: " + worker.model];
+    if (checkpoint?.localFileSources?.length) {
+      focusBits.push(checkpoint.localFileSources.length + " local file" + (checkpoint.localFileSources.length === 1 ? "" : "s"));
+    }
+    if (checkpoint?.githubSources?.length) {
+      focusBits.push(checkpoint.githubSources.length + " GitHub source" + (checkpoint.githubSources.length === 1 ? "" : "s"));
+    }
+    if (checkpoint?.researchSources?.length) {
+      focusBits.push(checkpoint.researchSources.length + " web source" + (checkpoint.researchSources.length === 1 ? "" : "s"));
+    }
+    $card.append($("<div>").addClass("lane-card-focus").text(focusBits.join(" | ")));
     $card.append($("<div>").addClass("lane-card-copy").text(
       checkpoint
         ? truncateText(checkpoint.observation || checkpoint.requestToPeer || "Checkpoint available.", 220)
@@ -3361,6 +3423,7 @@ function renderSummaryOpinion(summary) {
   const frontAnswer = summary.frontAnswer || {};
   const opinion = summary.summarizerOpinion || {};
   const controlAudit = summary.controlAudit || {};
+  const dynamicLaneDecision = summary.dynamicLaneDecision || {};
   const blocks = [
     renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary)),
     renderReviewBlock("Lead direction", frontAnswer.leadDirection || frontAnswer.stance || ""),
@@ -3383,6 +3446,17 @@ function renderSummaryOpinion(summary) {
       ? renderReviewBlock("Held-out concerns", controlAudit.heldOutConcerns.join("\n"))
       : "",
     renderReviewBlock("Pre-release self-check", controlAudit.selfCheck || ""),
+    dynamicLaneDecision.shouldSpawn
+      ? renderReviewBlock(
+          "Next-round lane request",
+          [
+            Array.isArray(dynamicLaneDecision.suggestedLaneTypes) && dynamicLaneDecision.suggestedLaneTypes.length
+              ? "Types: " + dynamicLaneDecision.suggestedLaneTypes.join(", ")
+              : "",
+            dynamicLaneDecision.reason || ""
+          ].filter(Boolean).join("\n")
+        )
+      : "",
     renderReviewBlock("Uncertainty", opinion.uncertainty || frontAnswer.confidenceNote || ""),
     renderReviewBlock("Recommended next action", summary.recommendedNextAction || ""),
     renderReviewBlock("Vetting note", summary.vettingSummary || "")
@@ -3967,7 +4041,16 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     maxTotalTokens: $("#maxTotalTokens").val(),
     maxOutputTokens: $("#maxOutputTokens").val(),
     loopRounds: $("#loopRounds").val(),
-    loopDelayMs: $("#loopDelayMs").val()
+    loopDelayMs: $("#loopDelayMs").val(),
+    researchEnabled: $("#researchEnabled").val(),
+    researchExternalWebAccess: $("#researchExternalWebAccess").val(),
+    researchDomains: $("#researchDomains").val(),
+    localFilesEnabled: $("#localFilesEnabled").val(),
+    localFileRoots: $("#localFileRoots").val(),
+    githubToolsEnabled: $("#githubToolsEnabled").val(),
+    githubAllowedRepos: $("#githubAllowedRepos").val(),
+    dynamicSpinupEnabled: $("#dynamicSpinupEnabled").val(),
+    vettingEnabled: $("#vettingEnabled").val()
   }, successText, {
     onSuccess: function () {
       workerControlsSignature = "";
@@ -3989,6 +4072,11 @@ $(function () {
   populateStaticModelSelect("#summarizerModel", "gpt-5-mini");
   $("#researchEnabled").val("0");
   $("#researchExternalWebAccess").val("1");
+  $("#localFilesEnabled").val("0");
+  $("#localFileRoots").val(".");
+  $("#githubToolsEnabled").val("0");
+  $("#githubAllowedRepos").val("");
+  $("#dynamicSpinupEnabled").val("0");
   $("#vettingEnabled").val("1");
   $("#composerFileInput").attr("accept", COMPOSER_SUPPORTED_EXTENSIONS.join(","));
   applyCommanderForm(defaultDraftState());
@@ -4032,7 +4120,7 @@ $(function () {
     setWorkerControlExpandedState($(this).data("workerId") || $(this).data("positionId"), this.open);
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
     formDirty = true;
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
     renderQualityProfileCards();
@@ -4067,6 +4155,11 @@ $(function () {
       loopDelayMs: payload.loopDelayMs,
       researchEnabled: payload.researchEnabled,
       researchExternalWebAccess: payload.researchExternalWebAccess,
+      localFilesEnabled: payload.localFilesEnabled,
+      localFileRoots: payload.localFileRoots,
+      githubToolsEnabled: payload.githubToolsEnabled,
+      githubAllowedRepos: payload.githubAllowedRepos,
+      dynamicSpinupEnabled: payload.dynamicSpinupEnabled,
       vettingEnabled: payload.vettingEnabled,
       researchDomains: payload.researchDomains,
       workers: JSON.stringify(workers)
@@ -4197,6 +4290,18 @@ $(function () {
       markComposerConfigDirty();
       return;
     }
+    if (action === "local-files") {
+      $("#localFilesEnabled").val($("#localFilesEnabled").val() === "1" ? "0" : "1");
+      composerToolMenuOpen = false;
+      markComposerConfigDirty();
+      return;
+    }
+    if (action === "github-tools") {
+      $("#githubToolsEnabled").val($("#githubToolsEnabled").val() === "1" ? "0" : "1");
+      composerToolMenuOpen = false;
+      markComposerConfigDirty();
+      return;
+    }
     if (action === "sources") {
       composerSourceDrawerOpen = !composerSourceDrawerOpen;
       composerRecentDrawerOpen = false;
@@ -4227,6 +4332,20 @@ $(function () {
   $("#composerResearchModeSelect").on("change", function () {
     $("#researchExternalWebAccess").val($(this).val());
     $("#researchEnabled").val("1");
+    markComposerConfigDirty();
+  });
+
+  $("#localFileRoots").on("input change", function () {
+    if (String($(this).val() || "").trim()) {
+      $("#localFilesEnabled").val("1");
+    }
+    markComposerConfigDirty();
+  });
+
+  $("#githubAllowedRepos").on("input change", function () {
+    if (String($(this).val() || "").trim()) {
+      $("#githubToolsEnabled").val("1");
+    }
     markComposerConfigDirty();
   });
 

@@ -38,6 +38,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - `scripts/qa_check.py`: reusable QA harness for linting and reversible endpoint smoke checks
 - `scripts/qa_live_check.py`: reusable live QA harness for budget-capped, source-restricted endpoint smoke checks
 - `scripts/qa_eval_check.py`: reusable isolated-eval smoke harness for suites, arms, and run artifacts
+- `scripts/qa_local_tools_check.py`: reusable read-only local-tool smoke harness for root policy, tool execution, and mocked Responses continuation
 - `scripts/quality_benchmark.py`: blind quality benchmark for comparing direct output vs steered output on the same case
 - `runtime/eval_runner.py`: isolated eval runner for suite/arm/replicate benchmarking outside the live singleton workspace
 - `data/state.json`: canonical state
@@ -61,6 +62,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Per-worker temperature qualifiers so each lane can stay cool, balanced, or hot while preserving its own point of view
 - Reasoning effort can be tuned per task
 - Optional grounded worker research with `web_search`, live-web toggle, and domain allow-lists
+- Optional read-only local file tools for commander and worker lanes with repo-relative allow-roots
+- Optional read-only GitHub repo tools for commander and worker lanes with owner/repo allow-lists
+- Optional summarizer-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
 - API keys can be managed locally through the UI as a local key pool, with per-slot inputs, masked previews, and deterministic per-position assignment
@@ -105,6 +109,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - The Home rail now lets users spawn the next adversarial lane from a selectable template such as `Security`, `Economist`, `User Advocate`, or other focused viewpoints instead of only taking the next default slot
 - Grounded worker research mode using the OpenAI Responses API `web_search` tool with optional OpenAI-domain allow-lists
 - Worker checkpoints now carry evidence ledgers, research queries, consulted source URLs, and evidence gaps
+- Commander and worker lanes can now call audited local tools (`local_list_dir`, `local_read_file`, `local_search_text`) against explicit repo-relative roots, and those reads are logged into steps, checkpoints, and artifact metadata
+- Commander and worker lanes can now call audited GitHub tools (`github_list_paths`, `github_read_file`, `github_get_issue`, `github_get_pull_request`, `github_get_commit`) against explicit owner/repo allow-lists, and those reads are logged into steps, checkpoints, and artifact metadata
+- The summarizer can now request one additional adversarial lane for the next round, and when dynamic spin-up is enabled the runtime appends that worker with a visible audit step instead of silently mutating the roster
 - Summarizer now acts as a vetter, preserving conflicts while scoring supported, mixed, weak, or disputed claims
 - Each worker and summarizer run now saves a dedicated output artifact so quality can be inspected separately from canonical state
 - Artifact Review UI supports side-by-side inspection of saved checkpoints and output artifacts
@@ -123,6 +130,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Summaries now need a front-answer layer plus a review-only adjudication layer with cited worker line refs
 - Review should expose the summarizer's current position, why it landed there, and the exact worker lines that shaped that judgment
 - Reusable QA should exist as a first-class path so syntax checks and reversible endpoint smoke tests can be rerun quickly after runtime/UI changes
+- Read-only tool paths should have their own explicit QA so tool-loop regressions get caught without spending live tokens
+- GitHub/repo read tooling should share that same QA discipline so connector-like access can be verified without spending model tokens
+- Dynamic lane spin-up should also have its own QA because a bad roster mutation is a state-management bug, not just a prompting bug
 - Live QA should stay separate from mock QA so spend-bearing checks remain explicit, budget-capped, and domain-restricted
 - Quality benchmarking should also be first-class so we can test whether steered output is actually better than a direct answer, not just more elaborate
 - Isolated evals should live beside the app, not inside the interactive singleton state, so hidden gold answers and benchmark artifacts cannot contaminate normal tasks

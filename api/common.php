@@ -230,6 +230,9 @@ function default_draft_state(): array {
     $budget = default_budget_config();
     $model = default_model_id();
     $loop = default_loop_preferences();
+    $localFiles = default_local_file_tool_config();
+    $githubTools = default_github_tool_config();
+    $dynamicSpinup = default_dynamic_spinup_config();
     return [
         'objective' => '',
         'constraints' => [],
@@ -245,6 +248,11 @@ function default_draft_state(): array {
         'researchEnabled' => false,
         'researchExternalWebAccess' => true,
         'researchDomains' => [],
+        'localFilesEnabled' => $localFiles['enabled'],
+        'localFileRoots' => $localFiles['roots'],
+        'githubToolsEnabled' => $githubTools['enabled'],
+        'githubAllowedRepos' => $githubTools['repos'],
+        'dynamicSpinupEnabled' => $dynamicSpinup['enabled'],
         'vettingEnabled' => true,
         'summarizerHarness' => default_summarizer_harness(),
         'loopRounds' => $loop['rounds'],
@@ -359,6 +367,78 @@ function normalize_allowed_domains($value): array {
     return array_slice(array_keys($domains), 0, 100);
 }
 
+function normalize_local_file_roots($value): array {
+    if (is_string($value)) {
+        $trimmed = trim($value);
+        if ($trimmed !== '' && str_starts_with($trimmed, '[')) {
+            $decoded = json_decode($trimmed, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        }
+    }
+
+    $roots = [];
+    foreach (normalize_string_list($value) as $entry) {
+        $entry = str_replace('\\', '/', trim((string)$entry));
+        if ($entry === '' || $entry === '.' || $entry === './') {
+            $roots['.'] = true;
+            continue;
+        }
+        if (preg_match('/^[a-zA-Z]:/', $entry) || str_starts_with($entry, '/') || str_starts_with($entry, '\\')) {
+            continue;
+        }
+        $entry = preg_replace('#^(\./)+#', '', $entry);
+        $entry = trim((string)$entry, " \t\n\r\0\x0B/");
+        if ($entry === '') {
+            $roots['.'] = true;
+            continue;
+        }
+        $parts = array_values(array_filter(explode('/', $entry), static function ($part): bool {
+            return $part !== '' && $part !== '.';
+        }));
+        if (!$parts) {
+            $roots['.'] = true;
+            continue;
+        }
+        if (in_array('..', $parts, true)) {
+            continue;
+        }
+        $normalized = implode('/', $parts);
+        $roots[$normalized] = true;
+    }
+
+    $list = array_slice(array_keys($roots), 0, 20);
+    return $list ?: ['.'];
+}
+
+function normalize_github_repos($value): array {
+    if (is_string($value)) {
+        $trimmed = trim($value);
+        if ($trimmed !== '' && str_starts_with($trimmed, '[')) {
+            $decoded = json_decode($trimmed, true);
+            if (is_array($decoded)) {
+                $value = $decoded;
+            }
+        }
+    }
+
+    $repos = [];
+    foreach (normalize_string_list($value) as $entry) {
+        $entry = strtolower(trim((string)$entry));
+        $entry = preg_replace('#^https?://github\.com/#i', '', $entry);
+        $entry = trim((string)$entry, " \t\n\r\0\x0B/");
+        if ($entry === '') {
+            continue;
+        }
+        if (!preg_match('/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i', $entry)) {
+            continue;
+        }
+        $repos[$entry] = true;
+    }
+    return array_slice(array_keys($repos), 0, 50);
+}
+
 function normalize_budget_config(array $config = []): array {
     $default = default_budget_config();
     $overall = normalize_budget_limits($config, $default);
@@ -388,6 +468,17 @@ function normalize_draft_state(?array $draft): array {
         'rounds' => $draft['loopRounds'] ?? $default['loopRounds'],
         'delayMs' => $draft['loopDelayMs'] ?? $default['loopDelayMs'],
     ]);
+    $localFiles = normalize_local_file_tool_config([
+        'enabled' => $draft['localFilesEnabled'] ?? $default['localFilesEnabled'],
+        'roots' => $draft['localFileRoots'] ?? $default['localFileRoots'],
+    ]);
+    $githubTools = normalize_github_tool_config([
+        'enabled' => $draft['githubToolsEnabled'] ?? $default['githubToolsEnabled'],
+        'repos' => $draft['githubAllowedRepos'] ?? $default['githubAllowedRepos'],
+    ]);
+    $dynamicSpinup = normalize_dynamic_spinup_config([
+        'enabled' => $draft['dynamicSpinupEnabled'] ?? $default['dynamicSpinupEnabled'],
+    ]);
     $reasoningEffort = trim((string)($draft['reasoningEffort'] ?? $default['reasoningEffort']));
     if (!in_array($reasoningEffort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
         $reasoningEffort = $default['reasoningEffort'];
@@ -413,6 +504,11 @@ function normalize_draft_state(?array $draft): array {
         'researchEnabled' => coerce_bool($draft['researchEnabled'] ?? $default['researchEnabled'], $default['researchEnabled']),
         'researchExternalWebAccess' => coerce_bool($draft['researchExternalWebAccess'] ?? $default['researchExternalWebAccess'], $default['researchExternalWebAccess']),
         'researchDomains' => normalize_allowed_domains($draft['researchDomains'] ?? $default['researchDomains']),
+        'localFilesEnabled' => $localFiles['enabled'],
+        'localFileRoots' => $localFiles['roots'],
+        'githubToolsEnabled' => $githubTools['enabled'],
+        'githubAllowedRepos' => $githubTools['repos'],
+        'dynamicSpinupEnabled' => $dynamicSpinup['enabled'],
         'vettingEnabled' => coerce_bool($draft['vettingEnabled'] ?? $default['vettingEnabled'], $default['vettingEnabled']),
         'summarizerHarness' => normalize_harness_config($draft['summarizerHarness'] ?? $default['summarizerHarness'], default_summarizer_harness()['concision']),
         'loopRounds' => $loop['rounds'],
@@ -436,6 +532,9 @@ function build_draft_from_task(?array $task, array $overrides = [], bool $resetB
         ? default_budget_config()
         : normalize_budget_config(is_array($runtime['budget'] ?? null) ? $runtime['budget'] : []);
     $research = normalize_research_config(is_array($runtime['research'] ?? null) ? $runtime['research'] : []);
+    $localFiles = normalize_local_file_tool_config(is_array($runtime['localFiles'] ?? null) ? $runtime['localFiles'] : []);
+    $githubTools = normalize_github_tool_config(is_array($runtime['githubTools'] ?? null) ? $runtime['githubTools'] : []);
+    $dynamicSpinup = normalize_dynamic_spinup_config(is_array($runtime['dynamicSpinup'] ?? null) ? $runtime['dynamicSpinup'] : []);
     $vetting = normalize_vetting_config(is_array($runtime['vetting'] ?? null) ? $runtime['vetting'] : []);
     $model = normalize_model_id((string)($runtime['model'] ?? $default['model']), $default['model']);
     $summarizer = is_array($task['summarizer'] ?? null) ? $task['summarizer'] : [];
@@ -456,6 +555,11 @@ function build_draft_from_task(?array $task, array $overrides = [], bool $resetB
         'researchEnabled' => $research['enabled'],
         'researchExternalWebAccess' => $research['externalWebAccess'],
         'researchDomains' => $research['domains'],
+        'localFilesEnabled' => $localFiles['enabled'],
+        'localFileRoots' => $localFiles['roots'],
+        'githubToolsEnabled' => $githubTools['enabled'],
+        'githubAllowedRepos' => $githubTools['repos'],
+        'dynamicSpinupEnabled' => $dynamicSpinup['enabled'],
         'vettingEnabled' => $vetting['enabled'],
         'summarizerHarness' => normalize_harness_config($summarizer['harness'] ?? $default['summarizerHarness'], default_summarizer_harness()['concision']),
         'loopRounds' => $loopPrefs['rounds'],
@@ -596,6 +700,49 @@ function normalize_research_config(array $config = []): array {
         'enabled' => coerce_bool($config['enabled'] ?? $default['enabled'], $default['enabled']),
         'externalWebAccess' => coerce_bool($config['externalWebAccess'] ?? $default['externalWebAccess'], $default['externalWebAccess']),
         'domains' => normalize_allowed_domains($config['domains'] ?? $default['domains']),
+    ];
+}
+
+function default_local_file_tool_config(): array {
+    return [
+        'enabled' => false,
+        'roots' => ['.'],
+    ];
+}
+
+function normalize_local_file_tool_config(array $config = []): array {
+    $default = default_local_file_tool_config();
+    return [
+        'enabled' => coerce_bool($config['enabled'] ?? $default['enabled'], $default['enabled']),
+        'roots' => normalize_local_file_roots($config['roots'] ?? $default['roots']),
+    ];
+}
+
+function default_github_tool_config(): array {
+    return [
+        'enabled' => false,
+        'repos' => [],
+    ];
+}
+
+function normalize_github_tool_config(array $config = []): array {
+    $default = default_github_tool_config();
+    return [
+        'enabled' => coerce_bool($config['enabled'] ?? $default['enabled'], $default['enabled']),
+        'repos' => normalize_github_repos($config['repos'] ?? $default['repos']),
+    ];
+}
+
+function default_dynamic_spinup_config(): array {
+    return [
+        'enabled' => false,
+    ];
+}
+
+function normalize_dynamic_spinup_config(array $config = []): array {
+    $default = default_dynamic_spinup_config();
+    return [
+        'enabled' => coerce_bool($config['enabled'] ?? $default['enabled'], $default['enabled']),
     ];
 }
 

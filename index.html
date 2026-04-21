@@ -373,6 +373,53 @@
               </div>
             </div>
 
+            <div class="settings-grid">
+              <div>
+                <label for="localFilesEnabled">Local file tools</label>
+                <select id="localFilesEnabled">
+                  <option value="0">Disabled</option>
+                  <option value="1">Read Only</option>
+                </select>
+              </div>
+              <div class="settings-span-2">
+                <div class="label-help-row">
+                  <label for="localFileRoots">Allowed local roots</label>
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show local file tool guidance">Info</button>
+                    <div class="inline-help-popup">Commander and workers can inspect read-only local files only inside these repo-relative roots. Use comma-separated paths like ., api, runtime.</div>
+                  </div>
+                </div>
+                <input id="localFileRoots" type="text" placeholder="Repo-relative roots like ., api, runtime" />
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <div>
+                <label for="githubToolsEnabled">GitHub tools</label>
+                <select id="githubToolsEnabled">
+                  <option value="0">Disabled</option>
+                  <option value="1">Read Only</option>
+                </select>
+              </div>
+              <div>
+                <label for="dynamicSpinupEnabled">Dynamic lane spin-up</label>
+                <select id="dynamicSpinupEnabled">
+                  <option value="0">Disabled</option>
+                  <option value="1">Summarizer-guided</option>
+                </select>
+              </div>
+              <div class="settings-span-2">
+                <div class="label-help-row">
+                  <label for="githubAllowedRepos">Allowed GitHub repos</label>
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show GitHub tool guidance">Info</button>
+                    <div class="inline-help-popup">Commander and workers can inspect public GitHub repos only inside this allowlist. Use comma-separated owner/repo values like openai/openai-cookbook.</div>
+                  </div>
+                </div>
+                <input id="githubAllowedRepos" type="text" placeholder="Comma-separated owner/repo allowlist" />
+              </div>
+            </div>
+
             <div class="form-section">
               <div class="label-help-row">
                 <label for="researchDomains">Research domain allowlist</label>

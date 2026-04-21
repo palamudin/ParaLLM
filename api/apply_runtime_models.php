@@ -16,6 +16,11 @@ if (loop_is_active($state)) {
 $activeTask = $state['activeTask'];
 $runtime = is_array($activeTask['runtime'] ?? null) ? $activeTask['runtime'] : [];
 $currentBudget = normalize_budget_config(is_array($runtime['budget'] ?? null) ? $runtime['budget'] : []);
+$currentResearch = normalize_research_config(is_array($runtime['research'] ?? null) ? $runtime['research'] : []);
+$currentLocalFiles = normalize_local_file_tool_config(is_array($runtime['localFiles'] ?? null) ? $runtime['localFiles'] : []);
+$currentGitHubTools = normalize_github_tool_config(is_array($runtime['githubTools'] ?? null) ? $runtime['githubTools'] : []);
+$currentDynamicSpinup = normalize_dynamic_spinup_config(is_array($runtime['dynamicSpinup'] ?? null) ? $runtime['dynamicSpinup'] : []);
+$currentVetting = normalize_vetting_config(is_array($runtime['vetting'] ?? null) ? $runtime['vetting'] : []);
 $currentLoop = normalize_loop_preferences(is_array($activeTask['preferredLoop'] ?? null) ? $activeTask['preferredLoop'] : []);
 $currentReasoningEffort = trim((string)($runtime['reasoningEffort'] ?? 'low'));
 if (!in_array($currentReasoningEffort, ['none', 'low', 'medium', 'high', 'xhigh'], true)) {
@@ -44,8 +49,27 @@ $preferredLoop = normalize_loop_preferences([
     'rounds' => post_int_value('loopRounds', $currentLoop['rounds']),
     'delayMs' => post_int_value('loopDelayMs', $currentLoop['delayMs']),
 ]);
+$research = normalize_research_config([
+    'enabled' => post_value('researchEnabled', $currentResearch['enabled']),
+    'externalWebAccess' => post_value('researchExternalWebAccess', $currentResearch['externalWebAccess']),
+    'domains' => post_value('researchDomains', $currentResearch['domains']),
+]);
+$localFiles = normalize_local_file_tool_config([
+    'enabled' => post_value('localFilesEnabled', $currentLocalFiles['enabled']),
+    'roots' => post_value('localFileRoots', $currentLocalFiles['roots']),
+]);
+$githubTools = normalize_github_tool_config([
+    'enabled' => post_value('githubToolsEnabled', $currentGitHubTools['enabled']),
+    'repos' => post_value('githubAllowedRepos', $currentGitHubTools['repos']),
+]);
+$dynamicSpinup = normalize_dynamic_spinup_config([
+    'enabled' => post_value('dynamicSpinupEnabled', $currentDynamicSpinup['enabled']),
+]);
+$vetting = normalize_vetting_config([
+    'enabled' => post_value('vettingEnabled', $currentVetting['enabled']),
+]);
 
-$updatedState = mutate_state(function (array $state) use ($model, $summarizerModel, $reasoningEffort, $budget, $preferredLoop): array {
+$updatedState = mutate_state(function (array $state) use ($model, $summarizerModel, $reasoningEffort, $budget, $preferredLoop, $research, $localFiles, $githubTools, $dynamicSpinup, $vetting): array {
     if (!is_array($state['activeTask'] ?? null)) {
         throw new RuntimeException('No active task.');
     }
@@ -62,6 +86,11 @@ $updatedState = mutate_state(function (array $state) use ($model, $summarizerMod
     $task['runtime']['model'] = $model;
     $task['runtime']['reasoningEffort'] = $reasoningEffort;
     $task['runtime']['budget'] = $budget;
+    $task['runtime']['research'] = $research;
+    $task['runtime']['localFiles'] = $localFiles;
+    $task['runtime']['githubTools'] = $githubTools;
+    $task['runtime']['dynamicSpinup'] = $dynamicSpinup;
+    $task['runtime']['vetting'] = $vetting;
     $task['preferredLoop'] = $preferredLoop;
 
     $summary = summarizer_config($task);
@@ -80,6 +109,11 @@ append_step('model', 'Applied settings runtime and loop selection to the active 
     'summarizerModel' => $summarizerModel,
     'reasoningEffort' => $reasoningEffort,
     'budget' => $budget,
+    'research' => $research,
+    'localFiles' => $localFiles,
+    'githubTools' => $githubTools,
+    'dynamicSpinup' => $dynamicSpinup,
+    'vetting' => $vetting,
     'preferredLoop' => $preferredLoop,
     'workerCount' => count(task_workers($updatedState['activeTask']))
 ]);
@@ -90,5 +124,10 @@ json_response([
     'summarizerModel' => $summarizerModel,
     'reasoningEffort' => $reasoningEffort,
     'budget' => $budget,
+    'research' => $research,
+    'localFiles' => $localFiles,
+    'githubTools' => $githubTools,
+    'dynamicSpinup' => $dynamicSpinup,
+    'vetting' => $vetting,
     'preferredLoop' => $preferredLoop
 ]);

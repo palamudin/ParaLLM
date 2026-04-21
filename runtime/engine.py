@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 
 MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -144,6 +145,18 @@ def default_research_config() -> Dict[str, Any]:
     return {"enabled": False, "externalWebAccess": True, "domains": []}
 
 
+def default_local_file_tool_config() -> Dict[str, Any]:
+    return {"enabled": False, "roots": ["."]}
+
+
+def default_github_tool_config() -> Dict[str, Any]:
+    return {"enabled": False, "repos": []}
+
+
+def default_dynamic_spinup_config() -> Dict[str, Any]:
+    return {"enabled": False}
+
+
 def default_vetting_config() -> Dict[str, Any]:
     return {"enabled": False}
 
@@ -242,6 +255,63 @@ def normalize_string_list(value: Any) -> List[str]:
     for item in items:
         deduped[item] = True
     return list(deduped.keys())
+
+
+def normalize_local_file_roots(value: Any) -> List[str]:
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if trimmed.startswith("["):
+            try:
+                decoded = json.loads(trimmed)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, list):
+                value = decoded
+
+    roots: Dict[str, bool] = {}
+    for entry in normalize_string_list(value):
+        candidate = str(entry or "").strip().replace("\\", "/")
+        if candidate in {"", ".", "./"}:
+            roots["."] = True
+            continue
+        if re.match(r"^[A-Za-z]:", candidate) or candidate.startswith("/"):
+            continue
+        candidate = re.sub(r"^(\./)+", "", candidate).strip().strip("/")
+        if not candidate:
+            roots["."] = True
+            continue
+        parts = [part for part in candidate.split("/") if part and part != "."]
+        if not parts:
+            roots["."] = True
+            continue
+        if ".." in parts:
+            continue
+        roots["/".join(parts)] = True
+    normalized = list(roots.keys())[:20]
+    return normalized or ["."]
+
+
+def normalize_github_repos(value: Any) -> List[str]:
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if trimmed.startswith("["):
+            try:
+                decoded = json.loads(trimmed)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, list):
+                value = decoded
+
+    repos: Dict[str, bool] = {}
+    for entry in normalize_string_list(value):
+        candidate = str(entry or "").strip().lower()
+        candidate = re.sub(r"^https?://github\.com/", "", candidate, flags=re.IGNORECASE).strip().strip("/")
+        if not candidate:
+            continue
+        if not re.match(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$", candidate):
+            continue
+        repos[candidate] = True
+    return list(repos.keys())[:50]
 
 
 def normalize_string_array_preserve_items(value: Any) -> List[str]:
@@ -346,6 +416,30 @@ def normalize_research_config(config: Optional[Dict[str, Any]] = None) -> Dict[s
         ),
         "domains": normalize_allowed_domains(config.get("domains", default["domains"])),
     }
+
+
+def normalize_local_file_tool_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or {}
+    default = default_local_file_tool_config()
+    return {
+        "enabled": coerce_bool(config.get("enabled", default["enabled"]), default["enabled"]),
+        "roots": normalize_local_file_roots(config.get("roots", default["roots"])),
+    }
+
+
+def normalize_github_tool_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or {}
+    default = default_github_tool_config()
+    return {
+        "enabled": coerce_bool(config.get("enabled", default["enabled"]), default["enabled"]),
+        "repos": normalize_github_repos(config.get("repos", default["repos"])),
+    }
+
+
+def normalize_dynamic_spinup_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or {}
+    default = default_dynamic_spinup_config()
+    return {"enabled": coerce_bool(config.get("enabled", default["enabled"]), default["enabled"])}
 
 
 def normalize_vetting_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -624,6 +718,69 @@ def limit_url_list(value: Any, max_items: int = 10) -> List[str]:
         if trimmed:
             items.append(trimmed)
     return items
+
+
+def normalize_local_tool_calls(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for entry in value[:20]:
+        if not isinstance(entry, dict):
+            continue
+        normalized.append(
+            {
+                "name": truncate_text(entry.get("name", ""), 60),
+                "path": truncate_text(entry.get("path", ""), 260),
+                "summary": truncate_text(entry.get("summary", ""), 260),
+                "sources": limit_string_list(entry.get("sources", []), 10, 220),
+                "error": truncate_text(entry.get("error", ""), 220),
+                "lineCount": max(0, int(entry.get("lineCount", 0) or 0)),
+                "entryCount": max(0, int(entry.get("entryCount", 0) or 0)),
+                "matchCount": max(0, int(entry.get("matchCount", 0) or 0)),
+                "filesScanned": max(0, int(entry.get("filesScanned", 0) or 0)),
+                "bytesRead": max(0, int(entry.get("bytesRead", 0) or 0)),
+                "truncated": bool(entry.get("truncated", False)),
+            }
+        )
+    return normalized
+
+
+def filter_tool_calls_by_prefixes(value: Any, prefixes: tuple[str, ...]) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    filtered: List[Dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).strip().lower()
+        if any(name.startswith(prefix) for prefix in prefixes):
+            filtered.append(entry)
+    return filtered
+
+
+def collect_tool_sources_by_prefixes(value: Any, prefixes: tuple[str, ...]) -> List[str]:
+    sources: List[str] = []
+    for entry in filter_tool_calls_by_prefixes(value, prefixes):
+        if not isinstance(entry, dict):
+            continue
+        for source in entry.get("sources", []):
+            sources.append(str(source))
+    return normalize_string_array_preserve_items(sources)
+
+
+def normalize_lane_type_list(value: Any, include_utility: bool = False, max_items: int = 3) -> List[str]:
+    allowed: List[str] = []
+    for lane_type in normalize_string_array_preserve_items(value):
+        candidate = str(lane_type).strip().lower()
+        if candidate not in WORKER_TYPE_CATALOG:
+            continue
+        if not include_utility and str(WORKER_TYPE_CATALOG[candidate].get("role", "adversarial")) != "adversarial":
+            continue
+        if candidate not in allowed:
+            allowed.append(candidate)
+        if len(allowed) >= max_items:
+            break
+    return allowed
 
 
 def worker_harness_instruction_lines(harness: Any) -> List[str]:
@@ -978,6 +1135,8 @@ def normalize_commander_checkpoint(checkpoint: Any, fallback_task: Optional[Dict
         "keepCourseIf": [],
         "changeCourseIf": [],
         "uncertainty": [],
+        "suggestedLaneTypes": [],
+        "suggestedLaneReason": "",
         "constraintsSeen": limit_string_list(fallback_task.get("constraints", []), 6, 180),
     }
     if not isinstance(checkpoint, dict):
@@ -1001,6 +1160,8 @@ def normalize_commander_checkpoint(checkpoint: Any, fallback_task: Optional[Dict
     normalized["keepCourseIf"] = limit_string_list(checkpoint.get("keepCourseIf", []), 4, 220)
     normalized["changeCourseIf"] = limit_string_list(checkpoint.get("changeCourseIf", []), 4, 220)
     normalized["uncertainty"] = limit_string_list(checkpoint.get("uncertainty", []), 4, 220)
+    normalized["suggestedLaneTypes"] = normalize_lane_type_list(checkpoint.get("suggestedLaneTypes", []))
+    normalized["suggestedLaneReason"] = truncate_text(checkpoint.get("suggestedLaneReason", ""), 280)
     normalized["constraintsSeen"] = limit_string_list(checkpoint.get("constraintsSeen", []), 8, 180)
     if not normalized["stance"]:
         normalized["stance"] = normalized["leadDirection"] or fallback_direction
@@ -1104,6 +1265,24 @@ def normalize_control_audit(control_audit: Any, fallback_summary: Optional[Dict[
     return normalized
 
 
+def normalize_dynamic_lane_decision(decision: Any) -> Dict[str, Any]:
+    normalized = {
+        "shouldSpawn": False,
+        "suggestedLaneTypes": [],
+        "reason": "No additional adversarial lane is needed yet.",
+    }
+    if not isinstance(decision, dict):
+        return normalized
+    normalized["shouldSpawn"] = bool(decision.get("shouldSpawn", normalized["shouldSpawn"]))
+    normalized["suggestedLaneTypes"] = normalize_lane_type_list(decision.get("suggestedLaneTypes", []), False, 2)
+    reason = truncate_text(decision.get("reason", ""), 320)
+    if reason:
+        normalized["reason"] = reason
+    if not normalized["suggestedLaneTypes"]:
+        normalized["shouldSpawn"] = False
+    return normalized
+
+
 def normalize_review_trace(review_trace: Any) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     if not isinstance(review_trace, list):
@@ -1171,6 +1350,7 @@ class OpenAIResult:
     effective_max_output_tokens: int
     attempts: List[int]
     recovered_from_incomplete: bool
+    executed_tools: List[Dict[str, Any]]
 
 
 class LoopRuntime:
@@ -1465,6 +1645,9 @@ class LoopRuntime:
             "reasoningEffort": "low",
             "maxOutputTokens": default_budget_config()["maxOutputTokens"],
             "research": default_research_config(),
+            "localFiles": default_local_file_tool_config(),
+            "githubTools": default_github_tool_config(),
+            "dynamicSpinup": default_dynamic_spinup_config(),
             "vetting": default_vetting_config(),
         }
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
@@ -1477,6 +1660,9 @@ class LoopRuntime:
                 runtime["reasoningEffort"] = reasoning_effort
             runtime["model"] = normalize_model_id(task_runtime.get("model"), runtime["model"])
             runtime["research"] = normalize_research_config(task_runtime.get("research") if isinstance(task_runtime.get("research"), dict) else {})
+            runtime["localFiles"] = normalize_local_file_tool_config(task_runtime.get("localFiles") if isinstance(task_runtime.get("localFiles"), dict) else {})
+            runtime["githubTools"] = normalize_github_tool_config(task_runtime.get("githubTools") if isinstance(task_runtime.get("githubTools"), dict) else {})
+            runtime["dynamicSpinup"] = normalize_dynamic_spinup_config(task_runtime.get("dynamicSpinup") if isinstance(task_runtime.get("dynamicSpinup"), dict) else {})
             runtime["vetting"] = normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
         runtime["maxOutputTokens"] = self.get_budget_limits(task, budget_target)["maxOutputTokens"]
         if model_override:
@@ -1486,6 +1672,18 @@ class LoopRuntime:
     def get_research_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
         return normalize_research_config(task_runtime.get("research") if isinstance(task_runtime.get("research"), dict) else {})
+
+    def get_local_file_tool_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        return normalize_local_file_tool_config(task_runtime.get("localFiles") if isinstance(task_runtime.get("localFiles"), dict) else {})
+
+    def get_github_tool_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        return normalize_github_tool_config(task_runtime.get("githubTools") if isinstance(task_runtime.get("githubTools"), dict) else {})
+
+    def get_dynamic_spinup_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        return normalize_dynamic_spinup_config(task_runtime.get("dynamicSpinup") if isinstance(task_runtime.get("dynamicSpinup"), dict) else {})
 
     def get_vetting_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
@@ -1541,6 +1739,565 @@ class LoopRuntime:
                     if isinstance(annotation, dict) and annotation.get("type") == "url_citation" and annotation.get("url"):
                         urls[str(annotation["url"])] = True
         return list(urls.keys())
+
+    def is_path_within(self, candidate: Path, root: Path) -> bool:
+        try:
+            return candidate == root or root in candidate.parents
+        except Exception:
+            return False
+
+    def repo_relative_path(self, path: Path) -> str:
+        resolved = path.resolve()
+        if resolved == self.root:
+            return "."
+        try:
+            return resolved.relative_to(self.root).as_posix() or "."
+        except Exception:
+            return resolved.as_posix()
+
+    def resolve_local_tool_roots(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        resolved_roots: List[Dict[str, Any]] = []
+        seen: Dict[str, bool] = {}
+        for entry in normalize_local_file_roots(config.get("roots", ["."])):
+            candidate = (self.root / entry).resolve()
+            if not candidate.exists():
+                continue
+            if not self.is_path_within(candidate, self.root):
+                continue
+            relative = self.repo_relative_path(candidate)
+            if relative not in seen:
+                seen[relative] = True
+                resolved_roots.append({"id": relative, "path": candidate})
+        if not resolved_roots:
+            resolved_roots.append({"id": ".", "path": self.root})
+        return resolved_roots
+
+    def resolve_local_tool_path(
+        self,
+        requested_path: Any,
+        config: Dict[str, Any],
+        *,
+        require_exists: bool = True,
+        allow_file: bool = True,
+        allow_dir: bool = True,
+    ) -> tuple[Path, str]:
+        candidate_text = str(requested_path or ".").strip().replace("\\", "/")
+        if candidate_text in {"", ".", "./"}:
+            candidate_text = "."
+        if re.match(r"^[A-Za-z]:", candidate_text) or candidate_text.startswith("/"):
+            raise RuntimeErrorWithCode("Local file tools only accept repo-relative paths.", 400)
+        candidate_text = re.sub(r"^(\./)+", "", candidate_text).strip().strip("/")
+        parts = [part for part in candidate_text.split("/") if part and part != "."]
+        if ".." in parts:
+            raise RuntimeErrorWithCode("Local file tools rejected a path traversal attempt.", 400)
+        normalized = "/".join(parts) if parts else "."
+        resolved = (self.root / normalized).resolve()
+        if not self.is_path_within(resolved, self.root):
+            raise RuntimeErrorWithCode("Local file tools only operate inside the workspace root.", 400)
+        allowed = self.resolve_local_tool_roots(config)
+        if not any(self.is_path_within(resolved, Path(root["path"])) for root in allowed):
+            raise RuntimeErrorWithCode("Requested path is outside the allowed local file roots.", 403)
+        if require_exists and not resolved.exists():
+            raise RuntimeErrorWithCode(f"Local path not found: {normalized}", 404)
+        if require_exists and resolved.is_file() and not allow_file:
+            raise RuntimeErrorWithCode("Expected a directory path for this local file tool.", 400)
+        if require_exists and resolved.is_dir() and not allow_dir:
+            raise RuntimeErrorWithCode("Expected a file path for this local file tool.", 400)
+        return resolved, self.repo_relative_path(resolved)
+
+    def is_probably_text_file(self, path: Path) -> bool:
+        if not path.is_file():
+            return False
+        try:
+            with path.open("rb") as handle:
+                sample = handle.read(4096)
+        except OSError:
+            return False
+        if b"\x00" in sample:
+            return False
+        return True
+
+    def build_local_file_function_tools(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        allowed_roots = ", ".join(normalize_local_file_roots(config.get("roots", ["."]))) or "."
+        return [
+            {
+                "type": "function",
+                "name": "local_list_dir",
+                "description": f"List files and folders inside the local workspace. Only use repo-relative paths within these allowed roots: {allowed_roots}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {"type": "string", "description": "Repo-relative directory path to inspect. Use . for the workspace root."},
+                        "max_entries": {"type": "integer", "minimum": 1, "maximum": 50},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "name": "local_read_file",
+                "description": f"Read text from a local file inside the workspace. Only use repo-relative file paths within these allowed roots: {allowed_roots}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {"type": "string", "description": "Repo-relative file path to read."},
+                        "start_line": {"type": "integer", "minimum": 1},
+                        "end_line": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["path"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "local_search_text",
+                "description": f"Search local text files for a literal pattern inside the workspace. Only use repo-relative paths within these allowed roots: {allowed_roots}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "pattern": {"type": "string", "description": "Literal text to search for."},
+                        "path": {"type": "string", "description": "Optional repo-relative file or directory path to search under. Defaults to ."},
+                        "max_matches": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+        ]
+
+    def execute_local_file_tool_call(self, name: str, arguments: Dict[str, Any], config: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        allowed_roots = [str(entry["id"]) for entry in self.resolve_local_tool_roots(config)]
+        if name == "local_list_dir":
+            max_entries = min(50, max(1, int(arguments.get("max_entries", 20) or 20)))
+            resolved, repo_path = self.resolve_local_tool_path(arguments.get("path", "."), config, allow_file=False, allow_dir=True)
+            entries: List[Dict[str, Any]] = []
+            children = sorted(
+                resolved.iterdir(),
+                key=lambda item: (0 if item.is_dir() else 1, item.name.lower()),
+            )
+            for child in children[:max_entries]:
+                item: Dict[str, Any] = {
+                    "name": child.name,
+                    "path": self.repo_relative_path(child),
+                    "kind": "dir" if child.is_dir() else "file",
+                }
+                if child.is_file():
+                    try:
+                        item["size"] = int(child.stat().st_size)
+                    except OSError:
+                        item["size"] = 0
+                entries.append(item)
+            result = {
+                "path": repo_path,
+                "allowedRoots": allowed_roots,
+                "entries": entries,
+                "truncated": len(children) > max_entries,
+            }
+            audit = {
+                "name": name,
+                "path": repo_path,
+                "sources": [repo_path],
+                "entryCount": len(entries),
+                "truncated": bool(result["truncated"]),
+                "summary": f"Listed {len(entries)} entries under {repo_path}.",
+            }
+            return result, audit
+
+        if name == "local_read_file":
+            resolved, repo_path = self.resolve_local_tool_path(arguments.get("path", ""), config, allow_file=True, allow_dir=False)
+            if not self.is_probably_text_file(resolved):
+                raise RuntimeErrorWithCode("Local read only supports probable text files.", 400)
+            start_line = max(1, int(arguments.get("start_line", 1) or 1))
+            end_line = max(start_line, int(arguments.get("end_line", start_line + 199) or (start_line + 199)))
+            end_line = min(end_line, start_line + 399)
+            numbered_lines: List[str] = []
+            with resolved.open("r", encoding="utf-8", errors="replace") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if line_number < start_line:
+                        continue
+                    if line_number > end_line:
+                        break
+                    numbered_lines.append(f"{line_number}:{line.rstrip()}")
+            content = "\n".join(numbered_lines)
+            result = {
+                "path": repo_path,
+                "allowedRoots": allowed_roots,
+                "startLine": start_line,
+                "endLine": start_line + max(0, len(numbered_lines) - 1),
+                "lineCount": len(numbered_lines),
+                "content": content,
+                "truncated": len(numbered_lines) >= (end_line - start_line + 1),
+            }
+            audit = {
+                "name": name,
+                "path": repo_path,
+                "sources": [repo_path],
+                "lineCount": len(numbered_lines),
+                "bytesRead": len(content.encode("utf-8")),
+                "truncated": bool(result["truncated"]),
+                "summary": f"Read {len(numbered_lines)} lines from {repo_path}.",
+            }
+            return result, audit
+
+        if name == "local_search_text":
+            pattern = str(arguments.get("pattern", "") or "").strip()
+            if not pattern:
+                raise RuntimeErrorWithCode("local_search_text requires a non-empty pattern.", 400)
+            max_matches = min(20, max(1, int(arguments.get("max_matches", 12) or 12)))
+            resolved, repo_path = self.resolve_local_tool_path(arguments.get("path", "."), config, allow_file=True, allow_dir=True)
+            candidates: List[Path] = [resolved] if resolved.is_file() else [path for path in resolved.rglob("*") if path.is_file()]
+            matches: List[Dict[str, Any]] = []
+            source_paths: Dict[str, bool] = {}
+            files_scanned = 0
+            pattern_lower = pattern.lower()
+            for file_path in candidates:
+                if len(matches) >= max_matches:
+                    break
+                if not self.is_probably_text_file(file_path):
+                    continue
+                files_scanned += 1
+                try:
+                    with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+                        for line_number, line in enumerate(handle, start=1):
+                            if pattern_lower not in line.lower():
+                                continue
+                            relative = self.repo_relative_path(file_path)
+                            source_paths[relative] = True
+                            matches.append(
+                                {
+                                    "path": relative,
+                                    "line": line_number,
+                                    "text": truncate_text(line.strip(), 240),
+                                }
+                            )
+                            if len(matches) >= max_matches:
+                                break
+                except OSError:
+                    continue
+            result = {
+                "pattern": pattern,
+                "path": repo_path,
+                "allowedRoots": allowed_roots,
+                "matches": matches,
+                "filesScanned": files_scanned,
+                "truncated": len(matches) >= max_matches,
+            }
+            audit = {
+                "name": name,
+                "path": repo_path,
+                "sources": list(source_paths.keys())[:10],
+                "matchCount": len(matches),
+                "filesScanned": files_scanned,
+                "truncated": bool(result["truncated"]),
+                "summary": f"Found {len(matches)} matches for '{truncate_text(pattern, 80)}' under {repo_path}.",
+            }
+            return result, audit
+
+        raise RuntimeErrorWithCode(f"Unsupported local tool: {name}", 400)
+
+    def get_github_token(self) -> Optional[str]:
+        for env_name in ("GITHUB_TOKEN", "GH_TOKEN"):
+            value = str(os.environ.get(env_name, "") or "").strip()
+            if value:
+                return value
+        return None
+
+    def github_request_json(self, url: str) -> Any:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "ParaLLM/1.0",
+        }
+        token = self.get_github_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as handle:
+                return json.loads(handle.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            body_text = error.read().decode("utf-8", errors="replace")
+            raise RuntimeErrorWithCode(f"GitHub API request failed: HTTP {error.code} | {body_text}", error.code)
+        except Exception as error:
+            raise RuntimeErrorWithCode(f"GitHub API request failed: {error}", 500)
+
+    def resolve_github_repo(self, requested_repo: Any, config: Dict[str, Any]) -> str:
+        candidate = str(requested_repo or "").strip().lower()
+        candidate = re.sub(r"^https?://github\.com/", "", candidate, flags=re.IGNORECASE).strip().strip("/")
+        if not candidate:
+            raise RuntimeErrorWithCode("GitHub tools require a repository like owner/repo.", 400)
+        if not re.match(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$", candidate):
+            raise RuntimeErrorWithCode("GitHub repo must be in owner/repo form.", 400)
+        allowed = normalize_github_repos(config.get("repos", []))
+        if candidate not in allowed:
+            raise RuntimeErrorWithCode("Requested GitHub repo is outside the allowed repo list.", 403)
+        return candidate
+
+    def github_api_contents_url(self, repo: str, path: str = "", ref: str = "") -> str:
+        cleaned_path = str(path or "").strip().strip("/")
+        suffix = f"/{quote(cleaned_path, safe='/')}" if cleaned_path else ""
+        ref_value = str(ref or "HEAD").strip() or "HEAD"
+        return f"https://api.github.com/repos/{repo}/contents{suffix}?ref={quote(ref_value, safe='')}"
+
+    def github_html_blob_url(self, repo: str, ref: str, path: str) -> str:
+        cleaned_path = str(path or "").strip().strip("/")
+        ref_value = str(ref or "HEAD").strip() or "HEAD"
+        if not cleaned_path:
+            return f"https://github.com/{repo}/tree/{quote(ref_value, safe='')}"
+        return f"https://github.com/{repo}/blob/{quote(ref_value, safe='')}/{quote(cleaned_path, safe='/')}"
+
+    def github_html_tree_url(self, repo: str, ref: str, path: str = "") -> str:
+        cleaned_path = str(path or "").strip().strip("/")
+        ref_value = str(ref or "HEAD").strip() or "HEAD"
+        base = f"https://github.com/{repo}/tree/{quote(ref_value, safe='')}"
+        if not cleaned_path:
+            return base
+        return base + "/" + quote(cleaned_path, safe="/")
+
+    def build_github_function_tools(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        allowed_repos = ", ".join(normalize_github_repos(config.get("repos", []))) or "none"
+        return [
+            {
+                "type": "function",
+                "name": "github_list_paths",
+                "description": f"List files or folders in an allowed public GitHub repo. Only use repos from this allowlist: {allowed_repos}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "repo": {"type": "string", "description": "Repository in owner/repo form."},
+                        "path": {"type": "string", "description": "Optional directory path inside the repo."},
+                        "ref": {"type": "string", "description": "Optional branch, tag, or commit SHA."},
+                        "max_entries": {"type": "integer", "minimum": 1, "maximum": 50},
+                    },
+                    "required": ["repo"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "github_read_file",
+                "description": f"Read text from a file in an allowed public GitHub repo. Only use repos from this allowlist: {allowed_repos}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "repo": {"type": "string"},
+                        "path": {"type": "string"},
+                        "ref": {"type": "string"},
+                        "start_line": {"type": "integer", "minimum": 1},
+                        "end_line": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["repo", "path"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "github_get_issue",
+                "description": f"Fetch issue metadata and body from an allowed public GitHub repo. Only use repos from this allowlist: {allowed_repos}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "repo": {"type": "string"},
+                        "issue_number": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["repo", "issue_number"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "github_get_pull_request",
+                "description": f"Fetch pull request metadata and body from an allowed public GitHub repo. Only use repos from this allowlist: {allowed_repos}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "repo": {"type": "string"},
+                        "pr_number": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["repo", "pr_number"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "github_get_commit",
+                "description": f"Fetch commit metadata from an allowed public GitHub repo. Only use repos from this allowlist: {allowed_repos}.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "repo": {"type": "string"},
+                        "ref": {"type": "string", "description": "Commit SHA or ref."},
+                    },
+                    "required": ["repo", "ref"],
+                },
+            },
+        ]
+
+    def execute_github_tool_call(self, name: str, arguments: Dict[str, Any], config: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        repo = self.resolve_github_repo(arguments.get("repo", ""), config)
+        allowed_repos = normalize_github_repos(config.get("repos", []))
+        if name == "github_list_paths":
+            max_entries = min(50, max(1, int(arguments.get("max_entries", 20) or 20)))
+            path = str(arguments.get("path", "") or "").strip().strip("/")
+            ref = str(arguments.get("ref", "HEAD") or "HEAD").strip() or "HEAD"
+            payload = self.github_request_json(self.github_api_contents_url(repo, path, ref))
+            entries_payload = payload if isinstance(payload, list) else [payload] if isinstance(payload, dict) else []
+            entries: List[Dict[str, Any]] = []
+            for item in entries_payload[:max_entries]:
+                if not isinstance(item, dict):
+                    continue
+                entries.append(
+                    {
+                        "name": str(item.get("name", "")),
+                        "path": str(item.get("path", "")),
+                        "kind": str(item.get("type", "")),
+                        "size": int(item.get("size", 0) or 0),
+                        "htmlUrl": str(item.get("html_url", "")),
+                    }
+                )
+            result = {
+                "repo": repo,
+                "path": path or ".",
+                "ref": ref,
+                "allowedRepos": allowed_repos,
+                "entries": entries,
+                "truncated": len(entries_payload) > max_entries,
+            }
+            audit = {
+                "name": name,
+                "path": f"{repo}:{path or '.'}@{ref}",
+                "sources": [self.github_html_tree_url(repo, ref, path)],
+                "entryCount": len(entries),
+                "truncated": bool(result["truncated"]),
+                "summary": f"Listed {len(entries)} GitHub paths under {repo}:{path or '.'}@{ref}.",
+            }
+            return result, audit
+
+        if name == "github_read_file":
+            path = str(arguments.get("path", "") or "").strip().strip("/")
+            if not path:
+                raise RuntimeErrorWithCode("github_read_file requires a file path.", 400)
+            ref = str(arguments.get("ref", "HEAD") or "HEAD").strip() or "HEAD"
+            payload = self.github_request_json(self.github_api_contents_url(repo, path, ref))
+            if not isinstance(payload, dict) or str(payload.get("type", "")) != "file":
+                raise RuntimeErrorWithCode("github_read_file expected a file path.", 400)
+            size = int(payload.get("size", 0) or 0)
+            if size > 200000:
+                raise RuntimeErrorWithCode("github_read_file is limited to files smaller than 200 KB.", 400)
+            encoded = str(payload.get("content", "") or "")
+            try:
+                decoded = base64.b64decode(encoded.encode("utf-8"), validate=False).decode("utf-8", errors="replace")
+            except Exception:
+                raise RuntimeErrorWithCode("Failed to decode GitHub file content.", 500)
+            start_line = max(1, int(arguments.get("start_line", 1) or 1))
+            end_line = max(start_line, int(arguments.get("end_line", start_line + 199) or (start_line + 199)))
+            end_line = min(end_line, start_line + 399)
+            numbered_lines: List[str] = []
+            for line_number, line in enumerate(decoded.splitlines(), start=1):
+                if line_number < start_line:
+                    continue
+                if line_number > end_line:
+                    break
+                numbered_lines.append(f"{line_number}:{line}")
+            content = "\n".join(numbered_lines)
+            result = {
+                "repo": repo,
+                "path": path,
+                "ref": ref,
+                "allowedRepos": allowed_repos,
+                "startLine": start_line,
+                "endLine": start_line + max(0, len(numbered_lines) - 1),
+                "lineCount": len(numbered_lines),
+                "content": content,
+                "truncated": len(numbered_lines) >= (end_line - start_line + 1),
+            }
+            audit = {
+                "name": name,
+                "path": f"{repo}:{path}@{ref}",
+                "sources": [str(payload.get("html_url", "")) or self.github_html_blob_url(repo, ref, path)],
+                "lineCount": len(numbered_lines),
+                "bytesRead": len(content.encode("utf-8")),
+                "truncated": bool(result["truncated"]),
+                "summary": f"Read {len(numbered_lines)} lines from {repo}:{path}@{ref}.",
+            }
+            return result, audit
+
+        if name == "github_get_issue":
+            issue_number = max(1, int(arguments.get("issue_number", 0) or 0))
+            payload = self.github_request_json(f"https://api.github.com/repos/{repo}/issues/{issue_number}")
+            if not isinstance(payload, dict):
+                raise RuntimeErrorWithCode("GitHub issue payload was malformed.", 500)
+            result = {
+                "repo": repo,
+                "issueNumber": issue_number,
+                "allowedRepos": allowed_repos,
+                "title": str(payload.get("title", "")),
+                "state": str(payload.get("state", "")),
+                "body": truncate_text(payload.get("body", ""), 4000),
+                "labels": [str(item.get("name", "")) for item in payload.get("labels", []) if isinstance(item, dict)],
+                "htmlUrl": str(payload.get("html_url", "")),
+            }
+            audit = {
+                "name": name,
+                "path": f"{repo}#issue-{issue_number}",
+                "sources": [result["htmlUrl"]] if result["htmlUrl"] else [],
+                "summary": f"Fetched issue #{issue_number} from {repo}.",
+            }
+            return result, audit
+
+        if name == "github_get_pull_request":
+            pr_number = max(1, int(arguments.get("pr_number", 0) or 0))
+            payload = self.github_request_json(f"https://api.github.com/repos/{repo}/pulls/{pr_number}")
+            if not isinstance(payload, dict):
+                raise RuntimeErrorWithCode("GitHub pull request payload was malformed.", 500)
+            result = {
+                "repo": repo,
+                "prNumber": pr_number,
+                "allowedRepos": allowed_repos,
+                "title": str(payload.get("title", "")),
+                "state": str(payload.get("state", "")),
+                "draft": bool(payload.get("draft", False)),
+                "merged": bool(payload.get("merged", False)),
+                "baseRef": str(((payload.get("base") or {}).get("ref", "")) or ""),
+                "headRef": str(((payload.get("head") or {}).get("ref", "")) or ""),
+                "body": truncate_text(payload.get("body", ""), 4000),
+                "htmlUrl": str(payload.get("html_url", "")),
+            }
+            audit = {
+                "name": name,
+                "path": f"{repo}#pr-{pr_number}",
+                "sources": [result["htmlUrl"]] if result["htmlUrl"] else [],
+                "summary": f"Fetched pull request #{pr_number} from {repo}.",
+            }
+            return result, audit
+
+        if name == "github_get_commit":
+            ref = str(arguments.get("ref", "") or "").strip()
+            if not ref:
+                raise RuntimeErrorWithCode("github_get_commit requires a commit ref.", 400)
+            payload = self.github_request_json(f"https://api.github.com/repos/{repo}/commits/{quote(ref, safe='')}")
+            if not isinstance(payload, dict):
+                raise RuntimeErrorWithCode("GitHub commit payload was malformed.", 500)
+            commit_data = payload.get("commit") if isinstance(payload.get("commit"), dict) else {}
+            html_url = str(payload.get("html_url", ""))
+            result = {
+                "repo": repo,
+                "ref": ref,
+                "allowedRepos": allowed_repos,
+                "sha": str(payload.get("sha", "")),
+                "author": str(((commit_data.get("author") or {}).get("name", "")) or ""),
+                "message": truncate_text(commit_data.get("message", ""), 2000),
+                "htmlUrl": html_url,
+            }
+            audit = {
+                "name": name,
+                "path": f"{repo}@{ref}",
+                "sources": [html_url] if html_url else [],
+                "summary": f"Fetched commit {truncate_text(ref, 16)} from {repo}.",
+            }
+            return result, audit
+
+        raise RuntimeErrorWithCode(f"Unsupported GitHub tool: {name}", 400)
 
     def get_response_usage_delta(self, response: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
         usage = response.get("usage")
@@ -1694,97 +2451,194 @@ class LoopRuntime:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         include: Optional[List[str]] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
     ) -> OpenAIResult:
         attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
         last_error: Optional[RuntimeErrorWithCode] = None
         recovered_from_incomplete = False
+        handlers = function_handlers if isinstance(function_handlers, dict) else {}
 
         for index, effective_tokens in enumerate(attempts):
-            body: Dict[str, Any] = {
-                "model": model,
-                "instructions": instructions,
-                "input": input_text,
-                "reasoning": {"effort": reasoning_effort},
-                "text": {
-                    "verbosity": "low",
-                    "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
-                },
-            }
-            if effective_tokens > 0:
-                body["max_output_tokens"] = effective_tokens
-            if tools:
-                body["tools"] = tools
-            if tool_choice is not None:
-                body["tool_choice"] = tool_choice
-            if include:
-                body["include"] = include
+            previous_response_id: Optional[str] = None
+            pending_input: Any = input_text
+            tool_turns = 0
+            web_search_queries: Dict[str, bool] = {}
+            web_search_sources: Dict[str, bool] = {}
+            url_citations: Dict[str, bool] = {}
+            executed_tools: List[Dict[str, Any]] = []
+            retry_attempt = False
 
-            request = urllib.request.Request(
-                "https://api.openai.com/v1/responses",
-                data=json.dumps(body).encode("utf-8"),
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=1800) as handle:
-                    response = json.loads(handle.read().decode("utf-8"))
-            except urllib.error.HTTPError as error:
-                body_text = error.read().decode("utf-8", errors="replace")
-                raise RuntimeErrorWithCode(f"OpenAI API request failed: HTTP {error.code} | {body_text}", 500)
-            except Exception as error:
-                raise RuntimeErrorWithCode(f"OpenAI API request failed: {error}", 500)
+            while True:
+                body: Dict[str, Any] = {
+                    "model": model,
+                    "instructions": instructions,
+                    "input": pending_input,
+                    "reasoning": {"effort": reasoning_effort},
+                    "text": {
+                        "verbosity": "low",
+                        "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
+                    },
+                }
+                if previous_response_id:
+                    body["previous_response_id"] = previous_response_id
+                if effective_tokens > 0:
+                    body["max_output_tokens"] = effective_tokens
+                if tools:
+                    body["tools"] = tools
+                if tool_choice is not None:
+                    body["tool_choice"] = tool_choice
+                if include:
+                    body["include"] = include
 
-            if isinstance(response.get("error"), dict):
-                raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+                request = urllib.request.Request(
+                    "https://api.openai.com/v1/responses",
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=1800) as handle:
+                        response = json.loads(handle.read().decode("utf-8"))
+                except urllib.error.HTTPError as error:
+                    body_text = error.read().decode("utf-8", errors="replace")
+                    raise RuntimeErrorWithCode(f"OpenAI API request failed: HTTP {error.code} | {body_text}", 500)
+                except Exception as error:
+                    raise RuntimeErrorWithCode(f"OpenAI API request failed: {error}", 500)
 
-            incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
-            incomplete_reason = str(incomplete_details.get("reason", "")).strip()
-            if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
-                recovered_from_incomplete = True
-                last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
+                if isinstance(response.get("error"), dict):
+                    raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+
+                for query in self.get_response_web_search_queries(response):
+                    web_search_queries[query] = True
+                for source in self.get_response_web_search_sources(response):
+                    web_search_sources[source] = True
+                for citation in self.get_response_url_citations(response):
+                    url_citations[citation] = True
+
+                incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
+                incomplete_reason = str(incomplete_details.get("reason", "")).strip()
+                if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
+                    recovered_from_incomplete = True
+                    last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
+                    retry_attempt = True
+                    break
+
+                tool_calls: List[Dict[str, Any]] = []
+                if handlers:
+                    for item in response.get("output", []):
+                        if not isinstance(item, dict):
+                            continue
+                        item_type = str(item.get("type", "")).strip()
+                        name = str(item.get("name", "")).strip()
+                        if item_type not in {"function_call", "custom_tool_call"} or name not in handlers:
+                            continue
+                        tool_calls.append(item)
+
+                if tool_calls:
+                    if tool_turns >= 8:
+                        raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
+                    continuation_items: List[Dict[str, Any]] = []
+                    for item in tool_calls:
+                        name = str(item.get("name", "")).strip()
+                        raw_arguments: Any = item.get("arguments")
+                        if item.get("type") == "custom_tool_call":
+                            raw_arguments = item.get("input")
+                        arguments: Dict[str, Any] = {}
+                        if isinstance(raw_arguments, dict):
+                            arguments = dict(raw_arguments)
+                        elif isinstance(raw_arguments, str) and raw_arguments.strip():
+                            try:
+                                decoded_arguments = json.loads(raw_arguments)
+                            except json.JSONDecodeError:
+                                decoded_arguments = None
+                            if isinstance(decoded_arguments, dict):
+                                arguments = decoded_arguments
+                        call_id = str(item.get("call_id", "")).strip()
+                        tool_output: Dict[str, Any]
+                        tool_audit: Dict[str, Any]
+                        try:
+                            tool_output, tool_audit = handlers[name](arguments)
+                        except RuntimeErrorWithCode as error:
+                            tool_output = {"ok": False, "error": str(error)}
+                            tool_audit = {
+                                "name": name,
+                                "path": str(arguments.get("path", ".")),
+                                "sources": [],
+                                "error": str(error),
+                                "summary": f"{name} failed: {truncate_text(str(error), 180)}",
+                            }
+                        except Exception as error:
+                            tool_output = {"ok": False, "error": str(error)}
+                            tool_audit = {
+                                "name": name,
+                                "path": str(arguments.get("path", ".")),
+                                "sources": [],
+                                "error": str(error),
+                                "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
+                            }
+                        audit_entry = dict(tool_audit or {})
+                        audit_entry["name"] = name
+                        audit_entry["arguments"] = arguments
+                        if call_id:
+                            audit_entry["callId"] = call_id
+                        executed_tools.append(audit_entry)
+                        continuation_items.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": json.dumps(tool_output, ensure_ascii=False),
+                            }
+                        )
+                    previous_response_id = str(response.get("id", "")).strip() or previous_response_id
+                    pending_input = continuation_items
+                    tool_turns += 1
+                    continue
+
+                output_text = self.get_response_output_text(response)
+                if not output_text:
+                    if response.get("status") == "incomplete" and incomplete_reason:
+                        detail = f"Model response incomplete: {incomplete_reason}"
+                        if incomplete_reason == "max_output_tokens":
+                            detail += f" after attempts {attempts}"
+                        raise RuntimeErrorWithCode(detail, 500)
+                    raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
+
+                if response.get("status") == "incomplete" and incomplete_reason:
+                    detail = f"Model response incomplete: {incomplete_reason}"
+                    if incomplete_reason == "max_output_tokens":
+                        detail += f" after attempts {attempts}"
+                    raise RuntimeErrorWithCode(detail, 500)
+
+                try:
+                    parsed = json.loads(output_text)
+                except json.JSONDecodeError as error:
+                    if response.get("status") == "incomplete" and incomplete_reason:
+                        detail = f"Model response incomplete: {incomplete_reason}"
+                        if incomplete_reason == "max_output_tokens":
+                            detail += f" after attempts {attempts}"
+                        raise RuntimeErrorWithCode(detail, 500)
+                    raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
+
+                if not isinstance(parsed, dict):
+                    raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+
+                return OpenAIResult(
+                    parsed=parsed,
+                    response=response,
+                    response_id=str(response.get("id", "")),
+                    output_text=output_text,
+                    web_search_queries=normalize_string_array_preserve_items(list(web_search_queries.keys())),
+                    web_search_sources=normalize_url_array_values(list(web_search_sources.keys())),
+                    url_citations=normalize_url_array_values(list(url_citations.keys())),
+                    requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                    effective_max_output_tokens=effective_tokens,
+                    attempts=attempts,
+                    recovered_from_incomplete=recovered_from_incomplete,
+                    executed_tools=executed_tools,
+                )
+
+            if retry_attempt:
                 continue
-
-            output_text = self.get_response_output_text(response)
-            if not output_text:
-                if response.get("status") == "incomplete" and incomplete_reason:
-                    detail = f"Model response incomplete: {incomplete_reason}"
-                    if incomplete_reason == "max_output_tokens":
-                        detail += f" after attempts {attempts}"
-                    raise RuntimeErrorWithCode(detail, 500)
-                raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
-
-            if response.get("status") == "incomplete" and incomplete_reason:
-                detail = f"Model response incomplete: {incomplete_reason}"
-                if incomplete_reason == "max_output_tokens":
-                    detail += f" after attempts {attempts}"
-                raise RuntimeErrorWithCode(detail, 500)
-
-            try:
-                parsed = json.loads(output_text)
-            except json.JSONDecodeError as error:
-                if response.get("status") == "incomplete" and incomplete_reason:
-                    detail = f"Model response incomplete: {incomplete_reason}"
-                    if incomplete_reason == "max_output_tokens":
-                        detail += f" after attempts {attempts}"
-                    raise RuntimeErrorWithCode(detail, 500)
-                raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
-
-            if not isinstance(parsed, dict):
-                raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
-
-            return OpenAIResult(
-                parsed=parsed,
-                response=response,
-                response_id=str(response.get("id", "")),
-                output_text=output_text,
-                web_search_queries=normalize_string_array_preserve_items(self.get_response_web_search_queries(response)),
-                web_search_sources=normalize_url_array_values(self.get_response_web_search_sources(response)),
-                url_citations=normalize_url_array_values(self.get_response_url_citations(response)),
-                requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
-                effective_max_output_tokens=effective_tokens,
-                attempts=attempts,
-                recovered_from_incomplete=recovered_from_incomplete,
-            )
 
         if last_error is not None:
             raise last_error
@@ -1920,6 +2774,26 @@ class LoopRuntime:
             return worker_round
         return 0
 
+    def select_dynamic_lane_type(self, task: Dict[str, Any], suggested_lane_types: Any) -> Optional[str]:
+        existing_types = {str(worker.get("type", "")).strip().lower() for worker in task_workers(task)}
+        for lane_type in normalize_lane_type_list(suggested_lane_types, include_utility=False, max_items=4):
+            if lane_type in existing_types:
+                continue
+            return lane_type
+        return None
+
+    def build_dynamic_worker(self, task: Dict[str, Any], lane_type: str) -> Optional[Dict[str, str]]:
+        selected_type = str(lane_type or "").strip().lower()
+        catalog_entry = WORKER_TYPE_CATALOG.get(selected_type)
+        if not catalog_entry or str(catalog_entry.get("role", "adversarial")) != "adversarial":
+            return None
+        existing_ids = {worker["id"] for worker in task_workers(task)}
+        for worker_id in worker_slot_ids():
+            if worker_id in existing_ids:
+                continue
+            return normalize_worker_definition({"id": worker_id, "type": selected_type}, normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID))
+        return None
+
     def commander_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",
@@ -1936,6 +2810,8 @@ class LoopRuntime:
                 "keepCourseIf",
                 "changeCourseIf",
                 "uncertainty",
+                "suggestedLaneTypes",
+                "suggestedLaneReason",
                 "constraintsSeen",
             ],
             "properties": {
@@ -1950,6 +2826,8 @@ class LoopRuntime:
                 "keepCourseIf": {"type": "array", "items": {"type": "string"}},
                 "changeCourseIf": {"type": "array", "items": {"type": "string"}},
                 "uncertainty": {"type": "array", "items": {"type": "string"}},
+                "suggestedLaneTypes": {"type": "array", "items": {"type": "string"}},
+                "suggestedLaneReason": {"type": "string"},
                 "constraintsSeen": {"type": "array", "items": {"type": "string"}},
             },
         }
@@ -1993,6 +2871,8 @@ class LoopRuntime:
             "uncertainty": [
                 "This is a draft checkpoint, not the final adjudicated answer.",
             ],
+            "suggestedLaneTypes": [],
+            "suggestedLaneReason": "",
             "constraintsSeen": constraints,
             "updatedAt": utc_now(),
         }
@@ -2011,6 +2891,26 @@ class LoopRuntime:
         session_context = str(task.get("sessionContext", "")).strip()
         summary_projection = self.project_prior_summary_for_worker(prior_summary)
         summary_text = json.dumps(summary_projection, ensure_ascii=False, indent=2) if summary_projection else "none"
+        local_file_config = normalize_local_file_tool_config(runtime.get("localFiles") if isinstance(runtime.get("localFiles"), dict) else {})
+        github_tool_config = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
+        tools: List[Dict[str, Any]] = []
+        function_handlers: Dict[str, Any] = {}
+        if local_file_config["enabled"]:
+            tools.extend(self.build_local_file_function_tools(local_file_config))
+            function_handlers.update({
+                "local_list_dir": lambda arguments: self.execute_local_file_tool_call("local_list_dir", arguments, local_file_config),
+                "local_read_file": lambda arguments: self.execute_local_file_tool_call("local_read_file", arguments, local_file_config),
+                "local_search_text": lambda arguments: self.execute_local_file_tool_call("local_search_text", arguments, local_file_config),
+            })
+        if github_tool_config["enabled"]:
+            tools.extend(self.build_github_function_tools(github_tool_config))
+            function_handlers.update({
+                "github_list_paths": lambda arguments: self.execute_github_tool_call("github_list_paths", arguments, github_tool_config),
+                "github_read_file": lambda arguments: self.execute_github_tool_call("github_read_file", arguments, github_tool_config),
+                "github_get_issue": lambda arguments: self.execute_github_tool_call("github_get_issue", arguments, github_tool_config),
+                "github_get_pull_request": lambda arguments: self.execute_github_tool_call("github_get_pull_request", arguments, github_tool_config),
+                "github_get_commit": lambda arguments: self.execute_github_tool_call("github_get_commit", arguments, github_tool_config),
+            })
         instructions = (
             "You are the commander / lead thread in a sparse multi-lane reasoning loop.\n"
             "Your job is to draft the answer direction before adversarial pressure arrives.\n"
@@ -2026,7 +2926,20 @@ class LoopRuntime:
             "Use pressurePoints for the assumptions, costs, safety issues, or blind spots that should be challenged.\n"
             "Use keepCourseIf for what kinds of objections should only qualify the answer.\n"
             "Use changeCourseIf for what kinds of objections would justify redirecting or reversing the answer.\n"
+            "If a crucial adversarial viewpoint is missing from the current roster, use suggestedLaneTypes for up to 2 adversarial lane types that should be added for a later round.\n"
+            "Use suggestedLaneReason to explain why the missing viewpoint matters.\n"
+            "Leave suggestedLaneTypes empty when the current roster is sufficient.\n"
             "Keep uncertainty honest, but do not become timid or vague.\n"
+            + (
+                "If local file tools are available, inspect the relevant workspace files before asserting repository-specific details.\n"
+                if local_file_config["enabled"]
+                else ""
+            )
+            + (
+                "If GitHub tools are available, inspect the allowlisted repositories directly before asserting GitHub-specific details.\n"
+                if github_tool_config["enabled"]
+                else ""
+            )
             + "\n".join(harness_lines)
             + "\nReturn JSON only that matches the schema exactly."
         )
@@ -2047,13 +2960,24 @@ class LoopRuntime:
             schema=self.commander_schema(),
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="commander",
+            tools=tools or None,
+            tool_choice="auto" if tools else None,
+            function_handlers=function_handlers if function_handlers else None,
         )
         parsed = normalize_commander_checkpoint(dict(result.parsed), task, round_number)
+        parsed["localToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("local_",)))
+        parsed["localFileSources"] = collect_tool_sources_by_prefixes(result.executed_tools, ("local_",))
+        parsed["githubToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("github_",)))
+        parsed["githubSources"] = normalize_url_array_values(collect_tool_sources_by_prefixes(result.executed_tools, ("github_",)))
         call_meta = {
             "requestedMaxOutputTokens": result.requested_max_output_tokens,
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "localToolCalls": parsed["localToolCalls"],
+            "localFileSources": parsed["localFileSources"],
+            "githubToolCalls": parsed["githubToolCalls"],
+            "githubSources": parsed["githubSources"],
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -2270,6 +3194,8 @@ class LoopRuntime:
         commander_projection = self.project_commander_for_worker(commander_checkpoint)
         commander_text = json.dumps(commander_projection, ensure_ascii=False, indent=2) if commander_projection else "none"
         harness_lines = worker_harness_instruction_lines(worker.get("harness"))
+        local_file_config = normalize_local_file_tool_config(runtime.get("localFiles") if isinstance(runtime.get("localFiles"), dict) else {})
+        github_tool_config = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
         instructions = (
             f"You are {worker['label']} in a sparse multi-lane reasoning loop.\n"
             f"Worker type: {worker.get('type', 'custom')}.\n"
@@ -2286,8 +3212,18 @@ class LoopRuntime:
             f"Set workerId to {worker['id']}, label to {worker['label']}, role to {worker['role']}, focus to {worker['focus']}, modelUsed to {runtime['model']}, and step to {step_number}.\n"
             f"requestTargets must only contain peers from this list: {', '.join(peer_targets)}.\n"
             "If researchMode is web_search, use the web search tool before answering and keep evidence grounded in URLs actually consulted.\n"
-            "Every evidenceLedger item must capture one concrete claim, its supportLevel, the relevant sourceUrls, and a short note on why the evidence matters.\n"
-            "If evidence is missing or weak, say so in evidenceGaps instead of overstating certainty.\n"
+            + (
+                "If local file tools are available, inspect the relevant workspace files before asserting repository-specific details.\n"
+                if local_file_config["enabled"]
+                else ""
+            )
+            + (
+                "If GitHub tools are available, inspect the allowlisted repositories directly before asserting GitHub-specific details.\n"
+                if github_tool_config["enabled"]
+                else ""
+            )
+            + "Every evidenceLedger item must capture one concrete claim, its supportLevel, the relevant sourceUrls, and a short note on why the evidence matters.\n"
+            + "If evidence is missing or weak, say so in evidenceGaps instead of overstating certainty.\n"
             + "\n".join(harness_lines)
         )
         research_description = "Enabled. Workers may use web_search." if research_config["enabled"] else "Disabled. Workers must reason from existing context only."
@@ -2309,6 +3245,7 @@ class LoopRuntime:
         tools: List[Dict[str, Any]] = []
         tool_choice: Optional[str] = None
         include: List[str] = []
+        function_handlers: Dict[str, Any] = {}
         if research_config["enabled"]:
             web_search_tool: Dict[str, Any] = {"type": "web_search", "external_web_access": bool(research_config["externalWebAccess"])}
             if research_config["domains"]:
@@ -2316,6 +3253,24 @@ class LoopRuntime:
             tools = [web_search_tool]
             tool_choice = "auto"
             include = ["web_search_call.action.sources"]
+        if local_file_config["enabled"]:
+            tools.extend(self.build_local_file_function_tools(local_file_config))
+            tool_choice = "auto"
+            function_handlers.update({
+                "local_list_dir": lambda arguments: self.execute_local_file_tool_call("local_list_dir", arguments, local_file_config),
+                "local_read_file": lambda arguments: self.execute_local_file_tool_call("local_read_file", arguments, local_file_config),
+                "local_search_text": lambda arguments: self.execute_local_file_tool_call("local_search_text", arguments, local_file_config),
+            })
+        if github_tool_config["enabled"]:
+            tools.extend(self.build_github_function_tools(github_tool_config))
+            tool_choice = "auto"
+            function_handlers.update({
+                "github_list_paths": lambda arguments: self.execute_github_tool_call("github_list_paths", arguments, github_tool_config),
+                "github_read_file": lambda arguments: self.execute_github_tool_call("github_read_file", arguments, github_tool_config),
+                "github_get_issue": lambda arguments: self.execute_github_tool_call("github_get_issue", arguments, github_tool_config),
+                "github_get_pull_request": lambda arguments: self.execute_github_tool_call("github_get_pull_request", arguments, github_tool_config),
+                "github_get_commit": lambda arguments: self.execute_github_tool_call("github_get_commit", arguments, github_tool_config),
+            })
         result = self.invoke_openai_json(
             api_key=api_key,
             model=runtime["model"],
@@ -2329,11 +3284,16 @@ class LoopRuntime:
             tools=tools,
             tool_choice=tool_choice,
             include=include,
+            function_handlers=function_handlers if function_handlers else None,
         )
         parsed = dict(result.parsed)
         parsed["researchQueries"] = normalize_string_array_preserve_items(result.web_search_queries)
         parsed["researchSources"] = normalize_url_array_values(result.web_search_sources)
         parsed["urlCitations"] = normalize_url_array_values(result.url_citations)
+        parsed["localToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("local_",)))
+        parsed["localFileSources"] = collect_tool_sources_by_prefixes(result.executed_tools, ("local_",))
+        parsed["githubToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("github_",)))
+        parsed["githubSources"] = normalize_url_array_values(collect_tool_sources_by_prefixes(result.executed_tools, ("github_",)))
         parsed["researchMode"] = (
             "web_search"
             if parsed["researchSources"] or parsed["researchQueries"]
@@ -2347,6 +3307,10 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "localToolCalls": parsed["localToolCalls"],
+            "localFileSources": parsed["localFileSources"],
+            "githubToolCalls": parsed["githubToolCalls"],
+            "githubSources": parsed["githubSources"],
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -2363,6 +3327,9 @@ class LoopRuntime:
                 "reasoningEffort": str(runtime["reasoningEffort"]),
                 "budget": self.get_budget_config(task),
                 "research": self.get_research_config(task),
+                "localFiles": self.get_local_file_tool_config(task),
+                "githubTools": self.get_github_tool_config(task),
+                "dynamicSpinup": self.get_dynamic_spinup_config(task),
                 "vetting": self.get_vetting_config(task),
             },
         }
@@ -2380,6 +3347,8 @@ class LoopRuntime:
             "keepCourseIf": limit_string_list(checkpoint.get("keepCourseIf", []), 2, 180),
             "changeCourseIf": limit_string_list(checkpoint.get("changeCourseIf", []), 2, 180),
             "uncertainty": limit_string_list(checkpoint.get("uncertainty", []), 2, 180),
+            "suggestedLaneTypes": normalize_lane_type_list(checkpoint.get("suggestedLaneTypes", []), False, 2),
+            "suggestedLaneReason": truncate_text(checkpoint.get("suggestedLaneReason", ""), 220),
         }
 
     def project_commander_for_summary(self, commander: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2396,6 +3365,8 @@ class LoopRuntime:
             "keepCourseIf": limit_string_list(checkpoint.get("keepCourseIf", []), 3, 220),
             "changeCourseIf": limit_string_list(checkpoint.get("changeCourseIf", []), 3, 220),
             "uncertainty": limit_string_list(checkpoint.get("uncertainty", []), 3, 220),
+            "suggestedLaneTypes": normalize_lane_type_list(checkpoint.get("suggestedLaneTypes", []), False, 2),
+            "suggestedLaneReason": truncate_text(checkpoint.get("suggestedLaneReason", ""), 240),
             "constraintsSeen": limit_string_list(checkpoint.get("constraintsSeen", []), 6, 180),
         }
 
@@ -2481,6 +3452,10 @@ class LoopRuntime:
             "researchQueries": limit_string_list(checkpoint.get("researchQueries", []), 6, 180),
             "researchSources": limit_url_list(checkpoint.get("researchSources", []), 10),
             "urlCitations": limit_url_list(checkpoint.get("urlCitations", []), 10),
+            "localFileSources": limit_string_list(checkpoint.get("localFileSources", []), 10, 220),
+            "localToolCalls": normalize_local_tool_calls(checkpoint.get("localToolCalls", []))[:6],
+            "githubSources": limit_url_list(checkpoint.get("githubSources", []), 10),
+            "githubToolCalls": normalize_local_tool_calls(checkpoint.get("githubToolCalls", []))[:6],
             "evidenceLedger": ledger,
             "evidenceGaps": limit_string_list(checkpoint.get("evidenceGaps", []), 6, 180),
             "confidence": float(checkpoint.get("confidence", 0.0) or 0.0),
@@ -2706,6 +3681,11 @@ class LoopRuntime:
                 ],
                 "selfCheck": "Before finalizing, I check that the fallback answer is still anchored to the current task instead of stale session drift or generic system rhetoric.",
             },
+            "dynamicLaneDecision": {
+                "shouldSpawn": False,
+                "suggestedLaneTypes": [],
+                "reason": "Fallback summary does not have enough confidence to request a new adversarial lane automatically.",
+            },
             "reviewTrace": review_trace,
             "stableFindings": [
                 "Structured checkpoints let many lanes disagree without losing continuity.",
@@ -2760,6 +3740,7 @@ class LoopRuntime:
                 "frontAnswer",
                 "summarizerOpinion",
                 "controlAudit",
+                "dynamicLaneDecision",
                 "reviewTrace",
                 "stableFindings",
                 "conflicts",
@@ -2851,6 +3832,16 @@ class LoopRuntime:
                             "challengingLineRefs": {"type": "array", "items": {"type": "string"}},
                             "openQuestions": {"type": "array", "items": {"type": "string"}},
                         },
+                    },
+                },
+                "dynamicLaneDecision": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["shouldSpawn", "suggestedLaneTypes", "reason"],
+                    "properties": {
+                        "shouldSpawn": {"type": "boolean"},
+                        "suggestedLaneTypes": {"type": "array", "items": {"type": "string"}},
+                        "reason": {"type": "string"},
                     },
                 },
                 "stableFindings": {"type": "array", "items": {"type": "string"}},
@@ -2986,6 +3977,10 @@ class LoopRuntime:
             "summarizerOpinion.integrationMode should explain how the strongest objections changed the lead direction.\n"
             "controlAudit is review-facing and should show that the lead thread actively interrogated adversarial pressure instead of submitting to it.\n"
             "reviewTrace is for review operations, not for the public answer.\n"
+            "Use dynamicLaneDecision to decide whether the next round needs one additional adversarial lane.\n"
+            "Only set dynamicLaneDecision.shouldSpawn to true when a materially missing adversarial lens remains unresolved after the current round.\n"
+            "dynamicLaneDecision.suggestedLaneTypes may contain up to 2 adversarial lane types from the known catalog.\n"
+            "Prefer false when the current roster already covers the relevant pressure.\n"
             "Every reviewTrace line ref must come from the supplied line catalog exactly as written.\n"
             "Do not upgrade weak evidence into a supported fact.\n"
             "Do not do new research.\n"
@@ -3008,6 +4003,7 @@ class LoopRuntime:
             f"Commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
             f"Task brief:\n{json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)}\n\n"
             f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
+            f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
             f"Partial summary mode:\n{partial_mode}\n\n"
             f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}\n\n"
             f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
@@ -3056,11 +4052,15 @@ class LoopRuntime:
             "constraintsSeen",
             "researchQueries",
             "evidenceGaps",
+            "localFileSources",
         ):
             checkpoint[field] = normalize_string_array_preserve_items(checkpoint.get(field, []))
         checkpoint["researchSources"] = normalize_url_array_values(checkpoint.get("researchSources", []))
         checkpoint["urlCitations"] = normalize_url_array_values(checkpoint.get("urlCitations", []))
+        checkpoint["githubSources"] = normalize_url_array_values(checkpoint.get("githubSources", []))
         checkpoint["evidenceLedger"] = normalize_evidence_ledger(checkpoint.get("evidenceLedger", []))
+        checkpoint["localToolCalls"] = normalize_local_tool_calls(checkpoint.get("localToolCalls", []))
+        checkpoint["githubToolCalls"] = normalize_local_tool_calls(checkpoint.get("githubToolCalls", []))
         checkpoint["requestTargets"] = self.normalize_request_targets(checkpoint.get("requestTargets", []), task, worker_id)
         checkpoint["updatedAt"] = utc_now()
         return checkpoint
@@ -3069,6 +4069,7 @@ class LoopRuntime:
         summary["frontAnswer"] = normalize_front_answer(summary.get("frontAnswer"), summary)
         summary["summarizerOpinion"] = normalize_summarizer_opinion(summary.get("summarizerOpinion"), summary)
         summary["controlAudit"] = normalize_control_audit(summary.get("controlAudit"), summary)
+        summary["dynamicLaneDecision"] = normalize_dynamic_lane_decision(summary.get("dynamicLaneDecision"))
         summary["reviewTrace"] = normalize_review_trace(summary.get("reviewTrace", []))
         summary["stableFindings"] = normalize_string_array_preserve_items(summary.get("stableFindings", []))
         summary["conditionalTruths"] = normalize_string_array_preserve_items(summary.get("conditionalTruths", []))
@@ -3234,6 +4235,10 @@ class LoopRuntime:
         if checkpoint is None:
             checkpoint = self.new_mock_commander(task, runtime, round_number, constraints, prior_summary)
         checkpoint = normalize_commander_checkpoint(checkpoint, task, round_number)
+        checkpoint["localToolCalls"] = normalize_local_tool_calls(call_meta.get("localToolCalls", []))
+        checkpoint["localFileSources"] = normalize_string_array_preserve_items(call_meta.get("localFileSources", []))
+        checkpoint["githubToolCalls"] = normalize_local_tool_calls(call_meta.get("githubToolCalls", []))
+        checkpoint["githubSources"] = normalize_url_array_values(call_meta.get("githubSources", []))
 
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             current["commander"] = checkpoint
@@ -3259,6 +4264,10 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
+                "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
+                "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
+                "githubSources": normalize_url_array_values(call_meta.get("githubSources", [])),
             } if response else None,
             "authMeta": auth_meta,
             "output": checkpoint,
@@ -3278,6 +4287,30 @@ class LoopRuntime:
                 "model": runtime["model"],
             },
         )
+        for tool_call in normalize_local_tool_calls(call_meta.get("localToolCalls", [])):
+            self.append_step(
+                "local_tool",
+                f"Commander used {tool_call.get('name') or 'local tool'}.",
+                {
+                    "taskId": task["taskId"],
+                    "target": "commander",
+                    "round": round_number,
+                    "tool": tool_call,
+                    "auth": auth_meta,
+                },
+            )
+        for tool_call in normalize_local_tool_calls(call_meta.get("githubToolCalls", [])):
+            self.append_step(
+                "github_tool",
+                f"Commander used {tool_call.get('name') or 'GitHub tool'}.",
+                {
+                    "taskId": task["taskId"],
+                    "target": "commander",
+                    "round": round_number,
+                    "tool": tool_call,
+                    "auth": auth_meta,
+                },
+            )
         self.append_step(
             "commander",
             "Commander drafted the lead answer for this round.",
@@ -3291,6 +4324,10 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
+                "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
+                "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
+                "githubSources": normalize_url_array_values(call_meta.get("githubSources", [])),
                 "totalTokens": int(budget_totals.get("totalTokens", 0)),
                 "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
                 "checkpointFile": history_cp.name,
@@ -3441,6 +4478,10 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
+                "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
+                "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
+                "githubSources": normalize_url_array_values(call_meta.get("githubSources", [])),
             }
             if response
             else None,
@@ -3463,6 +4504,30 @@ class LoopRuntime:
                 "mode": mode_used,
             },
         )
+        for tool_call in normalize_local_tool_calls(call_meta.get("localToolCalls", [])):
+            self.append_step(
+                "local_tool",
+                f"{worker['label']} used {tool_call.get('name') or 'local tool'}.",
+                {
+                    "taskId": task["taskId"],
+                    "target": worker_id,
+                    "step": step_number,
+                    "tool": tool_call,
+                    "auth": auth_meta,
+                },
+            )
+        for tool_call in normalize_local_tool_calls(call_meta.get("githubToolCalls", [])):
+            self.append_step(
+                "github_tool",
+                f"{worker['label']} used {tool_call.get('name') or 'GitHub tool'}.",
+                {
+                    "taskId": task["taskId"],
+                    "target": worker_id,
+                    "step": step_number,
+                    "tool": tool_call,
+                    "auth": auth_meta,
+                },
+            )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         self.append_step(
             f"worker_{worker_id}",
@@ -3482,6 +4547,10 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
+                "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
+                "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
+                "githubSources": normalize_url_array_values(call_meta.get("githubSources", [])),
                 "totalTokens": int(budget_totals.get("totalTokens", 0)),
                 "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
                 "checkpointFile": history_cp.name,
@@ -3579,11 +4648,34 @@ class LoopRuntime:
         if summary is None:
             summary = self.new_mock_summary(task, commander_checkpoint, workers, worker_state, vetting_config, line_catalog)
         summary = self.normalize_summary(summary, line_catalog)
+        dynamic_spinup = self.get_dynamic_spinup_config(task)
+        dynamic_lane_decision = summary.get("dynamicLaneDecision") if isinstance(summary.get("dynamicLaneDecision"), dict) else {}
+        selected_lane_type = self.select_dynamic_lane_type(task, dynamic_lane_decision.get("suggestedLaneTypes", []))
+        selected_dynamic_worker = (
+            self.build_dynamic_worker(task, selected_lane_type)
+            if dynamic_spinup["enabled"] and bool(dynamic_lane_decision.get("shouldSpawn")) and selected_lane_type
+            else None
+        )
+        spawned_worker: Optional[Dict[str, str]] = None
+
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal spawned_worker
             current["summary"] = summary
             current["memoryVersion"] = int(current.get("memoryVersion", 0) or 0) + 1
+            if selected_dynamic_worker is not None and isinstance(current.get("activeTask"), dict):
+                current_task = current["activeTask"]
+                existing_workers = task_workers(current_task)
+                if selected_dynamic_worker["id"] not in {worker["id"] for worker in existing_workers}:
+                    current_task["workers"] = existing_workers + [selected_dynamic_worker]
+                    workers_state = current.get("workers") if isinstance(current.get("workers"), dict) else {}
+                    workers_state[selected_dynamic_worker["id"]] = None
+                    current["workers"] = workers_state
+                    current["activeTask"] = current_task
+                    spawned_worker = selected_dynamic_worker
             return current
         state = self.mutate_state(update_state)
+        if spawned_worker is not None and isinstance(state.get("activeTask"), dict):
+            self._write_json_file(self.tasks_path / f"{task['taskId']}.json", state["activeTask"])
         current_memory_version = int(state.get("memoryVersion", 0) or 0)
         latest_summary, history_summary = self.write_summary_files(str(task["taskId"]), int(summary.get("round", 0) or 0), summary)
         output_artifact = {
@@ -3621,8 +4713,23 @@ class LoopRuntime:
                 "mode": mode_used,
                 "model": runtime["model"],
                 "sourceWorkers": [worker["id"] for worker in workers],
+                "dynamicLaneDecision": dynamic_lane_decision,
+                "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
             },
         )
+        if spawned_worker is not None:
+            self.append_step(
+                "dynamic_lane",
+                f"Spawned {spawned_worker['label']} for the next round.",
+                {
+                    "taskId": task["taskId"],
+                    "round": int(summary.get("round", 0) or 0),
+                    "workerId": spawned_worker["id"],
+                    "workerType": spawned_worker.get("type"),
+                    "reason": str(dynamic_lane_decision.get("reason", "")).strip(),
+                    "suggestedLaneTypes": normalize_lane_type_list(dynamic_lane_decision.get("suggestedLaneTypes", []), False, 2),
+                },
+            )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         self.append_step(
             "summarizer",
@@ -3636,6 +4743,8 @@ class LoopRuntime:
                 "responseId": response_id,
                 "workerCount": len(workers),
                 "vettingEnabled": bool(vetting_config["enabled"]),
+                "dynamicLaneDecision": dynamic_lane_decision,
+                "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
                 "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),

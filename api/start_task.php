@@ -59,6 +59,19 @@ $research = normalize_research_config([
     'domains' => post_value('researchDomains', default_research_config()['domains']),
 ]);
 
+$localFiles = normalize_local_file_tool_config([
+    'enabled' => post_value('localFilesEnabled', default_local_file_tool_config()['enabled']),
+    'roots' => post_value('localFileRoots', default_local_file_tool_config()['roots']),
+]);
+
+$githubTools = normalize_github_tool_config([
+    'enabled' => post_value('githubToolsEnabled', default_github_tool_config()['enabled']),
+    'repos' => post_value('githubAllowedRepos', default_github_tool_config()['repos']),
+]);
+$dynamicSpinup = normalize_dynamic_spinup_config([
+    'enabled' => post_value('dynamicSpinupEnabled', default_dynamic_spinup_config()['enabled']),
+]);
+
 $vetting = normalize_vetting_config([
     'enabled' => post_value('vettingEnabled', default_vetting_config()['enabled']),
 ]);
@@ -86,6 +99,9 @@ $task = [
         'reasoningEffort' => $reasoningEffort,
         'budget' => $budget,
         'research' => $research,
+        'localFiles' => $localFiles,
+        'githubTools' => $githubTools,
+        'dynamicSpinup' => $dynamicSpinup,
         'vetting' => $vetting,
         'pricingSource' => 'https://openai.com/api/pricing',
         'pricingCheckedAt' => '2026-04-19',
