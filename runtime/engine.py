@@ -1142,7 +1142,9 @@ def normalize_commander_checkpoint(checkpoint: Any, fallback_task: Optional[Dict
     if not isinstance(checkpoint, dict):
         return normalized
     normalized["taskId"] = str(checkpoint.get("taskId", normalized["taskId"]))
-    normalized["round"] = max(1, int(checkpoint.get("round", normalized["round"]) or normalized["round"]))
+    # The runtime decides which round is being executed; do not let a stale model
+    # echo drag the checkpoint backward and break worker alignment on later rounds.
+    normalized["round"] = max(1, int(fallback_round or normalized["round"]))
     stance = truncate_text(checkpoint.get("stance", ""), 260)
     lead_direction = truncate_text(checkpoint.get("leadDirection", ""), 280)
     answer_draft = truncate_text(checkpoint.get("answerDraft", ""), 1400)
