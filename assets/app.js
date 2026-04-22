@@ -120,6 +120,7 @@ const COMPOSER_ATTACHMENT_LIMIT = 4;
 const COMPOSER_ATTACHMENT_MAX_BYTES = 180000;
 const COMPOSER_ATTACHMENT_MAX_CHARS = 6000;
 const COMPOSER_RECENT_FILES_KEY = "loopComposerRecentFiles";
+const OPERATOR_NOTICE_ACK_KEY = "loopOperatorNoticeAckV1";
 const COMPOSER_SUPPORTED_EXTENSIONS = [
   ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
   ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
@@ -173,6 +174,7 @@ let threadRenderSignature = "";
 let threadRenderTaskId = "";
 let threadInspectorOpen = false;
 let exportPreviewKey = "";
+let operatorNoticeAcceptedThisSession = false;
 const API = {
   artifact: "/v1/artifact",
   draft: "/v1/draft",
@@ -218,6 +220,26 @@ function apiRoute(path) {
 
 function apiModeDisplay() {
   return "Python";
+}
+
+function shouldShowOperatorNotice() {
+  return !operatorNoticeAcceptedThisSession && localStorage.getItem(OPERATOR_NOTICE_ACK_KEY) !== "1";
+}
+
+function syncOperatorNoticeVisibility() {
+  const visible = shouldShowOperatorNotice();
+  $("#operatorNoticeModal").prop("hidden", !visible).attr("aria-hidden", visible ? "false" : "true");
+  $("body").toggleClass("operator-notice-open", visible);
+}
+
+function acceptOperatorNotice() {
+  operatorNoticeAcceptedThisSession = true;
+  if ($("#operatorNoticeDontShow").is(":checked")) {
+    localStorage.setItem(OPERATOR_NOTICE_ACK_KEY, "1");
+  } else {
+    localStorage.removeItem(OPERATOR_NOTICE_ACK_KEY);
+  }
+  syncOperatorNoticeVisibility();
 }
 
 function apiModeDetails() {
@@ -629,12 +651,101 @@ function artifactOutputCapSummary(artifact) {
   return parts.length ? parts.join(" | ") : "cap not recorded";
 }
 
+function executionHealthTone(health) {
+  if (!health || !health.degraded) return "clean";
+  if (Number(health.fallbackCount || 0) > 0) return "warning";
+  if (Number(health.recoveredCount || 0) > 0) return "recovered";
+  return "warning";
+}
+
+function renderExecutionHealthBadge(health, fallbackText = "Clean") {
+  const tone = executionHealthTone(health);
+  const text = !health || !health.degraded
+    ? fallbackText
+    : (Number(health.fallbackCount || 0) > 0
+      ? "Fallback"
+      : (Number(health.recoveredCount || 0) > 0 ? "Recovered" : "Warning"));
+  return `<span class="execution-health-badge ${escapeHtml(tone)}">${escapeHtml(text)}</span>`;
+}
+
+function formatExecutionHealthSummary(health) {
+  if (!health || typeof health !== "object") {
+    return "Execution status unavailable.";
+  }
+  if (!health.degraded) {
+    return "All captured stages completed without recorded degradation.";
+  }
+  const bits = [];
+  if (Number(health.fallbackCount || 0) > 0) {
+    bits.push(formatInteger(health.fallbackCount || 0) + " mock fallback" + (Number(health.fallbackCount || 0) === 1 ? "" : "s"));
+  }
+  if (Number(health.recoveredCount || 0) > 0) {
+    bits.push(formatInteger(health.recoveredCount || 0) + " recovered live stage" + (Number(health.recoveredCount || 0) === 1 ? "" : "s"));
+  }
+  if (!bits.length && health.degraded) {
+    bits.push("Contract warning or malformed runtime metadata detected.");
+  }
+  const latestIssue = health.latestIssue || null;
+  if (latestIssue?.label) {
+    bits.push("latest issue: " + latestIssue.label);
+  }
+  return bits.length ? bits.join(" | ") : "Degraded execution was recorded for this round.";
+}
+
+function artifactExecutionHealth(artifact) {
+  const mode = String(artifact?.mode || "").trim();
+  const recovered = !!artifact?.recoveredFromIncomplete;
+  const contractWarnings = Array.isArray(artifact?.contractWarnings) ? artifact.contractWarnings.filter(Boolean) : [];
+  const degraded = mode === "mock" || recovered || contractWarnings.length > 0;
+  return {
+    degraded,
+    mode,
+    fallbackCount: mode === "mock" ? 1 : 0,
+    recoveredCount: recovered ? 1 : 0,
+    contractWarningCount: contractWarnings.length
+  };
+}
+
+function renderArtifactExecutionBadge(artifact) {
+  const health = artifactExecutionHealth(artifact);
+  if (!health.degraded) {
+    return renderExecutionHealthBadge(null, "Live");
+  }
+  return renderExecutionHealthBadge(health, "Live");
+}
+
+function jobExecutionHealthTone(health) {
+  const tone = String(health?.tone || "").trim().toLowerCase();
+  if (["active", "error", "warning", "recovered", "clean"].includes(tone)) {
+    return tone;
+  }
+  return "clean";
+}
+
+function renderJobExecutionBadge(health) {
+  const tone = jobExecutionHealthTone(health);
+  const label = String(health?.label || (tone === "active" ? "Running" : "Clean")).trim() || "Clean";
+  return `<span class="execution-health-badge ${escapeHtml(tone)}">${escapeHtml(label)}</span>`;
+}
+
+function formatJobExecutionSummary(health) {
+  const summary = String(health?.summary || "").trim();
+  if (summary) return summary;
+  const tone = jobExecutionHealthTone(health);
+  if (tone === "active") return "Background work is currently in flight.";
+  if (tone === "error") return "This job ended in an explicit failure state.";
+  if (tone === "warning") return "This job completed with a warning condition.";
+  if (tone === "recovered") return "This job completed through a partial or recovered path.";
+  return "Completed without recorded degradation.";
+}
+
 function renderArtifactMeta(data) {
   const summary = data?.summary || {};
   const localToolCalls = Array.isArray(summary.localToolCalls) ? summary.localToolCalls : [];
   const localFileSources = Array.isArray(summary.localFileSources) ? summary.localFileSources : [];
   const githubToolCalls = Array.isArray(summary.githubToolCalls) ? summary.githubToolCalls : [];
   const githubSources = Array.isArray(summary.githubSources) ? summary.githubSources : [];
+  const contractWarnings = Array.isArray(summary.contractWarnings) ? summary.contractWarnings.filter(Boolean) : [];
   const bits = [
     data?.name || "artifact",
     "kind: " + (data?.kind || "artifact") + " | storage: " + (data?.storage || "unknown"),
@@ -648,6 +759,7 @@ function renderArtifactMeta(data) {
       + " | local sources: " + (localFileSources.length ? localFileSources.length : 0),
     "GitHub tools: " + (githubToolCalls.length ? githubToolCalls.length + " call" + (githubToolCalls.length === 1 ? "" : "s") : "none")
       + " | GitHub sources: " + (githubSources.length ? githubSources.length : 0),
+    "contract warnings: " + (contractWarnings.length ? contractWarnings.length + " | " + contractWarnings.join(" | ") : "none"),
     "raw output policy: " + (data?.policy?.reviewSurface || "review_only") + " | public thread: " + (data?.policy?.publicThread || "structured_only")
   ];
   return bits.join("\n");
@@ -2165,8 +2277,18 @@ function applyArtifactSelectionPair(leftArtifact, rightArtifact) {
   loadArtifactPane("Right", artifactSelections.right);
 }
 
-function renderJobHistory(jobs, recoveryWarning, queueLimit) {
+function renderJobHistory(jobs, recoveryWarning, queueLimit, contractWarnings) {
   const sections = [];
+  const topLevelWarnings = Array.isArray(contractWarnings) ? contractWarnings.filter(Boolean) : [];
+
+  if (topLevelWarnings.length) {
+    sections.push(`
+      <article class="history-card warning">
+        <div class="history-title">Telemetry note</div>
+        <div class="history-meta">${escapeHtml(topLevelWarnings.join(" | "))}</div>
+      </article>
+    `);
+  }
 
   if (recoveryWarning) {
     sections.push(`
@@ -2191,6 +2313,9 @@ function renderJobHistory(jobs, recoveryWarning, queueLimit) {
 
   jobs.forEach(function (job) {
     const isTargetJob = String(job.jobType || "loop") === "target";
+    const jobHealth = job?.executionHealth || null;
+    const tone = jobExecutionHealthTone(jobHealth);
+    const contractWarnings = Array.isArray(job?.contractWarnings) ? job.contractWarnings.filter(Boolean) : [];
     const title = truncateText(
       isTargetJob
         ? ((job.target === "answer_now" ? "Answer Now" : ("Dispatch " + String(job.target || "target"))) + " | " + (job.objective || job.taskId || job.jobId || "job"))
@@ -2226,6 +2351,10 @@ function renderJobHistory(jobs, recoveryWarning, queueLimit) {
     if (job.error) {
       metaLines.push("Error: " + job.error);
     }
+    if (contractWarnings.length) {
+      metaLines.push("Contract: " + contractWarnings.join(" | "));
+    }
+    metaLines.push("Execution: " + formatJobExecutionSummary(jobHealth));
 
     const actions = [];
     if (job.canResume) {
@@ -2239,10 +2368,13 @@ function renderJobHistory(jobs, recoveryWarning, queueLimit) {
     }
 
     sections.push(`
-      <article class="history-card${["interrupted", "error", "budget_exhausted"].includes(String(job.status || "")) ? " warning" : ""}">
+      <article class="history-card${tone === "error" ? " error" : ""}${tone === "warning" ? " warning" : ""}${tone === "recovered" ? " recovered" : ""}${tone === "active" ? " active" : ""}">
         <div class="history-head">
           <div class="history-title">${escapeHtml(title)}</div>
-          <div class="history-title">${escapeHtml(job.jobId || "job")}</div>
+          <div class="round-history-head-right">
+            ${renderJobExecutionBadge(jobHealth)}
+            <div class="history-title">${escapeHtml(job.jobId || "job")}</div>
+          </div>
         </div>
         <div class="history-meta">${escapeHtml(metaLines.join("\n"))}</div>
         ${actions.length ? `<div class="history-actions">${actions.join("")}</div>` : ""}
@@ -2271,6 +2403,8 @@ function renderRoundHistory(rounds) {
         const commanderArtifact = roundEntry.commanderArtifact || null;
         const commanderReviewArtifact = roundEntry.commanderReviewArtifact || null;
         const summaryArtifact = roundEntry.summaryArtifact || null;
+        const executionHealth = roundEntry.executionHealth || null;
+        const tone = executionHealthTone(executionHealth);
         const previousSummary = summaryByTaskRound[String(roundEntry.taskId || "") + ":" + String(Number(roundEntry.round || 0) - 1)] || null;
         const primaryWorker = Array.isArray(roundEntry.workerArtifacts) && roundEntry.workerArtifacts.length ? roundEntry.workerArtifacts[0] : null;
         const topActions = [];
@@ -2292,13 +2426,17 @@ function renderRoundHistory(rounds) {
         }
 
         return `
-          <article class="round-history-card">
+          <article class="round-history-card${executionHealth?.degraded ? " " + tone : ""}">
             <div class="round-history-head">
               <div class="round-history-title">Round ${escapeHtml(String(roundEntry.round || 0))}</div>
-              <div class="round-history-title">${escapeHtml(roundEntry.taskId || "task")}</div>
+              <div class="round-history-head-right">
+                ${renderExecutionHealthBadge(executionHealth)}
+                <div class="round-history-title">${escapeHtml(roundEntry.taskId || "task")}</div>
+              </div>
             </div>
             <div class="round-history-meta">${escapeHtml(truncateText(roundEntry.objective || "No objective recorded.", 180))}</div>
             <div class="round-history-meta">${escapeHtml("Captured " + (roundEntry.capturedAt || "n/a") + (summaryArtifact ? " | summary " + summaryArtifact.name + " | " + artifactOutputCapSummary(summaryArtifact) : ""))}</div>
+            <div class="round-history-meta">${escapeHtml(formatExecutionHealthSummary(executionHealth))}</div>
             ${commanderArtifact ? `<div class="round-history-meta">${escapeHtml("Commander draft " + commanderArtifact.name + " | " + artifactOutputCapSummary(commanderArtifact))}</div>` : ""}
             ${commanderReviewArtifact ? `<div class="round-history-meta">${escapeHtml("Commander review " + commanderReviewArtifact.name + " | " + artifactOutputCapSummary(commanderReviewArtifact))}</div>` : ""}
             ${topActions.length ? `<div class="round-history-actions">${topActions.join("")}</div>` : ""}
@@ -2307,7 +2445,7 @@ function renderRoundHistory(rounds) {
                 return `
                   <div class="round-worker-row">
                     <div>
-                      <div class="history-title">${escapeHtml((artifact.worker || "worker") + " | " + (artifact.model || "model n/a"))}</div>
+                      <div class="history-title">${escapeHtml((artifact.worker || "worker") + " | " + (artifact.model || "model n/a"))} ${renderArtifactExecutionBadge(artifact)}</div>
                       <div class="round-worker-meta">${escapeHtml((artifact.name || "artifact") + " | " + artifactOutputCapSummary(artifact))}</div>
                     </div>
                     ${summaryArtifact ? `<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(artifact.name)}">Compare vs summary</button>` : ""}
@@ -2330,14 +2468,19 @@ function renderSessionArchives(sessions) {
   return `
     <div class="session-archive-stack">
       ${sessions.map(function (session) {
+        const contractWarnings = Array.isArray(session.contractWarnings) ? session.contractWarnings.filter(Boolean) : [];
         return `
-          <article class="session-archive-card">
+          <article class="session-archive-card${contractWarnings.length ? " warning" : ""}">
             <div class="session-archive-head">
               <div class="session-archive-title">${escapeHtml(session.file || "archive")}</div>
-              <div class="session-archive-title">${escapeHtml(session.taskId || "no task")}</div>
+              <div class="round-history-head-right">
+                ${contractWarnings.length ? renderExecutionHealthBadge({ degraded: true, fallbackCount: 0, recoveredCount: 0 }, "Warning") : ""}
+                <div class="session-archive-title">${escapeHtml(session.taskId || "no task")}</div>
+              </div>
             </div>
             <div class="session-archive-meta">${escapeHtml("Archived " + (session.archivedAt || "n/a") + " | reason " + (session.reason || "unspecified"))}</div>
             <div class="session-archive-meta">${escapeHtml(session.carryContextPreview || "No carry-forward preview.")}</div>
+            ${contractWarnings.length ? `<div class="session-archive-meta">${escapeHtml("Contract: " + contractWarnings.join(" | "))}</div>` : ""}
             <div class="session-archive-actions">
               <button type="button" class="export-archive" data-archive-file="${escapeHtml(session.file || "")}">Preview export</button>
               <button type="button" class="replay-session" data-archive-file="${escapeHtml(session.file || "")}">Replay</button>
@@ -3566,6 +3709,7 @@ function latestCompletedSurface(task, workerState, state) {
 function renderWaitingProgress(task, workerState, loop, state) {
   const usage = state?.usage || {};
   const executionHealth = state?.executionHealth || task?.executionHealth || {};
+  const contractWarnings = Array.isArray(state?.contractWarnings) ? state.contractWarnings.filter(Boolean) : [];
   const activeTarget = inferFrontActiveTarget(loop, state);
   const totalStages = (task?.workers?.length || 0) + 3;
   const completedStages =
@@ -3620,6 +3764,7 @@ function renderWaitingProgress(task, workerState, loop, state) {
     `,
     renderTextSection("Loop message", loop?.lastMessage || "Working through the current stage."),
     executionNote ? renderTextSection("Execution note", truncateText(executionNote, 260)) : "",
+    contractWarnings.length ? renderTextSection("State note", truncateText(contractWarnings.join(" "), 260)) : "",
     latestDone ? renderTextSection("Latest completed", `${latestDone.label}: ${truncateText(latestDone.preview, 220)}`) : "",
     renderListSection("What you can do now", [
       completedStages > 0 ? "Use Answer Now to force a partial front answer from completed work." : "",
@@ -3896,12 +4041,22 @@ function renderSummaryOpinion(summary) {
   if (!summary) {
     return `<div class="review-empty">No summary yet.</div>`;
   }
+  const executionHealth = latestState?.executionHealth || latestState?.activeTask?.executionHealth || null;
+  const contractWarnings = Array.isArray(latestState?.contractWarnings)
+    ? latestState.contractWarnings.filter(Boolean)
+    : (Array.isArray(latestState?.activeTask?.contractWarnings) ? latestState.activeTask.contractWarnings.filter(Boolean) : []);
   const frontAnswer = summary.frontAnswer || {};
   const opinion = summary.summarizerOpinion || {};
   const controlAudit = summary.controlAudit || {};
   const dynamicLaneDecision = summary.dynamicLaneDecision || {};
   const dynamicLaneResolution = summary.dynamicLaneResolution || {};
   const blocks = [
+    executionHealth
+      ? renderReviewBlock("Execution status", formatExecutionHealthSummary(executionHealth))
+      : "",
+    contractWarnings.length
+      ? renderReviewBlock("State contract", contractWarnings.join("\n"))
+      : "",
     renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary)),
     renderReviewBlock("Lead direction", frontAnswer.leadDirection || frontAnswer.stance || ""),
     renderReviewBlock("Absorbed adversarial pressure", frontAnswer.adversarialPressure || ""),
@@ -4077,6 +4232,7 @@ function buildConversationRenderSignature(task, summary, workerState, loop, stat
       totalTokens: state?.usage?.totalTokens || 0,
       estimatedCostUsd: state?.usage?.estimatedCostUsd || 0
     },
+    contractWarnings: Array.isArray(state?.contractWarnings) ? state.contractWarnings : [],
     commanderRound: (state?.commander || task?.stateCommander || {}).round || 0,
     commanderReviewRound: (state?.commanderReview || task?.stateCommanderReview || {}).round || 0
   });
@@ -4440,7 +4596,7 @@ function refreshState() {
     .done(function (data) {
       clearMessageIfMatching("History load failed:");
       latestHistoryState = data;
-      $("#jobHistory").html(renderJobHistory(data.jobs || [], data.recoveryWarning || null, data.queueLimit || 0));
+      $("#jobHistory").html(renderJobHistory(data.jobs || [], data.recoveryWarning || null, data.queueLimit || 0, data.contractWarnings || []));
       $("#roundHistory").html(renderRoundHistory(data.rounds || []));
       $("#sessionArchives").html(renderSessionArchives(data.sessions || []));
       $("#artifactPolicy").html(renderArtifactPolicy(data.artifactPolicy || null));
@@ -4591,6 +4747,7 @@ $(function () {
   setActiveView(activeView);
   renderApiModeStatus();
   renderDispatchActivity();
+  syncOperatorNoticeVisibility();
   refreshState();
   setInterval(refreshState, 2000);
 
@@ -4619,6 +4776,10 @@ $(function () {
 
   $(document).on("click", ".theme-toggle-btn", function () {
     setTheme(String($(this).data("themeOption") || "dark"));
+  });
+
+  $("#operatorNoticeAccept").on("click", function () {
+    acceptOperatorNotice();
   });
 
   $(document).on("toggle", ".workercontrol-collapsible", function () {

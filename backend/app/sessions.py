@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from runtime.engine import LoopRuntime, RuntimeErrorWithCode
 
-from . import artifacts, control, jobs, storage
+from . import artifacts, control, faults, jobs, storage
 
 
 def _runtime(root: Optional[Path] = None) -> LoopRuntime:
@@ -23,19 +23,8 @@ def truncate_plain_text(value: Any, limit: int) -> str:
 
 def normalize_state_snapshot(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     current = state if isinstance(state, dict) else {}
-    normalized = storage.default_state()
-    normalized["activeTask"] = current.get("activeTask") if isinstance(current.get("activeTask"), dict) else None
-    normalized["draft"] = control.normalize_draft_state(current.get("draft") if isinstance(current.get("draft"), dict) else {})
-    normalized["commander"] = current.get("commander") if isinstance(current.get("commander"), dict) else None
-    normalized["commanderReview"] = current.get("commanderReview") if isinstance(current.get("commanderReview"), dict) else None
-    normalized["summary"] = current.get("summary") if isinstance(current.get("summary"), dict) else None
-    normalized["memoryVersion"] = int(current.get("memoryVersion") or 0)
-    normalized["usage"] = storage.normalize_usage_state(current.get("usage") if isinstance(current.get("usage"), dict) else {})
-    normalized["lastUpdated"] = str(current.get("lastUpdated") or storage.utc_now())
-    workers = current.get("workers") if isinstance(current.get("workers"), dict) else {}
-    normalized["workers"] = {str(key): value for key, value in sorted(workers.items()) if str(key).strip()}
-    loop = current.get("loop") if isinstance(current.get("loop"), dict) else {}
-    normalized["loop"] = dict(storage.default_loop_state(), **loop)
+    normalized = storage.normalize_state_contract(current)
+    normalized["draft"] = control.normalize_draft_state(normalized.get("draft") if isinstance(normalized.get("draft"), dict) else {})
     return normalized
 
 
@@ -124,6 +113,7 @@ def _export_bundle_filename(source: str, task_id: Optional[str]) -> str:
 
 
 def _write_session_archive(paths: storage.Paths, archive: Dict[str, Any]) -> str:
+    faults.maybe_raise_fault("session.reset.before_archive_write")
     archive_file = _session_archive_filename(archive.get("taskId"))
     artifacts.write_json_artifact(paths.root, "sessions", archive_file, archive)
     return archive_file
@@ -134,6 +124,7 @@ def _read_session_archive(paths: storage.Paths, archive_file: str) -> Optional[D
 
 
 def _write_export_bundle(paths: storage.Paths, bundle: Dict[str, Any], source: str, task_id: Optional[str]) -> str:
+    faults.maybe_raise_fault("session.export.before_bundle_write")
     bundle_file = _export_bundle_filename(source, task_id)
     artifacts.write_json_artifact(paths.root, "exports", bundle_file, bundle)
     return bundle_file
@@ -221,6 +212,7 @@ def replay_session(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict
         raise RuntimeErrorWithCode("Archive not found.", 404)
 
     archived_state = normalize_state_snapshot(archive.get("state") if isinstance(archive.get("state"), dict) else {})
+    faults.maybe_raise_fault("session.replay.before_restore")
 
     def mutate(_: Dict[str, Any]) -> Dict[str, Any]:
         next_state = normalize_state_snapshot(archived_state)
@@ -242,7 +234,13 @@ def export_session(archive_file: str = "", root: Optional[Path] = None) -> Dict[
     paths = storage.project_paths(root)
     archive_file = Path(str(archive_file or "").strip()).name
     source = "archive" if archive_file else "current"
-    bundle: Dict[str, Any] = {"exportedAt": control.utc_now(), "source": source, "artifactPolicy": storage.artifact_visibility_policy()}
+    bundle_warnings: list[str] = []
+    bundle: Dict[str, Any] = {
+        "exportedAt": control.utc_now(),
+        "source": source,
+        "artifactPolicy": storage.artifact_visibility_policy(),
+        "contractWarnings": bundle_warnings,
+    }
 
     task_id: Optional[str]
     if archive_file:
@@ -251,17 +249,25 @@ def export_session(archive_file: str = "", root: Optional[Path] = None) -> Dict[
             raise RuntimeErrorWithCode("Archive not found.", 404)
         bundle["archiveFile"] = archive_file
         bundle["archive"] = archive
+        archived_state = normalize_state_snapshot(archive.get("state") if isinstance(archive.get("state"), dict) else {})
+        for warning in archived_state.get("contractWarnings") or []:
+            storage.append_contract_warning(bundle_warnings, f"archive state: {warning}")
         task_id = str(archive.get("taskId") or "").strip() or None
     else:
         state = storage.read_state_payload(paths)
         bundle["state"] = normalize_state_snapshot(state)
+        for warning in (bundle["state"].get("contractWarnings") or []):
+            storage.append_contract_warning(bundle_warnings, f"state: {warning}")
         task_id = str((((state.get("activeTask") or {}) if isinstance(state.get("activeTask"), dict) else {}).get("taskId")) or "").strip() or None
 
     jobs_out = []
     for job in storage.read_jobs(paths):
         if task_id is not None and str(job.get("taskId") or "") != task_id:
             continue
-        jobs_out.append(storage.default_job(job))
+        normalized_job = storage.default_job(job)
+        for warning in normalized_job.get("contractWarnings") or []:
+            storage.append_contract_warning(bundle_warnings, f"job {normalized_job.get('jobId') or 'unknown'}: {warning}")
+        jobs_out.append(normalized_job)
     bundle["jobs"] = jobs_out
 
     exported_artifacts = []
@@ -270,22 +276,34 @@ def export_session(archive_file: str = "", root: Optional[Path] = None) -> Dict[
         artifact_name = str(artifact_file.get("name") or "").strip()
         artifact_category = str(artifact_file.get("category") or "").strip()
         if not artifact_name or not artifact_category:
+            storage.append_contract_warning(bundle_warnings, "Dropped an artifact entry with missing name or category during export.")
             continue
         content = artifacts.read_json_artifact(paths.root, artifact_category, artifact_name)
+        artifact_size = storage.coerce_int(
+            artifact_file.get("size"),
+            default=0,
+            minimum=0,
+            warnings=bundle_warnings,
+            label=f"{artifact_name}.size",
+        ) or 0
         entry = storage.build_artifact_history_entry(
             artifact_name,
             str(artifact_file.get("modifiedAt") or ""),
-            int(artifact_file.get("size") or 0),
+            artifact_size,
             content,
         )
         if entry is None:
+            storage.append_contract_warning(bundle_warnings, f"Dropped non-round artifact {artifact_name} from export.")
             continue
         if task_id is not None and str(entry.get("taskId") or "") != task_id:
             continue
         if not isinstance(content, dict):
+            storage.append_contract_warning(bundle_warnings, f"Dropped unreadable artifact content for {artifact_name}.")
             continue
         meta = dict(entry)
         meta.pop("path", None)
+        for warning in meta.get("contractWarnings") or []:
+            storage.append_contract_warning(bundle_warnings, f"artifact {artifact_name}: {warning}")
         exported_artifacts.append({"meta": meta, "content": content})
     bundle["artifacts"] = exported_artifacts
     bundle_file = _write_export_bundle(paths, bundle, source, task_id)

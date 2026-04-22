@@ -9,6 +9,7 @@ from unittest import mock
 
 from backend.app import control, sessions, storage
 from backend.tests.test_artifacts import FakeObjectStore
+from runtime.engine import RuntimeErrorWithCode
 
 
 class SessionTests(unittest.TestCase):
@@ -64,6 +65,23 @@ class SessionTests(unittest.TestCase):
         self.assertIsNotNone(state["activeTask"])
         self.assertEqual(state["loop"]["status"], "idle")
 
+    def test_reset_session_fault_before_archive_write_fails_loudly(self) -> None:
+        with mock.patch.dict(os.environ, {"LOOP_FAULT_POINTS": "session.reset.before_archive_write"}, clear=False):
+            with self.assertRaises(RuntimeErrorWithCode) as ctx:
+                sessions.reset_session(self.root)
+
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertIn("session.reset.before_archive_write", str(ctx.exception))
+
+    def test_replay_session_fault_before_restore_fails_loudly(self) -> None:
+        reset = sessions.reset_session(self.root)
+        with mock.patch.dict(os.environ, {"LOOP_FAULT_POINTS": "session.replay.before_restore"}, clear=False):
+            with self.assertRaises(RuntimeErrorWithCode) as ctx:
+                sessions.replay_session({"archiveFile": reset["archiveFile"]}, self.root)
+
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertIn("session.replay.before_restore", str(ctx.exception))
+
     def test_export_session_returns_jobs_and_artifacts_for_current_task(self) -> None:
         paths = storage.project_paths(self.root)
         state = storage.read_state_payload(paths)
@@ -102,6 +120,40 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(bundle["jobs"]), 1)
         self.assertEqual(len(bundle["artifacts"]), 1)
         self.assertTrue((paths.data / "exports" / bundle["bundleFile"]).is_file())
+
+    def test_export_session_fault_before_bundle_write_fails_loudly(self) -> None:
+        with mock.patch.dict(os.environ, {"LOOP_FAULT_POINTS": "session.export.before_bundle_write"}, clear=False):
+            with self.assertRaises(RuntimeErrorWithCode) as ctx:
+                sessions.export_session(root=self.root)
+
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertIn("session.export.before_bundle_write", str(ctx.exception))
+
+    def test_export_session_collects_contract_warnings_for_malformed_artifacts(self) -> None:
+        paths = storage.project_paths(self.root)
+        state = storage.read_state_payload(paths)
+        task_id = state["activeTask"]["taskId"]
+        (paths.outputs / f"{task_id}_summary_round001_output.json").write_text(
+            json.dumps(
+                {
+                    "taskId": task_id,
+                    "artifactType": "summary_output",
+                    "round": "later",
+                    "responseMeta": {
+                        "requestedMaxOutputTokens": "wide",
+                        "effectiveMaxOutputTokens": "wider",
+                        "maxOutputTokenAttempts": ["900", "oops"],
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        bundle = sessions.export_session(root=self.root)
+
+        self.assertTrue(bundle["contractWarnings"])
+        self.assertTrue(any("artifact" in warning.lower() for warning in bundle["contractWarnings"]))
 
     def test_session_archive_and_export_bundle_roundtrip_through_object_storage(self) -> None:
         env = {

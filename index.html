@@ -109,6 +109,26 @@
       <div class="workspace-container container-fluid px-0">
       <div id="message" class="notice-banner" aria-live="polite"></div>
       <div id="dispatchActivity" class="dispatch-activity" hidden aria-live="polite"></div>
+      <div id="operatorNoticeModal" class="operator-notice-modal" hidden aria-hidden="true">
+        <div class="operator-notice-backdrop"></div>
+        <div class="operator-notice-dialog" role="dialog" aria-modal="true" aria-labelledby="operatorNoticeTitle">
+          <div class="operator-notice-kicker">Operator notice</div>
+          <h3 id="operatorNoticeTitle">Provider responsibility stays with the operator</h3>
+          <p>
+            Provider terms vary. Pooling user-supplied keys, mixing multiple LLM providers, or running adversarial cross-provider workflows can violate some providers' ToS or acceptable-use rules.
+          </p>
+          <p>
+            This workspace cannot certify that multi-provider adversarial usage is allowed by any provider. If you choose to wire together multiple providers or user keys, you accept responsibility for provider review, legal/compliance sign-off, and any sanctions, suspension, rate limits, or key revocation that may follow.
+          </p>
+          <label class="operator-notice-choice">
+            <input id="operatorNoticeDontShow" type="checkbox" />
+            <span>Don’t show again on this browser</span>
+          </label>
+          <div class="operator-notice-actions">
+            <button type="button" id="operatorNoticeAccept">I Understand</button>
+          </div>
+        </div>
+      </div>
 
       <section class="workspace-view active" data-view="home">
         <div class="home-layout">

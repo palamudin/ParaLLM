@@ -591,6 +591,16 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 - Dispatch and loop execution now expose explicit failpoints for repeatable hardening tests.
 - Recovery coverage now verifies stale dispatch recovery, stale loop recovery, and dependency-failure interruption instead of relying only on smoke tests.
+- State, artifact, session, and history reads now coerce malformed payloads into explicit `contractWarnings` instead of leaking broken shapes into the shell.
+- Review and history surfaces now show execution-health state, degraded/recovered/fallback badges, and telemetry/data-contract warnings directly in the operator view.
+- Session reset, replay, and export paths now have explicit fault injection and warning-preserving bundle assembly.
+- Dispatch/runtime failures now land in explicit operator-facing classes such as `Provider`, `Output cap`, `Dependency`, and `Partial-risk` instead of one generic error bucket.
+- Step/event telemetry parsing now drops malformed JSONL safely, preserves degradation across later clean lines, and surfaces telemetry quality problems visibly instead of silently skewing execution health.
+
+#### Milestone status
+
+- Milestone 4 is now considered complete for the current roadmap bar.
+- The next active engineering milestone is `Milestone 5: Multi-Provider Model Abstraction`.
 
 ### Milestone 5: Multi-Provider Model Abstraction
 

@@ -201,6 +201,56 @@ def dispatch_target_label(job: Dict[str, Any]) -> str:
     return f"Worker {target.upper()}"
 
 
+def classify_dispatch_failure(message: str) -> Dict[str, str]:
+    normalized = str(message or "").strip()
+    lowered = normalized.lower()
+    if "http 500" in lowered or "server_error" in lowered or "provider error" in lowered:
+        return {
+            "failureClass": "provider_error",
+            "lastMessage": "Dispatch failed because the model provider returned a server-side error.",
+            "operatorNote": normalized or "The provider returned a server-side error.",
+        }
+    if "max_output_tokens" in lowered or "output remained incomplete after attempts" in lowered or "model response incomplete" in lowered:
+        return {
+            "failureClass": "output_exhausted",
+            "lastMessage": "Dispatch failed after output-token recovery was exhausted.",
+            "operatorNote": normalized or "The model stayed incomplete after output-token escalation.",
+        }
+    if "finished with status" in lowered or "dependency failed" in lowered:
+        return {
+            "failureClass": "dependency_failure",
+            "lastMessage": "Dispatch stopped because an upstream dependency failed.",
+            "operatorNote": normalized or "An upstream dependency failed before this dispatch could run.",
+        }
+    if lowered.startswith("budget limit reached:"):
+        return {
+            "failureClass": "budget_exhausted",
+            "lastMessage": "Dispatch stopped because the task budget was exhausted.",
+            "operatorNote": normalized,
+        }
+    return {
+        "failureClass": "runtime_error",
+        "lastMessage": "Dispatch failed.",
+        "operatorNote": normalized or "The runtime reported a dispatch failure.",
+    }
+
+
+def failed_target_dependency_labels(paths: storage.Paths, task_id: str) -> List[str]:
+    labels: List[str] = []
+    for job in storage.read_jobs(paths):
+        current = storage.default_job(job)
+        if str(current.get("jobType") or "loop") != "target":
+            continue
+        if str(current.get("taskId") or "") != task_id:
+            continue
+        if str(current.get("status") or "") not in {"error", "interrupted", "budget_exhausted"}:
+            continue
+        label = dispatch_target_label(current)
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
 def dispatch_dependency_ids(job: Dict[str, Any]) -> List[str]:
     return [str(value).strip() for value in (job.get("dependencyJobIds") or []) if str(value).strip()]
 
@@ -265,6 +315,11 @@ def interrupt_unrunnable_dispatch_jobs_unlocked(runtime: LoopRuntime, task_id: O
                         "lastHeartbeatAt": utc_now(),
                         "lastMessage": "Dispatch stopped because a dependency failed.",
                         "error": failure,
+                        "metadata": {
+                            **(job.get("metadata") if isinstance(job.get("metadata"), dict) else {}),
+                            "failureClass": "dependency_failure",
+                            "operatorNote": failure,
+                        },
                     }
                 )
             )
@@ -579,6 +634,7 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
         final_status = "budget_exhausted" if message.startswith("Budget limit reached:") else "error"
+        failure = classify_dispatch_failure(message)
         updated_job = runtime.mutate_job(
             job_id,
             lambda existing: storage.default_job(
@@ -587,8 +643,13 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
                     "status": final_status,
                     "finishedAt": utc_now(),
                     "lastHeartbeatAt": utc_now(),
-                    "lastMessage": "Dispatch failed.",
+                    "lastMessage": failure["lastMessage"],
                     "error": message,
+                    "metadata": {
+                        **((existing or {}).get("metadata") if isinstance((existing or {}).get("metadata"), dict) else {}),
+                        "failureClass": failure["failureClass"],
+                        "operatorNote": failure["operatorNote"],
+                    },
                 }
             ),
         )
@@ -635,6 +696,13 @@ def start_target_job(payload: Dict[str, Any], root: Optional[Path] = None) -> Di
     if target == "answer_now" and commander_round_from_state(state) <= 0:
         raise RuntimeErrorWithCode("Answer Now needs a commander draft first.", 409)
 
+    dependency_failures = failed_target_dependency_labels(paths, task_id) if target == "answer_now" else []
+    last_message = (
+        "Queued partial summary from current checkpoints despite failed lanes: " + ", ".join(dependency_failures) + "."
+        if dependency_failures
+        else ("Queued partial summary from current checkpoints." if target == "answer_now" else "Queued target dispatch.")
+    )
+
     job = create_target_job(
         runtime,
         task,
@@ -642,8 +710,12 @@ def start_target_job(payload: Dict[str, Any], root: Optional[Path] = None) -> Di
         {
             "partialSummary": target == "answer_now",
             "timeoutSeconds": 1800,
-            "lastMessage": "Queued partial summary from current checkpoints." if target == "answer_now" else "Queued target dispatch.",
-            "metadata": {"trigger": "answer-now" if target == "answer_now" else "manual"},
+            "lastMessage": last_message,
+            "metadata": {
+                "trigger": "answer-now" if target == "answer_now" else "manual",
+                "dependencyFailures": dependency_failures,
+                "dependencyFailureCount": len(dependency_failures),
+            },
         },
     )
     try:

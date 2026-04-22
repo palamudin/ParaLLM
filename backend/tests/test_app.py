@@ -157,6 +157,64 @@ class AppRouteTests(unittest.TestCase):
         self.assertTrue(active_task["executionHealth"]["degraded"])
         self.assertTrue(response.json()["executionHealth"]["targets"]["commander"]["recoveredFromIncomplete"])
 
+    def test_state_route_surfaces_contract_warnings(self) -> None:
+        self.paths.state.write_text(
+            json.dumps(
+                {
+                    "activeTask": {"taskId": "t-route-contract", "objective": "Keep warnings visible."},
+                    "workers": {"A": {"label": "Proponent"}, "B": "bad"},
+                    "summary": ["bad"],
+                    "loop": {"status": "hovering"},
+                    "memoryVersion": "lots",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        previous = os.environ.get("LOOP_DATA_ROOT")
+        os.environ["LOOP_DATA_ROOT"] = str(self.paths.data)
+        try:
+            client = TestClient(create_app())
+            response = client.get("/v1/state")
+        finally:
+            if previous is None:
+                os.environ.pop("LOOP_DATA_ROOT", None)
+            else:
+                os.environ["LOOP_DATA_ROOT"] = previous
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["contractWarnings"])
+        self.assertEqual(payload["activeTask"]["contractWarnings"], payload["contractWarnings"])
+        self.assertEqual(payload["loop"]["status"], "idle")
+
+    def test_history_route_surfaces_top_level_contract_warnings(self) -> None:
+        self.paths.state.write_text(
+            json.dumps(
+                {
+                    "activeTask": {"taskId": "t-route-history-contract", "objective": "Keep telemetry warnings visible."},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.paths.steps.write_text('{"ts":"2026-04-21T12:00:00+00:00","stage":"commander","context":{"taskId":"t-route-history-contract"}}\nnot-json\n', encoding="utf-8")
+        previous = os.environ.get("LOOP_DATA_ROOT")
+        os.environ["LOOP_DATA_ROOT"] = str(self.paths.data)
+        try:
+            client = TestClient(create_app())
+            response = client.get("/v1/history")
+        finally:
+            if previous is None:
+                os.environ.pop("LOOP_DATA_ROOT", None)
+            else:
+                os.environ["LOOP_DATA_ROOT"] = previous
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["contractWarnings"])
+        self.assertIn("steps.jsonl dropped 1 malformed JSONL line", payload["contractWarnings"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

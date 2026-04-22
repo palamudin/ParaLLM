@@ -84,6 +84,95 @@ def read_json_file(path: Path) -> Optional[Dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def append_contract_warning(warnings: List[str], message: str) -> None:
+    normalized = str(message or "").strip()
+    if not normalized or normalized in warnings:
+        return
+    warnings.append(normalized)
+
+
+def coerce_int(
+    value: Any,
+    *,
+    default: int = 0,
+    minimum: Optional[int] = None,
+    allow_none: bool = False,
+    warnings: Optional[List[str]] = None,
+    label: str = "value",
+) -> Optional[int]:
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        result: Optional[int] = None if allow_none else default
+    else:
+        try:
+            result = int(value)
+        except (TypeError, ValueError):
+            result = None if allow_none else default
+            if warnings is not None:
+                append_contract_warning(
+                    warnings,
+                    f"{label} had an invalid numeric value ({value!r}); using {result if result is not None else 'none'}.",
+                )
+    if result is not None and minimum is not None and result < minimum:
+        if warnings is not None:
+            append_contract_warning(
+                warnings,
+                f"{label} was below the minimum ({result}); using {minimum}.",
+            )
+        result = minimum
+    return result
+
+
+def coerce_float(
+    value: Any,
+    *,
+    default: float = 0.0,
+    minimum: Optional[float] = None,
+    allow_none: bool = False,
+    warnings: Optional[List[str]] = None,
+    label: str = "value",
+) -> Optional[float]:
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        result: Optional[float] = None if allow_none else default
+    else:
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            result = None if allow_none else default
+            if warnings is not None:
+                append_contract_warning(
+                    warnings,
+                    f"{label} had an invalid numeric value ({value!r}); using {result if result is not None else 'none'}.",
+                )
+    if result is not None and minimum is not None and result < minimum:
+        if warnings is not None:
+            append_contract_warning(
+                warnings,
+                f"{label} was below the minimum ({result}); using {minimum}.",
+            )
+        result = minimum
+    return result
+
+
+def coerce_int_list(value: Any, *, warnings: Optional[List[str]] = None, label: str = "values") -> List[int]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        if warnings is not None:
+            append_contract_warning(warnings, f"{label} was not a list; dropping invalid values.")
+        return []
+    coerced: List[int] = []
+    dropped = 0
+    for item in value:
+        parsed = coerce_int(item, allow_none=True)
+        if parsed is None:
+            dropped += 1
+            continue
+        coerced.append(parsed)
+    if dropped and warnings is not None:
+        append_contract_warning(warnings, f"{label} dropped {dropped} invalid entr{'y' if dropped == 1 else 'ies'}.")
+    return coerced
+
+
 def default_loop_state() -> Dict[str, Any]:
     return {
         "status": "idle",
@@ -150,11 +239,11 @@ def normalize_usage_bucket(bucket: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     for key in base:
         value = current.get(key, base[key])
         if key.endswith("Usd"):
-            merged[key] = float(value or 0.0)
+            merged[key] = coerce_float(value, default=0.0) or 0.0
         elif key in {"lastModel", "lastResponseId", "lastUpdated"}:
             merged[key] = value
         else:
-            merged[key] = int(value or 0)
+            merged[key] = coerce_int(value, default=0) or 0
     return merged
 
 
@@ -172,6 +261,85 @@ def normalize_usage_state(usage: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
+VALID_LOOP_STATUSES = {"idle", "queued", "running", "completed", "interrupted", "cancelled", "error", "budget_exhausted"}
+
+
+def normalize_loop_snapshot(loop: Optional[Dict[str, Any]], warnings: Optional[List[str]] = None) -> Dict[str, Any]:
+    current = loop if isinstance(loop, dict) else {}
+    merged = dict(default_loop_state())
+    raw_status = str(current.get("status") or merged["status"]).strip().lower()
+    if raw_status not in VALID_LOOP_STATUSES:
+        append_contract_warning(warnings or [], f"loop.status {raw_status!r} is invalid; using 'idle'.")
+        raw_status = "idle"
+    merged["status"] = raw_status
+    merged["jobId"] = current.get("jobId")
+    merged["mode"] = str(current.get("mode") or merged["mode"]).strip() or merged["mode"]
+    merged["totalRounds"] = coerce_int(current.get("totalRounds"), default=0, minimum=0, warnings=warnings, label="loop.totalRounds") or 0
+    merged["completedRounds"] = coerce_int(current.get("completedRounds"), default=0, minimum=0, warnings=warnings, label="loop.completedRounds") or 0
+    merged["currentRound"] = coerce_int(current.get("currentRound"), default=0, minimum=0, warnings=warnings, label="loop.currentRound") or 0
+    merged["delayMs"] = coerce_int(current.get("delayMs"), default=0, minimum=0, warnings=warnings, label="loop.delayMs") or 0
+    merged["cancelRequested"] = bool(current.get("cancelRequested") or False)
+    merged["queuedAt"] = current.get("queuedAt")
+    merged["startedAt"] = current.get("startedAt")
+    merged["finishedAt"] = current.get("finishedAt")
+    merged["lastHeartbeatAt"] = current.get("lastHeartbeatAt")
+    merged["lastMessage"] = str(current.get("lastMessage") or merged["lastMessage"])
+    return merged
+
+
+def normalize_state_contract(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    current = state if isinstance(state, dict) else {}
+    warnings: List[str] = []
+    normalized = default_state()
+
+    if current.get("activeTask") is not None and not isinstance(current.get("activeTask"), dict):
+        append_contract_warning(warnings, "activeTask was not an object; dropping malformed task state.")
+    normalized["activeTask"] = current.get("activeTask") if isinstance(current.get("activeTask"), dict) else None
+
+    if current.get("draft") is not None and not isinstance(current.get("draft"), dict):
+        append_contract_warning(warnings, "draft was not an object; resetting staged draft state.")
+    normalized["draft"] = current.get("draft") if isinstance(current.get("draft"), dict) else {}
+
+    for field in ("commander", "commanderReview", "summary"):
+        value = current.get(field)
+        if value is not None and not isinstance(value, dict):
+            append_contract_warning(warnings, f"{field} was not an object; dropping malformed state.")
+        normalized[field] = value if isinstance(value, dict) else None
+
+    worker_state = current.get("workers")
+    if worker_state is not None and not isinstance(worker_state, dict):
+        append_contract_warning(warnings, "workers was not an object; clearing malformed worker state.")
+        worker_state = {}
+    cleaned_workers: Dict[str, Any] = {}
+    dropped_workers = 0
+    for key, value in (worker_state or {}).items():
+        worker_id = str(key).strip()
+        if not worker_id:
+            dropped_workers += 1
+            continue
+        if value is None or isinstance(value, dict):
+            cleaned_workers[worker_id] = value
+            continue
+        dropped_workers += 1
+    if dropped_workers:
+        append_contract_warning(
+            warnings,
+            f"workers dropped {dropped_workers} malformed entr{'y' if dropped_workers == 1 else 'ies'}.",
+        )
+    normalized["workers"] = cleaned_workers
+
+    normalized["memoryVersion"] = coerce_int(current.get("memoryVersion"), default=0, minimum=0, warnings=warnings, label="memoryVersion") or 0
+    normalized["usage"] = normalize_usage_state(current.get("usage") if isinstance(current.get("usage"), dict) else {})
+    if current.get("usage") is not None and not isinstance(current.get("usage"), dict):
+        append_contract_warning(warnings, "usage was not an object; resetting usage counters.")
+    normalized["loop"] = normalize_loop_snapshot(current.get("loop") if isinstance(current.get("loop"), dict) else {}, warnings)
+    if current.get("loop") is not None and not isinstance(current.get("loop"), dict):
+        append_contract_warning(warnings, "loop was not an object; resetting loop state.")
+    normalized["lastUpdated"] = str(current.get("lastUpdated") or utc_now())
+    normalized["contractWarnings"] = warnings[:20]
+    return normalized
+
+
 def read_state(paths: Optional[Paths] = None) -> Dict[str, Any]:
     paths = paths or project_paths()
     if metadata.postgres_enabled(paths.root):
@@ -179,10 +347,8 @@ def read_state(paths: Optional[Paths] = None) -> Dict[str, Any]:
     else:
         parsed = read_json_file(paths.state)
     if not isinstance(parsed, dict):
-        return default_state()
-    parsed.setdefault("loop", default_loop_state())
-    parsed["usage"] = normalize_usage_state(parsed.get("usage") if isinstance(parsed.get("usage"), dict) else {})
-    return parsed
+        return normalize_state_contract(default_state())
+    return normalize_state_contract(parsed)
 
 
 def parse_ts(value: Any) -> Optional[float]:
@@ -196,6 +362,7 @@ def parse_ts(value: Any) -> Optional[float]:
 
 
 def default_job(config: Dict[str, Any]) -> Dict[str, Any]:
+    warnings: List[str] = []
     dependency_ids = [
         str(value).strip()
         for value in (config.get("dependencyJobIds") or [])
@@ -209,30 +376,31 @@ def default_job(config: Dict[str, Any]) -> Dict[str, Any]:
         "status": config.get("status") or "queued",
         "target": config.get("target"),
         "batchId": config.get("batchId"),
-        "queuePosition": max(0, int(config.get("queuePosition") or 0)),
-        "attempt": max(1, int(config.get("attempt") or 1)),
+        "queuePosition": coerce_int(config.get("queuePosition"), default=0, minimum=0, warnings=warnings, label="queuePosition") or 0,
+        "attempt": coerce_int(config.get("attempt"), default=1, minimum=1, warnings=warnings, label="attempt") or 1,
         "resumeOfJobId": config.get("resumeOfJobId"),
         "retryOfJobId": config.get("retryOfJobId"),
-        "resumeFromRound": max(1, int(config.get("resumeFromRound") or 1)),
-        "rounds": int(config.get("rounds") or 0),
-        "delayMs": int(config.get("delayMs") or 0),
-        "workerCount": max(0, int(config.get("workerCount") or 0)),
+        "resumeFromRound": coerce_int(config.get("resumeFromRound"), default=1, minimum=1, warnings=warnings, label="resumeFromRound") or 1,
+        "rounds": coerce_int(config.get("rounds"), default=0, warnings=warnings, label="rounds") or 0,
+        "delayMs": coerce_int(config.get("delayMs"), default=0, warnings=warnings, label="delayMs") or 0,
+        "workerCount": coerce_int(config.get("workerCount"), default=0, minimum=0, warnings=warnings, label="workerCount") or 0,
         "cancelRequested": bool(config.get("cancelRequested") or False),
         "dependencyJobIds": dependency_ids,
         "dependencyMode": str(config.get("dependencyMode") or "all"),
         "partialSummary": bool(config.get("partialSummary") or False),
-        "timeoutSeconds": max(30, int(config.get("timeoutSeconds") or 300)),
+        "timeoutSeconds": coerce_int(config.get("timeoutSeconds"), default=300, minimum=30, warnings=warnings, label="timeoutSeconds") or 300,
         "queuedAt": config.get("queuedAt"),
         "startedAt": config.get("startedAt"),
         "finishedAt": config.get("finishedAt"),
         "lastHeartbeatAt": config.get("lastHeartbeatAt"),
-        "completedRounds": int(config.get("completedRounds") or 0),
-        "currentRound": int(config.get("currentRound") or 0),
+        "completedRounds": coerce_int(config.get("completedRounds"), default=0, warnings=warnings, label="completedRounds") or 0,
+        "currentRound": coerce_int(config.get("currentRound"), default=0, warnings=warnings, label="currentRound") or 0,
         "lastMessage": config.get("lastMessage") or "Queued.",
         "usage": normalize_usage_state(config.get("usage") if isinstance(config.get("usage"), dict) else {}),
         "results": config.get("results") if isinstance(config.get("results"), list) else [],
         "metadata": config.get("metadata") if isinstance(config.get("metadata"), dict) else {},
         "error": config.get("error"),
+        "contractWarnings": warnings[:12],
     }
 
 
@@ -403,6 +571,138 @@ def current_dispatch_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) ->
     }
 
 
+def build_job_execution_health(job: Dict[str, Any]) -> Dict[str, Any]:
+    status = str(job.get("status") or "unknown").strip().lower()
+    mode = str(job.get("mode") or "").strip().lower()
+    last_message = str(job.get("lastMessage") or "").strip()
+    error = str(job.get("error") or "").strip()
+    partial = bool(job.get("partialSummary"))
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    failure_class = str(metadata.get("failureClass") or "").strip().lower()
+    operator_note = str(metadata.get("operatorNote") or "").strip()
+    dependency_failures = [
+        str(item).strip()
+        for item in (metadata.get("dependencyFailures") or [])
+        if str(item).strip()
+    ] if isinstance(metadata.get("dependencyFailures"), list) else []
+    contract_warnings = [
+        str(item).strip()
+        for item in (job.get("contractWarnings") or [])
+        if str(item).strip()
+    ] if isinstance(job.get("contractWarnings"), list) else []
+
+    if status in {"queued", "running"}:
+        if partial and dependency_failures:
+            return {
+                "tone": "active",
+                "label": "Partial-risk",
+                "summary": "Running a partial answer while failed lanes remain unresolved: " + ", ".join(dependency_failures) + ".",
+                "degraded": True,
+            }
+        label = "Running" if status == "running" else "Queued"
+        summary = last_message or ("Background work is active." if status == "running" else "Background work is queued.")
+        return {
+            "tone": "active",
+            "label": label,
+            "summary": summary,
+            "degraded": False,
+        }
+
+    if status in {"interrupted", "error", "budget_exhausted"}:
+        label_map = {
+            "interrupted": "Interrupted",
+            "error": "Error",
+            "budget_exhausted": "Budget stop",
+        }
+        if failure_class == "provider_error":
+            label_map["error"] = "Provider"
+        elif failure_class == "output_exhausted":
+            label_map["error"] = "Output cap"
+        elif failure_class == "dependency_failure":
+            label_map["interrupted"] = "Dependency"
+        return {
+            "tone": "error",
+            "label": label_map.get(status, "Error"),
+            "summary": last_message or operator_note or error or "This job ended in an explicit failure state.",
+            "degraded": True,
+        }
+
+    if status == "cancelled":
+        return {
+            "tone": "warning",
+            "label": "Cancelled",
+            "summary": last_message or "This job was cancelled before completing.",
+            "degraded": True,
+        }
+
+    if mode == "mock":
+        return {
+            "tone": "warning",
+            "label": "Fallback",
+            "summary": last_message or "This job completed with mock fallback output.",
+            "degraded": True,
+        }
+
+    if partial:
+        return {
+            "tone": "warning" if dependency_failures else "recovered",
+            "label": "Partial-risk" if dependency_failures else "Partial",
+            "summary": (
+                "Partial answer generated while failed lanes remained unresolved: " + ", ".join(dependency_failures) + "."
+                if dependency_failures
+                else (last_message or "This job produced a partial answer from current checkpoints.")
+            ),
+            "degraded": bool(dependency_failures),
+        }
+
+    if error:
+        return {
+            "tone": "warning",
+            "label": "Warning",
+            "summary": error,
+            "degraded": True,
+        }
+    if failure_class == "provider_error":
+        return {
+            "tone": "error",
+            "label": "Provider",
+            "summary": operator_note or error or "The model provider returned a server-side error.",
+            "degraded": True,
+        }
+    if failure_class == "output_exhausted":
+        return {
+            "tone": "warning",
+            "label": "Output cap",
+            "summary": operator_note or error or "Output-token recovery was exhausted for this job.",
+            "degraded": True,
+        }
+    if failure_class == "dependency_failure" or dependency_failures:
+        return {
+            "tone": "warning",
+            "label": "Dependency",
+            "summary": operator_note or error or (
+                "This job was created while failed lanes remained unresolved: " + ", ".join(dependency_failures) + "."
+                if dependency_failures
+                else "An upstream dependency failed before this job could complete."
+            ),
+            "degraded": True,
+        }
+    if contract_warnings:
+        return {
+            "tone": "warning",
+            "label": "Contract",
+            "summary": contract_warnings[0],
+            "degraded": True,
+        }
+
+    return {
+        "tone": "clean",
+        "label": "Clean",
+        "summary": last_message or "Completed without recorded degradation.",
+        "degraded": False,
+    }
+
+
 def coerce_loop_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     current = copy.deepcopy(state)
     loop = dict(default_loop_state(), **(current.get("loop") if isinstance(current.get("loop"), dict) else {}))
@@ -481,7 +781,17 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
     paths = paths or project_paths()
     jobs = read_jobs(paths)
     state = coerce_loop_state(read_state(paths), jobs)
-    state["executionHealth"] = build_execution_health(state, paths)
+    step_report = read_recent_jsonl_report(paths.steps, 400)
+    event_report = read_recent_jsonl_report(paths.events, 200)
+    state["executionHealth"] = build_execution_health(state, paths, step_report=step_report)
+    contract_warnings = [
+        str(item).strip()
+        for item in (state.get("contractWarnings") or [])
+        if str(item).strip()
+    ][:20] if isinstance(state.get("contractWarnings"), list) else []
+    for warning in list(step_report.get("warnings") or []) + list(event_report.get("warnings") or []):
+        append_contract_warning(contract_warnings, warning)
+    state["contractWarnings"] = contract_warnings[:20]
     active_task = state.get("activeTask")
     if isinstance(active_task, dict):
         enriched_task = copy.deepcopy(active_task)
@@ -490,6 +800,7 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
         enriched_task["stateCommanderReview"] = copy.deepcopy(state.get("commanderReview"))
         enriched_task["summary"] = copy.deepcopy(state.get("summary"))
         enriched_task["executionHealth"] = copy.deepcopy(state.get("executionHealth") or {})
+        enriched_task["contractWarnings"] = copy.deepcopy(state.get("contractWarnings") or [])
         state["activeTask"] = enriched_task
     state["dispatch"] = current_dispatch_state(state, jobs)
     return state
@@ -526,10 +837,11 @@ ARTIFACT_PATTERNS = [
 def build_artifact_history_entry(name: str, modified_at: str, size: int, content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if "_step" not in name and "_round" not in name:
         return None
+    warnings: List[str] = []
     entry: Dict[str, Any] = {
         "name": name,
         "modifiedAt": modified_at,
-        "size": int(size or 0),
+        "size": coerce_int(size, default=0, minimum=0, warnings=warnings, label=f"{name}.size") or 0,
         "kind": "artifact",
         "taskId": None,
         "worker": None,
@@ -542,6 +854,7 @@ def build_artifact_history_entry(name: str, modified_at: str, size: int, content
         "maxOutputTokenAttempts": [],
         "recoveredFromIncomplete": False,
         "rawOutputAvailable": False,
+        "contractWarnings": [],
     }
     for pattern, kind, worker_fn, round_fn in ARTIFACT_PATTERNS:
         match = pattern.match(name)
@@ -556,11 +869,26 @@ def build_artifact_history_entry(name: str, modified_at: str, size: int, content
         entry["model"] = content.get("model") or content.get("modelUsed")
         entry["mode"] = content.get("mode")
         entry["responseId"] = content.get("responseId")
-        entry["requestedMaxOutputTokens"] = int(response_meta.get("requestedMaxOutputTokens") or 0) or None
-        entry["effectiveMaxOutputTokens"] = int(response_meta.get("effectiveMaxOutputTokens") or 0) or None
-        entry["maxOutputTokenAttempts"] = [int(value) for value in (response_meta.get("maxOutputTokenAttempts") or []) if str(value).strip()]
+        entry["requestedMaxOutputTokens"] = coerce_int(
+            response_meta.get("requestedMaxOutputTokens"),
+            allow_none=True,
+            warnings=warnings,
+            label=f"{name}.responseMeta.requestedMaxOutputTokens",
+        )
+        entry["effectiveMaxOutputTokens"] = coerce_int(
+            response_meta.get("effectiveMaxOutputTokens"),
+            allow_none=True,
+            warnings=warnings,
+            label=f"{name}.responseMeta.effectiveMaxOutputTokens",
+        )
+        entry["maxOutputTokenAttempts"] = coerce_int_list(
+            response_meta.get("maxOutputTokenAttempts"),
+            warnings=warnings,
+            label=f"{name}.responseMeta.maxOutputTokenAttempts",
+        )
         entry["recoveredFromIncomplete"] = bool(response_meta.get("recoveredFromIncomplete"))
         entry["rawOutputAvailable"] = bool(str(content.get("rawOutputText") or "").strip())
+    entry["contractWarnings"] = warnings[:12]
     return entry
 
 
@@ -579,15 +907,22 @@ def list_session_archives(paths: Optional[Paths] = None, max_items: int = 10) ->
         archive = artifacts.read_json_artifact(paths.root, "sessions", str(file.get("name") or ""))
         if not isinstance(archive, dict):
             continue
+        warnings: List[str] = []
         carry_context = str(archive.get("carryContext") or "").strip()
+        archived_at = str(archive.get("archivedAt") or archive.get("createdAt") or file.get("modifiedAt") or "").strip() or None
+        if archive.get("summaryRound") not in (None, "") and coerce_int(archive.get("summaryRound"), allow_none=True) is None:
+            append_contract_warning(warnings, f"{file.get('name') or 'archive'} had an invalid summaryRound value.")
         archives.append(
             {
                 "file": str(file.get("name") or ""),
                 "createdAt": archive.get("createdAt"),
+                "archivedAt": archived_at,
                 "taskId": archive.get("taskId"),
-                "objective": archive.get("objective"),
-                "summaryRound": int(archive.get("summaryRound") or 0),
+                "objective": str(archive.get("objective") or "").strip(),
+                "reason": str(archive.get("reason") or "unspecified").strip() or "unspecified",
+                "summaryRound": coerce_int(archive.get("summaryRound"), default=0, minimum=0, warnings=warnings, label=f"{file.get('name') or 'archive'}.summaryRound") or 0,
                 "carryContextPreview": carry_context[:320],
+                "contractWarnings": warnings[:12],
             }
         )
     return archives
@@ -642,6 +977,8 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
                 "totalTokens": int(((job.get("usage") or {}) if isinstance(job.get("usage"), dict) else {}).get("totalTokens") or 0),
                 "estimatedCostUsd": float(((job.get("usage") or {}) if isinstance(job.get("usage"), dict) else {}).get("estimatedCostUsd") or 0.0),
                 "error": job.get("error"),
+                "executionHealth": build_job_execution_health(job),
+                "contractWarnings": (job.get("contractWarnings") or [])[:12] if isinstance(job.get("contractWarnings"), list) else [],
                 "canResume": (not is_target_job) and str(job.get("status") or "") == "interrupted",
                 "canRetry": (not is_target_job) and str(job.get("status") or "") in {"interrupted", "error", "budget_exhausted", "cancelled", "completed"},
                 "canCancel": (not is_target_job) and str(job.get("status") or "") in {"queued", "interrupted"},
@@ -681,6 +1018,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
                     "commanderReviewArtifact": None,
                     "summaryArtifact": None,
                     "workerArtifacts": [],
+                    "_healthArtifacts": [],
                 }
             if entry["kind"] == "commander_output":
                 round_groups[round_key]["commanderArtifact"] = artifact_out
@@ -690,6 +1028,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
                 round_groups[round_key]["summaryArtifact"] = artifact_out
             else:
                 round_groups[round_key]["workerArtifacts"].append(artifact_out)
+            round_groups[round_key]["_healthArtifacts"].append(artifact_out)
             if entry["modifiedAt"] > round_groups[round_key]["capturedAt"]:
                 round_groups[round_key]["capturedAt"] = entry["modifiedAt"]
         if len(artifact_entries) >= max_artifacts:
@@ -700,6 +1039,8 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
     rounds = rounds[:max_rounds]
     for round_entry in rounds:
         round_entry["workerArtifacts"].sort(key=lambda item: str(item.get("worker") or ""))
+        round_entry["executionHealth"] = build_round_execution_health(round_entry.get("_healthArtifacts") or [])
+        round_entry.pop("_healthArtifacts", None)
 
     return {
         "jobs": jobs_out,
@@ -707,6 +1048,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
         "artifacts": artifact_entries,
         "rounds": rounds,
         "sessions": list_session_archives(paths, max_sessions),
+        "contractWarnings": (state.get("contractWarnings") or [])[:20] if isinstance(state.get("contractWarnings"), list) else [],
         "artifactPolicy": artifact_visibility_policy(),
         "queueLimit": LOOP_QUEUE_LIMIT,
         "recoveryWarning": recovery_warning,
@@ -723,20 +1065,57 @@ def tail_text_lines(path: Path, limit: int, empty_message: str) -> str:
     return "\n".join(reversed(lines[-limit:]))
 
 
-def read_recent_jsonl_entries(path: Path, limit: int = 400) -> List[Dict[str, Any]]:
+def _count_label(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def read_recent_jsonl_report(path: Path, limit: int = 400) -> Dict[str, Any]:
     raw = read_text(path)
+    report: Dict[str, Any] = {
+        "entries": [],
+        "warnings": [],
+        "lineCount": 0,
+        "parsedCount": 0,
+        "malformedLineCount": 0,
+        "nonObjectCount": 0,
+    }
     if raw is None:
-        return []
+        return report
     lines = [line for line in raw.splitlines() if line.strip()]
+    report["lineCount"] = len(lines)
+    selected_lines = lines[-max(0, limit):]
     entries: List[Dict[str, Any]] = []
-    for line in lines[-max(0, limit):]:
+    malformed = 0
+    non_object = 0
+    for line in selected_lines:
         try:
             parsed = json.loads(line)
         except json.JSONDecodeError:
+            malformed += 1
             continue
-        if isinstance(parsed, dict):
-            entries.append(parsed)
-    return entries
+        if not isinstance(parsed, dict):
+            non_object += 1
+            continue
+        entries.append(parsed)
+    report["entries"] = entries
+    report["parsedCount"] = len(entries)
+    report["malformedLineCount"] = malformed
+    report["nonObjectCount"] = non_object
+    if malformed:
+        append_contract_warning(
+            report["warnings"],
+            f"{path.name} dropped {_count_label(malformed, 'malformed JSONL line', 'malformed JSONL lines')} from the recent telemetry window.",
+        )
+    if non_object:
+        append_contract_warning(
+            report["warnings"],
+            f"{path.name} dropped {_count_label(non_object, 'non-object telemetry entry', 'non-object telemetry entries')} from the recent telemetry window.",
+        )
+    return report
+
+
+def read_recent_jsonl_entries(path: Path, limit: int = 400) -> List[Dict[str, Any]]:
+    return list(read_recent_jsonl_report(path, limit).get("entries") or [])
 
 
 def step_target_id(stage: Any) -> Optional[str]:
@@ -767,7 +1146,12 @@ def execution_target_label(target_id: str, active_task: Optional[Dict[str, Any]]
     return normalized.upper()
 
 
-def build_execution_health(state: Dict[str, Any], paths: Paths, step_limit: int = 400) -> Dict[str, Any]:
+def build_execution_health(
+    state: Dict[str, Any],
+    paths: Paths,
+    step_limit: int = 400,
+    step_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
     task_id = str((active_task or {}).get("taskId") or "").strip()
     base = {
@@ -781,10 +1165,11 @@ def build_execution_health(state: Dict[str, Any], paths: Paths, step_limit: int 
     if not task_id:
         return base
 
+    report = step_report if isinstance(step_report, dict) else read_recent_jsonl_report(paths.steps, step_limit)
     latest_issue: Optional[Dict[str, Any]] = None
     latest_issue_ts = ""
     targets: Dict[str, Dict[str, Any]] = {}
-    for entry in read_recent_jsonl_entries(paths.steps, step_limit):
+    for entry in report.get("entries") or []:
         context = entry.get("context") if isinstance(entry.get("context"), dict) else {}
         if str(context.get("taskId") or "").strip() != task_id:
             continue
@@ -799,27 +1184,95 @@ def build_execution_health(state: Dict[str, Any], paths: Paths, step_limit: int 
         fallback = "falling back to mock" in message_lower or mode == "mock"
         errored = "failed and was not downgraded to mock" in message_lower or message_lower.startswith("budget stopped")
         degraded = fallback or recovered or errored
-        status = "error" if errored else ("degraded" if degraded else "completed")
+        existing = targets.get(target_id)
+        target_degraded = bool((existing or {}).get("degraded")) or degraded
+        target_fallback = bool((existing or {}).get("usedMockFallback")) or fallback
+        target_recovered = bool((existing or {}).get("recoveredFromIncomplete")) or recovered
+        target_errored = str((existing or {}).get("status") or "") == "error" or errored
+        status = "error" if target_errored else ("degraded" if target_degraded else "completed")
         target_entry = {
             "target": target_id,
             "label": execution_target_label(target_id, active_task),
             "status": status,
-            "mode": mode,
-            "degraded": degraded,
-            "usedMockFallback": fallback,
-            "recoveredFromIncomplete": recovered,
-            "lastError": str(context.get("error") or "").strip() or None,
-            "lastMessage": message,
-            "updatedAt": ts or None,
+            "mode": mode or ((existing or {}).get("mode")),
+            "degraded": target_degraded,
+            "usedMockFallback": target_fallback,
+            "recoveredFromIncomplete": target_recovered,
+            "lastError": str(context.get("error") or "").strip() or ((existing or {}).get("lastError")) or None,
+            "lastMessage": message or ((existing or {}).get("lastMessage")) or "",
+            "updatedAt": ts or ((existing or {}).get("updatedAt")) or None,
         }
         targets[target_id] = target_entry
-        if degraded and ts >= latest_issue_ts:
+        if target_degraded and ts >= latest_issue_ts:
             latest_issue_ts = ts
             latest_issue = dict(target_entry)
 
     fallback_count = sum(1 for target in targets.values() if bool(target.get("usedMockFallback")))
     recovered_count = sum(1 for target in targets.values() if bool(target.get("recoveredFromIncomplete")))
     issue_count = sum(1 for target in targets.values() if bool(target.get("degraded")))
+    return {
+        "degraded": issue_count > 0,
+        "issueCount": issue_count,
+        "fallbackCount": fallback_count,
+        "recoveredCount": recovered_count,
+        "latestIssue": latest_issue,
+        "targets": targets,
+    }
+
+
+def build_round_execution_health(artifacts_for_round: List[Dict[str, Any]]) -> Dict[str, Any]:
+    latest_issue: Optional[Dict[str, Any]] = None
+    latest_issue_ts = ""
+    fallback_count = 0
+    recovered_count = 0
+    issue_count = 0
+    targets: Dict[str, Dict[str, Any]] = {}
+    for artifact in artifacts_for_round:
+        target = str(artifact.get("worker") or "").strip()
+        if not target:
+            continue
+        label = execution_target_label(target, None)
+        mode = str(artifact.get("mode") or "").strip() or None
+        recovered = bool(artifact.get("recoveredFromIncomplete"))
+        fallback = mode == "mock"
+        contract_warnings = [
+            str(item).strip()
+            for item in (artifact.get("contractWarnings") or [])
+            if str(item).strip()
+        ] if isinstance(artifact.get("contractWarnings"), list) else []
+        degraded = fallback or recovered or bool(contract_warnings)
+        if fallback:
+            fallback_count += 1
+        if recovered:
+            recovered_count += 1
+        if degraded:
+            issue_count += 1
+        target_entry = {
+            "target": target,
+            "label": label,
+            "status": "degraded" if degraded else "completed",
+            "mode": mode,
+            "degraded": degraded,
+            "usedMockFallback": fallback,
+            "recoveredFromIncomplete": recovered,
+            "lastError": None,
+            "lastMessage": (
+                "Used mock fallback for this artifact."
+                if fallback
+                else (
+                    "Recovered after output-token escalation."
+                    if recovered
+                    else (contract_warnings[0] if contract_warnings else "Completed without degradation.")
+                )
+            ),
+            "updatedAt": str(artifact.get("modifiedAt") or "").strip() or None,
+            "contractWarnings": contract_warnings[:12],
+        }
+        targets[target] = target_entry
+        ts = str(artifact.get("modifiedAt") or "").strip()
+        if degraded and ts >= latest_issue_ts:
+            latest_issue_ts = ts
+            latest_issue = dict(target_entry)
     return {
         "degraded": issue_count > 0,
         "issueCount": issue_count,
@@ -854,6 +1307,7 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
             break
     if content is None or bucket_name is None:
         raise FileNotFoundError("Artifact not found.")
+    warnings: List[str] = []
     response_meta = content.get("responseMeta") if isinstance(content.get("responseMeta"), dict) else {}
     kind = str(content.get("artifactType") or "").strip() or "artifact"
     if kind == "artifact":
@@ -866,25 +1320,40 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
         "kind": kind,
         "storage": bucket_name,
         "modifiedAt": modified_at,
-        "size": size,
+        "size": coerce_int(size, default=0, minimum=0, warnings=warnings, label=f"{safe_name}.size") or 0,
         "summary": {
             "taskId": content.get("taskId"),
             "target": content.get("target") or content.get("workerId"),
             "label": content.get("label"),
             "mode": content.get("mode"),
             "model": content.get("model") or content.get("modelUsed"),
-            "step": content.get("step"),
-            "round": content.get("round"),
+            "step": coerce_int(content.get("step"), allow_none=True, warnings=warnings, label=f"{safe_name}.step"),
+            "round": coerce_int(content.get("round"), allow_none=True, warnings=warnings, label=f"{safe_name}.round"),
             "responseId": content.get("responseId"),
-            "requestedMaxOutputTokens": int(response_meta.get("requestedMaxOutputTokens") or 0) or None,
-            "effectiveMaxOutputTokens": int(response_meta.get("effectiveMaxOutputTokens") or 0) or None,
-            "maxOutputTokenAttempts": [int(value) for value in (response_meta.get("maxOutputTokenAttempts") or []) if str(value).strip()],
+            "requestedMaxOutputTokens": coerce_int(
+                response_meta.get("requestedMaxOutputTokens"),
+                allow_none=True,
+                warnings=warnings,
+                label=f"{safe_name}.responseMeta.requestedMaxOutputTokens",
+            ),
+            "effectiveMaxOutputTokens": coerce_int(
+                response_meta.get("effectiveMaxOutputTokens"),
+                allow_none=True,
+                warnings=warnings,
+                label=f"{safe_name}.responseMeta.effectiveMaxOutputTokens",
+            ),
+            "maxOutputTokenAttempts": coerce_int_list(
+                response_meta.get("maxOutputTokenAttempts"),
+                warnings=warnings,
+                label=f"{safe_name}.responseMeta.maxOutputTokenAttempts",
+            ),
             "recoveredFromIncomplete": bool(response_meta.get("recoveredFromIncomplete")),
             "localToolCalls": (response_meta.get("localToolCalls") or [])[:12] if isinstance(response_meta.get("localToolCalls"), list) else [],
             "localFileSources": list(response_meta.get("localFileSources") or []) if isinstance(response_meta.get("localFileSources"), list) else [],
             "githubToolCalls": (response_meta.get("githubToolCalls") or [])[:12] if isinstance(response_meta.get("githubToolCalls"), list) else [],
             "githubSources": list(response_meta.get("githubSources") or []) if isinstance(response_meta.get("githubSources"), list) else [],
             "rawOutputAvailable": bool(str(content.get("rawOutputText") or "").strip()),
+            "contractWarnings": warnings[:12],
         },
         "policy": artifact_visibility_policy(),
         "content": content,

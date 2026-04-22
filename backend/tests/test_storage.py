@@ -133,6 +133,106 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertTrue(payload["activeTask"]["executionHealth"]["degraded"])
         self.assertTrue(payload["activeTask"]["executionHealth"]["targets"]["commander"]["recoveredFromIncomplete"])
 
+    def test_read_state_payload_keeps_degraded_target_after_later_clean_step(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-health-sticky",
+                    "objective": "Do not lose degraded lane state.",
+                    "workers": [{"id": "A", "label": "Proponent"}],
+                },
+            },
+        )
+        self.paths.steps.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "ts": "2026-04-21T12:00:00+00:00",
+                            "stage": "worker_A",
+                            "message": "Live API call failed; falling back to mock.",
+                            "context": {
+                                "taskId": "t-health-sticky",
+                                "workerId": "A",
+                                "mode": "mock",
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "ts": "2026-04-21T12:00:10+00:00",
+                            "stage": "worker_A",
+                            "message": "Worker A checkpoint saved.",
+                            "context": {
+                                "taskId": "t-health-sticky",
+                                "workerId": "A",
+                                "mode": "live",
+                            },
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertTrue(payload["executionHealth"]["degraded"])
+        self.assertEqual(payload["executionHealth"]["fallbackCount"], 1)
+        self.assertEqual(payload["executionHealth"]["targets"]["A"]["status"], "degraded")
+        self.assertTrue(payload["executionHealth"]["targets"]["A"]["usedMockFallback"])
+
+    def test_read_state_payload_surfaces_telemetry_contract_warnings(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-health-telemetry",
+                    "objective": "Surface malformed telemetry safely.",
+                },
+            },
+        )
+        self.paths.steps.write_text('{"ts":"2026-04-21T12:00:00+00:00","stage":"commander","context":{"taskId":"t-health-telemetry"}}\nnot-json\n["bad"]\n', encoding="utf-8")
+        self.paths.events.write_text('{"ts":"2026-04-21T12:00:00+00:00","type":"task_started"}\nnull\n', encoding="utf-8")
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertTrue(payload["contractWarnings"])
+        joined = " ".join(payload["contractWarnings"])
+        self.assertIn("steps.jsonl dropped 1 malformed JSONL line", joined)
+        self.assertIn("steps.jsonl dropped 1 non-object telemetry entry", joined)
+        self.assertIn("events.jsonl dropped 1 non-object telemetry entry", joined)
+        self.assertEqual(payload["activeTask"]["contractWarnings"], payload["contractWarnings"])
+
+    def test_read_state_payload_surfaces_contract_warnings_for_malformed_state(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {"taskId": "t-state-contract", "objective": "Keep the shell stable."},
+                "commander": ["bad"],
+                "workers": {"A": {"label": "Proponent"}, "B": "bad"},
+                "memoryVersion": "many",
+                "loop": {
+                    "status": "flying",
+                    "totalRounds": "several",
+                    "completedRounds": "half",
+                    "delayMs": "slow",
+                },
+                "usage": "expensive",
+            },
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertIsNone(payload["commander"])
+        self.assertEqual(set(payload["workers"].keys()), {"A"})
+        self.assertEqual(payload["memoryVersion"], 0)
+        self.assertEqual(payload["loop"]["status"], "idle")
+        self.assertEqual(payload["loop"]["delayMs"], 0)
+        self.assertTrue(payload["contractWarnings"])
+        self.assertEqual(payload["activeTask"]["contractWarnings"], payload["contractWarnings"])
+
     def test_project_paths_honors_loop_data_root_override(self) -> None:
         override = self.root / "shared-data"
         previous = os.environ.get("LOOP_DATA_ROOT")
@@ -193,6 +293,187 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertTrue(payload["sessions"])
         self.assertEqual(payload["sessions"][0]["taskId"], task_id)
 
+    def test_build_history_payload_surfaces_top_level_contract_warnings(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-history-telemetry",
+                    "objective": "Carry telemetry warnings into Review.",
+                },
+            },
+        )
+        self.paths.steps.write_text('{"ts":"2026-04-21T12:00:00+00:00","stage":"commander","context":{"taskId":"t-history-telemetry"}}\nnot-json\n', encoding="utf-8")
+
+        payload = storage.build_history_payload(self.paths)
+
+        self.assertTrue(payload["contractWarnings"])
+        self.assertIn("steps.jsonl dropped 1 malformed JSONL line", payload["contractWarnings"][0])
+
+    def test_build_history_payload_surfaces_session_contract_warnings(self) -> None:
+        task_id = "t-20260421-120250-archive"
+        self.write_json(
+            self.paths.sessions / "session-bad.json",
+            {
+                "createdAt": "2026-04-21T12:00:00+00:00",
+                "taskId": task_id,
+                "objective": "Archive safely.",
+                "summaryRound": "latest",
+                "carryContext": "Carry this forward.",
+            },
+        )
+
+        payload = storage.build_history_payload(self.paths)
+        session = payload["sessions"][0]
+
+        self.assertEqual(session["summaryRound"], 0)
+        self.assertTrue(session["contractWarnings"])
+        self.assertIn("invalid summaryRound", session["contractWarnings"][0])
+
+    def test_build_history_payload_surfaces_round_execution_health(self) -> None:
+        task_id = "t-20260421-120500-beaded"
+        self.write_json(
+            self.paths.tasks / f"{task_id}.json",
+            {
+                "taskId": task_id,
+                "objective": "Make degraded rounds legible.",
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_A_step001_output.json",
+            {
+                "taskId": task_id,
+                "artifactType": "worker_output",
+                "workerId": "A",
+                "label": "Proponent",
+                "mode": "mock",
+                "model": "gpt-5-mini",
+                "step": 1,
+                "responseMeta": {
+                    "requestedMaxOutputTokens": 900,
+                    "effectiveMaxOutputTokens": 900,
+                },
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_summary_round001_output.json",
+            {
+                "taskId": task_id,
+                "artifactType": "summary_output",
+                "target": "summarizer",
+                "label": "Summarizer",
+                "mode": "live",
+                "model": "gpt-5-mini",
+                "round": 1,
+                "responseMeta": {
+                    "requestedMaxOutputTokens": 1200,
+                    "effectiveMaxOutputTokens": 2400,
+                    "recoveredFromIncomplete": True,
+                },
+            },
+        )
+
+        payload = storage.build_history_payload(self.paths)
+        round_entry = payload["rounds"][0]
+
+        self.assertTrue(round_entry["executionHealth"]["degraded"])
+        self.assertEqual(round_entry["executionHealth"]["fallbackCount"], 1)
+        self.assertEqual(round_entry["executionHealth"]["recoveredCount"], 1)
+        self.assertEqual(round_entry["executionHealth"]["issueCount"], 2)
+        self.assertEqual(round_entry["executionHealth"]["targets"]["A"]["status"], "degraded")
+
+    def test_build_history_payload_surfaces_job_execution_health(self) -> None:
+        task_id = "t-20260421-121000-jobsafe"
+        self.write_json(
+            self.paths.tasks / f"{task_id}.json",
+            {
+                "taskId": task_id,
+                "objective": "Show job health at a glance.",
+            },
+        )
+        self.write_json(
+            self.paths.jobs / "job-loop.json",
+            {
+                "jobId": "job-loop",
+                "taskId": task_id,
+                "jobType": "loop",
+                "status": "interrupted",
+                "rounds": 2,
+                "completedRounds": 1,
+                "queuedAt": "2026-04-21T12:00:00+00:00",
+                "startedAt": "2026-04-21T12:01:00+00:00",
+                "finishedAt": "2026-04-21T12:02:00+00:00",
+                "lastMessage": "Recovered a stale running background loop. It can be retried.",
+                "error": "Recovered a stale running background loop. It can be retried.",
+            },
+        )
+        self.write_json(
+            self.paths.jobs / "job-target.json",
+            {
+                "jobId": "job-target",
+                "taskId": task_id,
+                "jobType": "target",
+                "target": "answer_now",
+                "status": "completed",
+                "mode": "live",
+                "partialSummary": True,
+                "queuedAt": "2026-04-21T12:03:00+00:00",
+                "startedAt": "2026-04-21T12:03:01+00:00",
+                "finishedAt": "2026-04-21T12:03:30+00:00",
+                "lastMessage": "Partial answer generated from current checkpoints.",
+            },
+        )
+
+        payload = storage.build_history_payload(self.paths)
+        jobs = {entry["jobId"]: entry for entry in payload["jobs"]}
+
+        self.assertEqual(jobs["job-loop"]["executionHealth"]["tone"], "error")
+        self.assertTrue(jobs["job-loop"]["executionHealth"]["degraded"])
+        self.assertEqual(jobs["job-target"]["executionHealth"]["tone"], "recovered")
+        self.assertFalse(jobs["job-target"]["executionHealth"]["degraded"])
+
+    def test_build_history_payload_coerces_malformed_job_fields_into_contract_warnings(self) -> None:
+        task_id = "t-20260421-121500-contract"
+        self.write_json(
+            self.paths.tasks / f"{task_id}.json",
+            {
+                "taskId": task_id,
+                "objective": "Show malformed job payloads safely.",
+            },
+        )
+        self.write_json(
+            self.paths.jobs / "job-malformed.json",
+            {
+                "jobId": "job-malformed",
+                "taskId": task_id,
+                "jobType": "loop",
+                "status": "completed",
+                "queuePosition": "front",
+                "attempt": "retry",
+                "resumeFromRound": "later",
+                "rounds": "two",
+                "workerCount": "many",
+                "timeoutSeconds": "soon",
+                "usage": {
+                    "totalTokens": "lots",
+                    "estimatedCostUsd": "pricey",
+                },
+                "lastMessage": "Completed with malformed metadata.",
+            },
+        )
+
+        payload = storage.build_history_payload(self.paths)
+        job = next(entry for entry in payload["jobs"] if entry["jobId"] == "job-malformed")
+
+        self.assertEqual(job["queuePosition"], 0)
+        self.assertEqual(job["attempt"], 1)
+        self.assertEqual(job["rounds"], 0)
+        self.assertEqual(job["totalTokens"], 0)
+        self.assertEqual(job["estimatedCostUsd"], 0.0)
+        self.assertTrue(job["contractWarnings"])
+        self.assertEqual(job["executionHealth"]["tone"], "warning")
+        self.assertTrue(job["executionHealth"]["degraded"])
+
     def test_read_artifact_returns_summary_and_content(self) -> None:
         artifact_name = "t-20260421-120000-deadbe_A_step001_output.json"
         self.write_json(
@@ -225,6 +506,35 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["effectiveMaxOutputTokens"], 1800)
         self.assertTrue(payload["summary"]["recoveredFromIncomplete"])
         self.assertEqual(payload["content"]["label"], "Proponent")
+
+    def test_read_artifact_surfaces_contract_warnings_for_malformed_response_meta(self) -> None:
+        artifact_name = "t-20260421-120100-deadbe_A_step001_output.json"
+        self.write_json(
+            self.paths.outputs / artifact_name,
+            {
+                "taskId": "t-20260421-120100-deadbe",
+                "artifactType": "worker_output",
+                "workerId": "A",
+                "label": "Proponent",
+                "mode": "live",
+                "model": "gpt-5-mini",
+                "step": "first",
+                "responseMeta": {
+                    "requestedMaxOutputTokens": "wide-open",
+                    "effectiveMaxOutputTokens": "wider",
+                    "maxOutputTokenAttempts": ["900", "oops", None],
+                },
+                "rawOutputText": "Raw lane output.",
+            },
+        )
+
+        payload = storage.read_artifact(self.paths, artifact_name)
+
+        self.assertIsNone(payload["summary"]["step"])
+        self.assertIsNone(payload["summary"]["requestedMaxOutputTokens"])
+        self.assertIsNone(payload["summary"]["effectiveMaxOutputTokens"])
+        self.assertEqual(payload["summary"]["maxOutputTokenAttempts"], [900])
+        self.assertTrue(payload["summary"]["contractWarnings"])
 
     def test_eval_history_and_artifact_reads_work_from_isolated_run_store(self) -> None:
         run_id = "run-1"

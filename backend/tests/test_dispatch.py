@@ -145,6 +145,79 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(jobs_by_id[batch["commanderReview"]["jobId"]]["status"], "interrupted")
         self.assertEqual(jobs_by_id[batch["summarizer"]["jobId"]]["status"], "interrupted")
 
+    def test_execute_target_job_provider_error_gets_explicit_failure_class(self) -> None:
+        runtime = dispatch._runtime(self.root)
+        state = self._read_state()
+        task = state["activeTask"]
+        job = dispatch.create_target_job(runtime, task, "commander", {})
+
+        with mock.patch(
+            "backend.app.runtime_execution.run_target",
+            side_effect=RuntimeErrorWithCode("OpenAI API request failed: HTTP 500 | server_error", 500),
+        ):
+            with self.assertRaises(RuntimeErrorWithCode):
+                dispatch.execute_target_job_process(job["jobId"], self.root)
+
+        history = storage.build_history_payload(storage.project_paths(self.root))
+        recorded = next(entry for entry in history["jobs"] if entry["jobId"] == job["jobId"])
+        self.assertEqual(recorded["status"], "error")
+        self.assertEqual(recorded["executionHealth"]["label"], "Provider")
+        self.assertIn("server-side error", recorded["executionHealth"]["summary"].lower())
+
+    def test_execute_target_job_output_exhaustion_gets_explicit_failure_class(self) -> None:
+        runtime = dispatch._runtime(self.root)
+        state = self._read_state()
+        task = state["activeTask"]
+        job = dispatch.create_target_job(runtime, task, "commander", {})
+
+        with mock.patch(
+            "backend.app.runtime_execution.run_target",
+            side_effect=RuntimeErrorWithCode("OpenAI Responses API output remained incomplete after attempts [2800, 5600]", 500),
+        ):
+            with self.assertRaises(RuntimeErrorWithCode):
+                dispatch.execute_target_job_process(job["jobId"], self.root)
+
+        history = storage.build_history_payload(storage.project_paths(self.root))
+        recorded = next(entry for entry in history["jobs"] if entry["jobId"] == job["jobId"])
+        self.assertEqual(recorded["status"], "error")
+        self.assertEqual(recorded["executionHealth"]["label"], "Output cap")
+        self.assertIn("output-token", recorded["executionHealth"]["summary"].lower())
+
+    def test_answer_now_records_failed_lane_dependencies_in_partial_job(self) -> None:
+        state = self._read_state()
+        state["commander"] = {"round": 1, "answer": "Lead draft present."}
+        self._write_state(state)
+        paths = storage.project_paths(self.root)
+        (paths.jobs / "dispatch-worker-a.json").write_text(
+            json.dumps(
+                storage.default_job(
+                    {
+                        "jobId": "dispatch-worker-a",
+                        "taskId": state["activeTask"]["taskId"],
+                        "jobType": "target",
+                        "target": "A",
+                        "status": "error",
+                        "error": "OpenAI API request failed: HTTP 500 | server_error",
+                        "metadata": {
+                            "failureClass": "provider_error",
+                            "operatorNote": "OpenAI API request failed: HTTP 500 | server_error",
+                        },
+                    }
+                ),
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch("backend.app.dispatch.launch_dispatch_job_runner"):
+            result = dispatch.start_target_job({"target": "answer_now"}, self.root)
+
+        history = storage.build_history_payload(paths)
+        recorded = next(entry for entry in history["jobs"] if entry["jobId"] == result["jobId"])
+        self.assertTrue(recorded["partialSummary"])
+        self.assertEqual(recorded["executionHealth"]["label"], "Partial-risk")
+        self.assertIn("failed lanes remain unresolved", recorded["executionHealth"]["summary"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()

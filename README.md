@@ -483,6 +483,8 @@ Next milestone track:
 - `data/` contains volatile runtime state and artifacts
 - review artifacts may include sensitive prompt material
 - displayed spend is an operational estimate, not invoice truth
+- provider terms vary; pooling multiple LLM providers into adversarial or cross-provider orchestration can violate some providers' ToS or acceptable-use rules and may lead to suspension, rate limits, key revocation, or other sanctions
+- this project cannot certify that multi-provider adversarial usage is compliant with any provider's terms, and operators are responsible for their own provider-review, legal/compliance sign-off, and deployment choices before wiring together multiple providers or user-supplied keys
 
 ## Repo Hygiene
 
