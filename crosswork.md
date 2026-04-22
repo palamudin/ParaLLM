@@ -235,3 +235,5 @@ Responsibilities:
 2026-04-22 Codex: Fresh live validation passed on the direct backend. The 1-round / 2-worker loop completed with `status=completed`, workers `A,B`, and live usage recorded across commander, both workers, commander review, and summarizer. Moving to README updates for the new skill packs before commit/push.
 2026-04-22 Codex: `README.md` now documents the shared advisor skills plus the provider/runtime-specific skill layer (`openai`, `anthropic`, `xai`, `minimax`, `ollama`). Final repo check and commit/push are next.
 2026-04-22 Codex: Final gate is green: `python -m unittest` (110 tests), `node --check assets/app.js`, and a fresh direct-backend live loop with 1 round / 2 workers completed successfully. Committing and pushing the current branch state now.
+2026-04-22 Codex: Git add completed, but commit hit a stale `.git/index.lock`. Verifying there is no active git process, clearing the stale lock, then retrying commit/push sequentially.
+2026-04-22 Codex: Commit and push succeeded on `codex/vendor-neutral-advisor-skills` at `523439f`. Final local check is just a clean worktree confirmation before handoff.
