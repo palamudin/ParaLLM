@@ -1,0 +1,4 @@
+interface:
+  display_name: "Provider: Anthropic Messages"
+  short_description: "Use Anthropic Messages and tool blocks without breaking structured output"
+  default_prompt: "Apply the Anthropic Messages provider contract, respect tool_use or tool_result flow, and end with schema-valid JSON text."

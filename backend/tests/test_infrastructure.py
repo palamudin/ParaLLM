@@ -31,6 +31,7 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual(status["backend"], "env")
         self.assertFalse(status["writable"])
         self.assertEqual(status["keyCount"], 2)
+        self.assertEqual(status["providerGroups"]["openai"]["keyCount"], 2)
 
     def test_env_secret_backend_disables_ui_mutation(self) -> None:
         env = {
@@ -57,6 +58,22 @@ class InfrastructureTests(unittest.TestCase):
         self.assertTrue(status["strictLiveFailure"])
         self.assertEqual(status["failureMode"], "empty")
         self.assertEqual(infra["backends"]["secrets"]["failureMode"], "empty")
+
+    def test_infrastructure_aggregates_provider_groups_across_env_backend(self) -> None:
+        env = {
+            "LOOP_ROOT": str(self.root),
+            "LOOP_SECRET_BACKEND": "env",
+            "LOOP_OPENAI_API_KEYS": "sk-openai\n",
+            "LOOP_ANTHROPIC_API_KEYS": "sk-anthropic\n",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            infra = infrastructure.infrastructure_status(self.root)
+
+        secrets = infra["backends"]["secrets"]
+        self.assertTrue(secrets["ready"])
+        self.assertEqual(secrets["keyCount"], 2)
+        self.assertEqual(secrets["providerGroups"]["openai"]["keyCount"], 1)
+        self.assertEqual(secrets["providerGroups"]["anthropic"]["keyCount"], 1)
 
     def test_docker_secret_backend_reads_keys_from_mounted_file(self) -> None:
         secret_path = self.root / "secrets" / "openai_api_keys"

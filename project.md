@@ -69,9 +69,9 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Optional commander-review-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
-- API keys can be managed locally through the UI as a local key pool, with per-slot inputs, masked previews, and deterministic per-position assignment
+- API keys can now be managed through provider-grouped UI pools, with per-slot inputs, masked previews, and deterministic per-position assignment inside each vendor group
 - Form draft state is persisted locally so edits, roster changes, and loop settings do not get stomped by polling refreshes
-- The transitional local fallback can still store secrets in `Auth.txt` as a one-key-per-line pool, but the preferred paths are now `env`, `docker_secret`, or `external`
+- The transitional local fallback can still store secrets in provider-specific files such as `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, and `Auth.minimax.txt`, but the preferred paths are now `env`, `docker_secret`, or `external`
 
 ## Sync Model
 
@@ -366,10 +366,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - `object_storage` now owns runtime checkpoints, saved output artifacts, session archives, and export bundles, and Review/history reads the runtime artifacts back through the same adapter
   - eval suite/arm manifests remain filesystem-backed in this phase
 - The secret backend is no longer only transitional local-file handling:
-  - `LOOP_SECRET_BACKEND=env` now works through the runtime as well as the control plane via `LOOP_OPENAI_API_KEYS`, and the local profile now defaults to it
+  - `LOOP_SECRET_BACKEND=env` now works through the runtime as well as the control plane via provider-isolated env vars such as `LOOP_OPENAI_API_KEYS`, `LOOP_ANTHROPIC_API_KEYS`, `LOOP_XAI_API_KEYS`, and `LOOP_MINIMAX_API_KEYS`, and the local profile now defaults to it
   - `LOOP_SECRET_BACKEND=docker_secret` now supports mounted newline-delimited key files such as `/run/secrets/openai_api_keys`
-  - `LOOP_SECRET_BACKEND=external` now works as a real read-only HTTP provider path through both the backend and runtime when `LOOP_SECRET_PROVIDER_URL` is configured
-  - local `Auth.txt` remains only the transitional writable path for local-first testing
+  - `LOOP_SECRET_BACKEND=external` now works as a real read-only HTTP provider path through both the backend and runtime when `LOOP_SECRET_PROVIDER_URL` is configured, including grouped provider payloads
+  - local provider-specific auth files remain the only writable transitional path for local-first testing
 - A hosted-dev dependency shape now exists in `deploy/compose.hosted-dev.yml` with:
   - `postgres`
   - `redis`
@@ -570,6 +570,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - local profile defaults to `env`
   - hosted profiles default to `docker_secret`
   - `local_file` remains explicit fallback only
+- Provider key groups are now isolated for `openai`, `anthropic`, `xai`, and `minimax` across env, mounted-secret, external-provider, and local-file backends, so one vendor path never reuses another vendor's keys.
 - Live model calls now rotate to the next non-empty key on auth-style failures instead of binding one lane to one dead key for the rest of the run.
 - Managed secret backends now fail loudly when empty or unreachable, so live execution no longer drifts into file/env fallthrough or quiet mock fallback when the selected backend is degraded.
 
@@ -608,10 +609,12 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - Remove the OpenAI-only runtime assumption and make provider choice a real product capability
 - Current status:
   - initial slice landed
-  - runtime/provider dispatch now supports `openai` plus a first native `ollama` path
+  - runtime/provider dispatch now supports `openai`, `anthropic`, `xai`, `minimax`, and a native `ollama` path
   - workers inherit the task runtime provider while the summarizer/lead-thread provider can be set separately
-  - Ollama is intentionally limited to structured local generation for now and does not yet support the runtime's research/tool loop
+  - Ollama supports structured local generation plus local function-tool loops, but not hosted web-search research
   - eval arms, benchmark runs, and review artifacts now record provider identity/capability metadata so mixed-provider experiments can be compared honestly
+  - settings/auth now exposes provider-grouped key pools for `openai`, `anthropic`, `xai`, and `minimax`, with explicit no-bleed assignment rules and ToS warning copy
+  - provider-specific runtime behavior now changes auth lanes, live API transport, capability gating, and provider-scoped advisor skills
 - Scope:
   - add a provider layer that can support OpenAI, Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
   - make mixed-model experiments first-class
@@ -656,5 +659,5 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Notes
 
-- `Auth.txt` now acts only as a local fallback API key pool for testing, with one key per line. It must not be copied into logs, responses, or version control.
+- `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, and `Auth.minimax.txt` now act only as local fallback API key pools for testing. They must not be copied into logs, responses, or version control.
 - Before committing, the repo should ignore secrets and volatile runtime data.

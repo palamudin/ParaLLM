@@ -34,8 +34,8 @@ def _runtime(root: Optional[Path] = None) -> LoopRuntime:
     return LoopRuntime(Path(root).resolve() if root else Path(__file__).resolve().parents[2])
 
 
-def write_auth_key_pool(keys: list[str], root: Optional[Path] = None) -> None:
-    auth_path = control.auth_file_path(root)
+def write_auth_key_pool(keys: list[str], root: Optional[Path] = None, provider: Any = "openai") -> None:
+    auth_path = control.provider_auth_file_path(root, provider)
     auth_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = control.normalize_auth_key_pool(keys)
     payload = "\n".join(normalized) + ("\n" if normalized else "")
@@ -50,7 +50,8 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
             f"API key mutation is disabled because the active secret backend is {auth_status.get('backend')}.",
             409,
         )
-    auth_path = control.auth_file_path(runtime.root)
+    provider = control.normalize_auth_key_provider(payload.get("provider", "openai"))
+    provider_label = control.auth_key_provider_label(provider)
     clear = coerce_bool(payload.get("clear"), False)
     append_key = str(payload.get("appendKey") or "").strip()
     api_key = str(payload.get("apiKey") or "").strip()
@@ -59,58 +60,74 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
     api_keys = control.normalize_auth_key_pool(payload.get("apiKeys", payload.get("apiKey", "")))
 
     if clear:
-        write_auth_key_pool([], runtime.root)
-        runtime.append_step("auth", "Cleared the local API key pool file.", {})
-        return {"ok": True, "message": "Stored API key pool cleared.", **control.auth_pool_status(runtime.root)}
+        write_auth_key_pool([], runtime.root, provider)
+        runtime.append_step("auth", f"Cleared the local {provider_label} API key pool file.", {"provider": provider})
+        return {"ok": True, "message": f"Stored {provider_label} API key pool cleared.", **control.auth_pool_status(runtime.root)}
 
     if append_key:
-        pool = control.read_auth_key_pool(runtime.root)
+        pool = control.read_auth_key_pool(runtime.root, provider)
         pool.append(append_key)
-        write_auth_key_pool(pool, runtime.root)
-        runtime.append_step("auth", "Appended one API key into the local key pool.", {"keyCount": len(control.read_auth_key_pool(runtime.root))})
+        write_auth_key_pool(pool, runtime.root, provider)
+        runtime.append_step(
+            "auth",
+            f"Appended one {provider_label} API key into the local key pool.",
+            {"provider": provider, "keyCount": len(control.read_auth_key_pool(runtime.root, provider))},
+        )
         return {
             "ok": True,
-            "message": f"Stored {len(control.read_auth_key_pool(runtime.root))} API keys.",
+            "message": f"Stored {len(control.read_auth_key_pool(runtime.root, provider))} {provider_label} API keys.",
             **control.auth_pool_status(runtime.root),
         }
 
     if replace_index is not None and api_key:
         index = int(replace_index) if str(replace_index).strip().lstrip("-").isdigit() else -1
-        pool = control.read_auth_key_pool(runtime.root)
+        pool = control.read_auth_key_pool(runtime.root, provider)
         if index < 0 or index >= len(pool):
             raise RuntimeErrorWithCode("Key slot is out of range.", 400)
         pool[index] = api_key
-        write_auth_key_pool(pool, runtime.root)
-        runtime.append_step("auth", "Replaced one API key in the local key pool.", {"slot": index + 1, "keyCount": len(control.read_auth_key_pool(runtime.root))})
+        write_auth_key_pool(pool, runtime.root, provider)
+        runtime.append_step(
+            "auth",
+            f"Replaced one {provider_label} API key in the local key pool.",
+            {"provider": provider, "slot": index + 1, "keyCount": len(control.read_auth_key_pool(runtime.root, provider))},
+        )
         return {
             "ok": True,
-            "message": f"Updated key slot {index + 1}.",
+            "message": f"Updated {provider_label} key slot {index + 1}.",
             **control.auth_pool_status(runtime.root),
         }
 
     if remove_index is not None:
         index = int(remove_index) if str(remove_index).strip().lstrip("-").isdigit() else -1
-        pool = control.read_auth_key_pool(runtime.root)
+        pool = control.read_auth_key_pool(runtime.root, provider)
         if index < 0 or index >= len(pool):
             raise RuntimeErrorWithCode("Key slot is out of range.", 400)
         del pool[index]
-        write_auth_key_pool(pool, runtime.root)
-        runtime.append_step("auth", "Removed one API key from the local key pool.", {"slot": index + 1, "keyCount": len(control.read_auth_key_pool(runtime.root))})
+        write_auth_key_pool(pool, runtime.root, provider)
+        runtime.append_step(
+            "auth",
+            f"Removed one {provider_label} API key from the local key pool.",
+            {"provider": provider, "slot": index + 1, "keyCount": len(control.read_auth_key_pool(runtime.root, provider))},
+        )
         return {
             "ok": True,
-            "message": f"Stored {len(pool)} API keys." if pool else "Stored API key pool cleared.",
+            "message": f"Stored {len(pool)} {provider_label} API keys." if pool else f"Stored {provider_label} API key pool cleared.",
             **control.auth_pool_status(runtime.root),
         }
 
     if not api_keys:
         raise RuntimeErrorWithCode("At least one API key is required.", 400)
 
-    write_auth_key_pool(api_keys, runtime.root)
-    runtime.append_step("auth", "Updated the local API key pool file.", {"keyCount": len(control.read_auth_key_pool(runtime.root))})
-    count = len(control.read_auth_key_pool(runtime.root))
+    write_auth_key_pool(api_keys, runtime.root, provider)
+    runtime.append_step(
+        "auth",
+        f"Updated the local {provider_label} API key pool file.",
+        {"provider": provider, "keyCount": len(control.read_auth_key_pool(runtime.root, provider))},
+    )
+    count = len(control.read_auth_key_pool(runtime.root, provider))
     return {
         "ok": True,
-        "message": "Stored 1 API key." if count == 1 else f"Stored {count} API keys.",
+        "message": f"Stored 1 {provider_label} API key." if count == 1 else f"Stored {count} {provider_label} API keys.",
         **control.auth_pool_status(runtime.root),
     }
 
@@ -190,6 +207,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "repos": payload.get("githubAllowedRepos", current_github_tools["repos"]),
         }
     )
+    feature_alignment = control.align_provider_runtime_features(provider, research, local_files, github_tools)
+    research = feature_alignment["research"]
+    local_files = feature_alignment["localFiles"]
+    github_tools = feature_alignment["githubTools"]
     dynamic_spinup = normalize_dynamic_spinup_config(
         {"enabled": payload.get("dynamicSpinupEnabled", current_dynamic_spinup["enabled"])}
     )
@@ -223,7 +244,35 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         summary["model"] = summarizer_model
         task["summarizer"] = summary
         state_next["activeTask"] = task
-        state_next["draft"] = control.build_draft_from_task(task)
+        existing_draft = control.normalize_draft_state(
+            current.get("draft") if isinstance(current.get("draft"), dict) else control.build_draft_from_task(task)
+        )
+        state_next["draft"] = control.normalize_draft_state(
+            {
+                **existing_draft,
+                "provider": provider,
+                "model": model,
+                "summarizerProvider": summarizer_provider,
+                "summarizerModel": summarizer_model,
+                "reasoningEffort": reasoning_effort,
+                "maxTotalTokens": budget["maxTotalTokens"],
+                "maxCostUsd": budget["maxCostUsd"],
+                "maxOutputTokens": budget["maxOutputTokens"],
+                "budgetTargets": budget["targets"],
+                "researchEnabled": research["enabled"],
+                "researchExternalWebAccess": research["externalWebAccess"],
+                "researchDomains": research["domains"],
+                "localFilesEnabled": local_files["enabled"],
+                "localFileRoots": local_files["roots"],
+                "githubToolsEnabled": github_tools["enabled"],
+                "githubAllowedRepos": github_tools["repos"],
+                "dynamicSpinupEnabled": dynamic_spinup["enabled"],
+                "vettingEnabled": vetting["enabled"],
+                "loopRounds": preferred_loop["rounds"],
+                "loopDelayMs": preferred_loop["delayMs"],
+                "updatedAt": utc_now(),
+            }
+        )
         return state_next
 
     updated_state = runtime.mutate_state(mutate)

@@ -37,6 +37,18 @@ class RuntimeAuthTests(unittest.TestCase):
 
         self.assertEqual(keys, ["sk-one", "sk-two"])
 
+    def test_read_api_key_pool_reads_requested_provider_group_from_env(self) -> None:
+        missing_path = Path(tempfile.gettempdir()) / "parallm-missing-auth.txt"
+        env = {
+            "LOOP_SECRET_BACKEND": "env",
+            "LOOP_OPENAI_API_KEYS": "sk-openai\n",
+            "LOOP_ANTHROPIC_API_KEYS": "sk-anthropic\nsk-anthropic\n",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            keys = read_api_key_pool(missing_path, "anthropic")
+
+        self.assertEqual(keys, ["sk-anthropic"])
+
     def test_read_api_key_pool_reads_mounted_secret_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             secret_path = Path(tmpdir) / "openai_api_keys"
@@ -48,6 +60,19 @@ class RuntimeAuthTests(unittest.TestCase):
                 keys = read_api_key_pool(secret_path)
 
         self.assertEqual(keys, ["sk-one", "sk-two"])
+
+    def test_read_api_key_pool_reads_provider_specific_local_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            auth_path = Path(tmpdir) / "Auth.txt"
+            auth_path.write_text("sk-openai\n", encoding="utf-8")
+            (Path(tmpdir) / "Auth.anthropic.txt").write_text("sk-anthropic\nsk-anthropic\n", encoding="utf-8")
+            env = {
+                "LOOP_SECRET_BACKEND": "local_file",
+            }
+            with mock.patch.dict("os.environ", env, clear=False):
+                keys = read_api_key_pool(auth_path, "anthropic")
+
+        self.assertEqual(keys, ["sk-anthropic"])
 
     def test_read_api_key_pool_dedupes_local_file_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -224,7 +249,95 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(usage["outputTokens"], 45)
         self.assertEqual(usage["estimatedCostUsd"], 0.0)
 
-    def test_invoke_provider_json_rejects_ollama_tools(self) -> None:
+    def test_invoke_provider_json_supports_ollama_function_tools(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        request_bodies: list[dict] = []
+        responses = [
+            {
+                "created_at": "2026-04-21T12:34:56Z",
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "get_temperature",
+                                "arguments": {"city": "New York"},
+                            },
+                        }
+                    ],
+                },
+            },
+            {
+                "created_at": "2026-04-21T12:34:57Z",
+                "message": {
+                    "content": json.dumps({"answer": "New York is 22C and sunny."}),
+                },
+            },
+        ]
+
+        def fake_urlopen(request, timeout=1800):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return _FakeHTTPResponse(responses.pop(0))
+
+        tool_def = [
+            {
+                "type": "function",
+                "name": "get_temperature",
+                "description": "Get the temperature for a city.",
+                "parameters": {
+                    "type": "object",
+                    "required": ["city"],
+                    "properties": {
+                        "city": {"type": "string"},
+                    },
+                },
+            }
+        ]
+        handlers = {
+            "get_temperature": lambda arguments: (
+                {"city": arguments.get("city"), "temperature_c": 22},
+                {
+                    "summary": "Resolved local temperature.",
+                    "path": ".",
+                    "sources": [],
+                },
+            )
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = runtime.invoke_provider_json(
+                    provider="ollama",
+                    api_key="",
+                    model="qwen3",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something local.",
+                    schema_name="ollama_tool_test",
+                    schema=schema,
+                    target_kind="worker",
+                    tools=tool_def,
+                    tool_choice="auto",
+                    function_handlers=handlers,
+                )
+
+        self.assertEqual(result.provider, "ollama")
+        self.assertEqual(result.parsed, {"answer": "New York is 22C and sunny."})
+        self.assertEqual(len(result.executed_tools), 1)
+        self.assertEqual(result.executed_tools[0]["name"], "get_temperature")
+        self.assertEqual(result.executed_tools[0]["arguments"], {"city": "New York"})
+        self.assertEqual(request_bodies[0]["tools"][0]["function"]["name"], "get_temperature")
+        self.assertTrue(any(message.get("role") == "tool" for message in request_bodies[1]["messages"]))
+
+    def test_invoke_provider_json_rejects_ollama_web_search_tool(self) -> None:
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -246,10 +359,11 @@ class RuntimeAuthTests(unittest.TestCase):
                     schema_name="ollama_tool_test",
                     schema=schema,
                     target_kind="worker",
-                    tools=[{"type": "function", "name": "local_read_file"}],
+                    tools=[{"type": "web_search"}],
                 )
 
         self.assertIn("provider_does_not_support", str(context.exception))
+        self.assertIn("web_search", str(context.exception))
 
 
 if __name__ == "__main__":

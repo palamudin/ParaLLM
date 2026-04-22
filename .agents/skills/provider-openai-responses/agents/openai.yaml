@@ -1,0 +1,4 @@
+interface:
+  display_name: "Provider: OpenAI Responses"
+  short_description: "Use OpenAI Responses API features without breaking strict JSON or tool flow"
+  default_prompt: "Apply the OpenAI Responses provider contract, keep tool use disciplined, and return strict schema-valid JSON."

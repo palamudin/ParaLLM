@@ -128,7 +128,7 @@ def run_live_smoke(
             )
             task_id = require_text(start.get("taskId"), "start_task taskId")
 
-            for target in ("commander", "A", "B", "summarizer"):
+            for target in ("commander", "A", "B", "commander_review", "summarizer"):
                 qa_print(f"Running live smoke target {target}")
                 request_json(
                     api_url(base_url, "target_run"),

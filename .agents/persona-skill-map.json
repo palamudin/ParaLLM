@@ -18,6 +18,33 @@
     "claim-calibration",
     "evidence-ledger"
   ],
+  "providers": {
+    "openai": {
+      "shared": [
+        "provider-openai-responses"
+      ]
+    },
+    "anthropic": {
+      "shared": [
+        "provider-anthropic-messages"
+      ]
+    },
+    "xai": {
+      "shared": [
+        "provider-xai-responses"
+      ]
+    },
+    "minimax": {
+      "shared": [
+        "provider-minimax-compatible"
+      ]
+    },
+    "ollama": {
+      "shared": [
+        "provider-ollama-local-json"
+      ]
+    }
+  },
   "personas": {
     "proponent": [
       "claim-calibration",

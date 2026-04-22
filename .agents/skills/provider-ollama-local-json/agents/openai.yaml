@@ -1,0 +1,4 @@
+interface:
+  display_name: "Provider: Ollama Local JSON"
+  short_description: "Keep local Ollama runs deterministic and schema-true"
+  default_prompt: "Apply the Ollama local JSON contract, avoid unsupported tools, and return strict JSON only."

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import control, jobs, queueing, storage
+from backend.app.config import DeploymentTopology
 from runtime.engine import RuntimeErrorWithCode
 
 from .test_queueing import FakeRedis
@@ -92,6 +93,49 @@ class LoopJobTests(unittest.TestCase):
         self.assertIsInstance(new_job, dict)
         self.assertEqual(new_job["retryOfJobId"], interrupted_job_id)
         self.assertEqual(new_job["resumeFromRound"], 1)
+
+    def test_launch_loop_job_runner_passes_topology_env_to_subprocess(self) -> None:
+        topology = DeploymentTopology(
+            profile="local-single-node",
+            root=self.root,
+            data_root=self.root / "data",
+            auth_file=self.root / "Auth.txt",
+            host="127.0.0.1",
+            port=8787,
+            runtime_host="127.0.0.1",
+            runtime_port=8765,
+            queue_backend="local_subprocess",
+            metadata_backend="json_files",
+            artifact_backend="filesystem",
+            secret_backend="local_file",
+            secret_file=None,
+            runtime_execution_backend="embedded_engine_subprocess",
+            database_url=None,
+            redis_url=None,
+            object_store_url=None,
+            object_store_bucket=None,
+            object_store_healthcheck_url=None,
+            object_store_access_key=None,
+            object_store_secret_key=None,
+            object_store_region="us-east-1",
+            runtime_service_url=None,
+            secret_provider_url=None,
+            secret_provider_healthcheck_url=None,
+        )
+        with (
+            mock.patch("backend.app.jobs.deployment_topology", return_value=topology),
+            mock.patch("backend.app.jobs.control.auth_file_path", return_value=self.root / "Auth.txt"),
+            mock.patch("backend.app.jobs.subprocess.Popen") as popen,
+        ):
+            jobs.launch_loop_job_runner({"jobId": "job-test"}, self.root)
+
+        popen.assert_called_once()
+        _, kwargs = popen.call_args
+        env = kwargs["env"]
+        self.assertEqual(env["LOOP_ROOT"], str(self.root))
+        self.assertEqual(env["LOOP_AUTH_FILE"], str(self.root / "Auth.txt"))
+        self.assertEqual(env["LOOP_SECRET_BACKEND"], "local_file")
+        self.assertEqual(env["LOOP_DEPLOYMENT_PROFILE"], "local-single-node")
 
     def test_update_loop_job_progress_sets_waiting_target_message(self) -> None:
         paths = storage.project_paths(self.root)

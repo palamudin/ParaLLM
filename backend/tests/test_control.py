@@ -28,9 +28,11 @@ class ControlPlaneTests(unittest.TestCase):
 
         self.assertTrue(status["hasKey"])
         self.assertEqual(status["keyCount"], 2)
-        self.assertEqual(status["last4"], "1234")
-        self.assertEqual(len(status["masks"]), 2)
-        self.assertTrue(status["masks"][0].endswith("1234"))
+        self.assertIn("openai", status["providerGroups"])
+        self.assertEqual(status["providerGroups"]["openai"]["last4"], "1234")
+        self.assertEqual(len(status["providerGroups"]["openai"]["masks"]), 2)
+        self.assertTrue(status["providerGroups"]["openai"]["masks"][0].endswith("1234"))
+        self.assertEqual(status["providerGroups"]["anthropic"]["keyCount"], 0)
         self.assertTrue(status["deprecated"])
         self.assertFalse(status["preferred"])
         self.assertEqual(status["recommendedBackend"], "env")
@@ -56,7 +58,26 @@ class ControlPlaneTests(unittest.TestCase):
                 os.environ["LOOP_SECRET_BACKEND"] = previous_backend
 
         self.assertTrue(status["hasKey"])
-        self.assertEqual(status["last4"], "9999")
+        self.assertEqual(status["providerGroups"]["openai"]["last4"], "9999")
+
+    def test_auth_pool_status_keeps_provider_groups_isolated(self) -> None:
+        (self.root / "Auth.txt").write_text("sk-openai-1111\n", encoding="utf-8")
+        (self.root / "Auth.anthropic.txt").write_text("sk-anthropic-2222\n", encoding="utf-8")
+
+        with mock.patch.dict(
+            "os.environ",
+            {"LOOP_SECRET_BACKEND": "local_file", "LOOP_AUTH_FILE": str(self.root / "Auth.txt")},
+            clear=False,
+        ):
+            status = control.auth_pool_status(self.root)
+            self.assertEqual(status["keyCount"], 2)
+            self.assertEqual(control.read_auth_key_pool(self.root, "openai"), ["sk-openai-1111"])
+            self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), ["sk-anthropic-2222"])
+            self.assertEqual(status["providerGroups"]["openai"]["keyCount"], 1)
+            self.assertEqual(status["providerGroups"]["anthropic"]["keyCount"], 1)
+            self.assertEqual(status["providerGroups"]["openai"]["last4"], "1111")
+            self.assertEqual(status["providerGroups"]["anthropic"]["last4"], "2222")
+            self.assertIn("isolated", status["isolationNote"].lower())
 
     def test_auth_file_path_honors_docker_secret_backend(self) -> None:
         secret_path = self.root / "secrets" / "openai_api_keys"
@@ -108,7 +129,9 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["constraints"], ["No downtime", "Keep backward compatibility"])
         self.assertEqual(draft["model"], "qwen3-coder")
         self.assertEqual(draft["summarizerProvider"], "openai")
-        self.assertTrue(draft["researchEnabled"])
+        self.assertFalse(draft["researchEnabled"])
+        self.assertTrue(draft["localFilesEnabled"])
+        self.assertTrue(draft["githubToolsEnabled"])
         self.assertEqual(draft["localFileRoots"], [".", "runtime", "api"])
         self.assertEqual(draft["githubAllowedRepos"], ["palamudin/parallm"])
         self.assertTrue(draft["dynamicSpinupEnabled"])

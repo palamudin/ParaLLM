@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from runtime.engine import LoopRuntime, RuntimeErrorWithCode, task_workers
 
 from . import control, faults, metadata, queueing, runtime_execution, storage
+from .config import deployment_topology
 
 
 def utc_now() -> str:
@@ -248,13 +249,20 @@ def create_loop_job(
     return job
 
 
-def _subprocess_kwargs() -> Dict[str, Any]:
+def _subprocess_kwargs(env_overrides: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    env = os.environ.copy()
+    if env_overrides:
+        for key, value in env_overrides.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
     kwargs: Dict[str, Any] = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "stdin": subprocess.DEVNULL,
         "cwd": str(Path(__file__).resolve().parents[2]),
-        "env": os.environ.copy(),
+        "env": env,
         "close_fds": True,
     }
     if os.name == "nt":
@@ -267,6 +275,40 @@ def _subprocess_kwargs() -> Dict[str, Any]:
 def launch_loop_job_runner(job: Dict[str, Any], root: Optional[Path] = None) -> None:
     repo_root = Path(root).resolve() if root else Path(__file__).resolve().parents[2]
     auth_path = control.auth_file_path(repo_root)
+    topology = deployment_topology(repo_root)
+    env_overrides: Dict[str, str] = {
+        "LOOP_ROOT": str(repo_root),
+        "LOOP_DEPLOYMENT_PROFILE": topology.profile,
+        "LOOP_QUEUE_BACKEND": topology.queue_backend,
+        "LOOP_METADATA_BACKEND": topology.metadata_backend,
+        "LOOP_ARTIFACT_BACKEND": topology.artifact_backend,
+        "LOOP_SECRET_BACKEND": topology.secret_backend,
+        "LOOP_RUNTIME_EXECUTION_BACKEND": topology.runtime_execution_backend,
+        "LOOP_HOST": topology.host,
+        "LOOP_PORT": str(topology.port),
+        "LOOP_RUNTIME_HOST": topology.runtime_host,
+        "LOOP_RUNTIME_PORT": str(topology.runtime_port),
+        "LOOP_AUTH_FILE": str(auth_path),
+    }
+    optional_overrides = {
+        "LOOP_SECRET_FILE": str(topology.secret_file) if topology.secret_file else None,
+        "LOOP_RUNTIME_SERVICE_URL": topology.runtime_service_url,
+        "LOOP_DATABASE_URL": topology.database_url,
+        "LOOP_REDIS_URL": topology.redis_url,
+        "LOOP_OBJECT_STORE_URL": topology.object_store_url,
+        "LOOP_OBJECT_STORE_BUCKET": topology.object_store_bucket,
+        "LOOP_OBJECT_STORE_HEALTHCHECK_URL": topology.object_store_healthcheck_url,
+        "LOOP_OBJECT_STORE_ACCESS_KEY": topology.object_store_access_key,
+        "LOOP_OBJECT_STORE_SECRET_KEY": topology.object_store_secret_key,
+        "LOOP_OBJECT_STORE_REGION": topology.object_store_region,
+        "LOOP_SECRET_PROVIDER_URL": topology.secret_provider_url,
+        "LOOP_SECRET_PROVIDER_HEALTHCHECK_URL": topology.secret_provider_healthcheck_url,
+    }
+    for key, value in optional_overrides.items():
+        if value is not None:
+            env_overrides[key] = value
+        else:
+            env_overrides[key] = None
     command = [
         sys.executable,
         "-m",
@@ -275,7 +317,7 @@ def launch_loop_job_runner(job: Dict[str, Any], root: Optional[Path] = None) -> 
         f"--job-id={job['jobId']}",
         f"--auth-path={auth_path}",
     ]
-    subprocess.Popen(command, **_subprocess_kwargs())  # noqa: S603,S607
+    subprocess.Popen(command, **_subprocess_kwargs(env_overrides))  # noqa: S603,S607
 
 
 def _usage_snapshot(runtime: LoopRuntime) -> Dict[str, Any]:

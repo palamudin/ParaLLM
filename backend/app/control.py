@@ -34,12 +34,21 @@ from runtime.engine import (
     normalize_research_config,
     normalize_string_list,
     normalize_vetting_config,
+    provider_capability_profile,
     task_workers,
     worker_catalog,
 )
 
 from .config import deployment_topology
-from .secrets import env_secret_status, external_secret_status, normalize_auth_key_pool
+from .secrets import (
+    auth_key_file_path,
+    auth_key_provider_ids,
+    auth_key_provider_label,
+    env_secret_status,
+    external_secret_status,
+    normalize_auth_key_pool,
+    normalize_auth_key_provider,
+)
 from . import storage
 
 
@@ -167,6 +176,16 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         default_model_for_provider(summarizer_provider),
         summarizer_provider,
     )
+    feature_alignment = align_provider_runtime_features(
+        provider,
+        {
+            "enabled": current.get("researchEnabled", default["researchEnabled"]),
+            "externalWebAccess": current.get("researchExternalWebAccess", default["researchExternalWebAccess"]),
+            "domains": current.get("researchDomains", default["researchDomains"]),
+        },
+        local_files,
+        github_tools,
+    )
     return {
         "objective": str(current.get("objective", default["objective"])).strip(),
         "constraints": list(normalize_string_list(current.get("constraints", default["constraints"]))),
@@ -181,16 +200,13 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "maxCostUsd": budget["maxCostUsd"],
         "maxOutputTokens": budget["maxOutputTokens"],
         "budgetTargets": budget["targets"],
-        "researchEnabled": coerce_bool(current.get("researchEnabled", default["researchEnabled"]), bool(default["researchEnabled"])),
-        "researchExternalWebAccess": coerce_bool(
-            current.get("researchExternalWebAccess", default["researchExternalWebAccess"]),
-            bool(default["researchExternalWebAccess"]),
-        ),
-        "researchDomains": normalize_allowed_domains(current.get("researchDomains", default["researchDomains"])),
-        "localFilesEnabled": local_files["enabled"],
-        "localFileRoots": local_files["roots"],
-        "githubToolsEnabled": github_tools["enabled"],
-        "githubAllowedRepos": github_tools["repos"],
+        "researchEnabled": feature_alignment["research"]["enabled"],
+        "researchExternalWebAccess": feature_alignment["research"]["externalWebAccess"],
+        "researchDomains": feature_alignment["research"]["domains"],
+        "localFilesEnabled": feature_alignment["localFiles"]["enabled"],
+        "localFileRoots": feature_alignment["localFiles"]["roots"],
+        "githubToolsEnabled": feature_alignment["githubTools"]["enabled"],
+        "githubAllowedRepos": feature_alignment["githubTools"]["repos"],
         "dynamicSpinupEnabled": dynamic_spinup["enabled"],
         "vettingEnabled": coerce_bool(current.get("vettingEnabled", default["vettingEnabled"]), bool(default["vettingEnabled"])),
         "summarizerHarness": normalize_harness_config(
@@ -277,16 +293,24 @@ def auth_file_path(root: Optional[Path] = None) -> Path:
     return topology.auth_file
 
 
-def read_auth_key_pool(root: Optional[Path] = None) -> list[str]:
-    return auth_key_pool_state(root)["keys"]
+def provider_auth_file_path(root: Optional[Path] = None, provider: Any = "openai") -> Path:
+    return auth_key_file_path(auth_file_path(root), provider)
 
 
-def auth_key_pool_state(root: Optional[Path] = None) -> Dict[str, Any]:
+def read_auth_key_pool(root: Optional[Path] = None, provider: Any = "openai") -> list[str]:
+    return auth_key_pool_state(root, provider)["keys"]
+
+
+def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -> Dict[str, Any]:
+    normalized_provider = normalize_auth_key_provider(provider)
+    label = auth_key_provider_label(normalized_provider)
     topology = deployment_topology(root)
     if topology.secret_backend == "env":
-        status = env_secret_status()
+        status = env_secret_status(normalized_provider)
         return {
             "backend": "env",
+            "provider": normalized_provider,
+            "label": label,
             "keys": normalize_auth_key_pool(status.get("keys", [])),
             "configured": bool(status.get("configured")),
             "ready": bool(status.get("ready")),
@@ -296,9 +320,11 @@ def auth_key_pool_state(root: Optional[Path] = None) -> Dict[str, Any]:
             "writable": False,
         }
     if topology.secret_backend == "external":
-        status = external_secret_status(root)
+        status = external_secret_status(root, provider=normalized_provider)
         return {
             "backend": "external",
+            "provider": normalized_provider,
+            "label": label,
             "keys": normalize_auth_key_pool(status.get("keys", [])),
             "configured": bool(status.get("configured")),
             "ready": bool(status.get("ready")),
@@ -308,49 +334,57 @@ def auth_key_pool_state(root: Optional[Path] = None) -> Dict[str, Any]:
             "writable": False,
         }
     if topology.secret_backend == "docker_secret":
-        secret_path = auth_file_path(root)
+        secret_path = provider_auth_file_path(root, normalized_provider)
         if not secret_path.is_file():
             return {
                 "backend": "docker_secret",
+                "provider": normalized_provider,
+                "label": label,
                 "keys": [],
                 "configured": bool(secret_path),
                 "ready": False,
                 "failureMode": "misconfigured",
-                "failureDetail": f"Mounted secret file not found at {secret_path}.",
+                "failureDetail": f"Mounted {label} secret file not found at {secret_path}.",
                 "managed": True,
                 "writable": False,
             }
         keys = normalize_auth_key_pool(secret_path.read_text(encoding="utf-8", errors="replace"))
         return {
             "backend": "docker_secret",
+            "provider": normalized_provider,
+            "label": label,
             "keys": keys,
             "configured": True,
             "ready": len(keys) > 0,
             "failureMode": None if keys else "empty",
-            "failureDetail": f"Using mounted secret file at {secret_path}." if keys else f"Mounted secret file at {secret_path} is empty.",
+            "failureDetail": f"Using mounted {label} secret file at {secret_path}." if keys else f"Mounted {label} secret file at {secret_path} is empty.",
             "managed": True,
             "writable": False,
         }
-    path = auth_file_path(root)
+    path = provider_auth_file_path(root, normalized_provider)
     if not path.is_file():
         return {
             "backend": "local_file",
+            "provider": normalized_provider,
+            "label": label,
             "keys": [],
             "configured": True,
             "ready": False,
             "failureMode": "empty",
-            "failureDetail": f"Local fallback secret file not found at {path}.",
+            "failureDetail": f"Local fallback {label} secret file not found at {path}.",
             "managed": False,
             "writable": True,
         }
     keys = normalize_auth_key_pool(path.read_text(encoding="utf-8", errors="replace"))
     return {
         "backend": "local_file",
+        "provider": normalized_provider,
+        "label": label,
         "keys": keys,
         "configured": True,
         "ready": len(keys) > 0,
         "failureMode": None if keys else "empty",
-        "failureDetail": f"Using local fallback secret file at {path}." if keys else f"Local fallback secret file at {path} is empty.",
+        "failureDetail": f"Using local fallback {label} secret file at {path}." if keys else f"Local fallback {label} secret file at {path} is empty.",
         "managed": False,
         "writable": True,
     }
@@ -414,44 +448,134 @@ def secret_backend_status_note(topology=None) -> str:
     current = topology or deployment_topology()
     backend = current.secret_backend
     if backend == "local_file":
-        return "Transitional local-file fallback only. Prefer env for local work and docker_secret or external for hosted use."
+        return "Transitional local-file fallback only. Provider pools stay isolated by file. Prefer env for local work and docker_secret or external for hosted use."
     if backend == "env":
-        return "Using environment-injected keys. This is the preferred local path."
+        return "Using environment-injected provider key groups. This is the preferred local path."
     if backend == "docker_secret":
-        return "Using mounted Docker secrets. This is the preferred hosted/self-host path."
+        return "Using mounted Docker secrets with provider-isolated key files. This is the preferred hosted/self-host path."
     if backend == "external":
-        return "Using an external read-only secret provider."
+        return "Using an external read-only secret provider with provider-isolated key groups."
     return "Using a custom secret backend."
 
 
 def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
     topology = deployment_topology(root)
-    pool_state = auth_key_pool_state(root)
-    keys = pool_state["keys"]
-    masks = [mask_auth_key(key) for key in keys]
-    first = keys[0] if keys else ""
-    last4 = first[-4:] if len(first) >= 4 else first
+    provider_groups: Dict[str, Any] = {}
+    total_keys = 0
+    has_any_key = False
+    writable = False
+    for provider_id in auth_key_provider_ids():
+        pool_state = auth_key_pool_state(root, provider_id)
+        keys = pool_state["keys"]
+        masks = [mask_auth_key(key) for key in keys]
+        first = keys[0] if keys else ""
+        last4 = first[-4:] if len(first) >= 4 else first
+        provider_groups[provider_id] = {
+            "provider": provider_id,
+            "label": auth_key_provider_label(provider_id),
+            "hasKey": len(keys) > 0,
+            "keyCount": len(keys),
+            "last4": last4,
+            "masked": masks[0] if masks else None,
+            "masks": masks,
+            "available": len(keys) > 0,
+            "managed": bool(pool_state.get("managed")),
+            "writable": bool(pool_state.get("writable")),
+            "failureMode": pool_state.get("failureMode"),
+            "failureDetail": pool_state.get("failureDetail"),
+            "strictLiveFailure": bool(pool_state.get("managed")) and len(keys) == 0,
+        }
+        total_keys += len(keys)
+        has_any_key = has_any_key or len(keys) > 0
+        writable = writable or bool(pool_state.get("writable"))
+    failure_mode = None
+    failure_detail = ""
+    strict_live_failure = topology.secret_backend in {"env", "docker_secret", "external"} and not has_any_key
+    if not has_any_key:
+        failure_modes = [
+            str(group.get("failureMode") or "").strip()
+            for group in provider_groups.values()
+            if str(group.get("failureMode") or "").strip()
+        ]
+        for candidate in ("unreachable", "misconfigured", "empty"):
+            if candidate in failure_modes:
+                failure_mode = candidate
+                break
+        if failure_mode is None and failure_modes:
+            failure_mode = failure_modes[0]
+        labels = [str(group.get("label") or group.get("provider") or "").strip() for group in provider_groups.values()]
+        checked_labels = ", ".join([label for label in labels if label]) or "provider groups"
+        matching_detail = next(
+            (
+                str(group.get("failureDetail") or "").strip()
+                for group in provider_groups.values()
+                if str(group.get("failureMode") or "").strip() == str(failure_mode or "").strip()
+                and str(group.get("failureDetail") or "").strip()
+            ),
+            "",
+        )
+        fallback_detail = next(
+            (str(group.get("failureDetail") or "").strip() for group in provider_groups.values() if str(group.get("failureDetail") or "").strip()),
+            "",
+        )
+        detail_source = matching_detail or fallback_detail
+        failure_detail = f"No provider key groups are ready via the {topology.secret_backend} secret backend. Checked {checked_labels}."
+        if detail_source:
+            failure_detail = f"{failure_detail} {detail_source}"
     preferred_backends = preferred_secret_backends(topology)
     rotation_policy = secret_rotation_policy(topology.secret_backend, topology)
     return {
         "backend": topology.secret_backend,
-        "hasKey": len(keys) > 0,
-        "keyCount": len(keys),
-        "last4": last4,
-        "masked": masks[0] if masks else None,
-        "masks": masks,
-        "writable": bool(pool_state.get("writable")),
-        "available": len(keys) > 0,
-        "managed": bool(pool_state.get("managed")),
-        "failureMode": pool_state.get("failureMode"),
-        "failureDetail": pool_state.get("failureDetail"),
-        "strictLiveFailure": bool(pool_state.get("managed")) and len(keys) == 0,
+        "hasKey": has_any_key,
+        "keyCount": total_keys,
+        "writable": writable,
+        "available": has_any_key,
+        "failureMode": failure_mode,
+        "failureDetail": failure_detail,
+        "strictLiveFailure": strict_live_failure,
+        "providerOrder": auth_key_provider_ids(),
+        "providerGroups": provider_groups,
         "preferred": topology.secret_backend in preferred_backends,
         "preferredBackends": preferred_backends,
         "recommendedBackend": recommended_secret_backend(topology),
         "deprecated": topology.secret_backend == "local_file",
         "statusNote": secret_backend_status_note(topology),
         "rotationPolicy": rotation_policy,
+        "isolationNote": "Provider pools stay isolated. OpenAI lanes never reuse Anthropic, xAI, or MiniMax keys.",
+        "termsWarning": "Cross-vendor orchestration can implicate provider ToS or acceptable-use rules. Review each vendor's terms before mixing providers in one workflow.",
+    }
+
+
+def align_provider_runtime_features(
+    provider: Any,
+    research: Optional[Dict[str, Any]] = None,
+    local_files: Optional[Dict[str, Any]] = None,
+    github_tools: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_provider = normalize_provider_id(str(provider or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
+    capabilities = provider_capability_profile(normalized_provider)
+    normalized_research = normalize_research_config(research if isinstance(research, dict) else {})
+    normalized_local_files = normalize_local_file_tool_config(local_files if isinstance(local_files, dict) else {})
+    normalized_github_tools = normalize_github_tool_config(github_tools if isinstance(github_tools, dict) else {})
+    disabled: list[str] = []
+
+    if not capabilities["webSearch"] and normalized_research["enabled"]:
+        normalized_research = {**normalized_research, "enabled": False}
+        disabled.append("research")
+    if not capabilities["localFiles"] and normalized_local_files["enabled"]:
+        normalized_local_files = {**normalized_local_files, "enabled": False}
+        disabled.append("localFiles")
+    if not capabilities["githubTools"] and normalized_github_tools["enabled"]:
+        normalized_github_tools = {**normalized_github_tools, "enabled": False}
+        disabled.append("githubTools")
+
+    return {
+        "provider": normalized_provider,
+        "capabilities": capabilities,
+        "research": normalized_research,
+        "localFiles": normalized_local_files,
+        "githubTools": normalized_github_tools,
+        "disabled": disabled,
     }
 
 
@@ -597,6 +721,10 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
             "repos": payload.get("githubAllowedRepos", default_github_tool_config()["repos"]),
         }
     )
+    feature_alignment = align_provider_runtime_features(provider, research, local_files, github_tools)
+    research = feature_alignment["research"]
+    local_files = feature_alignment["localFiles"]
+    github_tools = feature_alignment["githubTools"]
     dynamic_spinup = normalize_dynamic_spinup_config(
         {"enabled": payload.get("dynamicSpinupEnabled", default_dynamic_spinup_config()["enabled"])}
     )

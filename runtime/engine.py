@@ -12,6 +12,7 @@ import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -19,7 +20,14 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from backend.app import artifacts as artifact_store
 from backend.app import metadata as metadata_store
 from backend.app.config import deployment_topology
-from backend.app.secrets import env_secret_status, external_secret_status
+from backend.app.secrets import (
+    auth_key_file_path,
+    auth_key_provider_ids,
+    auth_key_provider_label,
+    env_secret_status,
+    external_secret_status,
+    normalize_auth_key_provider,
+)
 
 
 MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -38,8 +46,26 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
     "gpt-4o-mini": {"label": "GPT-4o mini", "inputPer1M": 0.15, "cachedInputPer1M": 0.075, "outputPer1M": 0.60},
 }
 
+ANTHROPIC_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "claude-opus-4-1-20250805": {"label": "Claude Opus 4.1"},
+    "claude-opus-4-20250514": {"label": "Claude Opus 4"},
+    "claude-sonnet-4-20250514": {"label": "Claude Sonnet 4"},
+    "claude-3-7-sonnet-20250219": {"label": "Claude Sonnet 3.7"},
+    "claude-3-5-haiku-latest": {"label": "Claude Haiku 3.5"},
+}
+
+XAI_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "grok-4.20-reasoning": {"label": "Grok 4.20 Reasoning"},
+    "grok-4-1-fast-reasoning": {"label": "Grok 4.1 Fast Reasoning"},
+    "grok-4.20-multi-agent": {"label": "Grok 4.20 Multi-Agent"},
+    "grok-4.20": {"label": "Grok 4.20"},
+}
+
 PROVIDER_CATALOG: Dict[str, Dict[str, str]] = {
     "openai": {"label": "OpenAI"},
+    "anthropic": {"label": "Anthropic"},
+    "xai": {"label": "xAI"},
+    "minimax": {"label": "MiniMax"},
     "ollama": {"label": "Ollama"},
 }
 
@@ -56,16 +82,52 @@ PROVIDER_CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
             "Estimated token and spend tracking are available.",
         ],
     },
-    "ollama": {
-        "toolLoop": False,
-        "webSearch": False,
-        "localFiles": False,
-        "githubTools": False,
+    "anthropic": {
+        "toolLoop": True,
+        "webSearch": True,
+        "localFiles": True,
+        "githubTools": True,
         "costTracking": False,
         "reasoningSummary": True,
         "notes": [
-            "Native structured local generation path only in this repo.",
-            "Research and audited function-tool execution are not enabled yet.",
+            "Native Messages API path with tool_use and tool_result turns.",
+            "Server-side web search and client tool loops are supported in this runtime.",
+        ],
+    },
+    "xai": {
+        "toolLoop": True,
+        "webSearch": True,
+        "localFiles": True,
+        "githubTools": True,
+        "costTracking": False,
+        "reasoningSummary": True,
+        "notes": [
+            "OpenAI-compatible Responses path backed by xAI's Grok models.",
+            "Built-in web search plus local function tools are supported in this runtime.",
+        ],
+    },
+    "minimax": {
+        "toolLoop": True,
+        "webSearch": False,
+        "localFiles": True,
+        "githubTools": True,
+        "costTracking": False,
+        "reasoningSummary": True,
+        "notes": [
+            "Anthropic-compatible compatibility path is used for MiniMax in this runtime.",
+            "Client tool loops are supported, but built-in live web search is not wired here yet.",
+        ],
+    },
+    "ollama": {
+        "toolLoop": True,
+        "webSearch": False,
+        "localFiles": True,
+        "githubTools": True,
+        "costTracking": False,
+        "reasoningSummary": True,
+        "notes": [
+            "Native local structured generation path with client-side function tools.",
+            "Live web search is still disabled for Ollama in this runtime.",
         ],
     },
 }
@@ -75,6 +137,32 @@ OLLAMA_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
     "qwen3-coder": {"label": "Qwen3 Coder"},
     "gemma3": {"label": "Gemma 3"},
     "llama3.2": {"label": "Llama 3.2"},
+}
+
+MINIMAX_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "MiniMax-M2.7": {"label": "MiniMax M2.7"},
+    "MiniMax-M2.7-highspeed": {"label": "MiniMax M2.7 Highspeed"},
+    "MiniMax-M2.5": {"label": "MiniMax M2.5"},
+    "MiniMax-M2.5-highspeed": {"label": "MiniMax M2.5 Highspeed"},
+    "MiniMax-M2.1": {"label": "MiniMax M2.1"},
+    "MiniMax-M2.1-highspeed": {"label": "MiniMax M2.1 Highspeed"},
+    "MiniMax-M2": {"label": "MiniMax M2"},
+}
+
+PROVIDER_MODEL_CATALOG: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "openai": MODEL_CATALOG,
+    "anthropic": ANTHROPIC_MODEL_CATALOG,
+    "xai": XAI_MODEL_CATALOG,
+    "minimax": MINIMAX_MODEL_CATALOG,
+    "ollama": OLLAMA_MODEL_CATALOG,
+}
+
+PROVIDER_DEFAULT_MODELS: Dict[str, str] = {
+    "openai": "gpt-5-mini",
+    "anthropic": "claude-sonnet-4-20250514",
+    "xai": "grok-4.20-reasoning",
+    "minimax": "MiniMax-M2.7",
+    "ollama": "qwen3",
 }
 
 WORKER_TEMPERATURE_CATALOG: Dict[str, Dict[str, str]] = {
@@ -183,6 +271,10 @@ DEFAULT_MODEL_ID = "gpt-5-mini"
 DEFAULT_PROVIDER_ID = "openai"
 DEFAULT_OLLAMA_MODEL_ID = "qwen3"
 WEB_SEARCH_TOOL_CALL_PRICE_USD = 0.01
+REPO_ROOT = Path(__file__).resolve().parents[1]
+AGENT_CONTEXT_PATH = REPO_ROOT / "AGENTS.md"
+PERSONA_SKILL_MAP_PATH = REPO_ROOT / ".agents" / "persona-skill-map.json"
+SKILLS_ROOT = REPO_ROOT / ".agents" / "skills"
 SENSITIVE_PATH_SEGMENTS = {"secrets", ".ssh", ".aws", ".gnupg"}
 SENSITIVE_FILE_NAMES = {
     "auth.txt",
@@ -198,6 +290,111 @@ SENSITIVE_FILE_NAMES = {
     ".pypirc",
 }
 SENSITIVE_FILE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx", ".asc")
+
+
+def provider_model_catalog(provider: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    return PROVIDER_MODEL_CATALOG.get(normalized, {})
+
+
+def provider_supports_custom_model(provider: Optional[str]) -> bool:
+    normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    return normalized in {"anthropic", "xai", "minimax", "ollama"}
+
+
+def strip_markdown_frontmatter(text: str) -> str:
+    body = str(text or "").replace("\r\n", "\n")
+    if not body.startswith("---\n"):
+        return body.strip()
+    parts = body.split("\n---\n", 1)
+    if len(parts) == 2:
+        return parts[1].strip()
+    return body.strip()
+
+
+@lru_cache(maxsize=1)
+def load_agent_context() -> str:
+    if not AGENT_CONTEXT_PATH.exists():
+        return ""
+    try:
+        return AGENT_CONTEXT_PATH.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=1)
+def load_persona_skill_map() -> Dict[str, Any]:
+    if not PERSONA_SKILL_MAP_PATH.exists():
+        return {}
+    try:
+        parsed = json.loads(PERSONA_SKILL_MAP_PATH.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+@lru_cache(maxsize=64)
+def load_skill_text(skill_name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9-]+", "", str(skill_name or "").strip().lower())
+    if not normalized:
+        return ""
+    skill_path = SKILLS_ROOT / normalized / "SKILL.md"
+    if not skill_path.exists():
+        return ""
+    try:
+        content = skill_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    return strip_markdown_frontmatter(content)
+
+
+def runtime_skill_names(provider: Optional[str], role: str, worker_type: Optional[str] = None) -> List[str]:
+    config = load_persona_skill_map()
+    names: List[str] = []
+    for entry in config.get("shared", []) if isinstance(config.get("shared"), list) else []:
+        names.append(str(entry).strip())
+
+    providers_node = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    provider_node = providers_node.get(normalize_provider_id(provider, DEFAULT_PROVIDER_ID))
+    if isinstance(provider_node, dict):
+        for entry in provider_node.get("shared", []) if isinstance(provider_node.get("shared"), list) else []:
+            names.append(str(entry).strip())
+        role_entries = provider_node.get(role)
+        if isinstance(role_entries, list):
+            for entry in role_entries:
+                names.append(str(entry).strip())
+
+    if worker_type:
+        personas_node = config.get("personas") if isinstance(config.get("personas"), dict) else {}
+        persona_skills = personas_node.get(str(worker_type).strip().lower())
+        if isinstance(persona_skills, list):
+            for entry in persona_skills:
+                names.append(str(entry).strip())
+
+    ordered: List[str] = []
+    seen: Dict[str, bool] = {}
+    for name in names:
+        normalized = name.strip().lower()
+        if normalized and normalized not in seen:
+            seen[normalized] = True
+            ordered.append(normalized)
+    return ordered
+
+
+def build_runtime_skill_context(provider: Optional[str], role: str, worker_type: Optional[str] = None) -> Dict[str, Any]:
+    names = runtime_skill_names(provider, role, worker_type)
+    sections: List[str] = []
+    agent_context = load_agent_context()
+    if agent_context:
+        sections.append("Repo agent context:\n" + agent_context)
+    skill_sections: List[str] = []
+    for name in names:
+        skill_text = load_skill_text(name)
+        if skill_text:
+            skill_sections.append(f"[{name}]\n{skill_text}")
+    if skill_sections:
+        sections.append("Active skills:\n" + "\n\n".join(skill_sections))
+    return {"names": names, "prompt": "\n\n".join(sections).strip()}
 
 
 class RuntimeErrorWithCode(Exception):
@@ -342,15 +539,22 @@ def default_model_for_provider(provider: Optional[str]) -> str:
     normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     if normalized == "ollama":
         return str(os.getenv("LOOP_OLLAMA_DEFAULT_MODEL") or DEFAULT_OLLAMA_MODEL_ID).strip() or DEFAULT_OLLAMA_MODEL_ID
-    return DEFAULT_MODEL_ID
+    return str(PROVIDER_DEFAULT_MODELS.get(normalized) or DEFAULT_MODEL_ID)
 
 
 def infer_provider_from_model_id(model: Optional[str]) -> Optional[str]:
     candidate = (model or "").strip()
     if not candidate:
         return None
-    if candidate in MODEL_CATALOG:
-        return "openai"
+    for provider_id, catalog in PROVIDER_MODEL_CATALOG.items():
+        if candidate in catalog:
+            return provider_id
+    if candidate.lower().startswith("claude-"):
+        return "anthropic"
+    if candidate.lower().startswith("grok-"):
+        return "xai"
+    if candidate.startswith("MiniMax-"):
+        return "minimax"
     return "ollama"
 
 
@@ -372,15 +576,16 @@ def provider_capability_profile(provider: Optional[str]) -> Dict[str, Any]:
 def normalize_model_id(model: Optional[str], fallback: Optional[str] = None, provider: Optional[str] = None) -> str:
     normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     candidate = (model or "").strip()
-    if normalized_provider == "ollama":
+    catalog = provider_model_catalog(normalized_provider)
+    if provider_supports_custom_model(normalized_provider):
         if candidate:
             return candidate
         fallback_value = (fallback or default_model_for_provider(normalized_provider)).strip()
         return fallback_value or default_model_for_provider(normalized_provider)
-    if candidate in MODEL_CATALOG:
+    if candidate in catalog:
         return candidate
     fallback_value = (fallback or default_model_for_provider(normalized_provider)).strip()
-    return fallback_value if fallback_value in MODEL_CATALOG else default_model_for_provider(normalized_provider)
+    return fallback_value if fallback_value in catalog else default_model_for_provider(normalized_provider)
 
 
 def coerce_bool(value: Any, default: bool = False) -> bool:
@@ -488,39 +693,33 @@ def normalize_string_array_preserve_items(value: Any) -> List[str]:
     return ordered
 
 
-def read_env_api_key_pool() -> List[str]:
-    raw = str(os.getenv("LOOP_OPENAI_API_KEYS") or os.getenv("OPENAI_API_KEYS") or "").strip()
-    if not raw:
-        return []
-    keys: List[str] = []
-    seen: Dict[str, bool] = {}
-    for entry in raw.replace(",", "\n").splitlines():
-        key = str(entry or "").strip()
-        if key and key not in seen:
-            seen[key] = True
-            keys.append(key)
-    return keys
+def read_env_api_key_pool(provider: Any = "openai") -> List[str]:
+    return env_secret_status(provider=normalize_auth_key_provider(provider)).get("keys", [])
 
 
-def read_api_key_pool(path: Path) -> List[str]:
+def read_api_key_pool(path: Path, provider: Any = "openai") -> List[str]:
+    normalized_provider = normalize_auth_key_provider(provider)
     secret_backend = str(os.getenv("LOOP_SECRET_BACKEND") or "").strip().lower()
     if secret_backend == "env":
-        return read_env_api_key_pool()
+        return read_env_api_key_pool(normalized_provider)
     if secret_backend == "external":
-        return normalize_string_array_preserve_items(external_secret_status()["keys"])
+        return normalize_string_array_preserve_items(external_secret_status(provider=normalized_provider)["keys"])
     if secret_backend == "docker_secret":
-        if path.exists():
-            return normalize_string_array_preserve_items(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        provider_path = auth_key_file_path(path, normalized_provider)
+        if provider_path.exists():
+            return normalize_string_array_preserve_items(provider_path.read_text(encoding="utf-8", errors="replace").splitlines())
         return []
     if secret_backend == "local_file":
-        if path.exists():
-            return normalize_string_array_preserve_items(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        provider_path = auth_key_file_path(path, normalized_provider)
+        if provider_path.exists():
+            return normalize_string_array_preserve_items(provider_path.read_text(encoding="utf-8", errors="replace").splitlines())
         return []
-    if path.exists():
-        keys = normalize_string_array_preserve_items(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    provider_path = auth_key_file_path(path, normalized_provider)
+    if provider_path.exists():
+        keys = normalize_string_array_preserve_items(provider_path.read_text(encoding="utf-8", errors="replace").splitlines())
         if keys:
             return keys
-    return read_env_api_key_pool()
+    return read_env_api_key_pool(normalized_provider)
 
 
 def mask_api_key(key: str) -> str:
@@ -1995,20 +2194,24 @@ class LoopRuntime:
             normalized["loop"] = {**default_loop_state(), **loop}
         return normalized
 
-    def get_api_key(self) -> Optional[str]:
-        assignment = self.get_api_key_assignment()
+    def get_api_key(self, provider: Any = "openai") -> Optional[str]:
+        assignment = self.get_api_key_assignment(provider=provider)
         return str(assignment.get("apiKey")) if assignment else None
 
-    def load_api_keys(self) -> List[str]:
-        return self.load_api_key_pool_state()["keys"]
+    def load_api_keys(self, provider: Any = "openai") -> List[str]:
+        return self.load_api_key_pool_state(provider)["keys"]
 
-    def load_api_key_pool_state(self) -> Dict[str, Any]:
+    def load_api_key_pool_state(self, provider: Any = "openai") -> Dict[str, Any]:
+        normalized_provider = normalize_auth_key_provider(provider)
+        label = auth_key_provider_label(normalized_provider)
         topology = deployment_topology(self.root)
         backend = topology.secret_backend
         if backend == "env":
-            status = env_secret_status()
+            status = env_secret_status(normalized_provider)
             return {
                 "backend": "env",
+                "provider": normalized_provider,
+                "label": label,
                 "keys": normalize_string_array_preserve_items(status.get("keys", [])),
                 "managed": True,
                 "writable": False,
@@ -2018,9 +2221,11 @@ class LoopRuntime:
                 "failureDetail": str(status.get("detail") or ""),
             }
         if backend == "external":
-            status = external_secret_status(self.root)
+            status = external_secret_status(self.root, provider=normalized_provider)
             return {
                 "backend": "external",
+                "provider": normalized_provider,
+                "label": label,
                 "keys": normalize_string_array_preserve_items(status.get("keys", [])),
                 "managed": True,
                 "writable": False,
@@ -2030,55 +2235,71 @@ class LoopRuntime:
                 "failureDetail": str(status.get("detail") or ""),
             }
         if backend == "docker_secret":
-            secret_path = self.auth_path
+            secret_path = auth_key_file_path(self.auth_path, normalized_provider)
             if not secret_path.is_file():
                 return {
                     "backend": "docker_secret",
+                    "provider": normalized_provider,
+                    "label": label,
                     "keys": [],
                     "managed": True,
                     "writable": False,
                     "configured": bool(secret_path),
                     "ready": False,
                     "failureMode": "misconfigured",
-                    "failureDetail": f"Mounted secret file not found at {secret_path}.",
+                    "failureDetail": f"Mounted {label} secret file not found at {secret_path}.",
                 }
             keys = normalize_string_array_preserve_items(secret_path.read_text(encoding="utf-8", errors="replace").splitlines())
             return {
                 "backend": "docker_secret",
+                "provider": normalized_provider,
+                "label": label,
                 "keys": keys,
                 "managed": True,
                 "writable": False,
                 "configured": True,
                 "ready": len(keys) > 0,
                 "failureMode": None if keys else "empty",
-                "failureDetail": f"Using mounted secret file at {secret_path}." if keys else f"Mounted secret file at {secret_path} is empty.",
+                "failureDetail": f"Using mounted {label} secret file at {secret_path}." if keys else f"Mounted {label} secret file at {secret_path} is empty.",
             }
-        local_path = self.auth_path
+        local_path = auth_key_file_path(self.auth_path, normalized_provider)
         if not local_path.is_file():
             return {
                 "backend": "local_file",
+                "provider": normalized_provider,
+                "label": label,
                 "keys": [],
                 "managed": False,
                 "writable": True,
                 "configured": True,
                 "ready": False,
                 "failureMode": "empty",
-                "failureDetail": f"Local fallback secret file not found at {local_path}.",
+                "failureDetail": f"Local fallback {label} secret file not found at {local_path}.",
             }
         keys = normalize_string_array_preserve_items(local_path.read_text(encoding="utf-8", errors="replace").splitlines())
         return {
             "backend": "local_file",
+            "provider": normalized_provider,
+            "label": label,
             "keys": keys,
             "managed": False,
             "writable": True,
             "configured": True,
             "ready": len(keys) > 0,
             "failureMode": None if keys else "empty",
-            "failureDetail": f"Using local fallback secret file at {local_path}." if keys else f"Local fallback secret file at {local_path} is empty.",
+            "failureDetail": f"Using local fallback {label} secret file at {local_path}." if keys else f"Local fallback {label} secret file at {local_path} is empty.",
         }
 
-    def raise_if_managed_secret_backend_unavailable(self, stage: str, task_id: str, model: str, target: str) -> None:
-        auth_state = self.load_api_key_pool_state()
+    def raise_if_managed_secret_backend_unavailable(
+        self,
+        stage: str,
+        task_id: str,
+        model: str,
+        target: str,
+        provider: Any = "openai",
+    ) -> None:
+        normalized_provider = normalize_auth_key_provider(provider)
+        auth_state = self.load_api_key_pool_state(normalized_provider)
         if not bool(auth_state.get("managed")) or auth_state.get("keys"):
             return
         failure_mode = str(auth_state.get("failureMode") or "empty")
@@ -2091,13 +2312,14 @@ class LoopRuntime:
                 "target": target,
                 "model": model,
                 "secretBackend": auth_state.get("backend"),
+                "provider": normalized_provider,
                 "failureMode": failure_mode,
                 "failureDetail": detail,
             },
         )
         status_code = 503 if failure_mode in {"misconfigured", "unreachable"} else 409
         raise RuntimeErrorWithCode(
-            f"Live run requires the {auth_state.get('backend')} secret backend, but it is {failure_mode}: {detail}",
+            f"Live run requires {auth_key_provider_label(normalized_provider)} keys from the {auth_state.get('backend')} secret backend, but it is {failure_mode}: {detail}",
             status_code,
         )
 
@@ -2107,8 +2329,10 @@ class LoopRuntime:
         task: Optional[Dict[str, Any]] = None,
         round_number: Optional[int] = None,
         salt: str = "",
+        provider: Any = "openai",
     ) -> List[Dict[str, Any]]:
-        keys = self.load_api_keys()
+        normalized_provider = normalize_auth_key_provider(provider)
+        keys = self.load_api_keys(normalized_provider)
         if not keys:
             return []
         normalized_target = normalize_auth_target(target)
@@ -2124,6 +2348,7 @@ class LoopRuntime:
                 {
                     "apiKey": api_key,
                     "target": normalized_target,
+                    "provider": normalized_provider,
                     "positionSlot": position_index + 1,
                     "keySlot": key_index + 1,
                     "poolSize": len(keys),
@@ -2176,8 +2401,9 @@ class LoopRuntime:
         task: Optional[Dict[str, Any]] = None,
         round_number: Optional[int] = None,
         salt: str = "",
+        provider: Any = "openai",
     ) -> Optional[Dict[str, Any]]:
-        assignments = self.build_api_key_assignments(target, task, round_number, salt)
+        assignments = self.build_api_key_assignments(target, task, round_number, salt, provider)
         return dict(assignments[0]) if assignments else None
 
     def budget_scope_key(self, target: Optional[str]) -> Optional[str]:
@@ -2249,7 +2475,10 @@ class LoopRuntime:
         return runtime
 
     def provider_uses_api_key_pool(self, provider: Optional[str]) -> bool:
-        return normalize_provider_id(provider, DEFAULT_PROVIDER_ID) == "openai"
+        normalized = str(provider or "").strip().lower()
+        if not normalized:
+            normalized = DEFAULT_PROVIDER_ID
+        return normalized in auth_key_provider_ids()
 
     def provider_requires_api_key(self, provider: Optional[str]) -> bool:
         return self.provider_uses_api_key_pool(provider)
@@ -2264,18 +2493,18 @@ class LoopRuntime:
     ) -> List[Dict[str, Any]]:
         if not self.provider_uses_api_key_pool(provider):
             return []
-        return self.build_api_key_assignments(target, task, round_number, salt)
+        return self.build_api_key_assignments(target, task, round_number, salt, provider)
 
     def provider_live_api_key(
         self,
         provider: Optional[str],
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
-        if normalized_provider == "openai":
+        normalized_provider = str(provider or "").strip().lower() or DEFAULT_PROVIDER_ID
+        if normalized_provider in auth_key_provider_ids():
             assignment = auth_assignments[0] if auth_assignments else None
             return str(assignment.get("apiKey")) if isinstance(assignment, dict) else ""
-        if normalized_provider == "ollama":
+        if normalize_provider_id(normalized_provider, DEFAULT_PROVIDER_ID) == "ollama":
             return self.ollama_api_key()
         return ""
 
@@ -2305,7 +2534,8 @@ class LoopRuntime:
         return normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
 
     def get_model_pricing(self, model: str) -> Dict[str, Any]:
-        resolved = normalize_model_id(model, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID)
+        inferred_provider = infer_provider_from_model_id(model) or DEFAULT_PROVIDER_ID
+        resolved = normalize_model_id(model, default_model_for_provider(inferred_provider), inferred_provider)
         pricing = MODEL_CATALOG.get(resolved, {"inputPer1M": 0.0, "cachedInputPer1M": 0.0, "outputPer1M": 0.0})
         return {"model": resolved, **pricing}
 
@@ -2314,6 +2544,17 @@ class LoopRuntime:
             content = response["message"].get("content")
             if content:
                 return str(content)
+        content_blocks = response.get("content")
+        if isinstance(content_blocks, list):
+            text_parts: List[str] = []
+            for block in content_blocks:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text"):
+                    text_parts.append(str(block.get("text")))
+            combined = "".join(text_parts).strip()
+            if combined:
+                return combined
         for item in response.get("output", []):
             if item.get("type") != "message":
                 continue
@@ -2327,16 +2568,42 @@ class LoopRuntime:
             thinking = response["message"].get("thinking")
             if thinking:
                 return str(thinking)
+        content_blocks = response.get("content")
+        if isinstance(content_blocks, list):
+            thinking_parts: List[str] = []
+            for block in content_blocks:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "thinking" and block.get("thinking"):
+                    thinking_parts.append(str(block.get("thinking")))
+            combined = "\n".join([item for item in thinking_parts if item]).strip()
+            if combined:
+                return combined
         return None
 
     def get_web_search_call_items(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
-        return [item for item in response.get("output", []) if isinstance(item, dict) and item.get("type") == "web_search_call"]
+        items: List[Dict[str, Any]] = [
+            item for item in response.get("output", []) if isinstance(item, dict) and item.get("type") == "web_search_call"
+        ]
+        content_blocks = response.get("content")
+        if isinstance(content_blocks, list):
+            items.extend(
+                [
+                    block
+                    for block in content_blocks
+                    if isinstance(block, dict)
+                    and block.get("type") == "server_tool_use"
+                    and str(block.get("name") or "").strip() == "web_search"
+                ]
+            )
+        return items
 
     def get_response_web_search_queries(self, response: Dict[str, Any]) -> List[str]:
         queries: Dict[str, bool] = {}
         for item in self.get_web_search_call_items(response):
             action = item.get("action") if isinstance(item.get("action"), dict) else {}
-            query = action.get("query")
+            input_payload = item.get("input") if isinstance(item.get("input"), dict) else {}
+            query = action.get("query") or input_payload.get("query")
             if query:
                 queries[str(query)] = True
             for value in action.get("queries", []) if isinstance(action.get("queries"), list) else []:
@@ -2351,10 +2618,26 @@ class LoopRuntime:
             for source in action.get("sources", []) if isinstance(action.get("sources"), list) else []:
                 if isinstance(source, dict) and source.get("url"):
                     urls[str(source["url"])] = True
+        content_blocks = response.get("content")
+        if isinstance(content_blocks, list):
+            for block in content_blocks:
+                if not isinstance(block, dict) or block.get("type") != "web_search_tool_result":
+                    continue
+                for source in block.get("content", []) if isinstance(block.get("content"), list) else []:
+                    if isinstance(source, dict) and source.get("url"):
+                        urls[str(source.get("url"))] = True
         return list(urls.keys())
 
     def get_response_url_citations(self, response: Dict[str, Any]) -> List[str]:
         urls: Dict[str, bool] = {}
+        content_blocks = response.get("content")
+        if isinstance(content_blocks, list):
+            for block in content_blocks:
+                if not isinstance(block, dict):
+                    continue
+                for citation in block.get("citations", []) if isinstance(block.get("citations"), list) else []:
+                    if isinstance(citation, dict) and citation.get("url"):
+                        urls[str(citation.get("url"))] = True
         for item in response.get("output", []):
             if not isinstance(item, dict) or item.get("type") != "message":
                 continue
@@ -2966,9 +3249,14 @@ class LoopRuntime:
             output_tokens = int(usage.get("output_tokens", 0) or 0)
             total_tokens = int(usage.get("total_tokens", 0) or 0)
             cached_input_tokens = int(((usage.get("input_tokens_details") or {}).get("cached_tokens", 0)) or 0)
+            if cached_input_tokens <= 0:
+                cached_input_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
             reasoning_tokens = int(((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0)) or 0)
             billable_input_tokens = max(0, input_tokens - cached_input_tokens)
-            web_search_calls = len(self.get_web_search_call_items(response))
+            web_search_calls = max(
+                len(self.get_web_search_call_items(response)),
+                int(((usage.get("server_tool_use") or {}).get("web_search_requests", 0)) or 0),
+            )
             pricing = self.get_model_pricing(model)
             model_cost = (
                 (billable_input_tokens * float(pricing["inputPer1M"]))
@@ -2977,6 +3265,8 @@ class LoopRuntime:
             ) / 1_000_000.0
             tool_cost = web_search_calls * WEB_SEARCH_TOOL_CALL_PRICE_USD
             estimated_cost = model_cost + tool_cost
+            if total_tokens <= 0:
+                total_tokens = input_tokens + output_tokens
             return {
                 "calls": 1,
                 "webSearchCalls": web_search_calls,
@@ -3414,6 +3704,580 @@ class LoopRuntime:
             raise last_error
         raise RuntimeErrorWithCode("Model response did not produce a usable structured output.", 500)
 
+    def xai_responses_url(self) -> str:
+        base = str(os.getenv("LOOP_XAI_BASE_URL") or "https://api.x.ai/v1").strip() or "https://api.x.ai/v1"
+        return base.rstrip("/") + "/responses"
+
+    def anthropic_messages_url(self, provider: str = "anthropic") -> str:
+        normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        if normalized == "minimax":
+            base = str(os.getenv("LOOP_MINIMAX_ANTHROPIC_BASE_URL") or "https://api.minimax.io/anthropic").strip()
+        else:
+            base = str(os.getenv("LOOP_ANTHROPIC_BASE_URL") or "https://api.anthropic.com").strip()
+        base = base or ("https://api.minimax.io/anthropic" if normalized == "minimax" else "https://api.anthropic.com")
+        normalized_base = base.rstrip("/")
+        if normalized_base.endswith("/v1/messages"):
+            return normalized_base
+        return normalized_base + "/v1/messages"
+
+    def xai_accepts_reasoning_effort(self, model: str) -> bool:
+        return str(model or "").strip() == "grok-4.20-multi-agent"
+
+    def convert_function_tools_to_anthropic(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        converted: List[Dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            if str(tool.get("type", "")).strip() != "function":
+                continue
+            name = str(tool.get("name", "")).strip()
+            if not name:
+                continue
+            converted.append(
+                {
+                    "name": name,
+                    "description": str(tool.get("description", "")).strip(),
+                    "input_schema": dict(tool.get("parameters")) if isinstance(tool.get("parameters"), dict) else {"type": "object", "properties": {}},
+                }
+            )
+        return converted
+
+    def anthropic_tool_choice(self, tool_choice: Optional[Any]) -> Optional[Dict[str, Any]]:
+        if tool_choice is None:
+            return None
+        if isinstance(tool_choice, str):
+            normalized = tool_choice.strip().lower()
+            if normalized == "auto":
+                return {"type": "auto"}
+            if normalized == "none":
+                return {"type": "none"}
+        return None
+
+    def convert_function_tools_to_ollama(self, tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        converted: List[Dict[str, Any]] = []
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                continue
+            if str(tool.get("type", "")).strip() != "function":
+                continue
+            name = str(tool.get("name", "")).strip()
+            if not name:
+                continue
+            converted.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": str(tool.get("description", "")).strip(),
+                        "parameters": tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {"type": "object", "properties": {}},
+                    },
+                }
+            )
+        return converted
+
+    def invoke_xai_json(
+        self,
+        api_key: str,
+        model: str,
+        reasoning_effort: str,
+        instructions: str,
+        input_text: str,
+        schema_name: str,
+        schema: Dict[str, Any],
+        max_output_tokens: int = 0,
+        target_kind: str = "generic",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        include: Optional[List[str]] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
+    ) -> OpenAIResult:
+        handlers = function_handlers if isinstance(function_handlers, dict) else {}
+        assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
+        if not assignment_candidates and str(api_key or "").strip():
+            assignment_candidates = [{"apiKey": str(api_key).strip()}]
+        if not assignment_candidates:
+            raise RuntimeErrorWithCode("No API key available for live model call.", 401)
+
+        auth_failover_history: List[Dict[str, Any]] = []
+        last_error: Optional[RuntimeErrorWithCode] = None
+
+        for assignment_index, assignment in enumerate(assignment_candidates):
+            current_api_key = str(assignment.get("apiKey", "")).strip()
+            if not current_api_key:
+                continue
+            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            recovered_from_incomplete = False
+
+            try:
+                for index, effective_tokens in enumerate(attempts):
+                    previous_response_id: Optional[str] = None
+                    pending_input: Any = input_text
+                    tool_turns = 0
+                    web_search_queries: Dict[str, bool] = {}
+                    web_search_sources: Dict[str, bool] = {}
+                    url_citations: Dict[str, bool] = {}
+                    executed_tools: List[Dict[str, Any]] = []
+                    retry_attempt = False
+
+                    while True:
+                        body: Dict[str, Any] = {
+                            "model": model,
+                            "instructions": instructions,
+                            "input": pending_input,
+                            "text": {
+                                "verbosity": "low",
+                                "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
+                            },
+                        }
+                        if self.xai_accepts_reasoning_effort(model):
+                            body["reasoning"] = {"effort": reasoning_effort}
+                        if previous_response_id:
+                            body["previous_response_id"] = previous_response_id
+                        if effective_tokens > 0:
+                            body["max_output_tokens"] = effective_tokens
+                        if tools:
+                            body["tools"] = tools
+                        if tool_choice is not None:
+                            body["tool_choice"] = tool_choice
+                        if include and any(str(item or "").strip() for item in include):
+                            body["include"] = [item for item in include if str(item or "").strip() in {"no_inline_citations"}]
+
+                        request = urllib.request.Request(
+                            self.xai_responses_url(),
+                            data=json.dumps(body).encode("utf-8"),
+                            headers={"Authorization": f"Bearer {current_api_key}", "Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        try:
+                            with urllib.request.urlopen(request, timeout=1800) as handle:
+                                response = json.loads(handle.read().decode("utf-8"))
+                        except urllib.error.HTTPError as error:
+                            body_text = error.read().decode("utf-8", errors="replace")
+                            raise RuntimeErrorWithCode(f"xAI API request failed: HTTP {error.code} | {body_text}", 500)
+                        except Exception as error:
+                            raise RuntimeErrorWithCode(f"xAI API request failed: {error}", 500)
+
+                        if isinstance(response.get("error"), dict):
+                            raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+
+                        for query in self.get_response_web_search_queries(response):
+                            web_search_queries[query] = True
+                        for source in self.get_response_web_search_sources(response):
+                            web_search_sources[source] = True
+                        for citation in self.get_response_url_citations(response):
+                            url_citations[citation] = True
+
+                        incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
+                        incomplete_reason = str(incomplete_details.get("reason", "")).strip()
+                        if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
+                            recovered_from_incomplete = True
+                            last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
+                            retry_attempt = True
+                            break
+
+                        tool_calls: List[Dict[str, Any]] = []
+                        if handlers:
+                            for item in response.get("output", []):
+                                if not isinstance(item, dict):
+                                    continue
+                                item_type = str(item.get("type", "")).strip()
+                                name = str(item.get("name", "")).strip()
+                                if item_type not in {"function_call", "custom_tool_call"} or name not in handlers:
+                                    continue
+                                tool_calls.append(item)
+
+                        if tool_calls:
+                            if tool_turns >= 8:
+                                raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
+                            continuation_items: List[Dict[str, Any]] = []
+                            for item in tool_calls:
+                                name = str(item.get("name", "")).strip()
+                                raw_arguments: Any = item.get("arguments")
+                                if item.get("type") == "custom_tool_call":
+                                    raw_arguments = item.get("input")
+                                arguments: Dict[str, Any] = {}
+                                if isinstance(raw_arguments, dict):
+                                    arguments = dict(raw_arguments)
+                                elif isinstance(raw_arguments, str) and raw_arguments.strip():
+                                    try:
+                                        decoded_arguments = json.loads(raw_arguments)
+                                    except json.JSONDecodeError:
+                                        decoded_arguments = None
+                                    if isinstance(decoded_arguments, dict):
+                                        arguments = decoded_arguments
+                                call_id = str(item.get("call_id", "")).strip()
+                                tool_output: Dict[str, Any]
+                                tool_audit: Dict[str, Any]
+                                try:
+                                    tool_output, tool_audit = handlers[name](arguments)
+                                except RuntimeErrorWithCode as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} failed: {truncate_text(str(error), 180)}",
+                                    }
+                                except Exception as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
+                                    }
+                                audit_entry = dict(tool_audit or {})
+                                audit_entry["name"] = name
+                                audit_entry["arguments"] = arguments
+                                if call_id:
+                                    audit_entry["callId"] = call_id
+                                executed_tools.append(audit_entry)
+                                continuation_items.append(
+                                    {
+                                        "type": "function_call_output",
+                                        "call_id": call_id,
+                                        "output": json.dumps(tool_output, ensure_ascii=False),
+                                    }
+                                )
+                            previous_response_id = str(response.get("id", "")).strip() or previous_response_id
+                            pending_input = continuation_items
+                            tool_turns += 1
+                            continue
+
+                        output_text = self.get_response_output_text(response)
+                        if not output_text:
+                            if response.get("status") == "incomplete" and incomplete_reason:
+                                detail = f"Model response incomplete: {incomplete_reason}"
+                                if incomplete_reason == "max_output_tokens":
+                                    detail += f" after attempts {attempts}"
+                                raise RuntimeErrorWithCode(detail, 500)
+                            raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
+
+                        if response.get("status") == "incomplete" and incomplete_reason:
+                            detail = f"Model response incomplete: {incomplete_reason}"
+                            if incomplete_reason == "max_output_tokens":
+                                detail += f" after attempts {attempts}"
+                            raise RuntimeErrorWithCode(detail, 500)
+
+                        try:
+                            parsed = json.loads(output_text)
+                        except json.JSONDecodeError as error:
+                            if response.get("status") == "incomplete" and incomplete_reason:
+                                detail = f"Model response incomplete: {incomplete_reason}"
+                                if incomplete_reason == "max_output_tokens":
+                                    detail += f" after attempts {attempts}"
+                                raise RuntimeErrorWithCode(detail, 500)
+                            raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
+
+                        if not isinstance(parsed, dict):
+                            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+
+                        return OpenAIResult(
+                            provider="xai",
+                            parsed=parsed,
+                            response=response,
+                            response_id=str(response.get("id", "")),
+                            output_text=output_text,
+                            thinking_text=self.get_response_thinking_text(response),
+                            web_search_queries=normalize_string_array_preserve_items(list(web_search_queries.keys())),
+                            web_search_sources=normalize_url_array_values(list(web_search_sources.keys())),
+                            url_citations=normalize_url_array_values(list(url_citations.keys())),
+                            requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                            effective_max_output_tokens=effective_tokens,
+                            attempts=attempts,
+                            recovered_from_incomplete=recovered_from_incomplete,
+                            executed_tools=executed_tools,
+                            auth_assignment=auth_assignment_meta(assignment),
+                            auth_failover_history=list(auth_failover_history),
+                        )
+
+                    if retry_attempt:
+                        continue
+
+            except RuntimeErrorWithCode as error:
+                last_error = error
+                if assignment_index < len(assignment_candidates) - 1 and self.is_auth_rotation_error(error):
+                    auth_failover_history.append(
+                        {
+                            "failedTarget": str(assignment.get("target", target_kind)),
+                            "failedKeySlot": int(assignment.get("keySlot", 0) or 0),
+                            "failedMasked": str(assignment.get("masked", "")),
+                            "error": str(error),
+                            "nextKeySlot": int(assignment_candidates[assignment_index + 1].get("keySlot", 0) or 0),
+                            "nextMasked": str(assignment_candidates[assignment_index + 1].get("masked", "")),
+                        }
+                    )
+                    continue
+                if auth_failover_history and self.is_auth_rotation_error(error):
+                    history_summary = self.summarize_auth_failover_history(auth_failover_history)
+                    raise RuntimeErrorWithCode(
+                        f"{error} | auth_failover_exhausted after {len(auth_failover_history) + 1} key attempts"
+                        + (f" | {history_summary}" if history_summary else ""),
+                        error.status_code,
+                    )
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeErrorWithCode("Model response did not produce a usable structured output.", 500)
+
+    def invoke_anthropic_messages_json(
+        self,
+        provider: str,
+        api_key: str,
+        model: str,
+        instructions: str,
+        input_text: str,
+        schema: Dict[str, Any],
+        max_output_tokens: int = 0,
+        target_kind: str = "generic",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
+    ) -> OpenAIResult:
+        normalized_provider = normalize_provider_id(provider, "anthropic")
+        provider_label = provider_capability_profile(normalized_provider)["provider"]
+        handlers = function_handlers if isinstance(function_handlers, dict) else {}
+        assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
+        if not assignment_candidates and str(api_key or "").strip():
+            assignment_candidates = [{"apiKey": str(api_key).strip()}]
+        if not assignment_candidates:
+            raise RuntimeErrorWithCode("No API key available for live model call.", 401)
+
+        messages_tools: List[Dict[str, Any]] = []
+        if tools:
+            for tool in tools:
+                if not isinstance(tool, dict):
+                    continue
+                tool_type = str(tool.get("type", "")).strip()
+                if tool_type == "web_search":
+                    if normalized_provider != "anthropic":
+                        raise RuntimeErrorWithCode(
+                            f"provider_does_not_support: {PROVIDER_CATALOG[normalized_provider]['label']} live mode does not yet support built-in web search in this runtime.",
+                            400,
+                        )
+                    converted_tool: Dict[str, Any] = {"type": "web_search_20250305", "name": "web_search"}
+                    filters = tool.get("filters") if isinstance(tool.get("filters"), dict) else {}
+                    allowed_domains = normalize_string_array_preserve_items(filters.get("allowed_domains", []))
+                    if allowed_domains:
+                        converted_tool["allowed_domains"] = allowed_domains
+                    messages_tools.append(converted_tool)
+                    continue
+                if tool_type == "function":
+                    messages_tools.extend(self.convert_function_tools_to_anthropic([tool]))
+                    continue
+                raise RuntimeErrorWithCode(
+                    f"provider_does_not_support: Unsupported tool type {tool_type or 'unknown'} for {PROVIDER_CATALOG[normalized_provider]['label']} in this runtime.",
+                    400,
+                )
+
+        auth_failover_history: List[Dict[str, Any]] = []
+        last_error: Optional[RuntimeErrorWithCode] = None
+
+        for assignment_index, assignment in enumerate(assignment_candidates):
+            current_api_key = str(assignment.get("apiKey", "")).strip()
+            if not current_api_key:
+                continue
+            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            recovered_from_incomplete = False
+
+            try:
+                for index, effective_tokens in enumerate(attempts):
+                    messages: List[Dict[str, Any]] = [
+                        {"role": "user", "content": [{"type": "text", "text": input_text}]}
+                    ]
+                    tool_turns = 0
+                    pause_turns = 0
+                    web_search_queries: Dict[str, bool] = {}
+                    web_search_sources: Dict[str, bool] = {}
+                    url_citations: Dict[str, bool] = {}
+                    executed_tools: List[Dict[str, Any]] = []
+                    retry_attempt = False
+
+                    while True:
+                        body: Dict[str, Any] = {
+                            "model": model,
+                            "max_tokens": effective_tokens,
+                            "system": instructions,
+                            "messages": messages,
+                        }
+                        if messages_tools:
+                            body["tools"] = messages_tools
+                        converted_tool_choice = self.anthropic_tool_choice(tool_choice)
+                        if converted_tool_choice:
+                            body["tool_choice"] = converted_tool_choice
+
+                        request = urllib.request.Request(
+                            self.anthropic_messages_url(normalized_provider),
+                            data=json.dumps(body).encode("utf-8"),
+                            headers={
+                                "x-api-key": current_api_key,
+                                "anthropic-version": "2023-06-01",
+                                "Content-Type": "application/json",
+                            },
+                            method="POST",
+                        )
+                        try:
+                            with urllib.request.urlopen(request, timeout=1800) as handle:
+                                response = json.loads(handle.read().decode("utf-8"))
+                        except urllib.error.HTTPError as error:
+                            body_text = error.read().decode("utf-8", errors="replace")
+                            raise RuntimeErrorWithCode(f"{PROVIDER_CATALOG[normalized_provider]['label']} API request failed: HTTP {error.code} | {body_text}", 500)
+                        except Exception as error:
+                            raise RuntimeErrorWithCode(f"{PROVIDER_CATALOG[normalized_provider]['label']} API request failed: {error}", 500)
+
+                        if isinstance(response.get("error"), dict):
+                            raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+
+                        for query in self.get_response_web_search_queries(response):
+                            web_search_queries[query] = True
+                        for source in self.get_response_web_search_sources(response):
+                            web_search_sources[source] = True
+                        for citation in self.get_response_url_citations(response):
+                            url_citations[citation] = True
+
+                        stop_reason = str(response.get("stop_reason", "")).strip()
+                        content_blocks = response.get("content") if isinstance(response.get("content"), list) else []
+
+                        tool_calls: List[Dict[str, Any]] = []
+                        if handlers:
+                            for block in content_blocks:
+                                if not isinstance(block, dict):
+                                    continue
+                                if str(block.get("type", "")).strip() != "tool_use":
+                                    continue
+                                name = str(block.get("name", "")).strip()
+                                if name not in handlers:
+                                    continue
+                                tool_calls.append(block)
+
+                        if tool_calls:
+                            if tool_turns >= 8:
+                                raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
+                            messages.append({"role": "assistant", "content": content_blocks})
+                            continuation_blocks: List[Dict[str, Any]] = []
+                            for block in tool_calls:
+                                name = str(block.get("name", "")).strip()
+                                arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+                                tool_output: Dict[str, Any]
+                                tool_audit: Dict[str, Any]
+                                try:
+                                    tool_output, tool_audit = handlers[name](arguments)
+                                except RuntimeErrorWithCode as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} failed: {truncate_text(str(error), 180)}",
+                                    }
+                                except Exception as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
+                                    }
+                                audit_entry = dict(tool_audit or {})
+                                audit_entry["name"] = name
+                                audit_entry["arguments"] = arguments
+                                if block.get("id"):
+                                    audit_entry["callId"] = str(block.get("id"))
+                                executed_tools.append(audit_entry)
+                                continuation_blocks.append(
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": str(block.get("id", "")),
+                                        "content": json.dumps(tool_output, ensure_ascii=False),
+                                    }
+                                )
+                            messages.append({"role": "user", "content": continuation_blocks})
+                            tool_turns += 1
+                            continue
+
+                        if stop_reason == "pause_turn":
+                            if pause_turns >= 4:
+                                raise RuntimeErrorWithCode("Model exceeded the allowed paused-turn continuation count.", 500)
+                            messages.append({"role": "assistant", "content": content_blocks})
+                            pause_turns += 1
+                            continue
+
+                        output_text = self.get_response_output_text(response)
+                        if not output_text:
+                            if stop_reason == "max_tokens" and index < len(attempts) - 1:
+                                recovered_from_incomplete = True
+                                retry_attempt = True
+                                break
+                            raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
+
+                        try:
+                            parsed = json.loads(output_text)
+                        except json.JSONDecodeError as error:
+                            if stop_reason == "max_tokens" and index < len(attempts) - 1:
+                                recovered_from_incomplete = True
+                                retry_attempt = True
+                                break
+                            raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
+
+                        if not isinstance(parsed, dict):
+                            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+
+                        return OpenAIResult(
+                            provider=normalized_provider,
+                            parsed=parsed,
+                            response=response,
+                            response_id=str(response.get("id", "")),
+                            output_text=output_text,
+                            thinking_text=self.get_response_thinking_text(response),
+                            web_search_queries=normalize_string_array_preserve_items(list(web_search_queries.keys())),
+                            web_search_sources=normalize_url_array_values(list(web_search_sources.keys())),
+                            url_citations=normalize_url_array_values(list(url_citations.keys())),
+                            requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                            effective_max_output_tokens=effective_tokens,
+                            attempts=attempts,
+                            recovered_from_incomplete=recovered_from_incomplete,
+                            executed_tools=executed_tools,
+                            auth_assignment=auth_assignment_meta(assignment),
+                            auth_failover_history=list(auth_failover_history),
+                        )
+
+                    if retry_attempt:
+                        continue
+
+            except RuntimeErrorWithCode as error:
+                last_error = error
+                if assignment_index < len(assignment_candidates) - 1 and self.is_auth_rotation_error(error):
+                    auth_failover_history.append(
+                        {
+                            "failedTarget": str(assignment.get("target", target_kind)),
+                            "failedKeySlot": int(assignment.get("keySlot", 0) or 0),
+                            "failedMasked": str(assignment.get("masked", "")),
+                            "error": str(error),
+                            "nextKeySlot": int(assignment_candidates[assignment_index + 1].get("keySlot", 0) or 0),
+                            "nextMasked": str(assignment_candidates[assignment_index + 1].get("masked", "")),
+                        }
+                    )
+                    continue
+                if auth_failover_history and self.is_auth_rotation_error(error):
+                    history_summary = self.summarize_auth_failover_history(auth_failover_history)
+                    raise RuntimeErrorWithCode(
+                        f"{error} | auth_failover_exhausted after {len(auth_failover_history) + 1} key attempts"
+                        + (f" | {history_summary}" if history_summary else ""),
+                        error.status_code,
+                    )
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeErrorWithCode(f"{provider_label} response did not produce a usable structured output.", 500)
+
     def ollama_chat_url(self) -> str:
         base = str(os.getenv("LOOP_OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip() or "http://127.0.0.1:11434"
         return base.rstrip("/") + "/api/chat"
@@ -3429,10 +4293,14 @@ class LoopRuntime:
         schema: Dict[str, Any],
         max_output_tokens: int = 0,
         target_kind: str = "generic",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
     ) -> OpenAIResult:
         attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
         last_error: Optional[RuntimeErrorWithCode] = None
         api_key = self.ollama_api_key()
+        ollama_tools = self.convert_function_tools_to_ollama(tools)
+        handlers = function_handlers if isinstance(function_handlers, dict) else {}
         for effective_tokens in attempts:
             messages = [
                 {"role": "system", "content": instructions},
@@ -3445,68 +4313,147 @@ class LoopRuntime:
                     ),
                 },
             ]
-            body: Dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "format": schema,
-                "options": {},
-            }
-            if effective_tokens > 0:
-                body["options"]["num_predict"] = effective_tokens
-            if not body["options"]:
-                body.pop("options", None)
+            executed_tools: List[Dict[str, Any]] = []
+            tool_turns = 0
+            while True:
+                body: Dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "format": schema,
+                    "options": {},
+                }
+                if ollama_tools:
+                    body["tools"] = ollama_tools
+                if effective_tokens > 0:
+                    body["options"]["num_predict"] = effective_tokens
+                if not body["options"]:
+                    body.pop("options", None)
 
-            headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            request = urllib.request.Request(
-                self.ollama_chat_url(),
-                data=json.dumps(body).encode("utf-8"),
-                headers=headers,
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=1800) as handle:
-                    response = json.loads(handle.read().decode("utf-8"))
-            except urllib.error.HTTPError as error:
-                body_text = error.read().decode("utf-8", errors="replace")
-                raise RuntimeErrorWithCode(f"Ollama API request failed: HTTP {error.code} | {body_text}", 500)
-            except Exception as error:
-                raise RuntimeErrorWithCode(f"Ollama API request failed: {error}", 500)
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                request = urllib.request.Request(
+                    self.ollama_chat_url(),
+                    data=json.dumps(body).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=1800) as handle:
+                        response = json.loads(handle.read().decode("utf-8"))
+                except urllib.error.HTTPError as error:
+                    body_text = error.read().decode("utf-8", errors="replace")
+                    raise RuntimeErrorWithCode(f"Ollama API request failed: HTTP {error.code} | {body_text}", 500)
+                except Exception as error:
+                    raise RuntimeErrorWithCode(f"Ollama API request failed: {error}", 500)
 
-            output_text = self.get_response_output_text(response)
-            if not output_text:
-                last_error = RuntimeErrorWithCode("Ollama response did not include message.content.", 500)
-                continue
-            try:
-                parsed = json.loads(output_text)
-            except json.JSONDecodeError as error:
-                last_error = RuntimeErrorWithCode(f"Ollama response JSON parse failed: {error}", 500)
-                continue
-            if not isinstance(parsed, dict):
-                last_error = RuntimeErrorWithCode("Ollama response JSON parse failed: expected object output.", 500)
-                continue
+                message_node = response.get("message") if isinstance(response.get("message"), dict) else {}
+                raw_tool_calls = message_node.get("tool_calls") if isinstance(message_node.get("tool_calls"), list) else []
+                tool_calls: List[Dict[str, Any]] = []
+                if ollama_tools and handlers:
+                    for item in raw_tool_calls:
+                        if not isinstance(item, dict):
+                            continue
+                        function_node = item.get("function") if isinstance(item.get("function"), dict) else {}
+                        name = str(function_node.get("name", "")).strip()
+                        if name not in handlers:
+                            continue
+                        tool_calls.append(item)
 
-            response_id = str(response.get("created_at", "") or "") or f"ollama:{int(time.time())}"
-            return OpenAIResult(
-                provider="ollama",
-                parsed=parsed,
-                response=response,
-                response_id=response_id,
-                output_text=output_text,
-                thinking_text=self.get_response_thinking_text(response),
-                web_search_queries=[],
-                web_search_sources=[],
-                url_citations=[],
-                requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
-                effective_max_output_tokens=effective_tokens,
-                attempts=attempts,
-                recovered_from_incomplete=False,
-                executed_tools=[],
-                auth_assignment=None,
-                auth_failover_history=[],
-            )
+                if tool_calls:
+                    if tool_turns >= 8:
+                        raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
+                    assistant_message: Dict[str, Any] = {
+                        "role": "assistant",
+                        "content": str(message_node.get("content", "") or ""),
+                        "tool_calls": tool_calls,
+                    }
+                    if message_node.get("thinking"):
+                        assistant_message["thinking"] = str(message_node.get("thinking"))
+                    messages.append(assistant_message)
+                    for item in tool_calls:
+                        function_node = item.get("function") if isinstance(item.get("function"), dict) else {}
+                        name = str(function_node.get("name", "")).strip()
+                        raw_arguments = function_node.get("arguments")
+                        arguments: Dict[str, Any] = {}
+                        if isinstance(raw_arguments, dict):
+                            arguments = dict(raw_arguments)
+                        elif isinstance(raw_arguments, str) and raw_arguments.strip():
+                            try:
+                                decoded_arguments = json.loads(raw_arguments)
+                            except json.JSONDecodeError:
+                                decoded_arguments = None
+                            if isinstance(decoded_arguments, dict):
+                                arguments = decoded_arguments
+                        tool_output: Dict[str, Any]
+                        tool_audit: Dict[str, Any]
+                        try:
+                            tool_output, tool_audit = handlers[name](arguments)
+                        except RuntimeErrorWithCode as error:
+                            tool_output = {"ok": False, "error": str(error)}
+                            tool_audit = {
+                                "name": name,
+                                "path": str(arguments.get("path", ".")),
+                                "sources": [],
+                                "error": str(error),
+                                "summary": f"{name} failed: {truncate_text(str(error), 180)}",
+                            }
+                        except Exception as error:
+                            tool_output = {"ok": False, "error": str(error)}
+                            tool_audit = {
+                                "name": name,
+                                "path": str(arguments.get("path", ".")),
+                                "sources": [],
+                                "error": str(error),
+                                "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
+                            }
+                        audit_entry = dict(tool_audit or {})
+                        audit_entry["name"] = name
+                        audit_entry["arguments"] = arguments
+                        executed_tools.append(audit_entry)
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_name": name,
+                                "content": json.dumps(tool_output, ensure_ascii=False),
+                            }
+                        )
+                    tool_turns += 1
+                    continue
+
+                output_text = self.get_response_output_text(response)
+                if not output_text:
+                    last_error = RuntimeErrorWithCode("Ollama response did not include message.content.", 500)
+                    break
+                try:
+                    parsed = json.loads(output_text)
+                except json.JSONDecodeError as error:
+                    last_error = RuntimeErrorWithCode(f"Ollama response JSON parse failed: {error}", 500)
+                    break
+                if not isinstance(parsed, dict):
+                    last_error = RuntimeErrorWithCode("Ollama response JSON parse failed: expected object output.", 500)
+                    break
+
+                response_id = str(response.get("created_at", "") or "") or f"ollama:{int(time.time())}"
+                return OpenAIResult(
+                    provider="ollama",
+                    parsed=parsed,
+                    response=response,
+                    response_id=response_id,
+                    output_text=output_text,
+                    thinking_text=self.get_response_thinking_text(response),
+                    web_search_queries=[],
+                    web_search_sources=[],
+                    url_citations=[],
+                    requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                    effective_max_output_tokens=effective_tokens,
+                    attempts=attempts,
+                    recovered_from_incomplete=False,
+                    executed_tools=executed_tools,
+                    auth_assignment=None,
+                    auth_failover_history=[],
+                )
         if last_error is not None:
             raise last_error
         raise RuntimeErrorWithCode("Ollama response did not produce a usable structured output.", 500)
@@ -3547,12 +4494,73 @@ class LoopRuntime:
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
             )
+        if normalized_provider == "xai":
+            return self.invoke_xai_json(
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                instructions=instructions,
+                input_text=input_text,
+                schema_name=schema_name,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                target_kind=target_kind,
+                tools=tools,
+                tool_choice=tool_choice,
+                include=include,
+                function_handlers=function_handlers,
+                auth_assignments=auth_assignments,
+            )
+        if normalized_provider in {"anthropic", "minimax"}:
+            if include:
+                include = None
+            return self.invoke_anthropic_messages_json(
+                provider=normalized_provider,
+                api_key=api_key,
+                model=model,
+                instructions=instructions,
+                input_text=input_text,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                target_kind=target_kind,
+                tools=tools,
+                tool_choice=tool_choice,
+                function_handlers=function_handlers,
+                auth_assignments=auth_assignments,
+            )
         if normalized_provider == "ollama":
-            if tools or tool_choice is not None or include or function_handlers:
+            normalized_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
+            unsupported_tool_types = sorted(
+                {
+                    str(tool.get("type", "")).strip() or "unknown"
+                    for tool in normalized_tools
+                    if str(tool.get("type", "")).strip() != "function"
+                }
+            )
+            if unsupported_tool_types:
                 raise RuntimeErrorWithCode(
-                    "provider_does_not_support: Ollama live mode does not yet support research or function tools in this runtime.",
+                    "provider_does_not_support: Ollama live mode only supports local function tools in this runtime"
+                    + f" (unsupported: {', '.join(unsupported_tool_types)}).",
                     400,
                 )
+            normalized_tool_choice = ""
+            if tool_choice is not None:
+                if not isinstance(tool_choice, str):
+                    raise RuntimeErrorWithCode(
+                        "provider_does_not_support: Ollama live mode only supports tool_choice 'auto' for local function tools.",
+                        400,
+                    )
+                normalized_tool_choice = tool_choice.strip().lower()
+                if normalized_tool_choice not in {"auto", "none"}:
+                    raise RuntimeErrorWithCode(
+                        "provider_does_not_support: Ollama live mode only supports tool_choice 'auto' for local function tools.",
+                        400,
+                    )
+            if include:
+                include = None
+            if normalized_tool_choice == "none":
+                normalized_tools = []
+                function_handlers = None
             return self.invoke_ollama_json(
                 model=model,
                 instructions=instructions,
@@ -3560,6 +4568,8 @@ class LoopRuntime:
                 schema=schema,
                 max_output_tokens=max_output_tokens,
                 target_kind=target_kind,
+                tools=normalized_tools,
+                function_handlers=function_handlers,
             )
         raise RuntimeErrorWithCode(f"provider_not_configured: Unsupported provider {normalized_provider}.", 400)
 
@@ -3910,6 +4920,7 @@ class LoopRuntime:
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         command_config = commander_config(task)
         harness_lines = commander_harness_instruction_lines(command_config.get("harness"))
+        skill_context = build_runtime_skill_context(runtime["provider"], "commander")
         session_context = str(task.get("sessionContext", "")).strip()
         summary_projection = self.project_prior_summary_for_worker(prior_summary)
         summary_text = json.dumps(summary_projection, ensure_ascii=False, indent=2) if summary_projection else "none"
@@ -3963,6 +4974,7 @@ class LoopRuntime:
                 else ""
             )
             + "\n".join(harness_lines)
+            + skill_context["prompt"]
             + "\nReturn JSON only that matches the schema exactly."
         )
         input_text = (
@@ -3998,6 +5010,7 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "skills": skill_context["names"],
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
             "localToolCalls": parsed["localToolCalls"],
@@ -4144,6 +5157,7 @@ class LoopRuntime:
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         review_config = commander_review_config(task)
         harness_lines = summarizer_harness_instruction_lines(review_config.get("harness"))
+        skill_context = build_runtime_skill_context(runtime["provider"], "commander_review")
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
         session_context = str(task.get("sessionContext", "")).strip()
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
@@ -4173,6 +5187,7 @@ class LoopRuntime:
             "remainingUncertainty should capture what still stays unresolved after this reevaluation.\n"
             "sourceWorkers should list the workers whose checkpoints materially informed the reevaluation.\n"
             + "\n".join(harness_lines)
+            + skill_context["prompt"]
             + "\nReturn JSON only that matches the schema exactly."
         )
         input_text = (
@@ -4210,6 +5225,7 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "skills": skill_context["names"],
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
         }
@@ -4429,6 +5445,7 @@ class LoopRuntime:
         commander_projection = self.project_commander_for_worker(commander_checkpoint)
         commander_text = json.dumps(commander_projection, ensure_ascii=False, indent=2) if commander_projection else "none"
         harness_lines = worker_harness_instruction_lines(worker.get("harness"))
+        skill_context = build_runtime_skill_context(runtime["provider"], "worker", worker.get("type"))
         local_file_config = normalize_local_file_tool_config(runtime.get("localFiles") if isinstance(runtime.get("localFiles"), dict) else {})
         github_tool_config = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
         instructions = (
@@ -4460,6 +5477,7 @@ class LoopRuntime:
             + "Every evidenceLedger item must capture one concrete claim, its supportLevel, the relevant sourceUrls, and a short note on why the evidence matters.\n"
             + "If evidence is missing or weak, say so in evidenceGaps instead of overstating certainty.\n"
             + "\n".join(harness_lines)
+            + skill_context["prompt"]
         )
         research_description = "Enabled. Workers may use web_search." if research_config["enabled"] else "Disabled. Workers must reason from existing context only."
         research_domains_text = ", ".join(research_config["domains"]) if research_config["domains"] else "none"
@@ -4544,6 +5562,7 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "skills": skill_context["names"],
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
             "localToolCalls": parsed["localToolCalls"],
@@ -5226,6 +6245,7 @@ class LoopRuntime:
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         summary_config = summarizer_config(task)
         harness_lines = summarizer_harness_instruction_lines(summary_config.get("harness"))
+        skill_context = build_runtime_skill_context(runtime["provider"], "summarizer")
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
         session_context = str(task.get("sessionContext", "")).strip()
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
@@ -5319,6 +6339,7 @@ class LoopRuntime:
                 "The public answer should still be useful and decisive, but its confidence note must clearly reflect the missing evidence.\n"
             )
         instructions += "\n".join(harness_lines)
+        instructions += skill_context["prompt"]
         instructions += "\nReturn JSON only that matches the schema exactly."
         input_text = (
             f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
@@ -5370,6 +6391,7 @@ class LoopRuntime:
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "skills": skill_context["names"],
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
         }
@@ -5580,7 +6602,7 @@ class LoopRuntime:
                     )
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
-                    self.raise_if_managed_secret_backend_unavailable("commander", str(task["taskId"]), runtime["model"], "commander")
+                    self.raise_if_managed_secret_backend_unavailable("commander", str(task["taskId"]), runtime["model"], "commander", runtime["provider"])
                 self.append_step("commander", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if checkpoint is None:
             checkpoint = self.new_mock_commander(task, runtime, round_number, constraints, prior_summary)
@@ -5616,12 +6638,14 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
                 "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
                 "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
                 "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
                 "githubSources": normalize_url_array_values(call_meta.get("githubSources", [])),
             } if response else None,
             "authMeta": auth_meta,
+            "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
             "output": checkpoint,
         }
         _, history_output = self.write_output_artifact(
@@ -5789,7 +6813,7 @@ class LoopRuntime:
                     )
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
-                    self.raise_if_managed_secret_backend_unavailable("commander_review", str(task["taskId"]), runtime["model"], "commander_review")
+                    self.raise_if_managed_secret_backend_unavailable("commander_review", str(task["taskId"]), runtime["model"], "commander_review", runtime["provider"])
                 self.append_step("commander_review", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if checkpoint is None:
             checkpoint = self.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
@@ -5848,11 +6872,13 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
                 "dynamicLaneDecision": dynamic_lane_decision,
                 "dynamicLaneResolution": dynamic_lane_resolution,
                 "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
             } if response else None,
             "authMeta": auth_meta,
+            "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
             "output": checkpoint,
         }
         _, history_output = self.write_output_artifact(
@@ -6047,7 +7073,7 @@ class LoopRuntime:
                     )
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
-                    self.raise_if_managed_secret_backend_unavailable(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], worker_id)
+                    self.raise_if_managed_secret_backend_unavailable(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], worker_id, runtime["provider"])
                 self.append_step(
                     f"worker_{worker_id}",
                     "No API key found; falling back to mock.",
@@ -6086,6 +7112,7 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
                 "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
                 "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
                 "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
@@ -6094,6 +7121,7 @@ class LoopRuntime:
             if response
             else None,
             "authMeta": auth_meta,
+            "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
             "output": checkpoint,
         }
         _, history_output = self.write_output_artifact(
@@ -6276,7 +7304,7 @@ class LoopRuntime:
                     )
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
-                    self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "summarizer")
+                    self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "summarizer", runtime["provider"])
                 self.append_step("summarizer", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
             summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
@@ -6311,8 +7339,10 @@ class LoopRuntime:
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
             } if response else None,
             "authMeta": auth_meta,
+            "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
             "output": summary,
         }
         _, history_output = self.write_output_artifact(
@@ -6455,7 +7485,7 @@ class LoopRuntime:
                     )
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
-                    self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "answer_now")
+                    self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "answer_now", runtime["provider"])
                 self.append_step("summarizer", "No API key found for Answer Now; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
             summary = self.new_mock_summary(

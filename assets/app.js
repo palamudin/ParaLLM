@@ -14,16 +14,115 @@ const MODEL_CATALOG = {
   "gpt-4o-mini": { label: "GPT-4o mini" }
 };
 
+const ANTHROPIC_MODEL_CATALOG = {
+  "claude-opus-4-1-20250805": { label: "Claude Opus 4.1" },
+  "claude-opus-4-20250514": { label: "Claude Opus 4" },
+  "claude-sonnet-4-20250514": { label: "Claude Sonnet 4" },
+  "claude-3-7-sonnet-20250219": { label: "Claude Sonnet 3.7" },
+  "claude-3-5-haiku-latest": { label: "Claude Haiku 3.5" }
+};
+
+const XAI_MODEL_CATALOG = {
+  "grok-4.20-reasoning": { label: "Grok 4.20 Reasoning" },
+  "grok-4-1-fast-reasoning": { label: "Grok 4.1 Fast Reasoning" },
+  "grok-4.20-multi-agent": { label: "Grok 4.20 Multi-Agent" },
+  "grok-4.20": { label: "Grok 4.20" }
+};
+
+const MINIMAX_MODEL_CATALOG = {
+  "MiniMax-M2.7": { label: "MiniMax M2.7" },
+  "MiniMax-M2.7-highspeed": { label: "MiniMax M2.7 Highspeed" },
+  "MiniMax-M2.5": { label: "MiniMax M2.5" },
+  "MiniMax-M2.5-highspeed": { label: "MiniMax M2.5 Highspeed" },
+  "MiniMax-M2.1": { label: "MiniMax M2.1" },
+  "MiniMax-M2.1-highspeed": { label: "MiniMax M2.1 Highspeed" },
+  "MiniMax-M2": { label: "MiniMax M2" }
+};
+
 const PROVIDER_CATALOG = {
   openai: { label: "OpenAI" },
+  anthropic: { label: "Anthropic" },
+  xai: { label: "xAI" },
+  minimax: { label: "MiniMax" },
   ollama: { label: "Ollama" }
 };
 const PROVIDER_ORDER = Object.keys(PROVIDER_CATALOG);
+const PROVIDER_CAPABILITY_CATALOG = {
+  openai: {
+    toolLoop: true,
+    webSearch: true,
+    localFiles: true,
+    githubTools: true,
+    costTracking: true,
+    notes: [
+      "Responses API path with built-in web search and audited tool loop.",
+      "Estimated spend tracking is available."
+    ]
+  },
+  anthropic: {
+    toolLoop: true,
+    webSearch: true,
+    localFiles: true,
+    githubTools: true,
+    costTracking: false,
+    notes: [
+      "Messages API path with tool_use/tool_result turns.",
+      "Server web search plus client tool loops are enabled."
+    ]
+  },
+  xai: {
+    toolLoop: true,
+    webSearch: true,
+    localFiles: true,
+    githubTools: true,
+    costTracking: false,
+    notes: [
+      "xAI Responses path with Grok-compatible function tools.",
+      "Built-in web search is enabled in this runtime."
+    ]
+  },
+  minimax: {
+    toolLoop: true,
+    webSearch: false,
+    localFiles: true,
+    githubTools: true,
+    costTracking: false,
+    notes: [
+      "Anthropic-compatible MiniMax path for messages and client tools.",
+      "Built-in live web search is not wired here yet."
+    ]
+  },
+  ollama: {
+    toolLoop: true,
+    webSearch: false,
+    localFiles: true,
+    githubTools: true,
+    costTracking: false,
+    notes: [
+      "Native local structured generation with client-side function tools.",
+      "Live web search is still disabled for Ollama in this runtime."
+    ]
+  }
+};
 const OLLAMA_MODEL_CATALOG = {
   qwen3: { label: "Qwen3" },
   "qwen3-coder": { label: "Qwen3 Coder" },
   gemma3: { label: "Gemma 3" },
   "llama3.2": { label: "Llama 3.2" }
+};
+const PROVIDER_MODEL_CATALOG = {
+  openai: MODEL_CATALOG,
+  anthropic: ANTHROPIC_MODEL_CATALOG,
+  xai: XAI_MODEL_CATALOG,
+  minimax: MINIMAX_MODEL_CATALOG,
+  ollama: OLLAMA_MODEL_CATALOG
+};
+const PROVIDER_DEFAULT_MODELS = {
+  openai: "gpt-5-mini",
+  anthropic: "claude-sonnet-4-20250514",
+  xai: "grok-4.20-reasoning",
+  minimax: "MiniMax-M2.7",
+  ollama: "qwen3"
 };
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
 const WORKER_SLOT_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -139,9 +238,6 @@ const COMPOSER_SUPPORTED_EXTENSIONS = [
 let latestAuthStatus = {
   hasKey: false,
   keyCount: 0,
-  masked: null,
-  last4: "",
-  masks: [],
   backend: "env",
   writable: false,
   preferred: true,
@@ -149,9 +245,13 @@ let latestAuthStatus = {
   preferredBackends: ["env", "external"],
   recommendedBackend: "env",
   statusNote: "",
-  rotationPolicy: null
+  rotationPolicy: null,
+  providerOrder: ["openai", "anthropic", "xai", "minimax"],
+  providerGroups: {},
+  isolationNote: "",
+  termsWarning: ""
 };
-let authDynamicRows = [];
+let authDynamicRowsByProvider = {};
 let authRowSequence = 0;
 let authSaveTimers = {};
 let authRowSaveState = {};
@@ -570,16 +670,97 @@ function normalizeProviderId(provider) {
   return PROVIDER_CATALOG[candidate] ? candidate : "openai";
 }
 
+function providerSupportsCustomModel(provider) {
+  return normalizeProviderId(provider) !== "openai";
+}
+
 function defaultModelForProvider(provider) {
-  return normalizeProviderId(provider) === "ollama" ? "qwen3" : "gpt-5-mini";
+  const normalized = normalizeProviderId(provider);
+  return PROVIDER_DEFAULT_MODELS[normalized] || PROVIDER_DEFAULT_MODELS.openai;
 }
 
 function providerModelCatalog(provider) {
-  return normalizeProviderId(provider) === "ollama" ? OLLAMA_MODEL_CATALOG : MODEL_CATALOG;
+  const normalized = normalizeProviderId(provider);
+  return PROVIDER_MODEL_CATALOG[normalized] || MODEL_CATALOG;
 }
 
 function providerModelOrder(provider) {
-  return normalizeProviderId(provider) === "ollama" ? Object.keys(OLLAMA_MODEL_CATALOG) : MODEL_ORDER;
+  return Object.keys(providerModelCatalog(provider));
+}
+
+function providerCapabilities(provider) {
+  const normalized = normalizeProviderId(provider);
+  const raw = PROVIDER_CAPABILITY_CATALOG[normalized] || {};
+  return {
+    provider: normalized,
+    toolLoop: !!raw.toolLoop,
+    webSearch: !!raw.webSearch,
+    localFiles: !!raw.localFiles,
+    githubTools: !!raw.githubTools,
+    costTracking: !!raw.costTracking,
+    notes: Array.isArray(raw.notes) ? raw.notes.filter(Boolean) : []
+  };
+}
+
+function providerNoteSummary(provider) {
+  const notes = providerCapabilities(provider).notes || [];
+  return notes.length ? notes.join(" ") : "No provider note reported.";
+}
+
+function normalizeSelectedModelForProvider(modelId, provider) {
+  const normalizedProvider = normalizeProviderId(provider);
+  const candidate = String(modelId || "").trim();
+  const catalog = providerModelCatalog(normalizedProvider);
+  if (candidate && catalog[candidate]) {
+    return candidate;
+  }
+  if (candidate && providerSupportsCustomModel(normalizedProvider)) {
+    return candidate;
+  }
+  return defaultModelForProvider(normalizedProvider);
+}
+
+function qualityProfileModelConfig(profileId, provider) {
+  const normalizedProvider = normalizeProviderId(provider);
+  const defaults = {
+    low: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) },
+    mid: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) },
+    high: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) },
+    ultra: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) }
+  };
+  const providerModels = {
+    openai: {
+      low: { workerModel: "gpt-5-mini", summarizerModel: "gpt-5-mini" },
+      mid: { workerModel: "gpt-5-mini", summarizerModel: "gpt-5.4-mini" },
+      high: { workerModel: "gpt-5.4-mini", summarizerModel: "gpt-5.4" },
+      ultra: { workerModel: "gpt-5.4", summarizerModel: "gpt-5.4" }
+    },
+    anthropic: {
+      low: { workerModel: "claude-3-5-haiku-latest", summarizerModel: "claude-3-5-haiku-latest" },
+      mid: { workerModel: "claude-3-5-haiku-latest", summarizerModel: "claude-sonnet-4-20250514" },
+      high: { workerModel: "claude-sonnet-4-20250514", summarizerModel: "claude-opus-4-20250514" },
+      ultra: { workerModel: "claude-sonnet-4-20250514", summarizerModel: "claude-opus-4-1-20250805" }
+    },
+    xai: {
+      low: { workerModel: "grok-4-1-fast-reasoning", summarizerModel: "grok-4-1-fast-reasoning" },
+      mid: { workerModel: "grok-4-1-fast-reasoning", summarizerModel: "grok-4.20-reasoning" },
+      high: { workerModel: "grok-4.20-reasoning", summarizerModel: "grok-4.20-reasoning" },
+      ultra: { workerModel: "grok-4.20-reasoning", summarizerModel: "grok-4.20-multi-agent" }
+    },
+    minimax: {
+      low: { workerModel: "MiniMax-M2.1-highspeed", summarizerModel: "MiniMax-M2.1-highspeed" },
+      mid: { workerModel: "MiniMax-M2.1-highspeed", summarizerModel: "MiniMax-M2.5" },
+      high: { workerModel: "MiniMax-M2.5", summarizerModel: "MiniMax-M2.7" },
+      ultra: { workerModel: "MiniMax-M2.7", summarizerModel: "MiniMax-M2.7" }
+    },
+    ollama: {
+      low: { workerModel: "qwen3", summarizerModel: "qwen3" },
+      mid: { workerModel: "qwen3", summarizerModel: "qwen3-coder" },
+      high: { workerModel: "qwen3-coder", summarizerModel: "qwen3-coder" },
+      ultra: { workerModel: "qwen3-coder", summarizerModel: "qwen3-coder" }
+    }
+  };
+  return (providerModels[normalizedProvider] && providerModels[normalizedProvider][profileId]) || defaults[profileId] || defaults.low;
 }
 
 function buildProviderOptions(selectedValue) {
@@ -605,7 +786,12 @@ function buildModelOptions(selectedValue, provider) {
 
 function modelLabel(modelId, provider) {
   const catalog = providerModelCatalog(provider);
-  return catalog[modelId]?.label || MODEL_CATALOG[modelId]?.label || String(modelId || "Model");
+  if (catalog[modelId]?.label) return catalog[modelId].label;
+  const match = Object.keys(PROVIDER_MODEL_CATALOG).find(function (providerId) {
+    return !!PROVIDER_MODEL_CATALOG[providerId]?.[modelId]?.label;
+  });
+  if (match) return PROVIDER_MODEL_CATALOG[match][modelId].label;
+  return String(modelId || "Model");
 }
 
 function providerLabel(provider) {
@@ -620,8 +806,46 @@ function providerCapabilitySummary(capabilities) {
   const bits = [];
   bits.push(capabilities.toolLoop ? "tools on" : "tools off");
   bits.push(capabilities.webSearch ? "web search on" : "web search off");
+  bits.push(capabilities.localFiles ? "local files on" : "local files off");
+  bits.push(capabilities.githubTools ? "GitHub tools on" : "GitHub tools off");
   bits.push(capabilities.costTracking ? "cost tracked" : "cost local/untracked");
   return bits.join(" | ");
+}
+
+function enforceProviderCapabilitySelections(notifyUser = false) {
+  const workerProvider = normalizeProviderId($("#provider").val());
+  const capabilities = providerCapabilities(workerProvider);
+  const disabled = [];
+
+  if (!capabilities.webSearch && $("#researchEnabled").val() === "1") {
+    $("#researchEnabled").val("0");
+    disabled.push("web search");
+  }
+  if (!capabilities.localFiles && $("#localFilesEnabled").val() === "1") {
+    $("#localFilesEnabled").val("0");
+    disabled.push("local files");
+  }
+  if (!capabilities.githubTools && $("#githubToolsEnabled").val() === "1") {
+    $("#githubToolsEnabled").val("0");
+    disabled.push("GitHub tools");
+  }
+
+  if (!capabilities.webSearch && composerSourceDrawerOpen) {
+    composerSourceDrawerOpen = false;
+  }
+
+  if (notifyUser && disabled.length) {
+    showMessage(
+      providerLabel(workerProvider) + " disables " + disabled.join(", ") + " in this runtime. " + providerNoteSummary(workerProvider),
+      false
+    );
+  }
+
+  return {
+    provider: workerProvider,
+    capabilities,
+    disabled
+  };
 }
 
 function buildArtifactOptions(artifacts, selectedValue) {
@@ -806,6 +1030,7 @@ function renderArtifactMeta(data) {
   const localFileSources = Array.isArray(summary.localFileSources) ? summary.localFileSources : [];
   const githubToolCalls = Array.isArray(summary.githubToolCalls) ? summary.githubToolCalls : [];
   const githubSources = Array.isArray(summary.githubSources) ? summary.githubSources : [];
+  const activeSkills = Array.isArray(summary.skills) ? summary.skills.filter(Boolean) : [];
   const contractWarnings = Array.isArray(summary.contractWarnings) ? summary.contractWarnings.filter(Boolean) : [];
   const provider = summary.provider || "openai";
   const capabilitySummary = providerCapabilitySummary(summary.providerCapabilities);
@@ -816,6 +1041,7 @@ function renderArtifactMeta(data) {
     "task: " + (summary.taskId || "n/a") + " | target: " + (summary.target || "n/a"),
     "mode: " + (summary.mode || "n/a") + " | provider: " + providerLabel(provider) + " | model: " + modelLabel(summary.model || "n/a", provider),
     "provider capabilities: " + capabilitySummary,
+    "skills: " + (activeSkills.length ? activeSkills.join(", ") : "none"),
     "step: " + (summary.step ?? "-") + " | round: " + (summary.round ?? "-"),
     "responseId: " + (summary.responseId || "none"),
     "output cap: " + artifactOutputCapSummary(summary),
@@ -899,8 +1125,21 @@ function populateStaticModelSelect(selector, selectedValue, provider) {
 function refreshProviderModelSelects() {
   const workerProvider = normalizeProviderId($("#provider").val());
   const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
-  populateStaticModelSelect("#model", $("#model").val() || defaultModelForProvider(workerProvider), workerProvider);
-  populateStaticModelSelect("#summarizerModel", $("#summarizerModel").val() || defaultModelForProvider(summarizerProvider), summarizerProvider);
+  const workerModel = normalizeSelectedModelForProvider($("#model").val(), workerProvider);
+  const summarizerModel = normalizeSelectedModelForProvider($("#summarizerModel").val(), summarizerProvider);
+  populateStaticModelSelect("#model", workerModel, workerProvider);
+  populateStaticModelSelect("#summarizerModel", summarizerModel, summarizerProvider);
+  $("#model").val(workerModel);
+  $("#summarizerModel").val(summarizerModel);
+
+  $("#workerControls .worker-model").each(function () {
+    const nextValue = normalizeSelectedModelForProvider($(this).val(), workerProvider);
+    $(this).html(buildModelOptions(nextValue, workerProvider)).val(nextValue);
+  });
+  $("#workerControls .summarizer-model-draft").each(function () {
+    const nextValue = normalizeSelectedModelForProvider($(this).val(), summarizerProvider);
+    $(this).html(buildModelOptions(nextValue, summarizerProvider)).val(nextValue);
+  });
 }
 
 function buildCommanderFormSource(task, draft) {
@@ -1014,20 +1253,24 @@ function renderComposerContextPreview(sessionContext, constraints) {
 
 function applyCommanderForm(values) {
   const safe = Object.assign({}, defaultDraftState(), values || {});
+  const workerProvider = normalizeProviderId(safe.provider || "openai");
+  const summarizerProvider = normalizeProviderId(safe.summarizerProvider || safe.provider || "openai");
+  const workerModel = normalizeSelectedModelForProvider(safe.model, workerProvider);
+  const summarizerModel = normalizeSelectedModelForProvider(safe.summarizerModel || safe.model, summarizerProvider);
   $("#sessionContext").val(safe.sessionContext || "");
   $("#objective").val(safe.objective || "");
   $("#constraints").val((safe.constraints || []).join("\n"));
   $("#executionMode").val(safe.executionMode || "live");
-  $("#provider").val(normalizeProviderId(safe.provider || "openai"));
-  $("#summarizerProvider").val(normalizeProviderId(safe.summarizerProvider || safe.provider || "openai"));
-  populateStaticModelSelect("#model", safe.model || defaultModelForProvider(safe.provider), safe.provider || "openai");
+  $("#provider").val(workerProvider);
+  $("#summarizerProvider").val(summarizerProvider);
+  populateStaticModelSelect("#model", workerModel, workerProvider);
   populateStaticModelSelect(
     "#summarizerModel",
-    safe.summarizerModel || safe.model || defaultModelForProvider(safe.summarizerProvider || safe.provider),
-    safe.summarizerProvider || safe.provider || "openai"
+    summarizerModel,
+    summarizerProvider
   );
-  $("#model").val(safe.model || defaultModelForProvider(safe.provider));
-  $("#summarizerModel").val(safe.summarizerModel || safe.model || defaultModelForProvider(safe.summarizerProvider || safe.provider));
+  $("#model").val(workerModel);
+  $("#summarizerModel").val(summarizerModel);
   $("#reasoningEffort").val(safe.reasoningEffort || "low");
   $("#maxCostUsd").val(safe.maxCostUsd ?? 5.0);
   $("#maxTotalTokens").val(safe.maxTotalTokens ?? 250000);
@@ -1043,9 +1286,11 @@ function applyCommanderForm(values) {
   $("#dynamicSpinupEnabled").val(safe.dynamicSpinupEnabled ? "1" : "0");
   $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
   $("#researchDomains").val((safe.researchDomains || []).join(", "));
+  enforceProviderCapabilitySelections(false);
   renderQualityProfileCards();
   renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
   renderComposerTools();
+  renderAuthPoolPreview();
 }
 
 function syncCommanderForm(task, draft, force = false) {
@@ -1238,10 +1483,12 @@ function matchesQualityProfile(profileId, snapshot = null) {
   const profile = QUALITY_PROFILE_CATALOG[profileId];
   if (!profile) return false;
   const comparable = snapshot || buildQualityProfileSnapshot();
-  if (comparable.model !== profile.workerModel) return false;
-  if (normalizeProviderId(comparable.provider) !== "openai") return false;
-  if (comparable.summarizerModel !== profile.summarizerModel) return false;
-  if (normalizeProviderId(comparable.summarizerProvider) !== "openai") return false;
+  const provider = normalizeProviderId(comparable.provider);
+  const summarizerProvider = normalizeProviderId(comparable.summarizerProvider || comparable.provider);
+  if (provider !== summarizerProvider) return false;
+  const modelConfig = qualityProfileModelConfig(profileId, provider);
+  if (comparable.model !== modelConfig.workerModel) return false;
+  if (comparable.summarizerModel !== modelConfig.summarizerModel) return false;
   if (comparable.reasoningEffort !== profile.reasoningEffort) return false;
   if (Number(comparable.maxCostUsd) !== Number(profile.maxCostUsd)) return false;
   if (Number(comparable.maxTotalTokens) !== Number(profile.maxTotalTokens)) return false;
@@ -1249,7 +1496,7 @@ function matchesQualityProfile(profileId, snapshot = null) {
   if (Number(comparable.loopRounds) !== Number(profile.loopRounds)) return false;
   if (Number(comparable.loopDelayMs) !== Number(profile.loopDelayMs)) return false;
   return (comparable.workerModels.length ? comparable.workerModels : [comparable.model]).every(function (modelId) {
-    return modelId === profile.workerModel;
+    return modelId === modelConfig.workerModel;
   });
 }
 
@@ -1291,6 +1538,8 @@ function formatTokenWall(value) {
 
 function runtimeSnapshotsMatch(left, right) {
   if (!left || !right) return false;
+  if (normalizeProviderId(left.provider) !== normalizeProviderId(right.provider)) return false;
+  if (normalizeProviderId(left.summarizerProvider || left.provider) !== normalizeProviderId(right.summarizerProvider || right.provider)) return false;
   if (left.model !== right.model) return false;
   if (left.summarizerModel !== right.summarizerModel) return false;
   if (left.reasoningEffort !== right.reasoningEffort) return false;
@@ -1313,253 +1562,25 @@ function appendHomeRuntimeBlock($root, label, value, detailLines, warning = fals
   $root.append($block);
 }
 
-function renderHomeRuntimeControls(task, draft, loop) {
-  const $summary = $("#homeRuntimeSummary");
-  const $grid = $("#homeQualityProfiles");
-  const $apply = $("#applyHomeRuntime");
-  if (!$summary.length || !$grid.length || !$apply.length) return;
-
-  const stagedPayload = collectCommanderPayload();
-  const stagedSnapshot = buildQualityProfileSnapshot();
-  const stagedProfileId = detectQualityProfileId(stagedSnapshot);
-  const stagedProfileName = profileDisplayName(stagedProfileId);
-  const activeSnapshot = buildTaskQualityProfileSnapshot(task);
-  const activeProfileId = detectQualityProfileId(activeSnapshot);
-  const activeProfileName = profileDisplayName(activeProfileId);
-  const isLoopActive = loop?.status === "running" || loop?.status === "queued";
-  const hasTask = !!task;
-
-  $summary.empty();
-
-  appendHomeRuntimeBlock(
-    $summary,
-    "Next send",
-    stagedProfileName + " | " + (stagedPayload.executionMode || "live") + " mode",
-    [
-      "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
-      "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
-      "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms"
-    ]
-  );
-
-  if (hasTask && activeSnapshot) {
-    appendHomeRuntimeBlock(
-      $summary,
-      "Active task",
-      activeProfileName + " | " + (task?.runtime?.executionMode || "live") + " mode",
-      [
-        "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
-        "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
-        "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms"
-      ]
-    );
-
-    appendHomeRuntimeBlock(
-      $summary,
-      runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot) ? "Runtime sync" : "Runtime drift",
-      runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot)
-        ? "Active task already matches the staged template."
-        : "Next send and active task are different.",
-      [
-        runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot)
-          ? "You can keep prompting without touching settings."
-          : "Use Sync Active if you want the current task to adopt the staged profile, loop depth, and budget."
-      ],
-      !runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot)
-    );
-  } else {
-    appendHomeRuntimeBlock(
-      $summary,
-      "Active task",
-      "No active task yet.",
-      ["Send will start a fresh task with the staged profile, roster, and loop settings."]
-    );
-  }
-
-  $grid.empty();
-  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
-    const profile = QUALITY_PROFILE_CATALOG[profileId];
-    const $button = $("<button>")
-      .attr("type", "button")
-      .addClass("quick-profile-chip")
-      .toggleClass("active", stagedProfileId === profileId)
-      .attr("data-profile-id", profileId);
-    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
-    $button.append($("<div>").addClass("quick-profile-title").text(profile.label));
-    $button.append($("<div>").addClass("quick-profile-meta").text(
-      modelLabel(profile.workerModel) + " workers | " +
-      modelLabel(profile.summarizerModel) + " summarizer | " +
-      formatUsdBudget(profile.maxCostUsd)
-    ));
-    $button.append($("<div>").addClass("quick-profile-meta").text(
-      profile.reasoningEffort + " reasoning | " + formatTokenWall(profile.maxTotalTokens) + " | " + Number(profile.loopRounds || 0) + " rounds"
-    ));
-    $grid.append($button);
-  });
-
-  $apply.prop("disabled", isLoopActive || !hasTask);
-  $apply.text(isLoopActive ? "Loop Active" : "Sync Active");
-}
-
 function renderQualityProfileCards() {
   const $root = $("#qualityProfileCards");
   const $status = $("#qualityProfileStatus");
   if (!$root.length || !$status.length) return;
 
   const snapshot = buildQualityProfileSnapshot();
+  const workerProvider = normalizeProviderId(snapshot.provider || "openai");
+  const summarizerProvider = normalizeProviderId(snapshot.summarizerProvider || snapshot.provider || "openai");
   const activeProfileId = detectQualityProfileId(snapshot);
   const distinctWorkerModels = Array.from(new Set((snapshot.workerModels || []).filter(Boolean)));
   const workerModelSummary = distinctWorkerModels.length === 1
-    ? modelLabel(distinctWorkerModels[0])
-    : (distinctWorkerModels.length > 1 ? "mixed worker models" : modelLabel(snapshot.model));
+    ? modelLabel(distinctWorkerModels[0], workerProvider)
+    : (distinctWorkerModels.length > 1 ? "mixed worker models" : modelLabel(snapshot.model, workerProvider));
 
   $root.empty();
   QUALITY_PROFILE_ORDER.forEach(function (profileId) {
     const profile = QUALITY_PROFILE_CATALOG[profileId];
-    const tokenText = Number(profile.maxTotalTokens) > 0 ? Number(profile.maxTotalTokens).toLocaleString() + " local tokens" : "cost wall only";
-    const $button = $("<button>")
-      .attr("type", "button")
-      .addClass("quality-profile-card")
-      .toggleClass("active", activeProfileId === profileId)
-      .attr("data-profile-id", profileId);
-    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
-    $button.append($("<div>").addClass("quality-profile-title").text(profile.label));
-    $button.append($("<div>").addClass("quality-profile-copy").text(profile.description));
-    $button.append($("<div>").addClass("quality-profile-meta").text(
-      "Workers: " + modelLabel(profile.workerModel) +
-      " | Summarizer: " + modelLabel(profile.summarizerModel) +
-      " | Reasoning: " + profile.reasoningEffort +
-      " | Budget: " + formatUsdBudget(profile.maxCostUsd) +
-      " | " + tokenText +
-      " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
-    ));
-    $root.append($button);
-  });
-
-  if (activeProfileId) {
-    const profile = QUALITY_PROFILE_CATALOG[activeProfileId];
-    $status.text(
-      profile.label +
-      " matches the current runtime template. " +
-      "Workers use " + modelLabel(profile.workerModel) +
-      ", summarizer uses " + modelLabel(profile.summarizerModel) +
-      ", the token wall is " + (profile.maxTotalTokens > 0 ? Number(profile.maxTotalTokens).toLocaleString() : "off") +
-      ", and auto loop depth is " + Number(profile.loopRounds || 0) + " rounds."
-    );
-    return;
-  }
-
-  $status.text(
-    "Manual mix active. Workers are on " + workerModelSummary +
-    ", summarizer is on " + modelLabel(snapshot.summarizerModel) +
-    ", reasoning is " + (snapshot.reasoningEffort || "unset") +
-    ", and auto loop depth is " + Number(snapshot.loopRounds || 0) + " rounds. Click a profile to snap the whole runtime back into a tested template."
-  );
-}
-
-function renderHomeRuntimeControls(task, draft, loop) {
-  const $summary = $("#homeRuntimeSummary");
-  const $grid = $("#homeQualityProfiles");
-  const $apply = $("#applyHomeRuntime");
-  if (!$summary.length || !$grid.length || !$apply.length) return;
-
-  const stagedPayload = collectCommanderPayload();
-  const stagedSnapshot = buildQualityProfileSnapshot();
-  const stagedProfileId = detectQualityProfileId(stagedSnapshot);
-  const stagedProfileName = profileDisplayName(stagedProfileId);
-  const activeSnapshot = buildTaskQualityProfileSnapshot(task);
-  const activeProfileId = detectQualityProfileId(activeSnapshot);
-  const activeProfileName = profileDisplayName(activeProfileId);
-  const isLoopActive = loop?.status === "running" || loop?.status === "queued";
-  const hasTask = !!task;
-  const runtimeMatches = hasTask && activeSnapshot ? runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot) : false;
-
-  $summary.empty();
-
-  appendHomeRuntimeBlock(
-    $summary,
-    "Next send",
-    stagedProfileName + " | " + (stagedPayload.executionMode || "live") + " mode",
-    [
-      "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
-      "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
-      "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms"
-    ]
-  );
-
-  if (hasTask && activeSnapshot) {
-    appendHomeRuntimeBlock(
-      $summary,
-      "Active task",
-      activeProfileName + " | " + (task?.runtime?.executionMode || "live") + " mode",
-      [
-        "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
-        "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
-        "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms"
-      ]
-    );
-
-    appendHomeRuntimeBlock(
-      $summary,
-      runtimeMatches ? "Runtime sync" : "Runtime drift",
-      runtimeMatches ? "Aligned" : "Sync needed",
-      [
-        runtimeMatches
-          ? "Active task already matches the staged template."
-          : "Next send and active task are different.",
-        runtimeMatches
-          ? "You can keep prompting without touching settings."
-          : "Use Sync Active if you want the current task to adopt the staged profile, loop depth, and budget."
-      ],
-      !runtimeMatches
-    );
-  } else {
-    appendHomeRuntimeBlock(
-      $summary,
-      "Active task",
-      "Ready to start",
-      ["Send will start a fresh task with the staged profile, roster, and loop settings."]
-    );
-  }
-
-  $grid.empty();
-  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
-    const profile = QUALITY_PROFILE_CATALOG[profileId];
-    const $button = $("<button>")
-      .attr("type", "button")
-      .addClass("quick-profile-chip compact-hover-card")
-      .toggleClass("active", stagedProfileId === profileId)
-      .attr("data-profile-id", profileId);
-    $button.append($("<div>").addClass("quality-profile-eyebrow").text(profile.eyebrow));
-    $button.append($("<div>").addClass("quick-profile-title").text(profile.label));
-    appendCompactHoverPopup($button, [
-      profile.description,
-      "Workers: " + modelLabel(profile.workerModel) + " | Summarizer: " + modelLabel(profile.summarizerModel),
-      "Budget: " + formatUsdBudget(profile.maxCostUsd) + " | " + formatTokenWall(profile.maxTotalTokens),
-      "Reasoning: " + profile.reasoningEffort + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
-    ]);
-    $grid.append($button);
-  });
-
-  $apply.prop("disabled", isLoopActive || !hasTask);
-  $apply.text(isLoopActive ? "Loop Active" : "Sync Active");
-}
-
-function renderQualityProfileCards() {
-  const $root = $("#qualityProfileCards");
-  const $status = $("#qualityProfileStatus");
-  if (!$root.length || !$status.length) return;
-
-  const snapshot = buildQualityProfileSnapshot();
-  const activeProfileId = detectQualityProfileId(snapshot);
-  const distinctWorkerModels = Array.from(new Set((snapshot.workerModels || []).filter(Boolean)));
-  const workerModelSummary = distinctWorkerModels.length === 1
-    ? modelLabel(distinctWorkerModels[0])
-    : (distinctWorkerModels.length > 1 ? "mixed worker models" : modelLabel(snapshot.model));
-
-  $root.empty();
-  QUALITY_PROFILE_ORDER.forEach(function (profileId) {
-    const profile = QUALITY_PROFILE_CATALOG[profileId];
+    const workerModels = qualityProfileModelConfig(profileId, workerProvider);
+    const summarizerModels = qualityProfileModelConfig(profileId, summarizerProvider);
     const tokenText = Number(profile.maxTotalTokens) > 0 ? Number(profile.maxTotalTokens).toLocaleString() + " local tokens" : "cost wall only";
     const $button = $("<button>")
       .attr("type", "button")
@@ -1570,7 +1591,8 @@ function renderQualityProfileCards() {
     $button.append($("<div>").addClass("quality-profile-title").text(profile.label));
     appendCompactHoverPopup($button, [
       profile.description,
-      "Workers: " + modelLabel(profile.workerModel) + " | Summarizer: " + modelLabel(profile.summarizerModel),
+      "Workers: " + providerLabel(workerProvider) + " / " + modelLabel(workerModels.workerModel, workerProvider),
+      "Summarizer: " + providerLabel(summarizerProvider) + " / " + modelLabel(summarizerModels.summarizerModel, summarizerProvider),
       "Reasoning: " + profile.reasoningEffort + " | Budget: " + formatUsdBudget(profile.maxCostUsd),
       tokenText + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
     ]);
@@ -1579,11 +1601,13 @@ function renderQualityProfileCards() {
 
   if (activeProfileId) {
     const profile = QUALITY_PROFILE_CATALOG[activeProfileId];
+    const workerModels = qualityProfileModelConfig(activeProfileId, workerProvider);
+    const summarizerModels = qualityProfileModelConfig(activeProfileId, summarizerProvider);
     $status.text(
       profile.label +
       " matches the current runtime template. " +
-      "Workers use " + modelLabel(profile.workerModel) +
-      ", summarizer uses " + modelLabel(profile.summarizerModel) +
+      "Workers use " + providerLabel(workerProvider) + " / " + modelLabel(workerModels.workerModel, workerProvider) +
+      ", summarizer uses " + providerLabel(summarizerProvider) + " / " + modelLabel(summarizerModels.summarizerModel, summarizerProvider) +
       ", the token wall is " + (profile.maxTotalTokens > 0 ? Number(profile.maxTotalTokens).toLocaleString() : "off") +
       ", and auto loop depth is " + Number(profile.loopRounds || 0) + " rounds."
     );
@@ -1592,7 +1616,7 @@ function renderQualityProfileCards() {
 
   $status.text(
     "Manual mix active. Workers are on " + workerModelSummary +
-    ", summarizer is on " + modelLabel(snapshot.summarizerModel) +
+    ", summarizer is on " + providerLabel(summarizerProvider) + " / " + modelLabel(snapshot.summarizerModel, summarizerProvider) +
     ", reasoning is " + (snapshot.reasoningEffort || "unset") +
     ", and auto loop depth is " + Number(snapshot.loopRounds || 0) + " rounds. Click a profile to snap the whole runtime back into a tested template."
   );
@@ -1602,12 +1626,18 @@ function applyQualityProfile(profileId) {
   const profile = QUALITY_PROFILE_CATALOG[profileId];
   if (!profile) return;
 
-  $("#provider").val("openai");
-  $("#summarizerProvider").val("openai");
-  populateStaticModelSelect("#model", profile.workerModel, "openai");
-  populateStaticModelSelect("#summarizerModel", profile.summarizerModel, "openai");
-  $("#model").val(profile.workerModel);
-  $("#summarizerModel").val(profile.summarizerModel);
+  const workerProvider = normalizeProviderId($("#provider").val());
+  const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
+  const workerModels = qualityProfileModelConfig(profileId, workerProvider);
+  const summarizerModels = qualityProfileModelConfig(profileId, summarizerProvider);
+
+  $("#provider").val(workerProvider);
+  $("#summarizerProvider").val(summarizerProvider);
+  populateStaticModelSelect("#model", workerModels.workerModel, workerProvider);
+  populateStaticModelSelect("#summarizerModel", summarizerModels.summarizerModel, summarizerProvider);
+  $("#model").val(workerModels.workerModel);
+  $("#summarizerModel").val(summarizerModels.summarizerModel);
+  refreshProviderModelSelects();
   $("#reasoningEffort").val(profile.reasoningEffort);
   $("#maxCostUsd").val(profile.maxCostUsd);
   $("#maxTotalTokens").val(profile.maxTotalTokens);
@@ -1615,11 +1645,14 @@ function applyQualityProfile(profileId) {
   $("#loopRounds").val(profile.loopRounds);
   $("#loopDelayMs").val(profile.loopDelayMs);
 
-  const workerRoster = buildProfileAppliedWorkerRoster(profile.workerModel);
-  setVisibleWorkerModels(profile.workerModel);
+  const workerRoster = buildProfileAppliedWorkerRoster(workerModels.workerModel);
+  setVisibleWorkerModels(workerModels.workerModel);
+  $("#workerControls .summarizer-model-draft").val(summarizerModels.summarizerModel);
+  enforceProviderCapabilitySelections(true);
   formDirty = true;
   renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
   renderQualityProfileCards();
+  renderAuthPoolPreview();
 
   postForm(API.draft, buildDraftSavePayload({ workerRoster }), profile.label + " profile applied", {
     clearFormDirty: true,
@@ -1651,12 +1684,15 @@ function renderComposerTools() {
     return;
   }
 
-  const researchEnabled = $("#researchEnabled").val() === "1";
+  const capabilityState = enforceProviderCapabilitySelections(false);
+  const workerProvider = capabilityState.provider;
+  const capabilities = capabilityState.capabilities;
+  const researchEnabled = capabilities.webSearch && $("#researchEnabled").val() === "1";
   const externalWeb = $("#researchExternalWebAccess").val() !== "0";
-  const localFilesEnabled = $("#localFilesEnabled").val() === "1";
+  const localFilesEnabled = capabilities.localFiles && $("#localFilesEnabled").val() === "1";
   const localFileRootsValue = String($("#localFileRoots").val() || "").trim();
   const localRootCount = localFileRootsValue ? localFileRootsValue.split(",").map(function (item) { return item.trim(); }).filter(Boolean).length : 0;
-  const githubToolsEnabled = $("#githubToolsEnabled").val() === "1";
+  const githubToolsEnabled = capabilities.githubTools && $("#githubToolsEnabled").val() === "1";
   const githubReposValue = String($("#githubAllowedRepos").val() || "").trim();
   const githubRepoCount = githubReposValue ? githubReposValue.split(",").map(function (item) { return item.trim(); }).filter(Boolean).length : 0;
   const vettingEnabled = $("#vettingEnabled").val() !== "0";
@@ -1664,7 +1700,8 @@ function renderComposerTools() {
   const sourceCount = domainsValue ? domainsValue.split(",").map(function (item) { return item.trim(); }).filter(Boolean).length : 0;
   const toolChips = [];
 
-  toolChips.push(`<span class="composer-tool-chip${researchEnabled ? " active" : ""}">Search ${researchEnabled ? "on" : "off"}</span>`);
+  toolChips.push(`<span class="composer-tool-chip${researchEnabled ? " active" : ""}">Provider ${escapeHtml(providerLabel(workerProvider))}</span>`);
+  toolChips.push(`<span class="composer-tool-chip${researchEnabled ? " active" : ""}">Search ${capabilities.webSearch ? (researchEnabled ? "on" : "off") : "n/a"}</span>`);
   if (researchEnabled) {
     toolChips.push(`<span class="composer-tool-chip">${externalWeb ? "Live web" : "Cached web"}</span>`);
   }
@@ -1683,18 +1720,19 @@ function renderComposerTools() {
   if (vettingEnabled) {
     toolChips.push(`<span class="composer-tool-chip">Vetting</span>`);
   }
-  if (!toolChips.length) {
-    toolChips.push(`<span class="composer-tool-chip">No quick tools active</span>`);
-  }
+  toolChips.push(`<span class="composer-tool-chip">${escapeHtml(providerCapabilitySummary(capabilities))}</span>`);
   $status.html(toolChips.join(""));
 
+  const webSearchDisabled = capabilities.webSearch ? "" : " disabled title=\"This provider does not support live web search in the current runtime.\"";
+  const localFilesDisabled = capabilities.localFiles ? "" : " disabled title=\"This provider does not support local file tool calls in the current runtime.\"";
+  const githubToolsDisabled = capabilities.githubTools ? "" : " disabled title=\"This provider does not support GitHub tool calls in the current runtime.\"";
   $menu.html(`
     <button type="button" class="composer-tool-action" data-tool-action="upload">Upload files</button>
     <button type="button" class="composer-tool-action" data-tool-action="recent">Recent files</button>
-    <button type="button" class="composer-tool-action${researchEnabled ? " active" : ""}" data-tool-action="web-search">${researchEnabled ? "Web search on" : "Web search off"}</button>
-    <button type="button" class="composer-tool-action${localFilesEnabled ? " active" : ""}" data-tool-action="local-files">${localFilesEnabled ? "Local files on" : "Local files off"}</button>
-    <button type="button" class="composer-tool-action${githubToolsEnabled ? " active" : ""}" data-tool-action="github-tools">${githubToolsEnabled ? "GitHub on" : "GitHub off"}</button>
-    <button type="button" class="composer-tool-action${composerSourceDrawerOpen ? " active" : ""}" data-tool-action="sources">Add sources</button>
+    <button type="button" class="composer-tool-action${researchEnabled ? " active" : ""}" data-tool-action="web-search"${webSearchDisabled}>${capabilities.webSearch ? (researchEnabled ? "Web search on" : "Web search off") : "Web search unavailable"}</button>
+    <button type="button" class="composer-tool-action${localFilesEnabled ? " active" : ""}" data-tool-action="local-files"${localFilesDisabled}>${capabilities.localFiles ? (localFilesEnabled ? "Local files on" : "Local files off") : "Local files unavailable"}</button>
+    <button type="button" class="composer-tool-action${githubToolsEnabled ? " active" : ""}" data-tool-action="github-tools"${githubToolsDisabled}>${capabilities.githubTools ? (githubToolsEnabled ? "GitHub on" : "GitHub off") : "GitHub unavailable"}</button>
+    <button type="button" class="composer-tool-action${composerSourceDrawerOpen ? " active" : ""}" data-tool-action="sources"${webSearchDisabled}>${capabilities.webSearch ? "Add sources" : "Sources unavailable"}</button>
     <button type="button" class="composer-tool-action${vettingEnabled ? " active" : ""}" data-tool-action="vetting">${vettingEnabled ? "Vetting on" : "Vetting off"}</button>
   `);
   $menu.prop("hidden", !composerToolMenuOpen);
@@ -1857,6 +1895,7 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
   const loopProgress = dispatchActive
     ? (Number(dispatch.runningCount || 0) + " running | " + Number(dispatch.queuedCount || 0) + " queued")
     : ((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
+  const loopElapsed = formatElapsedCompact(dispatchPrimary?.startedAt || dispatchPrimary?.queuedAt || loop?.startedAt || loop?.queuedAt) || "n/a";
   const usageTokens = (usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0);
   const usageWebSearchCalls = usage.webSearchCalls ?? 0;
   const usageCost = formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0);
@@ -1867,6 +1906,7 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
   $("#loopJobId, #footerLoopJobId").text(loopJobId);
   $("#loopStatus, #footerLoopStatus, #headerLoopStatus").text(loopStatus);
   $("#loopProgress, #footerLoopProgress").text(loopProgress);
+  $("#footerLoopElapsed").text(loopElapsed);
   $("#usageTokens, #footerUsageTokens").text(usageTokens);
   $("#usageWebSearchCalls, #footerUsageWebSearchCalls").text(usageWebSearchCalls);
   $("#usageCost, #footerUsageCost").text(usageCost);
@@ -1971,8 +2011,11 @@ function closeInlineHelpPopovers($except = $()) {
 function updateAuthButtons() {
   const inputsLocked = latestLoopActive || activeDispatchCount(latestState) > 0;
   const writable = !!latestAuthStatus.writable;
-  $("#addAuthField").prop("disabled", inputsLocked || !writable);
-  $("#clearAuth").prop("disabled", inputsLocked || !writable || !latestAuthStatus.hasKey);
+  $(".add-auth-field").prop("disabled", inputsLocked || !writable);
+  $(".clear-auth").each(function () {
+    const provider = String($(this).data("provider") || "openai");
+    $(this).prop("disabled", inputsLocked || !writable || !authProviderGroup(provider).hasKey);
+  });
   $(".auth-key-input, .auth-key-remove").prop("disabled", inputsLocked);
 }
 
@@ -1994,28 +2037,63 @@ function compactMaskedKey(masked) {
   return "\u2022\u2022\u2022\u2022" + last4;
 }
 
-function ensureAuthDynamicRow() {
+function authProviderGroup(provider) {
+  const normalized = String(provider || "openai").trim().toLowerCase();
+  const group = latestAuthStatus.providerGroups?.[normalized];
+  if (group && typeof group === "object") return group;
+  return {
+    provider: normalized,
+    label: normalized,
+    hasKey: false,
+    keyCount: 0,
+    masks: [],
+    writable: !!latestAuthStatus.writable,
+    failureMode: "",
+    failureDetail: ""
+  };
+}
+
+function ensureAuthDynamicRows(provider) {
+  const normalized = String(provider || "openai").trim().toLowerCase();
   if (!latestAuthStatus.writable) return;
-  if (latestAuthStatus.hasKey || authDynamicRows.length) return;
-  authDynamicRows.push({ id: nextAuthRowId(), value: "" });
+  if (!authDynamicRowsByProvider[normalized]) authDynamicRowsByProvider[normalized] = [];
+  const group = authProviderGroup(normalized);
+  if (group.hasKey || authDynamicRowsByProvider[normalized].length) return;
+  authDynamicRowsByProvider[normalized].push({ id: nextAuthRowId(), value: "" });
 }
 
-function resetAuthDynamicRows() {
-  authDynamicRows = [];
-  ensureAuthDynamicRow();
+function resetAuthDynamicRows(provider = null) {
+  if (provider) {
+    const normalized = String(provider || "openai").trim().toLowerCase();
+    authDynamicRowsByProvider[normalized] = [];
+    ensureAuthDynamicRows(normalized);
+    return;
+  }
+  authDynamicRowsByProvider = {};
+  (latestAuthStatus.providerOrder || []).forEach(function (providerId) {
+    ensureAuthDynamicRows(providerId);
+  });
 }
 
-function updateAuthDynamicRow(rowId, value) {
-  authDynamicRows = authDynamicRows.map(function (row) {
+function authDynamicRows(provider) {
+  const normalized = String(provider || "openai").trim().toLowerCase();
+  ensureAuthDynamicRows(normalized);
+  return authDynamicRowsByProvider[normalized] || [];
+}
+
+function updateAuthDynamicRow(provider, rowId, value) {
+  const normalized = String(provider || "openai").trim().toLowerCase();
+  authDynamicRowsByProvider[normalized] = authDynamicRows(normalized).map(function (row) {
     return row.id === rowId ? Object.assign({}, row, { value: value }) : row;
   });
 }
 
-function removeAuthDynamicRow(rowId) {
-  authDynamicRows = authDynamicRows.filter(function (row) {
+function removeAuthDynamicRow(provider, rowId) {
+  const normalized = String(provider || "openai").trim().toLowerCase();
+  authDynamicRowsByProvider[normalized] = authDynamicRows(normalized).filter(function (row) {
     return row.id !== rowId;
   });
-  ensureAuthDynamicRow();
+  ensureAuthDynamicRows(normalized);
 }
 
 function authPreviewRotationOffset(keyCount) {
@@ -2033,29 +2111,36 @@ function authPreviewRotationOffset(keyCount) {
 }
 
 function authPositionPlan() {
+  const workerProvider = normalizeProviderId($("#provider").val() || runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null));
+  const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null));
   const visibleWorkers = $("#workerControls .workercontrol[data-worker-id]").length
     ? collectVisibleWorkerRoster()
     : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
-  const positions = [{ id: "commander", label: "Commander" }];
+  const positions = [{ id: "commander", label: "Commander", provider: workerProvider }];
   (visibleWorkers || []).forEach(function (worker) {
     const workerId = String(worker?.id || "").trim().toUpperCase();
     if (!workerId) return;
     positions.push({
       id: workerId,
-      label: workerId + " / " + displayWorkerLabel(worker)
+      label: workerId + " / " + displayWorkerLabel(worker),
+      provider: workerProvider
     });
   });
-  positions.push({ id: "commander_review", label: "Commander Review" });
-  positions.push({ id: "summarizer", label: "Summarizer" });
+  positions.push({ id: "commander_review", label: "Commander Review", provider: workerProvider });
+  positions.push({ id: "summarizer", label: "Summarizer", provider: summarizerProvider });
   return positions;
 }
 
-function buildAuthAssignments(status) {
-  const masks = Array.isArray(status?.masks) ? status.masks.filter(Boolean) : [];
-  const keyCount = Math.max(0, Number(status?.keyCount || masks.length || 0));
+function buildAuthAssignments(group) {
+  const masks = Array.isArray(group?.masks) ? group.masks.filter(Boolean) : [];
+  const keyCount = Math.max(0, Number(group?.keyCount || masks.length || 0));
   if (!keyCount || !masks.length) return [];
   const rotationOffset = authPreviewRotationOffset(keyCount);
-  return authPositionPlan().map(function (position, index) {
+  const providerId = normalizeProviderId(group?.provider || "openai");
+  const positions = authPositionPlan().filter(function (position) {
+    return normalizeProviderId(position.provider || "openai") === providerId;
+  });
+  return positions.map(function (position, index) {
     const keyIndex = (index + rotationOffset) % keyCount;
     return {
       label: position.label,
@@ -2066,118 +2151,138 @@ function buildAuthAssignments(status) {
   });
 }
 
+function renderAuthProviderCards(force = false) {
+  const $root = $("#authProviderCards");
+  if (!$root.length) return;
+  if (!force && hasFocusWithin("#authProviderCards")) return;
+
+  const backend = String(latestAuthStatus.backend || "env");
+  const recommended = String(latestAuthStatus.recommendedBackend || "env");
+  const inputsLocked = latestLoopActive || activeDispatchCount(latestState) > 0;
+  const cards = (latestAuthStatus.providerOrder || []).map(function (providerId) {
+    const group = authProviderGroup(providerId);
+    const rows = [];
+
+    if (!latestAuthStatus.writable) {
+      rows.push(`
+        <div class="auth-key-row auth-key-row-readonly">
+          <div class="auth-key-row-head">
+            <div>
+              <div class="auth-key-row-label">Read-only secret backend</div>
+              <div class="auth-key-row-meta">${escapeHtml(group.failureDetail || latestAuthStatus.statusNote || "This backend is not editable from the browser.")}</div>
+            </div>
+          </div>
+          <div class="auth-key-row-inputs">
+            <input class="auth-key-input" type="text" value="${escapeHtml("Backend: " + backend + " | Recommended: " + recommended)}" disabled />
+          </div>
+        </div>
+      `);
+    } else {
+      (group.masks || []).forEach(function (masked, index) {
+        rows.push(`
+          <div class="auth-key-row" data-provider="${escapeHtml(providerId)}" data-auth-mode="stored" data-slot-index="${index}">
+            <div class="auth-key-row-head">
+              <div>
+                <div class="auth-key-row-label">Slot ${index + 1}</div>
+                <div class="auth-key-row-meta">Stored now as ${escapeHtml(compactMaskedKey(masked))}. Paste a replacement to swap it.</div>
+              </div>
+            </div>
+            <div class="auth-key-row-inputs">
+              <input class="auth-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste replacement key for slot ${index + 1}" ${inputsLocked ? "disabled" : ""} />
+              <button type="button" class="auth-key-remove danger" data-provider="${escapeHtml(providerId)}" data-remove-mode="stored" data-slot-index="${index}" ${inputsLocked ? "disabled" : ""}>Remove</button>
+            </div>
+          </div>
+        `);
+      });
+
+      authDynamicRows(providerId).forEach(function (row, index) {
+        rows.push(`
+          <div class="auth-key-row" data-provider="${escapeHtml(providerId)}" data-auth-mode="new" data-row-id="${escapeHtml(row.id)}">
+            <div class="auth-key-row-head">
+              <div>
+                <div class="auth-key-row-label">New key ${index + 1}</div>
+                <div class="auth-key-row-meta">Paste a ${escapeHtml(group.label)} key here and it will append into the transitional local fallback pool automatically.</div>
+              </div>
+            </div>
+            <div class="auth-key-row-inputs">
+              <input class="auth-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste new ${escapeHtml(group.label)} API key" value="${escapeHtml(row.value || "")}" ${inputsLocked ? "disabled" : ""} />
+              <button type="button" class="auth-key-remove" data-provider="${escapeHtml(providerId)}" data-remove-mode="new" data-row-id="${escapeHtml(row.id)}" ${inputsLocked ? "disabled" : ""}>Remove</button>
+            </div>
+          </div>
+        `);
+      });
+    }
+
+    const previewBits = [];
+    (group.masks || []).forEach(function (masked, index) {
+      previewBits.push(`<span class="key-slot-chip">Slot ${index + 1} ${escapeHtml(compactMaskedKey(masked))}</span>`);
+    });
+    if (!previewBits.length) {
+      previewBits.push(`<span class="key-slot-chip">${escapeHtml(group.failureDetail || ("No " + group.label + " keys configured."))}</span>`);
+    }
+
+    const assignmentBits = [];
+    buildAuthAssignments(group).forEach(function (assignment) {
+      assignmentBits.push(
+        `<span class="key-slot-chip${assignment.reused ? " reused" : ""}"${assignment.reused ? ' title="This position reuses an earlier key because the pool is smaller than the lane count."' : ""}>${escapeHtml(assignment.label + " -> slot " + assignment.keySlot + " " + assignment.masked)}</span>`
+      );
+    });
+    if (!assignmentBits.length) {
+      assignmentBits.push(`<span class="key-slot-chip">No active lanes are currently routed to ${escapeHtml(group.label)}.</span>`);
+    }
+
+    return `
+      <div class="auth-provider-card${group.hasKey ? "" : " is-empty"}" data-provider-card="${escapeHtml(providerId)}">
+        <div class="auth-provider-card-head">
+          <div class="auth-provider-card-title">${escapeHtml(group.label)}</div>
+          <span class="secretmask">${escapeHtml(formatKeyCountLabel(group.keyCount))}</span>
+        </div>
+        <div class="auth-provider-card-meta">${escapeHtml(group.failureDetail || (group.hasKey ? (group.label + " keys available.") : ("No " + group.label + " keys configured.")))}</div>
+        <div class="key-pool-preview">${previewBits.join("")}</div>
+        <div class="key-assignment-list">${assignmentBits.join("")}</div>
+        <div class="auth-key-editor">${rows.join("")}</div>
+        <div class="integration-actions integration-actions-split">
+          <button type="button" class="add-auth-field" data-provider="${escapeHtml(providerId)}">+ Key</button>
+          <button type="button" class="clear-auth danger" data-provider="${escapeHtml(providerId)}">Clear</button>
+        </div>
+      </div>
+    `;
+  });
+
+  $root.html(cards.join(""));
+}
+
 function renderAuthEditor(force = false) {
-  const $editor = $("#authKeyEditor");
-  if (!$editor.length) return;
-  ensureAuthDynamicRow();
-  if (!force && hasFocusWithin("#authKeyEditor")) return;
-
-  if (!latestAuthStatus.writable) {
-    const backend = String(latestAuthStatus.backend || "env");
-    const recommended = String(latestAuthStatus.recommendedBackend || "env");
-    const note = String(latestAuthStatus.statusNote || "").trim();
-    $editor.html(`
-      <div class="auth-key-row auth-key-row-readonly">
-        <div class="auth-key-row-head">
-          <div>
-            <div class="auth-key-row-label">Read-only secret backend</div>
-            <div class="auth-key-row-meta">${escapeHtml(note || ("This backend is not editable from the browser."))}</div>
-          </div>
-        </div>
-        <div class="auth-key-row-inputs">
-          <input class="auth-key-input" type="text" value="${escapeHtml("Backend: " + backend + " | Recommended: " + recommended)}" disabled />
-        </div>
-      </div>
-    `);
-    return;
-  }
-
-  const masks = Array.isArray(latestAuthStatus.masks) ? latestAuthStatus.masks.filter(Boolean) : [];
-  const rows = [];
-
-  masks.forEach(function (masked, index) {
-    rows.push(`
-      <div class="auth-key-row" data-auth-mode="stored" data-slot-index="${index}">
-        <div class="auth-key-row-head">
-          <div>
-            <div class="auth-key-row-label">Slot ${index + 1}</div>
-            <div class="auth-key-row-meta">Stored now as ${escapeHtml(compactMaskedKey(masked))}. Paste a replacement to swap it.</div>
-          </div>
-        </div>
-        <div class="auth-key-row-inputs">
-          <input class="auth-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste replacement key for slot ${index + 1}" ${latestLoopActive ? "disabled" : ""} />
-          <button type="button" class="auth-key-remove danger" data-remove-mode="stored" data-slot-index="${index}" ${latestLoopActive ? "disabled" : ""}>Remove</button>
-        </div>
-      </div>
-    `);
-  });
-
-  authDynamicRows.forEach(function (row, index) {
-    rows.push(`
-      <div class="auth-key-row" data-auth-mode="new" data-row-id="${escapeHtml(row.id)}">
-        <div class="auth-key-row-head">
-          <div>
-            <div class="auth-key-row-label">New key ${index + 1}</div>
-            <div class="auth-key-row-meta">Paste a key here and it will append into the transitional local fallback pool automatically.</div>
-          </div>
-        </div>
-        <div class="auth-key-row-inputs">
-          <input class="auth-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste new API key" value="${escapeHtml(row.value || "")}" ${latestLoopActive ? "disabled" : ""} />
-          <button type="button" class="auth-key-remove" data-remove-mode="new" data-row-id="${escapeHtml(row.id)}" ${latestLoopActive ? "disabled" : ""}>Remove</button>
-        </div>
-      </div>
-    `);
-  });
-
-  $editor.html(rows.join(""));
+  renderAuthProviderCards(force);
 }
 
 function renderAuthPoolPreview() {
-  const $preview = $("#apiKeyPreview").empty();
-  const $assignment = $("#apiKeyAssignment").empty();
-
-  if (!latestAuthStatus.hasKey) {
-    const backend = String(latestAuthStatus.backend || "env");
-    if (backend === "env") {
-      $preview.text("No environment key pool detected. Set LOOP_OPENAI_API_KEYS outside the workspace to enable live mode.");
-    } else if (backend === "docker_secret") {
-      $preview.text("No mounted secret file detected. Provide openai_api_keys through the Docker secret backend to enable live mode.");
-    } else if (backend === "external") {
-      $preview.text("No external secret payload detected. Check the configured secret provider to enable live mode.");
-    } else {
-      $preview.text("No local fallback key pool stored. Live mode needs at least one key.");
-    }
-    $assignment.text("When the pool is smaller than the lane count, the runtime rotates the starting slot so one key does not always take commander-first traffic.");
-    return;
-  }
-
-  (latestAuthStatus.masks || []).forEach(function (masked, index) {
-    $preview.append(
-      $("<span>")
-        .addClass("key-slot-chip")
-        .text("Slot " + (index + 1) + " " + compactMaskedKey(masked))
-    );
-  });
-
-  buildAuthAssignments(latestAuthStatus).forEach(function (assignment) {
-    const $chip = $("<span>")
-      .addClass("key-slot-chip")
-      .text(assignment.label + " -> slot " + assignment.keySlot + " " + assignment.masked);
-    if (assignment.reused) {
-      $chip.addClass("reused");
-      $chip.attr("title", "This position reuses an earlier key because the pool is smaller than the lane count.");
-    }
-    $assignment.append($chip);
-  });
+  renderAuthProviderCards(false);
 }
 
 function renderAuthStatus(data) {
+  const providerOrder = Array.isArray(data?.providerOrder) && data.providerOrder.length
+    ? data.providerOrder.map(function (providerId) { return String(providerId || "").trim().toLowerCase(); }).filter(Boolean)
+    : ["openai", "anthropic", "xai", "minimax"];
+  const rawGroups = data?.providerGroups && typeof data.providerGroups === "object" ? data.providerGroups : {};
+  const providerGroups = {};
+  providerOrder.forEach(function (providerId) {
+    const group = rawGroups[providerId] || {};
+    providerGroups[providerId] = {
+      provider: providerId,
+      label: String(group.label || providerId),
+      hasKey: !!group.hasKey,
+      keyCount: Number(group.keyCount || 0),
+      masks: Array.isArray(group.masks) ? group.masks.filter(Boolean) : [],
+      writable: !!group.writable,
+      managed: !!group.managed,
+      failureMode: String(group.failureMode || ""),
+      failureDetail: String(group.failureDetail || "")
+    };
+  });
   latestAuthStatus = {
     hasKey: !!data?.hasKey,
     keyCount: Number(data?.keyCount || 0),
-    masked: data?.masked || null,
-    last4: data?.last4 || "",
-    masks: Array.isArray(data?.masks) ? data.masks.filter(Boolean) : [],
     backend: String(data?.backend || "env"),
     writable: !!data?.writable,
     preferred: data?.preferred !== false,
@@ -2185,7 +2290,11 @@ function renderAuthStatus(data) {
     preferredBackends: Array.isArray(data?.preferredBackends) ? data.preferredBackends : [],
     recommendedBackend: String(data?.recommendedBackend || "env"),
     statusNote: String(data?.statusNote || ""),
-    rotationPolicy: data?.rotationPolicy || null
+    rotationPolicy: data?.rotationPolicy || null,
+    providerOrder: providerOrder,
+    providerGroups: providerGroups,
+    isolationNote: String(data?.isolationNote || ""),
+    termsWarning: String(data?.termsWarning || "")
   };
 
   $("#apiKeyMasked").text(formatKeyCountLabel(latestAuthStatus.keyCount));
@@ -2193,10 +2302,11 @@ function renderAuthStatus(data) {
   if (latestAuthStatus.statusNote) statusParts.push(latestAuthStatus.statusNote);
   if (latestAuthStatus.deprecated) statusParts.push("Browser mutation stays enabled only for this transitional backend.");
   if (latestAuthStatus.rotationPolicy?.summary) statusParts.push("Rotation: " + latestAuthStatus.rotationPolicy.summary);
-  if (!latestAuthStatus.hasKey) statusParts.push("Live mode needs at least one key.");
+  if (!latestAuthStatus.hasKey) statusParts.push("Live mode needs at least one provider key.");
   $("#apiKeyStatus").text(statusParts.join(" "));
-  renderAuthPoolPreview();
-  renderAuthEditor();
+  $("#apiKeyIsolation").text(latestAuthStatus.isolationNote || "");
+  $("#apiKeyTermsWarning").text(latestAuthStatus.termsWarning || "");
+  renderAuthProviderCards(true);
   updateAuthButtons();
 }
 
@@ -2209,9 +2319,6 @@ function refreshAuth() {
       latestAuthStatus = {
         hasKey: false,
         keyCount: 0,
-        masked: null,
-        last4: "",
-        masks: [],
         backend: "env",
         writable: false,
         preferred: true,
@@ -2219,13 +2326,17 @@ function refreshAuth() {
         preferredBackends: ["env", "external"],
         recommendedBackend: "env",
         statusNote: "",
-        rotationPolicy: null
+        rotationPolicy: null,
+        providerOrder: ["openai", "anthropic", "xai", "minimax"],
+        providerGroups: {},
+        isolationNote: "",
+        termsWarning: ""
       };
       $("#apiKeyMasked").text("unavailable");
       $("#apiKeyStatus").text("Auth status could not be loaded.");
-      $("#apiKeyPreview").text("Auth status could not be loaded.");
-      $("#apiKeyAssignment").text("");
-      renderAuthEditor(true);
+      $("#apiKeyIsolation").text("");
+      $("#apiKeyTermsWarning").text("");
+      $("#authProviderCards").html('<div class="integration-note">Auth status could not be loaded.</div>');
       updateAuthButtons();
     });
 }
@@ -2262,82 +2373,87 @@ function handleAuthMutationSuccess(resp, successText, options = {}) {
   refreshState();
 }
 
-function persistAuthSlot(slotIndex, apiKey) {
+function persistAuthSlot(slotIndex, apiKey, provider) {
   const trimmed = String(apiKey || "").trim();
   if (!trimmed || latestLoopActive) return;
-  const timerKey = "stored-" + String(slotIndex);
+  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  const timerKey = normalizedProvider + ":stored-" + String(slotIndex);
   const meta = authSaveMeta(timerKey);
   if (meta.inFlight || meta.lastSubmitted === trimmed) return;
   meta.inFlight = true;
   meta.pendingValue = trimmed;
-  $.post(apiRoute(API.authKeys), { replaceIndex: slotIndex, apiKey: trimmed })
+  $.post(apiRoute(API.authKeys), { provider: normalizedProvider, replaceIndex: slotIndex, apiKey: trimmed })
     .done(function (resp) {
       meta.inFlight = false;
       meta.lastSubmitted = trimmed;
-      handleAuthMutationSuccess(resp, "API key slot updated", {
+      handleAuthMutationSuccess(resp, authProviderGroup(normalizedProvider).label + " API key slot updated", {
         onSuccess: function () {
-          renderAuthEditor(true);
+          renderAuthProviderCards(true);
         }
       });
     })
     .fail(function (xhr) {
       meta.inFlight = false;
-      showMessage("API key slot update failed: " + extractErrorMessage(xhr), true);
+      showMessage(authProviderGroup(normalizedProvider).label + " API key slot update failed: " + extractErrorMessage(xhr), true);
     });
 }
 
-function appendAuthKey(rowId, apiKey) {
+function appendAuthKey(rowId, apiKey, provider) {
   const trimmed = String(apiKey || "").trim();
   if (!trimmed || latestLoopActive) return;
-  const meta = authSaveMeta(rowId);
+  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  const timerKey = normalizedProvider + ":" + rowId;
+  const meta = authSaveMeta(timerKey);
   if (meta.inFlight || meta.lastSubmitted === trimmed) return;
   meta.inFlight = true;
   meta.pendingValue = trimmed;
-  $.post(apiRoute(API.authKeys), { appendKey: trimmed })
+  $.post(apiRoute(API.authKeys), { provider: normalizedProvider, appendKey: trimmed })
     .done(function (resp) {
       meta.inFlight = false;
       meta.lastSubmitted = trimmed;
-      handleAuthMutationSuccess(resp, "API key added", {
+      handleAuthMutationSuccess(resp, authProviderGroup(normalizedProvider).label + " API key added", {
         onSuccess: function () {
-          removeAuthDynamicRow(rowId);
-          clearAuthSaveMeta(rowId);
-          renderAuthEditor(true);
+          removeAuthDynamicRow(normalizedProvider, rowId);
+          clearAuthSaveMeta(timerKey);
+          renderAuthProviderCards(true);
         }
       });
     })
     .fail(function (xhr) {
       meta.inFlight = false;
-      showMessage("API key append failed: " + extractErrorMessage(xhr), true);
+      showMessage(authProviderGroup(normalizedProvider).label + " API key append failed: " + extractErrorMessage(xhr), true);
     });
 }
 
-function removeAuthSlot(slotIndex) {
-  $.post(apiRoute(API.authKeys), { removeIndex: slotIndex })
+function removeAuthSlot(slotIndex, provider) {
+  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  $.post(apiRoute(API.authKeys), { provider: normalizedProvider, removeIndex: slotIndex })
     .done(function (resp) {
-      handleAuthMutationSuccess(resp, "API key removed", {
+      handleAuthMutationSuccess(resp, authProviderGroup(normalizedProvider).label + " API key removed", {
         onSuccess: function () {
-          renderAuthEditor(true);
+          renderAuthProviderCards(true);
         }
       });
     })
     .fail(function (xhr) {
-      showMessage("API key removal failed: " + extractErrorMessage(xhr), true);
+      showMessage(authProviderGroup(normalizedProvider).label + " API key removal failed: " + extractErrorMessage(xhr), true);
     });
 }
 
 function scheduleAuthRowSave($input, immediate = false) {
   if (!$input || !$input.length) return;
   const $row = $input.closest(".auth-key-row");
+  const provider = String($row.data("provider") || "openai").trim().toLowerCase();
   const mode = String($row.data("authMode") || "");
   const rowId = String($row.data("rowId") || "");
   const slotIndex = Number($row.data("slotIndex"));
   const value = String($input.val() || "");
-  const timerKey = mode === "stored" ? "stored-" + slotIndex : rowId;
+  const timerKey = provider + ":" + (mode === "stored" ? "stored-" + slotIndex : rowId);
   const trimmed = value.trim();
   const meta = authSaveMeta(timerKey);
 
   if (mode === "new" && rowId) {
-    updateAuthDynamicRow(rowId, value);
+    updateAuthDynamicRow(provider, rowId, value);
   }
 
   if (trimmed !== meta.pendingValue) {
@@ -2350,10 +2466,10 @@ function scheduleAuthRowSave($input, immediate = false) {
   const runner = function () {
     if (!trimmed) return;
     if (mode === "stored") {
-      persistAuthSlot(slotIndex, trimmed);
+      persistAuthSlot(slotIndex, trimmed, provider);
       return;
     }
-    appendAuthKey(rowId, trimmed);
+    appendAuthKey(rowId, trimmed, provider);
   };
 
   if (immediate) {
@@ -3158,59 +3274,6 @@ function renderWorkerControls(task, loop, stateWorkers) {
   $controls.append($summaryCard);
 }
 
-function renderHomeWorkerControls(task, draft, loop) {
-  const $controls = $("#workerControls");
-  const workers = stagedWorkerSource(draft, task);
-  const summarizer = stagedSummarizerSource(draft, task);
-  const signature = JSON.stringify({
-    mode: "draft",
-    workers,
-    summarizer,
-    loopStatus: loop?.status || "idle",
-    dispatchStatus: latestState?.dispatch?.status || "idle"
-  });
-  if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
-  workerControlsSignature = signature;
-  $controls.empty();
-
-  if (!workers.length) {
-    $controls.append($("<div>").addClass("workercontrol").text("No workers configured."));
-    return;
-  }
-
-  const isActive = isWorkspaceBusy(loop, latestState);
-  const workerProvider = runtimeProviderSource(task, draft);
-  const summarizerProvider = summarizerProviderSource(task, draft);
-  workers.forEach(function (worker) {
-    const $card = $("<div>").addClass("workercontrol").attr("data-worker-id", worker.id);
-    $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + displayWorkerLabel(worker)));
-    $card.append($("<div>").addClass("workercontrol-meta").text(worker.role + " | " + worker.focus));
-
-    const $typeRow = $("<div>").addClass("workercontrol-field");
-    $typeRow.append($("<label>").text("Directive"));
-    $typeRow.append(
-      $("<select>").addClass("worker-type").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildWorkerTypeOptions(worker.type || "sceptic"))
-    );
-    $card.append($typeRow);
-
-    const $temperatureRow = $("<div>").addClass("workercontrol-field");
-    $temperatureRow.append($("<label>").text("Temperature"));
-    $temperatureRow.append(
-      $("<select>").addClass("worker-temperature").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildWorkerTemperatureOptions(worker.temperature || "balanced"))
-    );
-    $card.append($temperatureRow);
-
-    const $modelRow = $("<div>").addClass("workercontrol-field");
-    $modelRow.append($("<label>").text("Model"));
-    $modelRow.append(
-      $("<select>").addClass("worker-model").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildModelOptions(worker.model, workerProvider))
-    );
-    $card.append($modelRow);
-
-    $controls.append($card);
-  });
-}
-
 function workerDirectiveLabel(worker) {
   const typeId = String(worker?.type || "sceptic");
   return WORKER_TYPE_CATALOG[typeId]?.label || displayWorkerLabel(worker);
@@ -3219,56 +3282,6 @@ function workerDirectiveLabel(worker) {
 function workerTemperatureLabel(worker) {
   const temperatureId = String(worker?.temperature || "balanced");
   return WORKER_TEMPERATURE_CATALOG[temperatureId]?.label || temperatureId;
-}
-
-function buildWorkerControlCard(worker, isActive) {
-  const workerId = String(worker.id || "").trim();
-  const workerKey = normalizeWorkerControlKey(workerId);
-  const $card = $("<details>")
-    .addClass("workercontrol workercontrol-collapsible")
-    .attr("data-worker-id", workerId);
-  if (workerControlExpanded[workerKey]) {
-    $card.attr("open", "open");
-  }
-
-  const $summary = $("<summary>").addClass("workercontrol-summary");
-  const $summaryMain = $("<div>").addClass("workercontrol-summary-main");
-  $summaryMain.append($("<div>").addClass("workercontrol-title").text(workerId + " | " + displayWorkerLabel(worker)));
-  $summaryMain.append(
-    $("<div>").addClass("workercontrol-meta").text(
-      workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + modelLabel(worker.model)
-    )
-  );
-  $summary.append($summaryMain);
-  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
-  $card.append($summary);
-
-  const $body = $("<div>").addClass("workercontrol-body");
-
-  const $typeRow = $("<div>").addClass("workercontrol-field");
-  $typeRow.append($("<label>").text("Directive"));
-  $typeRow.append(
-    $("<select>").addClass("worker-type").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTypeOptions(worker.type || "sceptic"))
-  );
-  $body.append($typeRow);
-
-  const $temperatureRow = $("<div>").addClass("workercontrol-field");
-  $temperatureRow.append($("<label>").text("Temperature"));
-  $temperatureRow.append(
-    $("<select>").addClass("worker-temperature").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTemperatureOptions(worker.temperature || "balanced"))
-  );
-  $body.append($temperatureRow);
-
-  const workerProvider = runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null);
-  const $modelRow = $("<div>").addClass("workercontrol-field");
-  $modelRow.append($("<label>").text("Model"));
-  $modelRow.append(
-    $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model, workerProvider))
-  );
-  $body.append($modelRow);
-
-  $card.append($body);
-  return $card;
 }
 
 function renderHomeWorkerControls(task, draft, loop) {
@@ -3669,17 +3682,21 @@ function renderHomeRuntimeControls(task, draft, loop) {
   const isLoopActive = loop?.status === "running" || loop?.status === "queued";
   const hasTask = !!task;
   const runtimeMatches = hasTask && activeSnapshot ? runtimeSnapshotsMatch(stagedSnapshot, activeSnapshot) : false;
+  const stagedCapabilities = providerCapabilities(stagedSnapshot.provider);
+  const activeCapabilities = providerCapabilities(activeSnapshot?.provider || task?.runtime?.provider || stagedSnapshot.provider);
 
   $summary.empty();
 
   appendHomeRuntimeBlock(
     $summary,
     "Next send",
-    stagedProfileName + " | " + (stagedPayload.executionMode || "live") + " mode",
+    stagedProfileName + " | " + providerLabel(stagedSnapshot.provider) + " -> " + providerLabel(stagedSnapshot.summarizerProvider) + " | " + (stagedPayload.executionMode || "live") + " mode",
     [
-      "Workers: " + modelLabel(stagedSnapshot.model) + " | Summarizer: " + modelLabel(stagedSnapshot.summarizerModel) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
+      "Workers: " + providerLabel(stagedSnapshot.provider) + " / " + modelLabel(stagedSnapshot.model, stagedSnapshot.provider) + " | Summarizer: " + providerLabel(stagedSnapshot.summarizerProvider) + " / " + modelLabel(stagedSnapshot.summarizerModel, stagedSnapshot.summarizerProvider) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
       "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
-      "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms"
+      "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms",
+      "Provider capabilities: " + providerCapabilitySummary(stagedCapabilities),
+      providerNoteSummary(stagedSnapshot.provider)
     ]
   );
 
@@ -3687,11 +3704,13 @@ function renderHomeRuntimeControls(task, draft, loop) {
     appendHomeRuntimeBlock(
       $summary,
       "Active task",
-      activeProfileName + " | " + (task?.runtime?.executionMode || "live") + " mode",
+      activeProfileName + " | " + providerLabel(activeSnapshot.provider) + " -> " + providerLabel(activeSnapshot.summarizerProvider) + " | " + (task?.runtime?.executionMode || "live") + " mode",
       [
-        "Workers: " + modelLabel(activeSnapshot.model) + " | Summarizer: " + modelLabel(activeSnapshot.summarizerModel) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
+        "Workers: " + providerLabel(activeSnapshot.provider) + " / " + modelLabel(activeSnapshot.model, activeSnapshot.provider) + " | Summarizer: " + providerLabel(activeSnapshot.summarizerProvider) + " / " + modelLabel(activeSnapshot.summarizerModel, activeSnapshot.summarizerProvider) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
         "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
-        "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms"
+        "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms",
+        "Provider capabilities: " + providerCapabilitySummary(activeCapabilities),
+        providerNoteSummary(activeSnapshot.provider)
       ]
     );
 
@@ -3719,8 +3738,12 @@ function renderHomeRuntimeControls(task, draft, loop) {
   }
 
   $grid.empty();
+  const stagedWorkerProvider = normalizeProviderId(stagedSnapshot.provider);
+  const stagedSummarizerProvider = normalizeProviderId(stagedSnapshot.summarizerProvider || stagedSnapshot.provider);
   QUALITY_PROFILE_ORDER.forEach(function (profileId) {
     const profile = QUALITY_PROFILE_CATALOG[profileId];
+    const workerModels = qualityProfileModelConfig(profileId, stagedWorkerProvider);
+    const summarizerModels = qualityProfileModelConfig(profileId, stagedSummarizerProvider);
     const $button = $("<button>")
       .attr("type", "button")
       .addClass("quick-profile-chip compact-hover-card")
@@ -3730,7 +3753,8 @@ function renderHomeRuntimeControls(task, draft, loop) {
     $button.append($("<div>").addClass("quick-profile-title").text(profile.label));
     appendCompactHoverPopup($button, [
       profile.description,
-      "Workers: " + modelLabel(profile.workerModel) + " | Summarizer: " + modelLabel(profile.summarizerModel),
+      "Workers: " + providerLabel(stagedWorkerProvider) + " / " + modelLabel(workerModels.workerModel, stagedWorkerProvider),
+      "Summarizer: " + providerLabel(stagedSummarizerProvider) + " / " + modelLabel(summarizerModels.summarizerModel, stagedSummarizerProvider),
       "Budget: " + formatUsdBudget(profile.maxCostUsd) + " | " + formatTokenWall(profile.maxTotalTokens),
       "Reasoning: " + profile.reasoningEffort + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
     ]);
@@ -4920,13 +4944,15 @@ $(function () {
   $("#provider, #summarizerProvider").on("change", function () {
     const workerProvider = normalizeProviderId($("#provider").val());
     const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
-    $("#model").val(defaultModelForProvider(workerProvider));
-    $("#summarizerModel").val(defaultModelForProvider(summarizerProvider));
+    $("#model").val(normalizeSelectedModelForProvider($("#model").val(), workerProvider));
+    $("#summarizerModel").val(normalizeSelectedModelForProvider($("#summarizerModel").val(), summarizerProvider));
     refreshProviderModelSelects();
+    enforceProviderCapabilitySelections(true);
     formDirty = true;
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
     renderQualityProfileCards();
     renderComposerTools();
+    renderAuthPoolPreview();
     queueDraftSave();
   });
 
@@ -5084,6 +5110,9 @@ $(function () {
 
   $(document).on("click", ".composer-tool-action", function () {
     const action = String($(this).data("toolAction") || "").trim();
+    const capabilityState = enforceProviderCapabilitySelections(false);
+    const capabilities = capabilityState.capabilities;
+    const provider = capabilityState.provider;
     if (action === "upload") {
       composerToolMenuOpen = false;
       renderComposerTools();
@@ -5097,24 +5126,50 @@ $(function () {
       return;
     }
     if (action === "web-search") {
+      if (!capabilities.webSearch) {
+        composerToolMenuOpen = false;
+        renderComposerTools();
+        showMessage(providerLabel(provider) + " does not support live web search in this runtime.", false);
+        return;
+      }
       $("#researchEnabled").val($("#researchEnabled").val() === "1" ? "0" : "1");
       composerToolMenuOpen = false;
       markComposerConfigDirty();
       return;
     }
     if (action === "local-files") {
+      if (!capabilities.localFiles) {
+        composerToolMenuOpen = false;
+        renderComposerTools();
+        showMessage(providerLabel(provider) + " does not support local file tools in this runtime.", false);
+        return;
+      }
       $("#localFilesEnabled").val($("#localFilesEnabled").val() === "1" ? "0" : "1");
       composerToolMenuOpen = false;
       markComposerConfigDirty();
       return;
     }
     if (action === "github-tools") {
+      if (!capabilities.githubTools) {
+        composerToolMenuOpen = false;
+        renderComposerTools();
+        showMessage(providerLabel(provider) + " does not support GitHub tools in this runtime.", false);
+        return;
+      }
       $("#githubToolsEnabled").val($("#githubToolsEnabled").val() === "1" ? "0" : "1");
       composerToolMenuOpen = false;
       markComposerConfigDirty();
       return;
     }
     if (action === "sources") {
+      if (!capabilities.webSearch) {
+        composerSourceDrawerOpen = false;
+        composerRecentDrawerOpen = false;
+        composerToolMenuOpen = false;
+        renderComposerTools();
+        showMessage(providerLabel(provider) + " does not support live web search in this runtime.", false);
+        return;
+      }
       composerSourceDrawerOpen = !composerSourceDrawerOpen;
       composerRecentDrawerOpen = false;
       composerToolMenuOpen = false;
@@ -5135,7 +5190,7 @@ $(function () {
 
   $("#composerResearchDomainsInput").on("input change", function () {
     $("#researchDomains").val($(this).val());
-    if (String($(this).val() || "").trim()) {
+    if (providerCapabilities($("#provider").val()).webSearch && String($(this).val() || "").trim()) {
       $("#researchEnabled").val("1");
     }
     markComposerConfigDirty();
@@ -5143,19 +5198,21 @@ $(function () {
 
   $("#composerResearchModeSelect").on("change", function () {
     $("#researchExternalWebAccess").val($(this).val());
-    $("#researchEnabled").val("1");
+    if (providerCapabilities($("#provider").val()).webSearch) {
+      $("#researchEnabled").val("1");
+    }
     markComposerConfigDirty();
   });
 
   $("#localFileRoots").on("input change", function () {
-    if (String($(this).val() || "").trim()) {
+    if (providerCapabilities($("#provider").val()).localFiles && String($(this).val() || "").trim()) {
       $("#localFilesEnabled").val("1");
     }
     markComposerConfigDirty();
   });
 
   $("#githubAllowedRepos").on("input change", function () {
-    if (String($(this).val() || "").trim()) {
+    if (providerCapabilities($("#provider").val()).githubTools && String($(this).val() || "").trim()) {
       $("#githubToolsEnabled").val("1");
     }
     markComposerConfigDirty();
@@ -5309,25 +5366,28 @@ $(function () {
     });
   });
 
-  $("#addAuthField").on("click", function () {
-    authDynamicRows.push({ id: nextAuthRowId(), value: "" });
-    renderAuthEditor(true);
+  $(document).on("click", ".add-auth-field", function () {
+    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
+    authDynamicRows(provider).push({ id: nextAuthRowId(), value: "" });
+    renderAuthProviderCards(true);
   });
 
-  $("#clearAuth").on("click", function () {
-    if (!confirm("Clear the stored transitional local API key pool?")) return;
+  $(document).on("click", ".clear-auth", function () {
+    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
+    const label = authProviderGroup(provider).label || provider;
+    if (!confirm("Clear the stored transitional local " + label + " API key pool?")) return;
 
-    $.post(apiRoute(API.authKeys), { clear: 1 })
+    $.post(apiRoute(API.authKeys), { provider: provider, clear: 1 })
       .done(function (resp) {
-        handleAuthMutationSuccess(resp, "API key pool cleared", {
+        handleAuthMutationSuccess(resp, label + " API key pool cleared", {
           onSuccess: function () {
-            resetAuthDynamicRows();
-            renderAuthEditor(true);
+            resetAuthDynamicRows(provider);
+            renderAuthProviderCards(true);
           }
         });
       })
       .fail(function (xhr) {
-        showMessage("API key pool clear failed: " + extractErrorMessage(xhr), true);
+        showMessage(label + " API key pool clear failed: " + extractErrorMessage(xhr), true);
       });
   });
 
@@ -5340,17 +5400,18 @@ $(function () {
   });
 
   $(document).on("click", ".auth-key-remove", function () {
+    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
     const mode = String($(this).data("removeMode") || "");
     if (mode === "stored") {
       const slotIndex = Number($(this).data("slotIndex"));
       if (Number.isNaN(slotIndex)) return;
-      removeAuthSlot(slotIndex);
+      removeAuthSlot(slotIndex, provider);
       return;
     }
     const rowId = String($(this).data("rowId") || "");
-    clearAuthSaveTimer(rowId);
-    removeAuthDynamicRow(rowId);
-    renderAuthEditor(true);
+    clearAuthSaveTimer(provider + ":" + rowId);
+    removeAuthDynamicRow(provider, rowId);
+    renderAuthProviderCards(true);
   });
 
   $("#resetState").on("click", function () {

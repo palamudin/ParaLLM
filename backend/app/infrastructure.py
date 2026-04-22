@@ -16,9 +16,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - optional dependency in some runtimes
     redis_lib = None
 
+from . import control
 from .config import DeploymentTopology, deployment_topology
-from .secrets import env_secret_status
-from .secrets import external_secret_status
 
 
 def _http_probe(url: Optional[str], timeout: float = 3.0, headers: Optional[Dict[str, str]] = None) -> tuple[bool, str]:
@@ -194,13 +193,37 @@ def artifact_status(topology: DeploymentTopology) -> Dict[str, Any]:
 
 
 def secret_status(topology: DeploymentTopology) -> Dict[str, Any]:
-    if topology.secret_backend == "env":
-        return _env_secret_status()
+    auth_status = control.auth_pool_status(topology.root)
+    provider_groups = {
+        provider_id: {
+            "label": str(group.get("label") or provider_id),
+            "ready": bool(group.get("hasKey")),
+            "keyCount": int(group.get("keyCount", 0) or 0),
+            "failureMode": group.get("failureMode"),
+        }
+        for provider_id, group in (auth_status.get("providerGroups") or {}).items()
+        if isinstance(group, dict)
+    }
+    configured = True
     if topology.secret_backend == "docker_secret":
-        return _docker_secret_status(topology)
-    if topology.secret_backend == "external":
-        return _external_secret_status(topology)
-    return _local_secret_status(topology)
+        configured = bool(topology.secret_file)
+    elif topology.secret_backend == "external":
+        configured = bool(topology.secret_provider_url)
+    detail_parts = [str(auth_status.get("statusNote") or "").strip()]
+    if not auth_status.get("available") and str(auth_status.get("failureDetail") or "").strip():
+        detail_parts.append(str(auth_status.get("failureDetail") or "").strip())
+    detail = " ".join(part for part in detail_parts if part).strip()
+    return {
+        "backend": str(auth_status.get("backend") or topology.secret_backend),
+        "configured": configured,
+        "ready": bool(auth_status.get("available")),
+        "detail": detail,
+        "writable": bool(auth_status.get("writable")),
+        "keyCount": int(auth_status.get("keyCount", 0) or 0),
+        "failureMode": auth_status.get("failureMode"),
+        "strictLiveFailure": bool(auth_status.get("strictLiveFailure")),
+        "providerGroups": provider_groups,
+    }
 
 
 def runtime_execution_status(topology: DeploymentTopology) -> Dict[str, Any]:

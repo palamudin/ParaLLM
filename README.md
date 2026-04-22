@@ -33,8 +33,8 @@ The current prototype is built to make that test inspectable:
 - Isolated eval subsystem for side-by-side benchmark runs
 - Read-only local file tools for commander and worker lanes with allow-root policy and audit logs
 - Read-only GitHub repo tools for commander and worker lanes with owner/repo allowlist and audit logs
-- Local API key pool with deterministic per-position assignment
-- Container-friendly secret backends via env keys or mounted secret files
+- Provider-grouped API key pools with deterministic per-position assignment per vendor
+- Container-friendly secret backends via provider-isolated env keys or mounted secret files
 - Initial multi-provider runtime slice:
   - OpenAI remains the full-featured path
   - Ollama now works as a native local structured-output path
@@ -94,6 +94,26 @@ flowchart LR
 ```
 
 The advisor skill pack is written as vendor-neutral `SKILL.md` content. The `agents/openai.yaml` files are optional Codex metadata; other runtimes can ignore them and still use the skills.
+
+Current skill layers:
+
+- Shared advisor skills under `.agents/skills/`:
+  - `claim-calibration`
+  - `evidence-ledger`
+  - `feasibility-breakdown`
+  - `failure-mode-analysis`
+  - `threat-model`
+  - `cost-envelope`
+  - `user-journey-friction`
+  - `telemetry-gap-finder`
+  - `rollback-plan`
+- Provider/runtime skills for live vendor paths:
+  - `provider-openai-responses`
+  - `provider-anthropic-messages`
+  - `provider-xai-responses`
+  - `provider-minimax-compatible`
+  - `provider-ollama-local-json`
+- Persona-to-skill assignment lives in `.agents/persona-skill-map.json`, so advisor lanes can stay vendor-neutral at the core while still picking the right runtime guidance when the active model/provider changes.
 
 ## Current Feature Set
 
@@ -230,12 +250,20 @@ Milestone 5 is now started with a real first provider split:
   - native `/api/chat` execution
   - structured JSON output path
   - local-model experimentation without OpenAI keys
-  - no research or function-tool support in this first slice
+  - local function-tool loop for file/GitHub tools
+- `anthropic`, `xai`, `minimax`
+  - provider-native live adapters are wired now
+  - capability normalization depends on the provider path
+- auth/settings groundwork
+  - provider-grouped key storage now exists for `openai`, `anthropic`, `xai`, and `minimax`
+  - provider pools stay isolated; one vendor's lanes never reuse another vendor's key group
+  - runtime/provider routing now switches the live call path as well as the key lane group
 
 Current honest limitation:
 
-- Ollama is available as a live structured-output provider, but it does **not** yet support the runtime's research/tool loop in this repo
+- Ollama is available as a live structured-output provider with local function tools, but it does **not** support hosted web-search research in this repo
 - workers currently inherit the global runtime provider, while the summarizer/lead-thread provider can be set separately
+- Anthropic, xAI, and MiniMax are live runtime paths now, but capability differences are normalized conservatively and will keep evolving as provider docs and model behavior change
 - eval arms, result artifacts, and the blind benchmark now carry provider identity so mixed-provider experiments can be inspected honestly in Review instead of being inferred from model names alone
 - Milestone 5 is not complete until more providers and richer capability normalization land
 
@@ -339,18 +367,19 @@ The artifact backend is now partially real too:
 The secret backend is now hosted-aware too:
 
 - local development now defaults to `LOOP_SECRET_BACKEND=env`
-- provide newline-delimited keys in `LOOP_OPENAI_API_KEYS`
+- provide newline-delimited keys in `LOOP_OPENAI_API_KEYS`, `LOOP_ANTHROPIC_API_KEYS`, `LOOP_XAI_API_KEYS`, or `LOOP_MINIMAX_API_KEYS`
 - or set `LOOP_SECRET_BACKEND=docker_secret`
 - or set `LOOP_SECRET_BACKEND=external` with `LOOP_SECRET_PROVIDER_URL`
 - and mount a newline-delimited key file at `LOOP_SECRET_FILE` such as `/run/secrets/openai_api_keys`
+  - sibling files like `/run/secrets/anthropic_api_keys`, `/run/secrets/xai_api_keys`, and `/run/secrets/minimax_api_keys` are used for those provider groups
 - `local_file` remains available only as an explicit transitional fallback
 - managed backends are now authoritative: if `env`, `docker_secret`, or `external` is empty or unreachable, live execution fails visibly instead of silently drifting into another secret source
 
 ### First Run
 
 1. Open `Settings / Integrations`
-2. Prefer setting `LOOP_OPENAI_API_KEYS` before launch so the default env backend is live
-3. If you explicitly start with `LOOP_SECRET_BACKEND=local_file`, paste at least one OpenAI API key into the local fallback pool
+2. Prefer setting the provider env vars you actually plan to use before launch, especially `LOOP_OPENAI_API_KEYS` for the current full-featured live path
+3. If you explicitly start with `LOOP_SECRET_BACKEND=local_file`, paste keys into the matching provider group cards in Settings
 4. Pick a runtime profile in `Home` or `Settings`
 5. Write a prompt in `Home`
 6. Press `Send`
@@ -358,23 +387,25 @@ The secret backend is now hosted-aware too:
 
 ## Local API Key Pool
 
-ParaLLM still supports a local key pool through the UI, but only when you explicitly run with `LOOP_SECRET_BACKEND=local_file`.
+ParaLLM still supports local key pools through the UI, but only when you explicitly run with `LOOP_SECRET_BACKEND=local_file`.
 
-- One key slot per input row
+- One provider card per vendor group
+- One key slot per input row inside that provider group
 - `+ Key` adds another slot
 - Pasting into a stored slot replaces it immediately
-- Pasting into a new slot appends it to the local fallback `Auth.txt`
+- Pasting into a new slot appends it to the matching local fallback file such as `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, or `Auth.minimax.txt`
 - `Clear` wipes the local pool
 
 Assignment behavior:
 
 - default order is `commander -> workers in letter order -> summarizer`
+- assignments only draw from the selected provider's pool; there is no cross-vendor API key bleed
 - if there are fewer keys than positions, slots wrap
 - when wrapping is required, the starting slot rotates across rounds so one key does not always take commander-first traffic
 - if a live lane hits an auth-style key failure, the runtime now retries on the next non-empty key in pool order before giving up
 - if the active backend is managed and exposes no usable keys, live lanes fail loudly instead of downgrading to mock behind your back
 
-Only masked previews are shown in the UI. Raw keys stay in env vars for `env`, in the mounted file for `docker_secret`, behind a read-only HTTP provider for `external`, or in `Auth.txt` only when `local_file` is explicitly selected as a transitional fallback.
+Only masked previews are shown in the UI. Raw keys stay in provider-specific env vars for `env`, provider-specific mounted files for `docker_secret`, grouped payloads for `external`, or local fallback files only when `local_file` is explicitly selected as a transitional path.
 
 ## Usage Flow
 
@@ -509,7 +540,7 @@ Next milestone track:
 
 ## Safety / Local Data
 
-- `Auth.txt` is local-only and must never be committed
+- `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, and `Auth.minimax.txt` are local-only and must never be committed
 - `data/` contains volatile runtime state and artifacts
 - review artifacts may include sensitive prompt material
 - displayed spend is an operational estimate, not invoice truth

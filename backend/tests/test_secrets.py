@@ -86,6 +86,30 @@ class ExternalSecretBackendTests(unittest.TestCase):
 
         self.assertEqual(keys, ["sk-one", "sk-two"])
 
+    def test_external_secret_backend_reads_grouped_provider_payloads(self) -> None:
+        previous_body = _SecretProviderHandler.response_body
+        _SecretProviderHandler.response_body = json.dumps(
+            {
+                "providers": {
+                    "openai": ["sk-openai"],
+                    "anthropic": ["sk-anthropic", "sk-anthropic"],
+                }
+            }
+        ).encode("utf-8")
+        try:
+            with mock.patch.dict("os.environ", self._env(), clear=False):
+                anthropic_status = external_secret_status(self.root, provider="anthropic")
+                auth_status = control.auth_pool_status(self.root)
+                runtime_keys = read_api_key_pool(self.root / "missing-auth.txt", "anthropic")
+        finally:
+            _SecretProviderHandler.response_body = previous_body
+
+        self.assertEqual(anthropic_status["keys"], ["sk-anthropic"])
+        self.assertEqual(runtime_keys, ["sk-anthropic"])
+        self.assertEqual(auth_status["keyCount"], 2)
+        self.assertEqual(auth_status["providerGroups"]["openai"]["keyCount"], 1)
+        self.assertEqual(auth_status["providerGroups"]["anthropic"]["keyCount"], 1)
+
     def test_external_secret_status_reports_unreachable_provider(self) -> None:
         env = self._env()
         env["LOOP_SECRET_PROVIDER_URL"] = "http://127.0.0.1:1/keys"

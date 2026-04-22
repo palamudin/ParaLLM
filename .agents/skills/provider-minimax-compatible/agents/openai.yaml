@@ -1,0 +1,4 @@
+interface:
+  display_name: "Provider: MiniMax Compatibility"
+  short_description: "Use MiniMax's compatibility path without assuming unsupported extras"
+  default_prompt: "Apply the MiniMax compatibility contract, keep tool turns stable, and return strict schema-valid JSON."

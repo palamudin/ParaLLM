@@ -1,0 +1,4 @@
+interface:
+  display_name: "Provider: xAI Responses"
+  short_description: "Use xAI's Responses-compatible Grok path with disciplined structured output"
+  default_prompt: "Apply the xAI provider contract, use Grok tools carefully, and keep the final output strict and evidence-backed."

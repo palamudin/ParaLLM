@@ -21,9 +21,10 @@ class SettingsTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
             appended = settings.set_auth_keys({"appendKey": "sk-one-1111"}, self.root)
             self.assertEqual(appended["keyCount"], 1)
+            self.assertEqual(appended["providerGroups"]["openai"]["keyCount"], 1)
 
             replaced = settings.set_auth_keys({"replaceIndex": 0, "apiKey": "sk-two-2222"}, self.root)
-            self.assertEqual(replaced["last4"], "2222")
+            self.assertEqual(replaced["providerGroups"]["openai"]["last4"], "2222")
             self.assertEqual(control.read_auth_key_pool(self.root), ["sk-two-2222"])
 
             settings.set_auth_keys({"appendKey": "sk-three-3333"}, self.root)
@@ -34,6 +35,20 @@ class SettingsTests(unittest.TestCase):
             cleared = settings.set_auth_keys({"clear": 1}, self.root)
             self.assertFalse(cleared["hasKey"])
             self.assertEqual(control.read_auth_key_pool(self.root), [])
+
+    def test_set_auth_keys_keeps_provider_pools_isolated(self) -> None:
+        with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
+            settings.set_auth_keys({"provider": "openai", "appendKey": "sk-openai-1111"}, self.root)
+            status = settings.set_auth_keys({"provider": "anthropic", "appendKey": "sk-anthropic-2222"}, self.root)
+
+            self.assertEqual(control.read_auth_key_pool(self.root, "openai"), ["sk-openai-1111"])
+            self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), ["sk-anthropic-2222"])
+            self.assertEqual(status["providerGroups"]["openai"]["keyCount"], 1)
+            self.assertEqual(status["providerGroups"]["anthropic"]["keyCount"], 1)
+
+            settings.set_auth_keys({"provider": "anthropic", "clear": 1}, self.root)
+            self.assertEqual(control.read_auth_key_pool(self.root, "openai"), ["sk-openai-1111"])
+            self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), [])
 
     def test_apply_runtime_settings_updates_task_snapshot_and_draft(self) -> None:
         result = settings.apply_runtime_settings(
@@ -74,7 +89,36 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["draft"]["provider"], "ollama")
         self.assertEqual(state["draft"]["summarizerProvider"], "openai")
         self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4-mini")
+        self.assertFalse(state["activeTask"]["runtime"]["research"]["enabled"])
+        self.assertTrue(state["activeTask"]["runtime"]["localFiles"]["enabled"])
+        self.assertTrue(state["activeTask"]["runtime"]["githubTools"]["enabled"])
+        self.assertFalse(state["draft"]["researchEnabled"])
+        self.assertTrue(state["draft"]["localFilesEnabled"])
         self.assertTrue(state["draft"]["githubToolsEnabled"])
+
+    def test_apply_runtime_settings_preserves_staged_draft_worker_roster(self) -> None:
+        settings.add_adversarial_worker({"type": "reliability"}, self.root)
+        settings.update_worker_config({"workerId": "B", "type": "security", "temperature": "hot"}, self.root)
+
+        result = settings.apply_runtime_settings(
+            {
+                "provider": "ollama",
+                "model": "qwen3",
+                "summarizerProvider": "openai",
+                "summarizerModel": "gpt-5.4-mini",
+            },
+            self.root,
+        )
+
+        self.assertEqual(result["provider"], "ollama")
+        state = storage.read_state_payload(storage.project_paths(self.root))
+
+        self.assertEqual([worker["id"] for worker in state["activeTask"]["workers"]], ["A", "B"])
+        self.assertEqual([worker["id"] for worker in state["draft"]["workers"]], ["A", "B", "C"])
+        self.assertEqual(state["draft"]["provider"], "ollama")
+        self.assertEqual(state["draft"]["model"], "qwen3")
+        self.assertEqual(next(worker for worker in state["draft"]["workers"] if worker["id"] == "B")["type"], "security")
+        self.assertEqual(next(worker for worker in state["draft"]["workers"] if worker["id"] == "B")["temperature"], "hot")
 
     def test_update_worker_config_mutates_draft_only(self) -> None:
         result = settings.update_worker_config(
