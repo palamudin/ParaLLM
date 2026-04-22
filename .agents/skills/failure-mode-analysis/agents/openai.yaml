@@ -1,0 +1,4 @@
+interface:
+  display_name: "Failure Mode Analysis"
+  short_description: "Pressure-test proposals with realistic failure paths"
+  default_prompt: "Identify the concrete failure modes that matter most, including silent failures, hidden coupling, and the mitigation that would change the risk picture."

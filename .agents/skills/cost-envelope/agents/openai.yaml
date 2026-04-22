@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cost Envelope"
+  short_description: "Estimate cost drivers, cliffs, and ROI risk"
+  default_prompt: "Estimate the real cost envelope, name the cost cliff, and suggest the cheapest validation step that would test the economics honestly."

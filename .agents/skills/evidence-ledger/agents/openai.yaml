@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evidence Ledger"
+  short_description: "Track supporting evidence, conflict, and gaps"
+  default_prompt: "Build a compact evidence ledger that separates support, conflict, and gaps, and only keep evidence that changes the decision."

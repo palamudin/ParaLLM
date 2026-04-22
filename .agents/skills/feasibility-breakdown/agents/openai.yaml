@@ -1,0 +1,4 @@
+interface:
+  display_name: "Feasibility Breakdown"
+  short_description: "Find the shortest credible build path"
+  default_prompt: "Break the proposal into a realistic minimum path, name the hardest bottleneck, and suggest the fastest validation step."

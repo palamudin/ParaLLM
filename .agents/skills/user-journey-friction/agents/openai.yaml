@@ -1,0 +1,4 @@
+interface:
+  display_name: "User Journey Friction"
+  short_description: "Find confusion, trust loss, and adoption blockers"
+  default_prompt: "Review the journey from the user's perspective, find the sharpest friction point, explain the trust risk, and suggest the smallest useful fix."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rollback Plan"
+  short_description: "Pressure-test rollback and restore readiness"
+  default_prompt: "Check whether the change can really be rolled back, identify any irreversible risk, and name the smallest rehearsal that would expose false confidence."

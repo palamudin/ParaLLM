@@ -1,0 +1,4 @@
+interface:
+  display_name: "Threat Model"
+  short_description: "Map attack paths, trust boundaries, and blast radius"
+  default_prompt: "Threat-model the proposal by naming the real attack path, the trust boundary it crosses, the blast radius, and the cheapest strong fix."

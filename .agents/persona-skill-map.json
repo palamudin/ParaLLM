@@ -1,0 +1,58 @@
+{
+  "pack": "parallm-advisor-pack-v1",
+  "compatibility": {
+    "format": "skill-md",
+    "vendorNeutral": true,
+    "textOnlyByDefault": true,
+    "requiresProviderSpecificApis": false,
+    "optionalCodexMetadata": "agents/openai.yaml",
+    "targetVendors": [
+      "openai",
+      "ollama",
+      "anthropic",
+      "xai",
+      "minimax"
+    ]
+  },
+  "shared": [
+    "claim-calibration",
+    "evidence-ledger"
+  ],
+  "personas": {
+    "proponent": [
+      "claim-calibration",
+      "evidence-ledger",
+      "feasibility-breakdown"
+    ],
+    "sceptic": [
+      "claim-calibration",
+      "evidence-ledger",
+      "failure-mode-analysis"
+    ],
+    "economist": [
+      "claim-calibration",
+      "evidence-ledger",
+      "cost-envelope"
+    ],
+    "security": [
+      "claim-calibration",
+      "evidence-ledger",
+      "threat-model"
+    ],
+    "user": [
+      "claim-calibration",
+      "evidence-ledger",
+      "user-journey-friction"
+    ],
+    "observability": [
+      "claim-calibration",
+      "evidence-ledger",
+      "telemetry-gap-finder"
+    ],
+    "recovery": [
+      "claim-calibration",
+      "evidence-ledger",
+      "rollback-plan"
+    ]
+  }
+}

@@ -80,6 +80,8 @@ flowchart LR
 
 ```text
 .
+|-- .agents/                advisor skill pack and persona-to-skill map
+|-- AGENTS.md               shared advisor conventions for repo-aware agents
 |-- backend/                Python-first control plane
 |-- assets/                 frontend JS, CSS, vendored Bootstrap
 |-- deploy/                 Docker Compose stack and container images
@@ -90,6 +92,8 @@ flowchart LR
 |-- project.md              running architecture notes / product log
 `-- README.md               repo front door
 ```
+
+The advisor skill pack is written as vendor-neutral `SKILL.md` content. The `agents/openai.yaml` files are optional Codex metadata; other runtimes can ignore them and still use the skills.
 
 ## Current Feature Set
 

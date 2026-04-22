@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telemetry Gap Finder"
+  short_description: "Find missing signals, alerts, and audit trails"
+  default_prompt: "Find the operator blind spots, explain the consequence of each, and name the smallest telemetry, alert, or audit addition that would change recovery."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claim Calibration"
+  short_description: "Separate facts, inferences, assumptions, and unknowns"
+  default_prompt: "Apply claim calibration, label the important claims, and keep confidence proportional to the actual evidence."
