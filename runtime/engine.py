@@ -43,6 +43,33 @@ PROVIDER_CATALOG: Dict[str, Dict[str, str]] = {
     "ollama": {"label": "Ollama"},
 }
 
+PROVIDER_CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
+    "openai": {
+        "toolLoop": True,
+        "webSearch": True,
+        "localFiles": True,
+        "githubTools": True,
+        "costTracking": True,
+        "reasoningSummary": True,
+        "notes": [
+            "Full live research and audited function-tool path.",
+            "Estimated token and spend tracking are available.",
+        ],
+    },
+    "ollama": {
+        "toolLoop": False,
+        "webSearch": False,
+        "localFiles": False,
+        "githubTools": False,
+        "costTracking": False,
+        "reasoningSummary": True,
+        "notes": [
+            "Native structured local generation path only in this repo.",
+            "Research and audited function-tool execution are not enabled yet.",
+        ],
+    },
+}
+
 OLLAMA_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
     "qwen3": {"label": "Qwen3"},
     "qwen3-coder": {"label": "Qwen3 Coder"},
@@ -316,6 +343,30 @@ def default_model_for_provider(provider: Optional[str]) -> str:
     if normalized == "ollama":
         return str(os.getenv("LOOP_OLLAMA_DEFAULT_MODEL") or DEFAULT_OLLAMA_MODEL_ID).strip() or DEFAULT_OLLAMA_MODEL_ID
     return DEFAULT_MODEL_ID
+
+
+def infer_provider_from_model_id(model: Optional[str]) -> Optional[str]:
+    candidate = (model or "").strip()
+    if not candidate:
+        return None
+    if candidate in MODEL_CATALOG:
+        return "openai"
+    return "ollama"
+
+
+def provider_capability_profile(provider: Optional[str]) -> Dict[str, Any]:
+    normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    raw = PROVIDER_CAPABILITY_CATALOG.get(normalized) or {}
+    return {
+        "provider": normalized,
+        "toolLoop": bool(raw.get("toolLoop", False)),
+        "webSearch": bool(raw.get("webSearch", False)),
+        "localFiles": bool(raw.get("localFiles", False)),
+        "githubTools": bool(raw.get("githubTools", False)),
+        "costTracking": bool(raw.get("costTracking", False)),
+        "reasoningSummary": bool(raw.get("reasoningSummary", False)),
+        "notes": limit_string_list(raw.get("notes", []), 6, 180),
+    }
 
 
 def normalize_model_id(model: Optional[str], fallback: Optional[str] = None, provider: Optional[str] = None) -> str:
@@ -689,10 +740,14 @@ def normalize_harness_config(value: Any, fallback_concision: str = "tight") -> D
 def worker_catalog(default_model: Optional[str] = None, default_provider: Optional[str] = None) -> List[Dict[str, str]]:
     provider = normalize_provider_id(default_provider, DEFAULT_PROVIDER_ID)
     model = normalize_model_id(default_model, default_model_for_provider(provider), provider)
-    return [normalize_worker_definition({"id": worker_id}, model) for worker_id in worker_slot_ids()]
+    return [normalize_worker_definition({"id": worker_id}, model, provider) for worker_id in worker_slot_ids()]
 
 
-def normalize_worker_definition(worker: Dict[str, Any], default_model: Optional[str] = None) -> Dict[str, str]:
+def normalize_worker_definition(
+    worker: Dict[str, Any],
+    default_model: Optional[str] = None,
+    default_provider: Optional[str] = None,
+) -> Dict[str, str]:
     worker_id = str(worker.get("id", "")).strip().upper()
     if not re.match(r"^[A-Z]$", worker_id):
         raise RuntimeErrorWithCode("Worker ids must be single uppercase letters.", 500)
@@ -709,7 +764,8 @@ def normalize_worker_definition(worker: Dict[str, Any], default_model: Optional[
             "temperature": "balanced",
         },
     )
-    fallback_model = normalize_model_id(default_model, DEFAULT_MODEL_ID)
+    provider = normalize_provider_id(default_provider, infer_provider_from_model_id(default_model) or DEFAULT_PROVIDER_ID)
+    fallback_model = normalize_model_id(default_model, default_model_for_provider(provider), provider)
     active_from_round = max(1, int(worker.get("activeFromRound", 1) or 1))
     return {
         "id": worker_id,
@@ -718,7 +774,7 @@ def normalize_worker_definition(worker: Dict[str, Any], default_model: Optional[
         "role": str(worker.get("role", catalog_worker["role"])).strip() or catalog_worker["role"],
         "focus": str(worker.get("focus", catalog_worker["focus"])).strip() or catalog_worker["focus"],
         "temperature": normalize_worker_temperature(worker.get("temperature"), str(catalog_worker.get("temperature", "balanced"))),
-        "model": normalize_model_id(worker.get("model"), fallback_model),
+        "model": normalize_model_id(worker.get("model"), fallback_model, provider),
         "activeFromRound": active_from_round,
         "harness": normalize_harness_config(worker.get("harness"), default_worker_harness()["concision"]),
     }
@@ -733,11 +789,11 @@ def task_workers(task: Dict[str, Any], round_number: Optional[int] = None) -> Li
     if isinstance(raw_workers, list):
         for worker in raw_workers:
             if isinstance(worker, dict):
-                normalized = normalize_worker_definition(worker, default_model)
+                normalized = normalize_worker_definition(worker, default_model, default_provider)
                 workers[normalized["id"]] = normalized
     if not workers:
         for worker in worker_catalog(default_model, default_provider)[:2]:
-            normalized = normalize_worker_definition(worker, default_model)
+            normalized = normalize_worker_definition(worker, default_model, default_provider)
             workers[normalized["id"]] = normalized
     ordered = [workers[key] for key in sorted(workers)]
     if round_number is None:
@@ -3751,6 +3807,7 @@ class LoopRuntime:
             normalized_worker = normalize_worker_definition(
                 worker_definition,
                 normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID),
+                normalize_provider_id((task.get("runtime") or {}).get("provider"), DEFAULT_PROVIDER_ID),
             )
             resolution["spawnedWorkerId"] = normalized_worker["id"]
             return normalized_worker, normalize_dynamic_lane_resolution(resolution)
@@ -5545,6 +5602,8 @@ class LoopRuntime:
             "target": "commander",
             "label": summary_config["label"],
             "mode": mode_used,
+            "provider": runtime["provider"],
+            "providerCapabilities": provider_capability_profile(runtime["provider"]),
             "model": runtime["model"],
             "round": round_number,
             "capturedAt": utc_now(),
@@ -5775,6 +5834,8 @@ class LoopRuntime:
             "target": "commander_review",
             "label": review_config["label"],
             "mode": mode_used,
+            "provider": runtime["provider"],
+            "providerCapabilities": provider_capability_profile(runtime["provider"]),
             "model": runtime["model"],
             "round": commander_round,
             "capturedAt": utc_now(),
@@ -6008,6 +6069,8 @@ class LoopRuntime:
             "target": worker_id,
             "label": worker["label"],
             "mode": mode_used,
+            "provider": runtime["provider"],
+            "providerCapabilities": provider_capability_profile(runtime["provider"]),
             "model": runtime["model"],
             "step": step_number,
             "capturedAt": utc_now(),
@@ -6234,6 +6297,8 @@ class LoopRuntime:
             "target": "summarizer",
             "label": summary_config["label"],
             "mode": mode_used,
+            "provider": runtime["provider"],
+            "providerCapabilities": provider_capability_profile(runtime["provider"]),
             "model": runtime["model"],
             "round": int(summary.get("round", 0) or 0),
             "capturedAt": utc_now(),
@@ -6418,6 +6483,8 @@ class LoopRuntime:
             "target": "answer_now",
             "label": "Answer Now",
             "mode": mode_used,
+            "provider": runtime["provider"],
+            "providerCapabilities": provider_capability_profile(runtime["provider"]),
             "model": runtime["model"],
             "round": int(summary.get("round", 0) or 0),
             "capturedAt": utc_now(),

@@ -16,6 +16,7 @@ from engine import (
     RuntimeErrorWithCode,
     auth_assignment_meta,
     coerce_bool,
+    default_model_for_provider,
     default_budget_config,
     default_loop_state,
     default_research_config,
@@ -24,10 +25,12 @@ from engine import (
     default_vetting_config,
     normalize_budget_config,
     normalize_model_id,
+    normalize_provider_id,
     normalize_research_config,
     normalize_string_array_preserve_items,
     normalize_usage_state,
     normalize_vetting_config,
+    provider_capability_profile,
     task_workers,
     utc_now,
 )
@@ -120,7 +123,7 @@ def normalize_loop_preferences(config: Optional[Dict[str, Any]] = None) -> Dict[
     }
 
 
-def response_meta_from_openai(runtime: LoopRuntime, response: Optional[Dict[str, Any]], call_meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def response_meta_from_result(runtime: LoopRuntime, response: Optional[Dict[str, Any]], call_meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not response:
         return None
     return {
@@ -250,8 +253,14 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         raise EvalError(f"Arm {arm_id} must use type 'direct' or 'steered'.")
 
     runtime_payload = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
-    model = normalize_model_id(str(runtime_payload.get("model", "")).strip(), "gpt-5-mini")
-    summarizer_model = normalize_model_id(str(runtime_payload.get("summarizerModel", "")).strip(), model)
+    provider = normalize_provider_id(str(runtime_payload.get("provider", "")).strip(), "openai")
+    model = normalize_model_id(str(runtime_payload.get("model", "")).strip(), default_model_for_provider(provider), provider)
+    summarizer_provider = normalize_provider_id(str(runtime_payload.get("summarizerProvider", "")).strip(), provider)
+    summarizer_model = normalize_model_id(
+        str(runtime_payload.get("summarizerModel", "")).strip(),
+        model,
+        summarizer_provider,
+    )
     reasoning_effort = str(runtime_payload.get("reasoningEffort", "low")).strip().lower()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = "low"
@@ -263,7 +272,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
     vetting = normalize_vetting_config(runtime_payload.get("vetting") if isinstance(runtime_payload.get("vetting"), dict) else {})
     preferred_loop = normalize_loop_preferences(runtime_payload.get("preferredLoop") if isinstance(runtime_payload.get("preferredLoop"), dict) else {})
     workers = payload.get("workers") if isinstance(payload.get("workers"), list) else []
-    normalized_workers = task_workers({"runtime": {"model": model}, "workers": workers}) if workers else []
+    normalized_workers = task_workers({"runtime": {"model": model, "provider": provider}, "workers": workers}) if workers else []
     if arm_type == "steered" and not normalized_workers:
         raise EvalError(f"Steered arm {arm_id} must include at least one worker.")
     return {
@@ -273,7 +282,9 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         "type": arm_type,
         "runtime": {
             "executionMode": execution_mode,
+            "provider": provider,
             "model": model,
+            "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
@@ -304,6 +315,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
         "createdAt": utc_now(),
         "runtime": {
             "executionMode": runtime_config["executionMode"],
+            "provider": runtime_config["provider"],
             "model": runtime_config["model"],
             "reasoningEffort": runtime_config["reasoningEffort"],
             "budget": deepcopy(runtime_config["budget"]),
@@ -315,6 +327,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
         "summarizer": {
             "id": "summarizer",
             "label": "Summarizer",
+            "provider": runtime_config["summarizerProvider"],
             "model": runtime_config["summarizerModel"],
         },
         "syncPolicy": {
@@ -372,8 +385,13 @@ def run_direct_answer(
     case: Dict[str, Any],
     arm: Dict[str, Any],
 ) -> Dict[str, Any]:
-    api_key = str(auth_assignment.get("apiKey")) if isinstance(auth_assignment, dict) else None
-    auth_meta = auth_assignment_meta(auth_assignment)
+    provider = str(arm["runtime"].get("provider") or "openai").strip()
+    api_key = str(auth_assignment.get("apiKey")) if isinstance(auth_assignment, dict) else ""
+    if provider == "openai" and not api_key:
+        api_key = runtime.get_api_key()
+    if provider != "openai":
+        api_key = runtime.provider_live_api_key(provider, None)
+    auth_meta = runtime.live_auth_meta(provider, auth_assignment)
     runtime_config = arm["runtime"]
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
@@ -391,9 +409,10 @@ def run_direct_answer(
         f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
         f"Session context:\n{case.get('sessionContext', '') or 'none'}\n"
     )
-    if runtime_config["executionMode"] == "live" and api_key:
+    if runtime_config["executionMode"] == "live" and (api_key or not runtime.provider_requires_api_key(provider)):
         try:
-            result = runtime.invoke_openai_json(
+            result = runtime.invoke_provider_json(
+                provider=provider,
                 api_key=api_key,
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -407,22 +426,24 @@ def run_direct_answer(
             usage = runtime.get_response_usage_delta(result.response, model) or default_usage_state()
             return {
                 "mode": "live",
+                "provider": provider,
+                "providerCapabilities": provider_capability_profile(provider),
                 "model": model,
                 "answer": result.parsed,
                 "usage": normalize_usage_state(usage),
                 "responseId": result.response_id,
                 "rawOutputText": result.output_text,
-                "responseMeta": {
-                    "status": str(result.response.get("status", "completed")),
-                    "usageDelta": runtime.get_response_usage_delta(result.response, model) or {},
-                    "webSearchQueries": result.web_search_queries,
-                    "webSearchSources": result.web_search_sources,
-                    "urlCitations": result.url_citations,
-                    "requestedMaxOutputTokens": result.requested_max_output_tokens,
-                    "effectiveMaxOutputTokens": result.effective_max_output_tokens,
-                    "maxOutputTokenAttempts": result.attempts,
-                    "recoveredFromIncomplete": result.recovered_from_incomplete,
-                },
+                "responseMeta": response_meta_from_result(
+                    runtime,
+                    result.response,
+                    {
+                        "model": model,
+                        "requestedMaxOutputTokens": result.requested_max_output_tokens,
+                        "effectiveMaxOutputTokens": result.effective_max_output_tokens,
+                        "attempts": result.attempts,
+                        "recoveredFromIncomplete": result.recovered_from_incomplete,
+                    },
+                ),
                 "authMeta": auth_meta,
             }
         except RuntimeErrorWithCode:
@@ -430,6 +451,8 @@ def run_direct_answer(
                 raise
     return {
         "mode": "mock",
+        "provider": provider,
+        "providerCapabilities": provider_capability_profile(provider),
         "model": model,
         "answer": build_mock_direct_answer(case),
         "usage": default_usage_state(),
@@ -814,6 +837,8 @@ def artifact_meta_from_payload(path: Path, relative_path: Path, payload: Dict[st
         "taskId": payload.get("taskId"),
         "target": target,
         "mode": payload.get("mode"),
+        "provider": payload.get("provider"),
+        "providerCapabilities": payload.get("providerCapabilities") if isinstance(payload.get("providerCapabilities"), dict) else {},
         "model": payload.get("model") or payload.get("modelUsed"),
         "step": int(step or 0) if step is not None else None,
         "round": int(round_number or 0) if round_number is not None else None,
@@ -1002,6 +1027,8 @@ def execute_replicate(
         write_json(replicate_dir / "direct_answer_output.json", output_payload)
         result = {
             "mode": direct["mode"],
+            "provider": direct["provider"],
+            "providerCapabilities": direct["providerCapabilities"],
             "answer": direct["answer"],
             "usage": normalize_usage_state(direct["usage"]),
             "responseId": direct["responseId"],
@@ -1013,6 +1040,8 @@ def execute_replicate(
         mode_state = mode_summary_for_steered(steered["workspaceRoot"], steered["taskId"], loop_rounds)
         result = {
             "mode": mode_state["summaryMode"],
+            "provider": arm["runtime"]["summarizerProvider"],
+            "providerCapabilities": provider_capability_profile(arm["runtime"]["summarizerProvider"]),
             "taskId": steered["taskId"],
             "summary": steered["summary"],
             "usage": normalize_usage_state(steered["usage"]),
@@ -1046,6 +1075,8 @@ def execute_replicate(
         "variantId": variant_id,
         "replicate": replicate_index,
         "mode": result["mode"],
+        "provider": result.get("provider"),
+        "providerCapabilities": result.get("providerCapabilities"),
         "modeState": result.get("modeState", {}),
         "usage": result["usage"],
         "publicAnswer": public_answer,
@@ -1094,6 +1125,8 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
             "title": arm["title"],
             "description": arm["description"],
             "type": arm["type"],
+            "provider": arm["runtime"]["provider"],
+            "summarizerProvider": arm["runtime"]["summarizerProvider"],
         }
         for arm in arm_map.values()
     ]
@@ -1127,6 +1160,10 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
                         "title": arm["title"],
                         "description": arm["description"],
                         "type": arm["type"],
+                        "provider": arm["runtime"]["provider"],
+                        "summarizerProvider": arm["runtime"]["summarizerProvider"],
+                        "model": arm["runtime"]["model"],
+                        "summarizerModel": arm["runtime"]["summarizerModel"],
                         "loopRounds": int(loop_rounds),
                         "replicates": [],
                     }

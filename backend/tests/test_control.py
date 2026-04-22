@@ -152,6 +152,24 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertIn("task_started", paths.events.read_text(encoding="utf-8"))
         self.assertIn("Created a new task and reset worker memory.", paths.steps.read_text(encoding="utf-8"))
 
+    def test_create_task_defaults_worker_models_to_provider_family(self) -> None:
+        result = control.create_task(
+            {
+                "objective": "Exercise provider-aware default workers.",
+                "provider": "ollama",
+                "model": "qwen3:1.7b",
+                "summarizerProvider": "ollama",
+                "summarizerModel": "qwen3:1.7b",
+            },
+            self.root,
+        )
+
+        task = storage.read_json_file(storage.project_paths(self.root).tasks / f"{result['taskId']}.json")
+        self.assertIsInstance(task, dict)
+        workers = task.get("workers")
+        self.assertIsInstance(workers, list)
+        self.assertEqual([worker.get("model") for worker in workers], ["qwen3:1.7b", "qwen3:1.7b"])
+
     def test_create_task_rejects_active_loop(self) -> None:
         runtime_paths = storage.project_paths(self.root)
         state = storage.default_state()

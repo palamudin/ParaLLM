@@ -293,7 +293,7 @@ def update_worker_config(payload: Dict[str, Any], root: Optional[Path] = None) -
                 patch["label"] = ""
                 patch["role"] = ""
                 patch["focus"] = ""
-            updated.append(normalize_worker_definition({**worker, **patch}, draft["model"]))
+            updated.append(normalize_worker_definition({**worker, **patch}, draft["model"], draft["provider"]))
             found = True
         if not found:
             raise RuntimeErrorWithCode("Unknown worker position.", 409)
@@ -338,7 +338,7 @@ def _next_adversarial_worker_definition(task: Dict[str, Any], requested_type: Op
             definition["label"] = ""
             definition["role"] = ""
             definition["focus"] = ""
-        return normalize_worker_definition(definition, default_model)
+        return normalize_worker_definition(definition, default_model, default_provider)
     return None
 
 

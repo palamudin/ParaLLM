@@ -608,6 +608,22 @@ function modelLabel(modelId, provider) {
   return catalog[modelId]?.label || MODEL_CATALOG[modelId]?.label || String(modelId || "Model");
 }
 
+function providerLabel(provider) {
+  const normalized = normalizeProviderId(provider);
+  return PROVIDER_CATALOG[normalized]?.label || String(provider || "Provider");
+}
+
+function providerCapabilitySummary(capabilities) {
+  if (!capabilities || typeof capabilities !== "object") {
+    return "Capabilities not reported.";
+  }
+  const bits = [];
+  bits.push(capabilities.toolLoop ? "tools on" : "tools off");
+  bits.push(capabilities.webSearch ? "web search on" : "web search off");
+  bits.push(capabilities.costTracking ? "cost tracked" : "cost local/untracked");
+  return bits.join(" | ");
+}
+
 function buildArtifactOptions(artifacts, selectedValue) {
   const options = [`<option value="">Select artifact</option>`];
   (artifacts || []).forEach(function (artifact) {
@@ -791,12 +807,15 @@ function renderArtifactMeta(data) {
   const githubToolCalls = Array.isArray(summary.githubToolCalls) ? summary.githubToolCalls : [];
   const githubSources = Array.isArray(summary.githubSources) ? summary.githubSources : [];
   const contractWarnings = Array.isArray(summary.contractWarnings) ? summary.contractWarnings.filter(Boolean) : [];
+  const provider = summary.provider || "openai";
+  const capabilitySummary = providerCapabilitySummary(summary.providerCapabilities);
   const bits = [
     data?.name || "artifact",
     "kind: " + (data?.kind || "artifact") + " | storage: " + (data?.storage || "unknown"),
     "modified: " + (data?.modifiedAt || "n/a") + " | bytes: " + (data?.size ?? 0),
     "task: " + (summary.taskId || "n/a") + " | target: " + (summary.target || "n/a"),
-    "mode: " + (summary.mode || "n/a") + " | model: " + (summary.model || "n/a"),
+    "mode: " + (summary.mode || "n/a") + " | provider: " + providerLabel(provider) + " | model: " + modelLabel(summary.model || "n/a", provider),
+    "provider capabilities: " + capabilitySummary,
     "step: " + (summary.step ?? "-") + " | round: " + (summary.round ?? "-"),
     "responseId: " + (summary.responseId || "none"),
     "output cap: " + artifactOutputCapSummary(summary),
@@ -2657,10 +2676,14 @@ function renderEvalArmList(arms) {
   $root.html((arms || []).map(function (arm) {
     const armId = String(arm?.armId || "");
     const checked = effectiveSelected.includes(armId) ? " checked" : "";
+    const workerProvider = arm?.provider || "openai";
+    const summarizerProvider = arm?.summarizerProvider || workerProvider;
     const summary = [
       (arm?.type || "arm"),
-      modelLabel(arm?.model || "gpt-5-mini"),
-      arm?.type === "steered" ? (modelLabel(arm?.summarizerModel || arm?.model || "gpt-5-mini") + " summarizer") : "single answer",
+      providerLabel(workerProvider) + " " + modelLabel(arm?.model || "gpt-5-mini", workerProvider),
+      arm?.type === "steered"
+        ? (providerLabel(summarizerProvider) + " " + modelLabel(arm?.summarizerModel || arm?.model || "gpt-5-mini", summarizerProvider) + " summarizer")
+        : "single answer",
       (arm?.reasoningEffort || "low") + " reasoning"
     ].join(" | ");
     return `
@@ -2890,6 +2913,12 @@ function renderEvalRunDetail(run) {
             <div class="round-history-title">${escapeHtml(variant.title || variant.variantId || "Variant")}</div>
             <div class="round-history-title">${escapeHtml((variant.type || "variant") + " | loops " + Number(variant.loopRounds || 0))}</div>
           </div>
+          <div class="round-history-meta">${escapeHtml(
+            providerLabel(variant.provider || "openai") + " " + modelLabel(variant.model || "gpt-5-mini", variant.provider || "openai") +
+            (variant.type === "steered"
+              ? (" | " + providerLabel(variant.summarizerProvider || variant.provider || "openai") + " " + modelLabel(variant.summarizerModel || variant.model || "gpt-5-mini", variant.summarizerProvider || variant.provider || "openai") + " summarizer")
+              : "")
+          )}</div>
           <div class="round-history-meta">${escapeHtml(
             "Pass rate " + Number(variant.aggregate?.deterministicPassRate || 0).toFixed(2) +
             " | Quality " + Number(variant.aggregate?.quality?.overallQuality || 0).toFixed(1) +

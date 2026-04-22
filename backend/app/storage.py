@@ -846,6 +846,8 @@ def build_artifact_history_entry(name: str, modified_at: str, size: int, content
         "taskId": None,
         "worker": None,
         "roundOrStep": None,
+        "provider": None,
+        "providerCapabilities": {},
         "model": None,
         "mode": None,
         "responseId": None,
@@ -866,6 +868,8 @@ def build_artifact_history_entry(name: str, modified_at: str, size: int, content
             break
     if isinstance(content, dict):
         response_meta = content.get("responseMeta") if isinstance(content.get("responseMeta"), dict) else {}
+        entry["provider"] = content.get("provider")
+        entry["providerCapabilities"] = content.get("providerCapabilities") if isinstance(content.get("providerCapabilities"), dict) else {}
         entry["model"] = content.get("model") or content.get("modelUsed")
         entry["mode"] = content.get("mode")
         entry["responseId"] = content.get("responseId")
@@ -1326,6 +1330,8 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
             "target": content.get("target") or content.get("workerId"),
             "label": content.get("label"),
             "mode": content.get("mode"),
+            "provider": content.get("provider"),
+            "providerCapabilities": content.get("providerCapabilities") if isinstance(content.get("providerCapabilities"), dict) else {},
             "model": content.get("model") or content.get("modelUsed"),
             "step": coerce_int(content.get("step"), allow_none=True, warnings=warnings, label=f"{safe_name}.step"),
             "round": coerce_int(content.get("round"), allow_none=True, warnings=warnings, label=f"{safe_name}.round"),
@@ -1411,7 +1417,9 @@ def load_eval_arm_catalog(paths: Optional[Paths] = None) -> Dict[str, Any]:
         lambda manifest: {
             "description": str(manifest.get("description") or "").strip(),
             "type": str(manifest.get("type") or "").strip(),
+            "provider": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("provider"),
             "model": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("model"),
+            "summarizerProvider": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("summarizerProvider"),
             "summarizerModel": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("summarizerModel"),
             "reasoningEffort": str((((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("reasoningEffort")) or "low"),
             "workerCount": len(manifest.get("workers") or []) if isinstance(manifest.get("workers"), list) else 0,

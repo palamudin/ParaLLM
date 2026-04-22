@@ -232,6 +232,7 @@ Current honest limitation:
 
 - Ollama is available as a live structured-output provider, but it does **not** yet support the runtime's research/tool loop in this repo
 - workers currently inherit the global runtime provider, while the summarizer/lead-thread provider can be set separately
+- eval arms, result artifacts, and the blind benchmark now carry provider identity so mixed-provider experiments can be inspected honestly in Review instead of being inferred from model names alone
 - Milestone 5 is not complete until more providers and richer capability normalization land
 
 If you still want the optional compatibility runtime service in the same local session:

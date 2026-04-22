@@ -611,6 +611,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - runtime/provider dispatch now supports `openai` plus a first native `ollama` path
   - workers inherit the task runtime provider while the summarizer/lead-thread provider can be set separately
   - Ollama is intentionally limited to structured local generation for now and does not yet support the runtime's research/tool loop
+  - eval arms, benchmark runs, and review artifacts now record provider identity/capability metadata so mixed-provider experiments can be compared honestly
 - Scope:
   - add a provider layer that can support OpenAI, Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
   - make mixed-model experiments first-class

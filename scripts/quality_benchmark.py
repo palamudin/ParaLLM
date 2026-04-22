@@ -117,6 +117,11 @@ def parse_loop_sweep(raw: str | None, default_rounds: int) -> List[int]:
     return values
 
 
+def normalize_provider_id(provider: str | None) -> str:
+    candidate = str(provider or "").strip().lower()
+    return candidate if candidate in {"openai", "ollama"} else "openai"
+
+
 def normalize_worker_list(model: str) -> List[Dict[str, Any]]:
     return [
         {
@@ -341,6 +346,7 @@ def run_direct_baseline(
     runtime: Any,
     api_key: str,
     case: BenchmarkCase,
+    provider: str,
     model: str,
     reasoning_effort: str,
     max_output_tokens: int,
@@ -359,8 +365,11 @@ def run_direct_baseline(
         f"Constraints:\n{json.dumps(case.constraints, ensure_ascii=False, indent=2)}\n\n"
         "Produce the strongest direct answer you can without any hidden multi-lane steering."
     )
-    result = runtime.invoke_openai_json(
-        api_key=api_key,
+    effective_provider = normalize_provider_id(provider)
+    effective_api_key = api_key if effective_provider == "openai" else runtime.provider_live_api_key(effective_provider, None)
+    result = runtime.invoke_provider_json(
+        provider=effective_provider,
+        api_key=effective_api_key,
         model=model,
         reasoning_effort=reasoning_effort,
         instructions=instructions,
@@ -372,6 +381,7 @@ def run_direct_baseline(
     )
     return {
         "answer": result.parsed,
+        "provider": effective_provider,
         "model": model,
         "reasoningEffort": reasoning_effort,
         "responseId": result.response_id,
@@ -383,6 +393,8 @@ def run_direct_baseline(
 def run_steered_case(
     base_url: str,
     case: BenchmarkCase,
+    worker_provider: str,
+    summarizer_provider: str,
     worker_model: str,
     summarizer_model: str,
     reasoning_effort: str,
@@ -393,6 +405,8 @@ def run_steered_case(
     require_live: bool,
     dynamic_spinup: bool,
 ) -> Dict[str, Any]:
+    worker_provider = normalize_provider_id(worker_provider)
+    summarizer_provider = normalize_provider_id(summarizer_provider)
     workers = normalize_worker_list(worker_model)
     start = request_json(
         api_url(base_url, "task_start"),
@@ -403,7 +417,9 @@ def run_steered_case(
             "sessionContext": "",
             "workers": json.dumps(workers),
             "executionMode": "live",
+            "provider": worker_provider,
             "model": worker_model,
+            "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
             "reasoningEffort": reasoning_effort,
             "maxTotalTokens": str(max_total_tokens),
@@ -484,6 +500,8 @@ def run_steered_case(
         "artifactOutput": artifact_output,
         "artifactMeta": artifact.get("summary", {}),
         "dynamicSpinupEnabled": bool(dynamic_spinup),
+        "provider": worker_provider,
+        "summarizerProvider": summarizer_provider,
         "usage": usage,
         "workerModes": worker_modes,
         "summaryMode": summary_mode or "unknown",
@@ -674,6 +692,7 @@ def execute_suite(
                 runtime=runtime,
                 api_key=api_key,
                 case=case,
+                provider=args.baseline_provider,
                 model=args.baseline_model,
                 reasoning_effort=args.reasoning_effort,
                 max_output_tokens=args.max_output_tokens,
@@ -681,6 +700,8 @@ def execute_suite(
             steered = run_steered_case(
                 base_url=args.base_url,
                 case=case,
+                worker_provider=args.worker_provider,
+                summarizer_provider=args.summarizer_provider,
                 worker_model=args.worker_model,
                 summarizer_model=args.summarizer_model,
                 reasoning_effort=args.reasoning_effort,
@@ -716,6 +737,8 @@ def execute_suite(
                 "trial": trial_number,
                 "baseline": baseline,
                 "steered": {
+                    "provider": steered["provider"],
+                    "summarizerProvider": steered["summarizerProvider"],
                     "taskId": steered["taskId"],
                     "artifact": steered["artifact"],
                     "dynamicSpinupEnabled": steered["dynamicSpinupEnabled"],
@@ -808,7 +831,10 @@ def parse_args() -> argparse.Namespace:
         help="Benchmark case id or 'core' to run the built-in suite.",
     )
     parser.add_argument("--baseline-model", default="gpt-5.4", help="Model used for the direct baseline answer.")
+    parser.add_argument("--baseline-provider", default="openai", help="Provider used for the direct baseline answer.")
+    parser.add_argument("--worker-provider", default="openai", help="Provider used for steered worker lanes.")
     parser.add_argument("--worker-model", default="gpt-5-mini", help="Model used for steered worker lanes.")
+    parser.add_argument("--summarizer-provider", default="openai", help="Provider used for the steered summarizer.")
     parser.add_argument("--summarizer-model", default="gpt-5.4", help="Model used for the steered summarizer.")
     parser.add_argument("--judge-model", default="gpt-5.4", help="Model used to grade baseline vs steered output.")
     parser.add_argument("--reasoning-effort", default="medium", help="Reasoning effort for baseline and steered summarizer.")
@@ -859,7 +885,10 @@ def main() -> int:
         "generatedAt": timestamp,
         "config": {
             "baselineModel": args.baseline_model,
+            "baselineProvider": normalize_provider_id(args.baseline_provider),
+            "workerProvider": normalize_provider_id(args.worker_provider),
             "workerModel": args.worker_model,
+            "summarizerProvider": normalize_provider_id(args.summarizer_provider),
             "summarizerModel": args.summarizer_model,
             "judgeModel": args.judge_model,
             "reasoningEffort": args.reasoning_effort,

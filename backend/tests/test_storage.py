@@ -702,6 +702,65 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(coerced["loop"]["status"], "interrupted")
         self.assertIn("stale running background loop", coerced["loop"]["lastMessage"].lower())
 
+    def test_load_eval_arm_catalog_surfaces_provider_fields(self) -> None:
+        self.write_json(
+            self.paths.eval_arms / "arm-provider.json",
+            {
+                "armId": "arm-provider",
+                "title": "Provider Arm",
+                "type": "steered",
+                "runtime": {
+                    "provider": "ollama",
+                    "model": "qwen3",
+                    "summarizerProvider": "openai",
+                    "summarizerModel": "gpt-5.4",
+                    "reasoningEffort": "medium",
+                },
+                "workers": [{"id": "A", "type": "sceptic", "label": "Sceptic", "model": "qwen3"}],
+            },
+        )
+
+        catalog = storage.load_eval_arm_catalog(self.paths)
+        arm = next(item for item in catalog["items"] if item["armId"] == "arm-provider")
+
+        self.assertEqual(arm["provider"], "ollama")
+        self.assertEqual(arm["summarizerProvider"], "openai")
+        self.assertEqual(arm["model"], "qwen3")
+        self.assertEqual(arm["summarizerModel"], "gpt-5.4")
+
+    def test_read_artifact_surfaces_provider_capabilities(self) -> None:
+        task_id = "t-20260421-123000-face01"
+        artifact_name = f"{task_id}_summary_round001_output.json"
+        self.write_json(
+            self.paths.outputs / artifact_name,
+            {
+                "taskId": task_id,
+                "artifactType": "summary_output",
+                "target": "summarizer",
+                "label": "Summarizer",
+                "mode": "live",
+                "provider": "ollama",
+                "providerCapabilities": {
+                    "toolLoop": False,
+                    "webSearch": False,
+                    "costTracking": False,
+                    "notes": ["Structured local generation only."],
+                },
+                "model": "qwen3",
+                "round": 1,
+                "responseMeta": {
+                    "requestedMaxOutputTokens": 1200,
+                    "effectiveMaxOutputTokens": 1200,
+                },
+            },
+        )
+
+        artifact = storage.read_artifact(self.paths, artifact_name)
+
+        self.assertEqual(artifact["summary"]["provider"], "ollama")
+        self.assertFalse(artifact["summary"]["providerCapabilities"]["toolLoop"])
+        self.assertEqual(artifact["summary"]["model"], "qwen3")
+
 
 if __name__ == "__main__":
     unittest.main()
