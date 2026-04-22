@@ -1,13 +1,38 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
+from backend.app import storage
 
 
 class AppRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.paths = storage.project_paths(self.root)
+        for directory in (
+            self.paths.data,
+            self.paths.tasks,
+            self.paths.checkpoints,
+            self.paths.outputs,
+            self.paths.sessions,
+            self.paths.jobs,
+            self.paths.eval_suites,
+            self.paths.eval_arms,
+            self.paths.eval_runs,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
     def test_expected_routes_are_registered(self) -> None:
         app = create_app()
         paths = {route.path for route in app.routes}
@@ -79,6 +104,58 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(payload["backends"]["queue"]["backend"], "local_subprocess")
         self.assertEqual(payload["backends"]["metadata"]["backend"], "json_files")
         self.assertEqual(payload["backends"]["artifacts"]["backend"], "filesystem")
+
+    def test_state_route_enriches_active_task_runtime_mirrors(self) -> None:
+        self.paths.state.write_text(
+            json.dumps(
+                {
+                    "activeTask": {
+                        "taskId": "t-route-1",
+                        "objective": "Validate live state shape.",
+                    },
+                    "workers": {"A": {"label": "Proponent", "step": 1}},
+                    "commander": {"round": 1, "leadDirection": "Ship with guardrails."},
+                    "commanderReview": {"round": 1, "courseDecision": "maintain"},
+                    "summary": {"round": 1, "frontAnswer": {"answer": "Proceed carefully."}},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.paths.steps.write_text(
+            json.dumps(
+                {
+                    "ts": "2026-04-21T12:00:00+00:00",
+                    "stage": "commander",
+                    "message": "Commander drafted the lead answer for this round.",
+                    "context": {
+                        "taskId": "t-route-1",
+                        "mode": "live",
+                        "recoveredFromIncomplete": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        previous = os.environ.get("LOOP_DATA_ROOT")
+        os.environ["LOOP_DATA_ROOT"] = str(self.paths.data)
+        try:
+            client = TestClient(create_app())
+            response = client.get("/v1/state")
+        finally:
+            if previous is None:
+                os.environ.pop("LOOP_DATA_ROOT", None)
+            else:
+                os.environ["LOOP_DATA_ROOT"] = previous
+
+        self.assertEqual(response.status_code, 200)
+        active_task = response.json()["activeTask"]
+        self.assertEqual(active_task["stateWorkers"]["A"]["label"], "Proponent")
+        self.assertEqual(active_task["stateCommander"]["round"], 1)
+        self.assertEqual(active_task["stateCommanderReview"]["courseDecision"], "maintain")
+        self.assertEqual(active_task["summary"]["frontAnswer"]["answer"], "Proceed carefully.")
+        self.assertTrue(active_task["executionHealth"]["degraded"])
+        self.assertTrue(response.json()["executionHealth"]["targets"]["commander"]["recoveredFromIncomplete"])
 
 
 if __name__ == "__main__":

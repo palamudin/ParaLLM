@@ -246,6 +246,19 @@ function showMessage(text, isError = false) {
   });
 }
 
+function clearMessageIfMatching(prefixes) {
+  const message = String($("#message").text() || "");
+  const patterns = Array.isArray(prefixes) ? prefixes : [prefixes];
+  if (!patterns.some(function (prefix) { return message.startsWith(String(prefix || "")); })) {
+    return;
+  }
+  $("#message").text("").css({
+    color: "",
+    borderColor: "",
+    background: ""
+  });
+}
+
 function pretty(value) {
   return JSON.stringify(value, null, 2);
 }
@@ -1650,6 +1663,73 @@ function hasActiveDispatchTarget(state, target) {
   });
 }
 
+function inferFrontActiveTarget(loop, state) {
+  const dispatchTarget = activeDispatchEntries(state).map(function (entry) {
+    return String(entry?.target || "").trim();
+  }).find(Boolean);
+  if (dispatchTarget) return dispatchTarget;
+  const message = String(loop?.lastMessage || state?.dispatch?.lastMessage || "").trim();
+  if (!message) return "";
+  const workerMatch = message.match(/worker\s+([a-z0-9_-]+)/i);
+  if (workerMatch) return String(workerMatch[1] || "").toUpperCase();
+  if (/answer now/i.test(message)) return "answer_now";
+  if (/commander review/i.test(message)) return "commander_review";
+  if (/summarizer/i.test(message)) return "summarizer";
+  if (/commander/i.test(message)) return "commander";
+  return "";
+}
+
+function workerFrontStatus(workerId, task, loop, state) {
+  const activeTarget = inferFrontActiveTarget(loop, state);
+  const checkpoint = task?.stateWorkers?.[workerId] || null;
+  if (activeTarget === workerId) {
+    return { key: "running", label: "Working" };
+  }
+  if (checkpoint) {
+    return { key: "completed", label: "Done" };
+  }
+  if (isWorkspaceBusy(loop, state)) {
+    return { key: "waiting", label: "Waiting" };
+  }
+  return { key: "ready", label: "Ready" };
+}
+
+function summarizerFrontStatus(task, loop, state) {
+  const activeTarget = inferFrontActiveTarget(loop, state);
+  if (activeTarget === "commander") {
+    return { key: "running", label: "Drafting" };
+  }
+  if (activeTarget === "commander_review") {
+    return { key: "running", label: "Reviewing" };
+  }
+  if (activeTarget === "summarizer") {
+    return { key: "running", label: "Summarizing" };
+  }
+  if (activeTarget === "answer_now") {
+    return { key: "running", label: "Answering" };
+  }
+  if (task?.summary) {
+    return { key: "completed", label: "Done" };
+  }
+  if (task?.stateCommanderReview?.round || task?.stateCommander?.round) {
+    return { key: isWorkspaceBusy(loop, state) ? "waiting" : "ready", label: isWorkspaceBusy(loop, state) ? "Waiting" : "Ready" };
+  }
+  if (isWorkspaceBusy(loop, state)) {
+    return { key: "waiting", label: "Waiting" };
+  }
+  return { key: "ready", label: "Ready" };
+}
+
+function statusClassName(status) {
+  return "is-" + String(status?.key || "ready");
+}
+
+function buildStatusBadge(status) {
+  return $("<span>")
+    .addClass("workercontrol-state " + statusClassName(status))
+    .text(status?.label || "Ready");
+}
+
 function isWorkspaceBusy(loop, state) {
   return loop?.status === "running" || loop?.status === "queued" || activeDispatchCount(state) > 0;
 }
@@ -2734,6 +2814,35 @@ function commanderReviewReadyForCommanderRound(task, stateWorkers) {
   });
 }
 
+function answerNowReady(state) {
+  const task = state?.activeTask || null;
+  const commander = state?.commander || task?.stateCommander || null;
+  return !!task && Number(commander?.round || 0) > 0;
+}
+
+function syncComposerAnswerNowButton(state) {
+  const $button = $("#answerNowPrompt");
+  if (!$button.length) return;
+
+  const partialAnswerActive = hasActiveDispatchTarget(state, "answer_now");
+  const ready = answerNowReady(state);
+  let title = "Queue a partial answer from the current commander draft and finished worker checkpoints.";
+
+  if (partialAnswerActive) {
+    title = "A partial answer is already being generated.";
+  } else if (!state?.activeTask) {
+    title = "Start a task first.";
+  } else if (!ready) {
+    title = "Answer Now needs a commander draft first.";
+  }
+
+  $button
+    .prop("disabled", partialAnswerActive || !ready)
+    .text(partialAnswerActive ? "Answering..." : "Answer Now")
+    .attr("title", title)
+    .attr("aria-label", title);
+}
+
 function renderWorkerControls(task, loop, stateWorkers) {
   const $controls = $("#workerControls");
   $controls.empty();
@@ -2896,11 +3005,21 @@ function renderHomeWorkerControls(task, draft, loop) {
   const $controls = $("#workerControls");
   const workers = stagedWorkerSource(draft, task);
   const summarizer = stagedSummarizerSource(draft, task);
+  const workerState = task?.stateWorkers || {};
+  const activeTarget = inferFrontActiveTarget(loop, latestState);
   const signature = JSON.stringify({
     mode: "draft",
     workers,
     summarizer,
-    loopStatus: loop?.status || "idle"
+    loopStatus: loop?.status || "idle",
+    loopMessage: loop?.lastMessage || "",
+    activeTarget,
+    commanderRound: task?.stateCommander?.round || 0,
+    commanderReviewRound: task?.stateCommanderReview?.round || 0,
+    summaryPresent: !!task?.summary,
+    workerSteps: workers.map(function (worker) {
+      return [worker.id, workerState?.[worker.id]?.step || 0];
+    })
   });
   if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
   workerControlsSignature = signature;
@@ -2913,9 +3032,9 @@ function renderHomeWorkerControls(task, draft, loop) {
 
   const isActive = loop?.status === "running" || loop?.status === "queued";
   workers.forEach(function (worker) {
-    $controls.append(buildWorkerControlCard(worker, isActive));
+    $controls.append(buildWorkerControlCard(worker, isActive, workerFrontStatus(worker.id, task, loop, latestState)));
   });
-  $controls.append(buildSummarizerControlCard(summarizer, isActive));
+  $controls.append(buildSummarizerControlCard(summarizer, isActive, summarizerFrontStatus(task, loop, latestState)));
 }
 
 function renderDebugTargetControls(task, loop, stateWorkers) {
@@ -3028,12 +3147,16 @@ function renderRosterPanels(task, draft) {
   }
 
   const workerState = task?.stateWorkers || {};
+  const loop = latestState?.loop || {};
   workers.forEach(function (worker) {
     const checkpoint = workerState[worker.id] || null;
-    const $card = $("<div>").addClass("lane-card");
+    const status = workerFrontStatus(worker.id, task, loop, latestState);
+    const $card = $("<div>").addClass("lane-card " + statusClassName(status));
     const $head = $("<div>").addClass("lane-card-head");
     $head.append($("<div>").addClass("lane-card-title").text(displayWorkerLabel(worker) + " | " + (worker.type || worker.role)));
-    $head.append($("<div>").addClass("lane-card-step").text(checkpoint ? "step " + (checkpoint.step || 0) : (task ? "waiting" : "ready")));
+    $head.append($("<div>").addClass("lane-card-step").text(
+      checkpoint ? (status?.label || "Done") + " | step " + (checkpoint.step || 0) : (status?.label || (task ? "Waiting" : "Ready"))
+    ));
     $card.append($head);
     $card.append($("<div>").addClass("lane-card-focus").text(worker.focus + " | " + (worker.temperature || "balanced") + " | model: " + worker.model));
     $card.append($("<div>").addClass("lane-card-copy").text(
@@ -3134,12 +3257,12 @@ function renderFooterCheckpoints(task) {
   });
 }
 
-function buildWorkerControlCard(worker, isActive) {
+function buildWorkerControlCard(worker, isActive, status) {
   const workerId = String(worker.id || "").trim();
   const workerKey = normalizeWorkerControlKey(workerId);
   const harness = normalizeHarnessConfig(worker?.harness, "tight");
   const $card = $("<details>")
-    .addClass("workercontrol workercontrol-collapsible")
+    .addClass("workercontrol workercontrol-collapsible " + statusClassName(status))
     .attr("data-worker-id", workerId);
   if (workerControlExpanded[workerKey]) {
     $card.attr("open", "open");
@@ -3154,6 +3277,7 @@ function buildWorkerControlCard(worker, isActive) {
     )
   );
   $summary.append($summaryMain);
+  $summary.append(buildStatusBadge(status));
   $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
   $card.append($summary);
 
@@ -3204,11 +3328,11 @@ function buildWorkerControlCard(worker, isActive) {
   return $card;
 }
 
-function buildSummarizerControlCard(summarizer, isActive) {
+function buildSummarizerControlCard(summarizer, isActive, status) {
   const summarizerKey = normalizeWorkerControlKey("summarizer");
   const harness = normalizeHarnessConfig(summarizer?.harness, "balanced");
   const $card = $("<details>")
-    .addClass("workercontrol workercontrol-collapsible summarizer-control-card")
+    .addClass("workercontrol workercontrol-collapsible summarizer-control-card " + statusClassName(status))
     .attr("data-position-id", "summarizer");
   if (workerControlExpanded[summarizerKey]) {
     $card.attr("open", "open");
@@ -3223,6 +3347,7 @@ function buildSummarizerControlCard(summarizer, isActive) {
     )
   );
   $summary.append($summaryMain);
+  $summary.append(buildStatusBadge(status));
   $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
   $card.append($summary);
 
@@ -3375,6 +3500,134 @@ function renderPlainTextBlock(text) {
   const normalized = String(text || "").trim();
   if (!normalized) return "";
   return `<div class="message-body-plain">${escapeHtml(normalized)}</div>`;
+}
+
+function formatElapsedCompact(startedAt) {
+  const raw = String(startedAt || "").trim();
+  if (!raw) return "";
+  const start = new Date(raw);
+  const time = start.getTime();
+  if (Number.isNaN(time)) return "";
+  const deltaSeconds = Math.max(0, Math.round((Date.now() - time) / 1000));
+  const hours = Math.floor(deltaSeconds / 3600);
+  const minutes = Math.floor((deltaSeconds % 3600) / 60);
+  const seconds = deltaSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function friendlyTargetLabel(target, task) {
+  const id = String(target || "").trim();
+  if (!id) return "Preparing";
+  if (id === "commander") return "Commander";
+  if (id === "commander_review") return "Commander Review";
+  if (id === "summarizer") return "Summarizer";
+  if (id === "answer_now") return "Answer Now";
+  const worker = (task?.workers || []).find(function (entry) {
+    return String(entry?.id || "").trim().toUpperCase() === id.toUpperCase();
+  });
+  return worker ? `${worker.id} / ${displayWorkerLabel(worker)}` : id;
+}
+
+function latestCompletedSurface(task, workerState, state) {
+  const entries = [];
+  const commander = state?.commander || task?.stateCommander || null;
+  const commanderReview = state?.commanderReview || task?.stateCommanderReview || null;
+  if (commander?.updatedAt || commander?.round) {
+    entries.push({
+      sortAt: String(commander.updatedAt || ""),
+      label: "Commander",
+      preview: String(commander.answerDraft || commander.leadDirection || "Commander draft ready.").trim()
+    });
+  }
+  (task?.workers || []).forEach(function (worker) {
+    const checkpoint = workerState?.[worker.id] || null;
+    if (!checkpoint) return;
+    entries.push({
+      sortAt: String(checkpoint.updatedAt || ""),
+      label: `${worker.id} / ${displayWorkerLabel(worker)}`,
+      preview: String(checkpoint.observation || checkpoint.requestToPeer || "Checkpoint ready.").trim()
+    });
+  });
+  if (commanderReview?.updatedAt || commanderReview?.round) {
+    entries.push({
+      sortAt: String(commanderReview.updatedAt || ""),
+      label: "Commander Review",
+      preview: String(commanderReview.whyThisDirection || commanderReview.answerDraft || commanderReview.leadDirection || "Review checkpoint ready.").trim()
+    });
+  }
+  entries.sort(function (left, right) {
+    return String(right.sortAt || "").localeCompare(String(left.sortAt || ""));
+  });
+  return entries[0] || null;
+}
+
+function renderWaitingProgress(task, workerState, loop, state) {
+  const usage = state?.usage || {};
+  const executionHealth = state?.executionHealth || task?.executionHealth || {};
+  const activeTarget = inferFrontActiveTarget(loop, state);
+  const totalStages = (task?.workers?.length || 0) + 3;
+  const completedStages =
+    (state?.commander || task?.stateCommander ? 1 : 0) +
+    Object.keys(workerState || {}).length +
+    (state?.commanderReview || task?.stateCommanderReview ? 1 : 0) +
+    (task?.summary || state?.summary ? 1 : 0);
+  const latestDone = latestCompletedSurface(task, workerState, state);
+  const latestIssue = executionHealth?.latestIssue || null;
+  let executionNote = "";
+  if (latestIssue) {
+    if (latestIssue.usedMockFallback) {
+      executionNote = `${latestIssue.label || friendlyTargetLabel(latestIssue.target, task)} fell back to mock. ${String(latestIssue.lastError || latestIssue.lastMessage || "").trim()}`;
+    } else if (latestIssue.recoveredFromIncomplete) {
+      executionNote = `${latestIssue.label || friendlyTargetLabel(latestIssue.target, task)} needed output-token recovery but still completed live.`;
+    } else if (latestIssue.lastMessage) {
+      executionNote = `${latestIssue.label || friendlyTargetLabel(latestIssue.target, task)} reported a degraded run. ${String(latestIssue.lastMessage || "").trim()}`;
+    }
+    if (executionNote && Number(executionHealth.issueCount || 0) > 1) {
+      executionNote += ` ${executionHealth.issueCount} stages in this task have degraded behavior recorded.`;
+    }
+  }
+  const sections = [
+    `
+      <div class="thread-progress-card">
+        <div class="thread-progress-head">
+          <div>
+            <div class="thread-progress-kicker">Live status</div>
+            <div class="thread-progress-title">${escapeHtml(friendlyTargetLabel(activeTarget || "summarizer", task))}</div>
+          </div>
+          <div class="thread-progress-badge ${escapeHtml(statusClassName({ key: activeTarget ? "running" : "waiting" }))}">${escapeHtml(activeTarget ? "Working" : "Waiting")}</div>
+        </div>
+        <div class="thread-progress-grid">
+          <div class="thread-progress-stat">
+            <span class="thread-progress-stat-label">Elapsed</span>
+            <strong>${escapeHtml(formatElapsedCompact(loop?.startedAt || loop?.queuedAt) || "Just started")}</strong>
+          </div>
+          <div class="thread-progress-stat">
+            <span class="thread-progress-stat-label">Completed</span>
+            <strong>${escapeHtml(`${Math.min(completedStages, totalStages)} / ${totalStages} stages`)}</strong>
+          </div>
+          <div class="thread-progress-stat">
+            <span class="thread-progress-stat-label">Tokens</span>
+            <strong>${escapeHtml(Number(usage.totalTokens || 0).toLocaleString())}</strong>
+          </div>
+          <div class="thread-progress-stat">
+            <span class="thread-progress-stat-label">Spend</span>
+            <strong>${escapeHtml(formatUsd(usage.estimatedCostUsd || 0))}</strong>
+          </div>
+        </div>
+      </div>
+    `,
+    renderTextSection("Loop message", loop?.lastMessage || "Working through the current stage."),
+    executionNote ? renderTextSection("Execution note", truncateText(executionNote, 260)) : "",
+    latestDone ? renderTextSection("Latest completed", `${latestDone.label}: ${truncateText(latestDone.preview, 220)}`) : "",
+    renderListSection("What you can do now", [
+      completedStages > 0 ? "Use Answer Now to force a partial front answer from completed work." : "",
+      "Leave the tab open and the loop will keep polling live progress.",
+      activeTarget ? `${friendlyTargetLabel(activeTarget, task)} is the current active stage.` : ""
+    ])
+  ];
+  return sections.filter(Boolean).join("");
 }
 
 function buildLegacyAgentReplyText(summary) {
@@ -3785,8 +4038,9 @@ function renderSummaryReview(summary, task, workerState) {
   $("#summaryLineCatalog").html(renderSummaryLineCatalog(summary, task, workerState));
 }
 
-function buildConversationRenderSignature(task, summary, workerState) {
+function buildConversationRenderSignature(task, summary, workerState, loop, state) {
   if (!task) return "empty";
+  const elapsedMarker = formatElapsedCompact(loop?.startedAt || loop?.queuedAt);
 
   const workerSignature = (task.workers || []).map(function (worker) {
     const checkpoint = workerState?.[worker.id] || null;
@@ -3812,7 +4066,19 @@ function buildConversationRenderSignature(task, summary, workerState) {
       vettingSummary: summary.vettingSummary || "",
       claimsNeedingVerification: summary.claimsNeedingVerification || []
     } : null,
-    workers: workerSignature
+    workers: workerSignature,
+    loop: {
+      status: loop?.status || "idle",
+      lastMessage: loop?.lastMessage || "",
+      currentRound: loop?.currentRound || 0,
+      elapsedMarker
+    },
+    usage: {
+      totalTokens: state?.usage?.totalTokens || 0,
+      estimatedCostUsd: state?.usage?.estimatedCostUsd || 0
+    },
+    commanderRound: (state?.commander || task?.stateCommander || {}).round || 0,
+    commanderReviewRound: (state?.commanderReview || task?.stateCommanderReview || {}).round || 0
   });
 }
 
@@ -3957,6 +4223,7 @@ function legacyApplyLoopUiUnused(state) {
   );
   latestLoopActive = isActive;
   updateAuthButtons();
+  syncComposerAnswerNowButton(state);
 
   $("#sendPrompt").prop("disabled", isActive);
   $("#summarize").prop("disabled", isActive || !hasTask || !summaryReady);
@@ -3969,7 +4236,7 @@ function legacyApplyLoopUiUnused(state) {
   $("#cancelLoop").prop("disabled", !(loop?.status === "running" || loop?.status === "queued"));
 }
 
-function renderConversationThread(task, summary, workerState, loop) {
+function renderConversationThread(task, summary, workerState, loop, state) {
   const $thread = $("#conversationThread");
   const threadNode = $thread[0];
 
@@ -3995,7 +4262,7 @@ function renderConversationThread(task, summary, workerState, loop) {
     threadInspectorOpen = false;
   }
 
-  const signature = buildConversationRenderSignature(task, summary, workerState);
+  const signature = buildConversationRenderSignature(task, summary, workerState, loop, state);
   if (signature === threadRenderSignature) {
     return;
   }
@@ -4034,13 +4301,13 @@ function renderConversationThread(task, summary, workerState, loop) {
       ]
     }));
   } else {
-    const waitingText = "Thinking through the prompt and shaping a final answer.";
-
     messages.push(buildThreadMessage({
       kind: "summary",
       author: "Assistant",
+      tag: "Working",
       sections: [
-        renderPlainTextBlock(waitingText)
+        renderPlainTextBlock("Working through the live lanes and shaping the final answer."),
+        renderWaitingProgress(task, workerState, loop, state)
       ]
     }));
   }
@@ -4095,6 +4362,7 @@ function applyLoopUi(state) {
   );
   latestLoopActive = isActive;
   updateAuthButtons();
+  syncComposerAnswerNowButton(state);
 
   $("#sendPrompt").prop("disabled", isActive);
   $("#summarize").prop("disabled", isActive || !hasTask || !summaryReady);
@@ -4114,13 +4382,15 @@ function refreshState() {
 
   $.getJSON(apiRoute(API.state))
     .done(function (data) {
+      clearMessageIfMatching("State load failed:");
       latestState = data;
       renderDispatchActivity();
       const task = data.activeTask
         ? Object.assign({}, data.activeTask, {
             stateWorkers: data.workers || {},
             stateCommander: data.commander || null,
-            stateCommanderReview: data.commanderReview || null
+            stateCommanderReview: data.commanderReview || null,
+            summary: data.summary || null
           })
         : null;
       syncCommanderForm(data.activeTask || null, data.draft || null);
@@ -4132,7 +4402,7 @@ function refreshState() {
       renderQualityProfileCards();
       renderDebugTargetControls(task, data.loop || null, data.workers || {});
       renderFooterCheckpoints(task);
-      renderConversationThread(task, data.summary || null, data.workers || {}, data.loop || null);
+      renderConversationThread(task, data.summary || null, data.workers || {}, data.loop || null, data);
       renderSummaryReview(data.summary || null, task, data.workers || {});
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
@@ -4150,6 +4420,7 @@ function refreshState() {
 
   $.get(apiRoute(API.events))
     .done(function (data) {
+      clearMessageIfMatching("Event load failed:");
       $("#events").text(data || "No events.");
     })
     .fail(function (xhr) {
@@ -4158,6 +4429,7 @@ function refreshState() {
 
   $.get(apiRoute(API.steps))
     .done(function (data) {
+      clearMessageIfMatching("Step load failed:");
       $("#steps").text(data || "No steps.");
     })
     .fail(function (xhr) {
@@ -4166,6 +4438,7 @@ function refreshState() {
 
   $.getJSON(apiRoute(API.history))
     .done(function (data) {
+      clearMessageIfMatching("History load failed:");
       latestHistoryState = data;
       $("#jobHistory").html(renderJobHistory(data.jobs || [], data.recoveryWarning || null, data.queueLimit || 0));
       $("#roundHistory").html(renderRoundHistory(data.rounds || []));

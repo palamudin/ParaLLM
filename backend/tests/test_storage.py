@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.app import storage
 
@@ -34,6 +35,9 @@ class StorageReadModelTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def read_json(self, path: Path) -> dict:
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def test_read_state_payload_defaults_to_idle(self) -> None:
         payload = storage.read_state_payload(self.paths)
 
@@ -41,6 +45,93 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["loop"]["status"], "idle")
         self.assertEqual(payload["dispatch"]["status"], "idle")
         self.assertEqual(payload["dispatch"]["activeJobs"], [])
+
+    def test_read_state_payload_enriches_active_task_runtime_mirrors(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-1",
+                    "objective": "Stress test the runtime contract.",
+                },
+                "workers": {
+                    "A": {"round": 1, "label": "Proponent"},
+                },
+                "commander": {
+                    "round": 1,
+                    "leadDraft": {"position": "Ship with guardrails."},
+                },
+                "commanderReview": {
+                    "round": 1,
+                    "courseDecision": "maintain",
+                },
+                "summary": {
+                    "round": 1,
+                    "frontAnswer": {"answer": "Proceed carefully."},
+                },
+            },
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertEqual(payload["activeTask"]["stateWorkers"]["A"]["label"], "Proponent")
+        self.assertEqual(payload["activeTask"]["stateCommander"]["round"], 1)
+        self.assertEqual(payload["activeTask"]["stateCommanderReview"]["courseDecision"], "maintain")
+        self.assertEqual(payload["activeTask"]["summary"]["frontAnswer"]["answer"], "Proceed carefully.")
+        self.assertNotIn("stateWorkers", self.read_json(self.paths.state)["activeTask"])
+
+    def test_read_state_payload_surfaces_execution_health_from_recent_steps(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-health-1",
+                    "objective": "Show degraded state clearly.",
+                    "workers": [{"id": "A", "label": "Proponent"}],
+                },
+            },
+        )
+        self.paths.steps.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "ts": "2026-04-21T12:00:00+00:00",
+                            "stage": "commander",
+                            "message": "Commander drafted the lead answer for this round.",
+                            "context": {
+                                "taskId": "t-health-1",
+                                "mode": "live",
+                                "recoveredFromIncomplete": True,
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "ts": "2026-04-21T12:01:00+00:00",
+                            "stage": "worker_A",
+                            "message": "Live API call failed; falling back to mock.",
+                            "context": {
+                                "taskId": "t-health-1",
+                                "workerId": "A",
+                                "model": "gpt-5-mini",
+                                "error": "OpenAI API request failed: HTTP 500",
+                            },
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertTrue(payload["executionHealth"]["degraded"])
+        self.assertEqual(payload["executionHealth"]["fallbackCount"], 1)
+        self.assertEqual(payload["executionHealth"]["recoveredCount"], 1)
+        self.assertEqual(payload["executionHealth"]["latestIssue"]["target"], "A")
+        self.assertTrue(payload["activeTask"]["executionHealth"]["degraded"])
+        self.assertTrue(payload["activeTask"]["executionHealth"]["targets"]["commander"]["recoveredFromIncomplete"])
 
     def test_project_paths_honors_loop_data_root_override(self) -> None:
         override = self.root / "shared-data"
@@ -240,7 +331,7 @@ class StorageReadModelTests(unittest.TestCase):
             ),
         ]
 
-        with unittest.mock.patch("backend.app.storage.datetime") as fake_datetime:
+        with mock.patch("backend.app.storage.datetime") as fake_datetime:
             from datetime import datetime, timezone
 
             fake_now = datetime(2026, 4, 21, 12, 10, 0, tzinfo=timezone.utc)
@@ -289,7 +380,7 @@ class StorageReadModelTests(unittest.TestCase):
             )
         ]
 
-        with unittest.mock.patch("backend.app.storage.datetime") as fake_datetime:
+        with mock.patch("backend.app.storage.datetime") as fake_datetime:
             from datetime import datetime, timezone
 
             fake_now = datetime(2026, 4, 21, 12, 10, 0, tzinfo=timezone.utc)

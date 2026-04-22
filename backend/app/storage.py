@@ -481,6 +481,16 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
     paths = paths or project_paths()
     jobs = read_jobs(paths)
     state = coerce_loop_state(read_state(paths), jobs)
+    state["executionHealth"] = build_execution_health(state, paths)
+    active_task = state.get("activeTask")
+    if isinstance(active_task, dict):
+        enriched_task = copy.deepcopy(active_task)
+        enriched_task["stateWorkers"] = copy.deepcopy(state.get("workers") or {})
+        enriched_task["stateCommander"] = copy.deepcopy(state.get("commander"))
+        enriched_task["stateCommanderReview"] = copy.deepcopy(state.get("commanderReview"))
+        enriched_task["summary"] = copy.deepcopy(state.get("summary"))
+        enriched_task["executionHealth"] = copy.deepcopy(state.get("executionHealth") or {})
+        state["activeTask"] = enriched_task
     state["dispatch"] = current_dispatch_state(state, jobs)
     return state
 
@@ -711,6 +721,113 @@ def tail_text_lines(path: Path, limit: int, empty_message: str) -> str:
     if not lines:
         return empty_message
     return "\n".join(reversed(lines[-limit:]))
+
+
+def read_recent_jsonl_entries(path: Path, limit: int = 400) -> List[Dict[str, Any]]:
+    raw = read_text(path)
+    if raw is None:
+        return []
+    lines = [line for line in raw.splitlines() if line.strip()]
+    entries: List[Dict[str, Any]] = []
+    for line in lines[-max(0, limit):]:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            entries.append(parsed)
+    return entries
+
+
+def step_target_id(stage: Any) -> Optional[str]:
+    text = str(stage or "").strip().lower()
+    if text in {"commander", "commander_review", "summarizer"}:
+        return text
+    match = re.fullmatch(r"worker_([a-z])", text)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def execution_target_label(target_id: str, active_task: Optional[Dict[str, Any]]) -> str:
+    normalized = str(target_id or "").strip()
+    if normalized == "commander":
+        return "Commander"
+    if normalized == "commander_review":
+        return "Commander Review"
+    if normalized == "summarizer":
+        return "Summarizer"
+    workers = active_task.get("workers") if isinstance(active_task, dict) and isinstance(active_task.get("workers"), list) else []
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        if str(worker.get("id") or "").strip().upper() == normalized.upper():
+            label = str(worker.get("label") or worker.get("type") or normalized).strip()
+            return f"{normalized.upper()} / {label}" if label else normalized.upper()
+    return normalized.upper()
+
+
+def build_execution_health(state: Dict[str, Any], paths: Paths, step_limit: int = 400) -> Dict[str, Any]:
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    task_id = str((active_task or {}).get("taskId") or "").strip()
+    base = {
+        "degraded": False,
+        "issueCount": 0,
+        "fallbackCount": 0,
+        "recoveredCount": 0,
+        "latestIssue": None,
+        "targets": {},
+    }
+    if not task_id:
+        return base
+
+    latest_issue: Optional[Dict[str, Any]] = None
+    latest_issue_ts = ""
+    targets: Dict[str, Dict[str, Any]] = {}
+    for entry in read_recent_jsonl_entries(paths.steps, step_limit):
+        context = entry.get("context") if isinstance(entry.get("context"), dict) else {}
+        if str(context.get("taskId") or "").strip() != task_id:
+            continue
+        target_id = step_target_id(entry.get("stage"))
+        if not target_id:
+            continue
+        message = str(entry.get("message") or "").strip()
+        message_lower = message.lower()
+        ts = str(entry.get("ts") or "").strip()
+        mode = str(context.get("mode") or "").strip() or None
+        recovered = bool(context.get("recoveredFromIncomplete"))
+        fallback = "falling back to mock" in message_lower or mode == "mock"
+        errored = "failed and was not downgraded to mock" in message_lower or message_lower.startswith("budget stopped")
+        degraded = fallback or recovered or errored
+        status = "error" if errored else ("degraded" if degraded else "completed")
+        target_entry = {
+            "target": target_id,
+            "label": execution_target_label(target_id, active_task),
+            "status": status,
+            "mode": mode,
+            "degraded": degraded,
+            "usedMockFallback": fallback,
+            "recoveredFromIncomplete": recovered,
+            "lastError": str(context.get("error") or "").strip() or None,
+            "lastMessage": message,
+            "updatedAt": ts or None,
+        }
+        targets[target_id] = target_entry
+        if degraded and ts >= latest_issue_ts:
+            latest_issue_ts = ts
+            latest_issue = dict(target_entry)
+
+    fallback_count = sum(1 for target in targets.values() if bool(target.get("usedMockFallback")))
+    recovered_count = sum(1 for target in targets.values() if bool(target.get("recoveredFromIncomplete")))
+    issue_count = sum(1 for target in targets.values() if bool(target.get("degraded")))
+    return {
+        "degraded": issue_count > 0,
+        "issueCount": issue_count,
+        "fallbackCount": fallback_count,
+        "recoveredCount": recovered_count,
+        "latestIssue": latest_issue,
+        "targets": targets,
+    }
 
 
 def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:

@@ -1,3 +1,15 @@
+:root {
+  --bs-border-radius-sm: 0.5rem;
+  --bs-border-radius: 0.5rem;
+  --bs-border-radius-lg: 0.5rem;
+  --bs-border-radius-xl: 0.5rem;
+  --bs-border-radius-2xl: 0.5rem;
+  --radius-shell: 8px;
+  --radius-panel: 8px;
+  --radius-card: 8px;
+  --radius-chip: 8px;
+}
+
 :root,
 html[data-bs-theme="dark"] {
   --bg: var(--bs-body-bg);
@@ -83,6 +95,23 @@ html[data-bs-theme="light"] {
   --button-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
 }
 
+html[data-bs-theme="light"] .workercontrol.is-running,
+html[data-bs-theme="light"] .lane-card.is-running {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: linear-gradient(180deg, rgba(255, 241, 242, 0.98), rgba(254, 226, 226, 0.95));
+}
+
+html[data-bs-theme="light"] .workercontrol.is-completed,
+html[data-bs-theme="light"] .lane-card.is-completed {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: linear-gradient(180deg, rgba(240, 253, 244, 0.98), rgba(220, 252, 231, 0.95));
+}
+
+html[data-bs-theme="light"] .workercontrol.is-waiting,
+html[data-bs-theme="light"] .lane-card.is-waiting {
+  background: rgba(247, 250, 253, 0.98);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -135,7 +164,7 @@ textarea {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 28px;
+  border-radius: var(--radius-shell);
   background: var(--sidebar-background);
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
@@ -168,7 +197,7 @@ textarea {
   place-items: center;
   width: 52px;
   height: 52px;
-  border-radius: 17px;
+  border-radius: var(--radius-card);
   background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 92%, white 8%), color-mix(in srgb, var(--accent-2) 48%, white 52%));
   color: color-mix(in srgb, var(--bs-dark) 70%, white 30%);
   font-size: 24px;
@@ -184,7 +213,7 @@ textarea {
   width: 44px;
   height: 44px;
   padding: 0;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid color-mix(in srgb, var(--accent) 46%, var(--border) 54%);
   background: color-mix(in srgb, var(--surface-strong) 88%, var(--bg) 12%);
   color: transparent;
@@ -332,7 +361,7 @@ textarea {
   justify-content: flex-start;
   gap: 14px;
   padding: 10px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted-strong);
@@ -347,7 +376,7 @@ textarea {
   height: 32px;
   display: grid;
   place-items: center;
-  border-radius: 11px;
+  border-radius: var(--radius-chip);
   background: color-mix(in srgb, var(--pill-background) 80%, transparent);
   color: color-mix(in srgb, var(--muted-strong) 78%, white 22%);
   font-size: 13px;
@@ -430,7 +459,7 @@ textarea {
 .sidebar-card {
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: var(--radius-panel);
   background: var(--card-background);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
@@ -682,7 +711,7 @@ textarea {
 .footer-checkpoint-item {
   position: relative;
   padding: 10px 12px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--card-background) 84%, transparent);
 }
@@ -731,7 +760,7 @@ textarea {
   gap: 10px;
   margin-bottom: 14px;
   padding: 12px 16px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface-raised) 88%, var(--accent) 12%), color-mix(in srgb, var(--surface) 94%, var(--bg) 6%));
   color: var(--muted-strong);
@@ -907,7 +936,7 @@ textarea {
   top: calc(100% + 10px);
   width: min(380px, calc(100vw - 48px));
   padding: 13px 14px;
-  border-radius: 16px;
+  border-radius: var(--radius-panel);
   border: 1px solid var(--border);
   background: var(--popover-background);
   box-shadow: 0 22px 48px rgba(2, 6, 23, 0.32);
@@ -965,7 +994,7 @@ textarea {
   min-height: 280px;
   padding: 24px;
   border: 1px dashed rgba(128, 186, 224, 0.22);
-  border-radius: 22px;
+  border-radius: var(--radius-panel);
   background: var(--empty-thread-background);
   text-align: center;
 }
@@ -979,7 +1008,7 @@ textarea {
 .thread-message {
   max-width: min(860px, 94%);
   padding: 16px 18px;
-  border-radius: 22px;
+  border-radius: var(--radius-panel);
   border: 1px solid var(--border);
   background: var(--thread-background);
   line-height: 1.55;
@@ -1073,7 +1102,7 @@ textarea {
 .lane-inspector {
   margin-top: 14px;
   border: 1px solid rgba(128, 186, 224, 0.16);
-  border-radius: 18px;
+  border-radius: var(--radius-panel);
   background: rgba(9, 19, 29, 0.72);
   overflow: hidden;
 }
@@ -1116,9 +1145,9 @@ textarea {
 
 .lane-inspector-card {
   padding: 12px 14px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(128, 186, 224, 0.14);
-  background: rgba(15, 31, 46, 0.82);
+  background: var(--card-background);
 }
 
 .lane-inspector-card.utility {
@@ -1155,8 +1184,8 @@ textarea {
 .review-empty {
   padding: 14px 16px;
   border: 1px dashed rgba(128, 186, 224, 0.18);
-  border-radius: 18px;
-  background: rgba(10, 22, 35, 0.56);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--card-background) 88%, transparent);
   color: var(--muted);
   line-height: 1.55;
 }
@@ -1185,8 +1214,8 @@ textarea {
 .policy-card {
   padding: 14px 16px;
   border: 1px solid rgba(128, 186, 224, 0.14);
-  border-radius: 18px;
-  background: rgba(12, 26, 40, 0.82);
+  border-radius: var(--radius-panel);
+  background: var(--card-background);
 }
 
 .history-card.warning,
@@ -1243,9 +1272,9 @@ textarea {
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(128, 186, 224, 0.12);
-  background: rgba(8, 18, 29, 0.72);
+  background: var(--input-background);
 }
 
 .round-worker-meta {
@@ -1258,8 +1287,8 @@ textarea {
 .review-block {
   padding: 14px 16px;
   border: 1px solid rgba(128, 186, 224, 0.14);
-  border-radius: 18px;
-  background: rgba(12, 26, 40, 0.82);
+  border-radius: var(--radius-panel);
+  background: var(--card-background);
 }
 
 .review-block-label {
@@ -1280,8 +1309,8 @@ textarea {
 .review-trace-item,
 .line-catalog-worker {
   border: 1px solid rgba(128, 186, 224, 0.14);
-  border-radius: 18px;
-  background: rgba(10, 23, 36, 0.82);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--card-background) 92%, var(--surface-alt) 8%);
   overflow: hidden;
 }
 
@@ -1339,9 +1368,9 @@ textarea {
 .review-line-snippet,
 .review-line-card {
   padding: 12px 14px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(128, 186, 224, 0.14);
-  background: rgba(15, 31, 46, 0.82);
+  background: var(--card-background);
 }
 
 .review-line-snippet.missing {
@@ -1404,8 +1433,8 @@ textarea {
   margin-top: 18px;
   padding: 18px;
   border: 1px solid rgba(128, 186, 224, 0.20);
-  border-radius: 22px;
-  background: linear-gradient(180deg, rgba(11, 25, 39, 0.96), rgba(9, 19, 30, 0.98));
+  border-radius: var(--radius-panel);
+  background: var(--drawer-background);
 }
 
 .composer-context-row {
@@ -1418,8 +1447,8 @@ textarea {
 .context-chip {
   padding: 12px 14px;
   border: 1px solid rgba(128, 186, 224, 0.18);
-  border-radius: 18px;
-  background: rgba(16, 33, 48, 0.86);
+  border-radius: var(--radius-card);
+  background: var(--card-background);
 }
 
 .context-chip-label {
@@ -1489,9 +1518,9 @@ textarea {
   width: 44px;
   height: 44px;
   padding: 0;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(128, 186, 224, 0.24);
-  background: linear-gradient(180deg, rgba(22, 47, 68, 0.98), rgba(14, 31, 47, 0.94));
+  background: var(--button-background);
   color: var(--text);
   font-size: 26px;
   line-height: 1;
@@ -1506,7 +1535,7 @@ textarea {
 .composer-tool-toggle[aria-expanded="true"] {
   transform: translateY(-1px);
   border-color: rgba(76, 201, 240, 0.34);
-  background: linear-gradient(180deg, rgba(31, 67, 95, 0.98), rgba(16, 39, 61, 0.96));
+  background: color-mix(in srgb, var(--button-background) 78%, var(--accent) 22%);
 }
 
 .composer-tool-menu {
@@ -1518,8 +1547,8 @@ textarea {
   gap: 6px;
   padding: 8px;
   border: 1px solid rgba(128, 186, 224, 0.20);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(17, 29, 42, 0.99), rgba(12, 22, 33, 0.98));
+  border-radius: var(--radius-panel);
+  background: var(--popover-background);
   box-shadow: 0 26px 56px rgba(0, 0, 0, 0.34);
   z-index: 8;
 }
@@ -1531,7 +1560,7 @@ textarea {
   justify-content: flex-start;
   padding: 12px 14px;
   border: 1px solid transparent;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -1566,7 +1595,7 @@ textarea {
   padding: 8px 12px;
   border-radius: 999px;
   border: 1px solid rgba(128, 186, 224, 0.16);
-  background: rgba(13, 28, 42, 0.86);
+  background: var(--chip-background);
   color: var(--muted-strong);
   font-size: 12px;
   line-height: 1;
@@ -1586,7 +1615,7 @@ textarea {
 
 .composer-inline-drawer {
   padding: 14px;
-  border-radius: 18px;
+  border-radius: var(--radius-panel);
   border: 1px solid rgba(128, 186, 224, 0.18);
   background: rgba(11, 24, 36, 0.78);
 }
@@ -1611,7 +1640,7 @@ textarea {
 .composer-recent-file,
 .composer-attachment-card {
   border: 1px solid rgba(128, 186, 224, 0.16);
-  border-radius: 18px;
+  border-radius: var(--radius-panel);
   background: rgba(13, 27, 41, 0.82);
 }
 
@@ -1659,7 +1688,7 @@ textarea {
 .composer-attachment-remove {
   flex: 0 0 auto;
   padding: 8px 12px;
-  border-radius: 12px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(248, 113, 113, 0.22);
   background: rgba(78, 28, 28, 0.48);
   color: #fecaca;
@@ -1675,7 +1704,7 @@ textarea {
 .composer-attachment-preview {
   margin-top: 12px;
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   background: rgba(8, 18, 29, 0.92);
   color: var(--muted-strong);
   white-space: pre-wrap;
@@ -1701,11 +1730,27 @@ textarea {
   flex-wrap: wrap;
 }
 
+.composer-actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+#answerNowPrompt,
 #sendPrompt {
   min-width: 128px;
-  border-color: rgba(76, 201, 240, 0.34);
-  background: linear-gradient(180deg, rgba(36, 95, 121, 0.98), rgba(19, 63, 86, 0.96));
   white-space: nowrap;
+}
+
+#answerNowPrompt {
+  border-color: rgba(128, 186, 224, 0.24);
+  background: color-mix(in srgb, var(--button-background) 84%, var(--surface-raised) 16%);
+  color: var(--muted-strong);
+}
+
+#sendPrompt {
+  border-color: rgba(76, 201, 240, 0.34);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 70%, white 10%), color-mix(in srgb, var(--accent) 54%, var(--surface-raised) 46%));
+  color: #f8fbff;
 }
 
 .action-grid {
@@ -1735,7 +1780,7 @@ textarea {
   padding: 10px 12px;
   border-radius: var(--bs-border-radius-xl);
   border: 1px solid rgba(128, 186, 224, 0.16);
-  background: rgba(15, 31, 46, 0.82);
+  background: var(--card-background);
 }
 
 .home-runtime-empty {
@@ -1773,7 +1818,7 @@ textarea {
   bottom: calc(100% + 10px);
   width: min(320px, calc(100vw - 56px));
   padding: 12px 13px;
-  border-radius: 16px;
+  border-radius: var(--radius-panel);
   border: 1px solid var(--border);
   background: var(--popover-background);
   box-shadow: 0 22px 48px rgba(2, 6, 23, 0.26);
@@ -1852,9 +1897,9 @@ textarea {
 .loop-note {
   min-height: 56px;
   padding: 12px 14px;
-  border-radius: 18px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(128, 186, 224, 0.18);
-  background: rgba(12, 27, 41, 0.86);
+  background: var(--card-background);
   color: var(--muted-strong);
 }
 
@@ -1868,6 +1913,7 @@ textarea {
   border-radius: var(--bs-border-radius-xl);
   border: 1px solid rgba(128, 186, 224, 0.16);
   background: rgba(15, 31, 46, 0.82);
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 
 .workercontrol + .workercontrol {
@@ -1886,7 +1932,7 @@ textarea {
 .workercontrol-summary {
   list-style: none;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;
@@ -1899,6 +1945,66 @@ textarea {
 
 .workercontrol-summary-main {
   min-width: 0;
+}
+
+.workercontrol-state {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.workercontrol.is-running,
+.lane-card.is-running {
+  border-color: rgba(248, 113, 113, 0.34);
+  background: linear-gradient(180deg, rgba(62, 26, 28, 0.92), rgba(34, 19, 25, 0.88));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.workercontrol.is-running .workercontrol-state,
+.lane-card.is-running .lane-card-step {
+  border-color: rgba(248, 113, 113, 0.32);
+  background: rgba(127, 29, 29, 0.28);
+  color: #fecaca;
+}
+
+.workercontrol.is-completed,
+.lane-card.is-completed {
+  border-color: rgba(74, 222, 128, 0.28);
+  background: linear-gradient(180deg, rgba(17, 54, 42, 0.92), rgba(12, 35, 30, 0.88));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.workercontrol.is-completed .workercontrol-state,
+.lane-card.is-completed .lane-card-step {
+  border-color: rgba(74, 222, 128, 0.28);
+  background: rgba(21, 128, 61, 0.18);
+  color: #bbf7d0;
+}
+
+.workercontrol.is-waiting,
+.lane-card.is-waiting {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(14, 28, 42, 0.84);
+}
+
+.workercontrol.is-waiting .workercontrol-state,
+.lane-card.is-waiting .lane-card-step {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(148, 163, 184, 0.10);
+  color: var(--muted-strong);
+}
+
+.workercontrol.is-ready .workercontrol-state {
+  border-color: rgba(76, 201, 240, 0.16);
+  background: rgba(76, 201, 240, 0.08);
+  color: color-mix(in srgb, var(--accent-2) 68%, white 32%);
 }
 
 .workercontrol-summary-caret {
@@ -1953,9 +2059,10 @@ textarea {
 .lane-card,
 .lane-card-empty {
   padding: 14px;
-  border-radius: 18px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(128, 186, 224, 0.16);
   background: rgba(14, 28, 42, 0.84);
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 
 .lane-card-empty {
@@ -2002,9 +2109,9 @@ textarea {
 
 .quality-profile-section {
   padding: 16px;
-  border-radius: 20px;
+  border-radius: var(--radius-panel);
   border: 1px solid rgba(128, 186, 224, 0.18);
-  background: linear-gradient(180deg, rgba(16, 34, 49, 0.9), rgba(11, 24, 37, 0.88));
+  background: var(--panel-background);
 }
 
 .quality-profile-head {
@@ -2029,7 +2136,7 @@ textarea {
   padding: 12px;
   border-radius: var(--bs-border-radius-xl);
   border: 1px solid rgba(128, 186, 224, 0.18);
-  background: linear-gradient(180deg, rgba(12, 27, 41, 0.96), rgba(8, 19, 30, 0.94));
+  background: var(--card-background);
   text-align: left;
 }
 
@@ -2039,7 +2146,7 @@ textarea {
 
 .quality-profile-card.active {
   border-color: rgba(76, 201, 240, 0.46);
-  background: linear-gradient(180deg, rgba(14, 41, 61, 0.98), rgba(10, 26, 39, 0.96));
+  background: color-mix(in srgb, var(--card-background) 72%, var(--accent) 28%);
   box-shadow: 0 0 0 1px rgba(76, 201, 240, 0.18) inset;
 }
 
@@ -2080,9 +2187,9 @@ textarea {
 
 .integration-card {
   padding: 16px;
-  border-radius: 20px;
+  border-radius: var(--radius-panel);
   border: 1px solid rgba(128, 186, 224, 0.18);
-  background: rgba(15, 30, 44, 0.82);
+  background: var(--card-background);
 }
 
 .integration-header {
@@ -2135,14 +2242,14 @@ textarea {
   display: grid;
   gap: 8px;
   padding: 12px 14px;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   border: 1px solid rgba(128, 186, 224, 0.14);
-  background: rgba(10, 23, 36, 0.74);
+  background: color-mix(in srgb, var(--surface-alt) 82%, var(--card-background) 18%);
 }
 
 .auth-key-row-readonly {
   border-color: color-mix(in srgb, var(--accent) 18%, var(--border) 82%);
-  background: color-mix(in srgb, var(--panel-2) 82%, var(--accent) 18%);
+  background: color-mix(in srgb, var(--panel-background) 82%, var(--accent) 18%);
 }
 
 .auth-key-row-head {
@@ -2246,9 +2353,9 @@ textarea {
 .eval-variant-card,
 .eval-replicate-row {
   padding: 14px;
-  border-radius: 18px;
+  border-radius: var(--radius-panel);
   border: 1px solid rgba(128, 186, 224, 0.16);
-  background: rgba(14, 28, 42, 0.84);
+  background: var(--card-background);
 }
 
 .eval-arm-option {
@@ -2305,7 +2412,7 @@ pre {
   min-height: 120px;
   margin: 0;
   padding: 14px;
-  border-radius: 18px;
+  border-radius: var(--radius-panel);
   border: 1px solid var(--border);
   background: var(--input-background);
   white-space: pre-wrap;
@@ -2351,7 +2458,78 @@ button:disabled {
 
 button.danger {
   border-color: rgba(248, 113, 113, 0.24);
-  background: linear-gradient(180deg, rgba(62, 24, 24, 0.95), rgba(45, 18, 18, 0.94));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 22%, var(--button-background) 78%), color-mix(in srgb, var(--danger) 30%, var(--surface-raised) 70%));
+}
+
+.thread-progress-card {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: var(--radius-panel);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border) 80%);
+  background: color-mix(in srgb, var(--card-background) 84%, var(--surface-raised) 16%);
+}
+
+.thread-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.thread-progress-kicker,
+.thread-progress-stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.thread-progress-title {
+  margin-top: 5px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.thread-progress-badge {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(148, 163, 184, 0.10);
+  color: var(--muted-strong);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.thread-progress-badge.is-running {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(239, 68, 68, 0.14);
+  color: color-mix(in srgb, var(--danger) 72%, white 28%);
+}
+
+.thread-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.thread-progress-stat {
+  padding: 10px 11px;
+  border-radius: var(--radius-card);
+  border: 1px solid rgba(128, 186, 224, 0.14);
+  background: color-mix(in srgb, var(--surface-alt) 72%, transparent);
+}
+
+.thread-progress-stat strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 15px;
+  color: var(--text);
 }
 
 label {
@@ -2448,6 +2626,10 @@ label {
   .workspace-pill-row {
     justify-content: flex-start;
   }
+
+  .thread-progress-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -2460,7 +2642,7 @@ label {
   .workspace-header,
   .panel,
   .workspace-footer {
-    border-radius: 20px;
+    border-radius: 8px;
   }
 
   .brand-block {
@@ -2470,8 +2652,12 @@ label {
   .brand-mark {
     width: 48px;
     height: 48px;
-    border-radius: 14px;
+    border-radius: 8px;
     font-size: 22px;
+  }
+
+  .thread-progress-grid {
+    grid-template-columns: 1fr;
   }
 
   .brand-logo,
