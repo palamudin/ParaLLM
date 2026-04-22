@@ -83,7 +83,9 @@ class ControlPlaneTests(unittest.TestCase):
             {
                 "objective": "Map the hosted migration",
                 "constraints": '["No downtime", "Keep backward compatibility"]',
-                "model": "gpt-5-mini",
+                "provider": "ollama",
+                "model": "qwen3-coder",
+                "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
                 "researchEnabled": "1",
                 "localFilesEnabled": "1",
@@ -102,7 +104,10 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(result["message"], "Draft saved.")
         draft = result["draft"]
         self.assertEqual(draft["objective"], "Map the hosted migration")
+        self.assertEqual(draft["provider"], "ollama")
         self.assertEqual(draft["constraints"], ["No downtime", "Keep backward compatibility"])
+        self.assertEqual(draft["model"], "qwen3-coder")
+        self.assertEqual(draft["summarizerProvider"], "openai")
         self.assertTrue(draft["researchEnabled"])
         self.assertEqual(draft["localFileRoots"], [".", "runtime", "api"])
         self.assertEqual(draft["githubAllowedRepos"], ["palamudin/parallm"])
@@ -118,7 +123,9 @@ class ControlPlaneTests(unittest.TestCase):
             {
                 "objective": "Design the first hosted topology",
                 "constraints": '["Keep Docker-first", "Do not break evals"]',
-                "model": "gpt-5-mini",
+                "provider": "ollama",
+                "model": "qwen3",
+                "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
                 "reasoningEffort": "medium",
                 "loopRounds": "2",
@@ -135,6 +142,9 @@ class ControlPlaneTests(unittest.TestCase):
         state = storage.read_state_payload(paths)
 
         self.assertEqual(state["activeTask"]["taskId"], task_id)
+        self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
+        self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
+        self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
         self.assertEqual(state["draft"]["objective"], "Design the first hosted topology")
         self.assertIn("A", state["workers"])
         self.assertIn("B", state["workers"])

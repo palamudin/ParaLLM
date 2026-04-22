@@ -180,6 +180,77 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertIn("env secret backend", str(context.exception))
         self.assertIn("empty", str(context.exception))
 
+    def test_invoke_provider_json_supports_ollama_native_chat(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        payload = {
+            "created_at": "2026-04-21T12:34:56Z",
+            "message": {
+                "content": json.dumps({"answer": "Local model reply"}),
+                "thinking": "Reasoned locally.",
+            },
+            "prompt_eval_count": 123,
+            "eval_count": 45,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", return_value=_FakeHTTPResponse(payload)):
+                result = runtime.invoke_provider_json(
+                    provider="ollama",
+                    api_key="",
+                    model="qwen3",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something local.",
+                    schema_name="ollama_test",
+                    schema=schema,
+                    max_output_tokens=600,
+                    target_kind="worker",
+                )
+
+        self.assertEqual(result.provider, "ollama")
+        self.assertEqual(result.parsed, {"answer": "Local model reply"})
+        self.assertEqual(result.thinking_text, "Reasoned locally.")
+        self.assertEqual(result.response_id, "2026-04-21T12:34:56Z")
+        usage = runtime.get_response_usage_delta(result.response, "qwen3")
+        self.assertEqual(usage["inputTokens"], 123)
+        self.assertEqual(usage["outputTokens"], 45)
+        self.assertEqual(usage["estimatedCostUsd"], 0.0)
+
+    def test_invoke_provider_json_rejects_ollama_tools(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with self.assertRaises(RuntimeErrorWithCode) as context:
+                runtime.invoke_provider_json(
+                    provider="ollama",
+                    api_key="",
+                    model="qwen3",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something local.",
+                    schema_name="ollama_tool_test",
+                    schema=schema,
+                    target_kind="worker",
+                    tools=[{"type": "function", "name": "local_read_file"}],
+                )
+
+        self.assertIn("provider_does_not_support", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

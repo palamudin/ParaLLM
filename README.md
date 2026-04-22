@@ -35,6 +35,10 @@ The current prototype is built to make that test inspectable:
 - Read-only GitHub repo tools for commander and worker lanes with owner/repo allowlist and audit logs
 - Local API key pool with deterministic per-position assignment
 - Container-friendly secret backends via env keys or mounted secret files
+- Initial multi-provider runtime slice:
+  - OpenAI remains the full-featured path
+  - Ollama now works as a native local structured-output path
+  - workers and summarizer can be assigned different providers
 - Reversible QA scripts for mock, live, and eval smoke tests
 
 ## Architecture
@@ -69,7 +73,7 @@ flowchart LR
 | Self-host packaging | Docker Compose Python stack |
 | Frontend | HTML, jQuery, local Bootstrap 5.3, custom CSS |
 | Storage | Local JSON / JSONL artifacts |
-| Model path | OpenAI Responses API |
+| Model path | OpenAI Responses API + native Ollama `/api/chat` |
 | QA | Python harnesses + JS syntax check |
 
 ## Project Layout
@@ -208,6 +212,27 @@ Infrastructure readiness now lives at:
 ```text
 http://127.0.0.1:8787/v1/system/infrastructure
 ```
+
+### Initial Multi-Provider Slice
+
+Milestone 5 is now started with a real first provider split:
+
+- `openai`
+  - full current path
+  - structured Responses execution
+  - web search and audited local/GitHub tools
+  - key-pool rotation and managed-secret backends
+- `ollama`
+  - native `/api/chat` execution
+  - structured JSON output path
+  - local-model experimentation without OpenAI keys
+  - no research or function-tool support in this first slice
+
+Current honest limitation:
+
+- Ollama is available as a live structured-output provider, but it does **not** yet support the runtime's research/tool loop in this repo
+- workers currently inherit the global runtime provider, while the summarizer/lead-thread provider can be set separately
+- Milestone 5 is not complete until more providers and richer capability normalization land
 
 If you still want the optional compatibility runtime service in the same local session:
 

@@ -14,6 +14,17 @@ const MODEL_CATALOG = {
   "gpt-4o-mini": { label: "GPT-4o mini" }
 };
 
+const PROVIDER_CATALOG = {
+  openai: { label: "OpenAI" },
+  ollama: { label: "Ollama" }
+};
+const PROVIDER_ORDER = Object.keys(PROVIDER_CATALOG);
+const OLLAMA_MODEL_CATALOG = {
+  qwen3: { label: "Qwen3" },
+  "qwen3-coder": { label: "Qwen3 Coder" },
+  gemma3: { label: "Gemma 3" },
+  "llama3.2": { label: "Llama 3.2" }
+};
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
 const WORKER_SLOT_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WORKER_TYPE_CATALOG = {
@@ -491,7 +502,9 @@ function defaultDraftState() {
     constraints: [],
     sessionContext: "",
     executionMode: "live",
+    provider: "openai",
     model: "gpt-5-mini",
+    summarizerProvider: "openai",
     summarizerModel: "gpt-5-mini",
     reasoningEffort: "low",
     maxCostUsd: 5.0,
@@ -552,15 +565,47 @@ function harnessConcisionLabel(config, fallback = "tight") {
   return HARNESS_CONCISION_CATALOG[normalized.concision]?.label || normalized.concision;
 }
 
-function buildModelOptions(selectedValue) {
-  return MODEL_ORDER.map(function (id) {
-    const selected = id === selectedValue ? " selected" : "";
-    return `<option value="${id}"${selected}>${MODEL_CATALOG[id].label}</option>`;
+function normalizeProviderId(provider) {
+  const candidate = String(provider || "").trim().toLowerCase();
+  return PROVIDER_CATALOG[candidate] ? candidate : "openai";
+}
+
+function defaultModelForProvider(provider) {
+  return normalizeProviderId(provider) === "ollama" ? "qwen3" : "gpt-5-mini";
+}
+
+function providerModelCatalog(provider) {
+  return normalizeProviderId(provider) === "ollama" ? OLLAMA_MODEL_CATALOG : MODEL_CATALOG;
+}
+
+function providerModelOrder(provider) {
+  return normalizeProviderId(provider) === "ollama" ? Object.keys(OLLAMA_MODEL_CATALOG) : MODEL_ORDER;
+}
+
+function buildProviderOptions(selectedValue) {
+  const selectedProvider = normalizeProviderId(selectedValue);
+  return PROVIDER_ORDER.map(function (id) {
+    const selected = id === selectedProvider ? " selected" : "";
+    return `<option value="${id}"${selected}>${PROVIDER_CATALOG[id].label}</option>`;
   }).join("");
 }
 
-function modelLabel(modelId) {
-  return MODEL_CATALOG[modelId]?.label || String(modelId || "Model");
+function buildModelOptions(selectedValue, provider) {
+  const catalog = providerModelCatalog(provider);
+  const order = providerModelOrder(provider);
+  const options = order.map(function (id) {
+    const selected = id === selectedValue ? " selected" : "";
+    return `<option value="${id}"${selected}>${catalog[id].label}</option>`;
+  });
+  if (selectedValue && !catalog[selectedValue]) {
+    options.push(`<option value="${selectedValue}" selected>${String(selectedValue)} (custom)</option>`);
+  }
+  return options.join("");
+}
+
+function modelLabel(modelId, provider) {
+  const catalog = providerModelCatalog(provider);
+  return catalog[modelId]?.label || MODEL_CATALOG[modelId]?.label || String(modelId || "Model");
 }
 
 function buildArtifactOptions(artifacts, selectedValue) {
@@ -824,8 +869,19 @@ function syncArtifactReview(artifacts) {
   loadArtifactPane("Right", artifactSelections.right);
 }
 
-function populateStaticModelSelect(selector, selectedValue) {
-  $(selector).html(buildModelOptions(selectedValue));
+function populateStaticProviderSelect(selector, selectedValue) {
+  $(selector).html(buildProviderOptions(selectedValue));
+}
+
+function populateStaticModelSelect(selector, selectedValue, provider) {
+  $(selector).html(buildModelOptions(selectedValue, provider));
+}
+
+function refreshProviderModelSelects() {
+  const workerProvider = normalizeProviderId($("#provider").val());
+  const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
+  populateStaticModelSelect("#model", $("#model").val() || defaultModelForProvider(workerProvider), workerProvider);
+  populateStaticModelSelect("#summarizerModel", $("#summarizerModel").val() || defaultModelForProvider(summarizerProvider), summarizerProvider);
 }
 
 function buildCommanderFormSource(task, draft) {
@@ -839,7 +895,9 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.sessionContext || "",
         JSON.stringify(safeDraft.constraints || []),
         safeDraft.executionMode || "live",
+        safeDraft.provider || "openai",
         safeDraft.model || "gpt-5-mini",
+        safeDraft.summarizerProvider || safeDraft.provider || "openai",
         safeDraft.summarizerModel || "gpt-5-mini",
         safeDraft.reasoningEffort || "low",
         safeDraft.maxCostUsd ?? 5.0,
@@ -872,7 +930,9 @@ function buildCommanderFormSource(task, draft) {
         task.sessionContext || "",
         JSON.stringify(task.constraints || []),
         task.runtime?.executionMode || "live",
+        task.runtime?.provider || "openai",
         task.runtime?.model || "gpt-5-mini",
+        task.summarizer?.provider || task.runtime?.provider || "openai",
         task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
         task.runtime?.reasoningEffort || "low",
         task.runtime?.budget?.maxCostUsd ?? 5.0,
@@ -897,7 +957,9 @@ function buildCommanderFormSource(task, draft) {
         constraints: task.constraints || [],
         sessionContext: task.sessionContext || "",
         executionMode: task.runtime?.executionMode || "live",
+        provider: task.runtime?.provider || "openai",
         model: task.runtime?.model || "gpt-5-mini",
+        summarizerProvider: task.summarizer?.provider || task.runtime?.provider || "openai",
         summarizerModel: task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
         reasoningEffort: task.runtime?.reasoningEffort || "low",
         maxCostUsd: task.runtime?.budget?.maxCostUsd ?? 5.0,
@@ -937,8 +999,16 @@ function applyCommanderForm(values) {
   $("#objective").val(safe.objective || "");
   $("#constraints").val((safe.constraints || []).join("\n"));
   $("#executionMode").val(safe.executionMode || "live");
-  $("#model").val(safe.model || "gpt-5-mini");
-  $("#summarizerModel").val(safe.summarizerModel || safe.model || "gpt-5-mini");
+  $("#provider").val(normalizeProviderId(safe.provider || "openai"));
+  $("#summarizerProvider").val(normalizeProviderId(safe.summarizerProvider || safe.provider || "openai"));
+  populateStaticModelSelect("#model", safe.model || defaultModelForProvider(safe.provider), safe.provider || "openai");
+  populateStaticModelSelect(
+    "#summarizerModel",
+    safe.summarizerModel || safe.model || defaultModelForProvider(safe.summarizerProvider || safe.provider),
+    safe.summarizerProvider || safe.provider || "openai"
+  );
+  $("#model").val(safe.model || defaultModelForProvider(safe.provider));
+  $("#summarizerModel").val(safe.summarizerModel || safe.model || defaultModelForProvider(safe.summarizerProvider || safe.provider));
   $("#reasoningEffort").val(safe.reasoningEffort || "low");
   $("#maxCostUsd").val(safe.maxCostUsd ?? 5.0);
   $("#maxTotalTokens").val(safe.maxTotalTokens ?? 250000);
@@ -974,7 +1044,9 @@ function collectCommanderPayload() {
     objective: $("#objective").val().trim(),
     constraints: $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean),
     executionMode: $("#executionMode").val(),
+    provider: $("#provider").val(),
     model: $("#model").val(),
+    summarizerProvider: $("#summarizerProvider").val(),
     summarizerModel: $("#summarizerModel").val(),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: parseFloat($("#maxCostUsd").val()) || 0,
@@ -1001,6 +1073,14 @@ function activeWorkerSource(task, draft) {
   return Array.isArray(draft?.workers) && draft.workers.length ? draft.workers : defaultDraftState().workers;
 }
 
+function runtimeProviderSource(task, draft) {
+  return normalizeProviderId(draft?.provider || task?.runtime?.provider || "openai");
+}
+
+function summarizerProviderSource(task, draft) {
+  return normalizeProviderId(draft?.summarizerProvider || task?.summarizer?.provider || task?.runtime?.provider || draft?.provider || "openai");
+}
+
 function stagedWorkerSource(draft, task) {
   if (Array.isArray(draft?.workers) && draft.workers.length) {
     return draft.workers;
@@ -1016,6 +1096,7 @@ function stagedSummarizerSource(draft, task) {
   return {
     id: "summarizer",
     label: "Commander / Summarizer",
+    provider: String(draft?.summarizerProvider || task?.summarizer?.provider || task?.runtime?.provider || fallback.summarizerProvider || fallback.provider),
     model: String(draft?.summarizerModel || task?.summarizer?.model || task?.runtime?.model || fallback.summarizerModel || fallback.model),
     harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "balanced")
   };
@@ -1029,6 +1110,7 @@ function collectVisibleSummarizerConfig() {
   return {
     id: "summarizer",
     label: "Commander / Summarizer",
+    provider: String($("#summarizerProvider").val() || stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null).provider || "openai"),
     model: String($card.find(".summarizer-model-draft").val() || stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null).model),
     harness: {
       concision: String($card.find(".summarizer-harness-profile").val() || "balanced"),
@@ -1081,11 +1163,13 @@ function buildDraftSavePayload(options = {}) {
   const summarizerConfig = options.summarizerConfig && typeof options.summarizerConfig === "object"
     ? options.summarizerConfig
     : {
+        provider: String(payload.summarizerProvider || fallbackSummarizer.provider || payload.provider || "openai"),
         model: String(payload.summarizerModel || payload.model || fallbackSummarizer.model || ""),
         harness: visibleSummarizer?.harness || fallbackSummarizer.harness
       };
   payload.constraints = JSON.stringify(payload.constraints);
   payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
+  payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
   payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
   return payload;
@@ -1115,7 +1199,9 @@ function buildQualityProfileSnapshot() {
     : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
   const summarizerSource = collectVisibleSummarizerConfig();
   return {
+    provider: String(payload.provider || "openai"),
     model: String(payload.model || ""),
+    summarizerProvider: String(summarizerSource?.provider || payload.summarizerProvider || payload.provider || "openai"),
     summarizerModel: String(summarizerSource?.model || payload.summarizerModel || payload.model || ""),
     reasoningEffort: String(payload.reasoningEffort || ""),
     maxCostUsd: Number(payload.maxCostUsd || 0),
@@ -1134,7 +1220,9 @@ function matchesQualityProfile(profileId, snapshot = null) {
   if (!profile) return false;
   const comparable = snapshot || buildQualityProfileSnapshot();
   if (comparable.model !== profile.workerModel) return false;
+  if (normalizeProviderId(comparable.provider) !== "openai") return false;
   if (comparable.summarizerModel !== profile.summarizerModel) return false;
+  if (normalizeProviderId(comparable.summarizerProvider) !== "openai") return false;
   if (comparable.reasoningEffort !== profile.reasoningEffort) return false;
   if (Number(comparable.maxCostUsd) !== Number(profile.maxCostUsd)) return false;
   if (Number(comparable.maxTotalTokens) !== Number(profile.maxTotalTokens)) return false;
@@ -1157,7 +1245,9 @@ function buildTaskQualityProfileSnapshot(task) {
   if (!task) return null;
   const budget = task?.runtime?.budget || {};
   return {
+    provider: String(task?.runtime?.provider || "openai"),
     model: String(task?.runtime?.model || "gpt-5-mini"),
+    summarizerProvider: String(task?.summarizer?.provider || task?.runtime?.provider || "openai"),
     summarizerModel: String(task?.summarizer?.model || task?.runtime?.model || "gpt-5-mini"),
     reasoningEffort: String(task?.runtime?.reasoningEffort || "low"),
     maxCostUsd: Number(budget.maxCostUsd ?? 0),
@@ -1493,6 +1583,10 @@ function applyQualityProfile(profileId) {
   const profile = QUALITY_PROFILE_CATALOG[profileId];
   if (!profile) return;
 
+  $("#provider").val("openai");
+  $("#summarizerProvider").val("openai");
+  populateStaticModelSelect("#model", profile.workerModel, "openai");
+  populateStaticModelSelect("#summarizerModel", profile.summarizerModel, "openai");
   $("#model").val(profile.workerModel);
   $("#summarizerModel").val(profile.summarizerModel);
   $("#reasoningEffort").val(profile.reasoningEffort);
@@ -3005,7 +3099,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
 
     const $row = $("<div>").addClass("inlineform");
     $row.append(
-      $("<select>").addClass("position-model").attr("data-position", worker.id).html(buildModelOptions(worker.model)),
+      $("<select>").addClass("position-model").attr("data-position", worker.id).html(buildModelOptions(worker.model, task?.runtime?.provider || "openai")),
       $("<button>").addClass("save-model").attr("data-position", worker.id).prop("disabled", isActive).text("Save Model"),
       $("<button>").addClass("run-target").attr("data-target", worker.id).prop("disabled", isActive).text("Run " + worker.id)
     );
@@ -3014,6 +3108,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
   });
 
   const summarizerModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
+  const summarizerProvider = task.summarizer?.provider || task.runtime?.provider || "openai";
   const vettingEnabled = !!task.runtime?.vetting?.enabled;
   const $summaryCard = $("<div>").addClass("workercontrol");
   $summaryCard.append($("<div>").addClass("workercontrol-title").text("Summarizer"));
@@ -3025,7 +3120,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
 
   const $summaryRow = $("<div>").addClass("inlineform");
   $summaryRow.append(
-    $("<select>").addClass("position-model").attr("data-position", "summarizer").html(buildModelOptions(summarizerModel)),
+    $("<select>").addClass("position-model").attr("data-position", "summarizer").html(buildModelOptions(summarizerModel, summarizerProvider)),
     $("<button>").addClass("save-model").attr("data-position", "summarizer").prop("disabled", isActive).text("Save Model"),
     $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize"),
     $("<button>").addClass("run-target secondary").attr("data-target", "answer_now").prop("disabled", commanderRound(task) <= 0 || hasActiveDispatchTarget(latestState, "answer_now")).text("Answer Now")
@@ -3055,6 +3150,8 @@ function renderHomeWorkerControls(task, draft, loop) {
   }
 
   const isActive = isWorkspaceBusy(loop, latestState);
+  const workerProvider = runtimeProviderSource(task, draft);
+  const summarizerProvider = summarizerProviderSource(task, draft);
   workers.forEach(function (worker) {
     const $card = $("<div>").addClass("workercontrol").attr("data-worker-id", worker.id);
     $card.append($("<div>").addClass("workercontrol-title").text(worker.id + " | " + displayWorkerLabel(worker)));
@@ -3077,7 +3174,7 @@ function renderHomeWorkerControls(task, draft, loop) {
     const $modelRow = $("<div>").addClass("workercontrol-field");
     $modelRow.append($("<label>").text("Model"));
     $modelRow.append(
-      $("<select>").addClass("worker-model").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildModelOptions(worker.model))
+      $("<select>").addClass("worker-model").attr("data-worker-id", worker.id).prop("disabled", isActive).html(buildModelOptions(worker.model, workerProvider))
     );
     $card.append($modelRow);
 
@@ -3133,10 +3230,11 @@ function buildWorkerControlCard(worker, isActive) {
   );
   $body.append($temperatureRow);
 
+  const workerProvider = runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null);
   const $modelRow = $("<div>").addClass("workercontrol-field");
   $modelRow.append($("<label>").text("Model"));
   $modelRow.append(
-    $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model))
+    $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model, workerProvider))
   );
   $body.append($modelRow);
 
@@ -3443,7 +3541,7 @@ function buildWorkerControlCard(worker, isActive, status) {
   const $modelRow = $("<div>").addClass("workercontrol-field");
   $modelRow.append($("<label>").text("Model"));
   $modelRow.append(
-    $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model))
+      $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model, runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null)))
   );
   $body.append($modelRow);
 
@@ -3499,7 +3597,7 @@ function buildSummarizerControlCard(summarizer, isActive, status) {
   const $modelRow = $("<div>").addClass("workercontrol-field");
   $modelRow.append($("<label>").text("Model"));
   $modelRow.append(
-    $("<select>").addClass("summarizer-model-draft").prop("disabled", isActive).html(buildModelOptions(summarizer?.model || "gpt-5-mini"))
+    $("<select>").addClass("summarizer-model-draft").prop("disabled", isActive).html(buildModelOptions(summarizer?.model || "gpt-5-mini", summarizer?.provider || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null)))
   );
   $body.append($modelRow);
 
@@ -4694,7 +4792,9 @@ function postForm(url, payload, successText, options = {}) {
 
 function applyCurrentRuntimeSettings(successText = "Current task runtime updated") {
   postForm(API.runtimeApply, {
+    provider: $("#provider").val(),
     model: $("#model").val(),
+    summarizerProvider: $("#summarizerProvider").val(),
     summarizerModel: $("#summarizerModel").val(),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: $("#maxCostUsd").val(),
@@ -4728,8 +4828,10 @@ function setActiveView(viewName) {
 
 $(function () {
   recentComposerAttachments = loadRecentComposerAttachments();
-  populateStaticModelSelect("#model", "gpt-5-mini");
-  populateStaticModelSelect("#summarizerModel", "gpt-5-mini");
+  populateStaticProviderSelect("#provider", "openai");
+  populateStaticProviderSelect("#summarizerProvider", "openai");
+  populateStaticModelSelect("#model", "gpt-5-mini", "openai");
+  populateStaticModelSelect("#summarizerModel", "gpt-5-mini", "openai");
   $("#researchEnabled").val("0");
   $("#researchExternalWebAccess").val("1");
   $("#localFilesEnabled").val("0");
@@ -4786,6 +4888,19 @@ $(function () {
     setWorkerControlExpandedState($(this).data("workerId") || $(this).data("positionId"), this.open);
   });
 
+  $("#provider, #summarizerProvider").on("change", function () {
+    const workerProvider = normalizeProviderId($("#provider").val());
+    const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
+    $("#model").val(defaultModelForProvider(workerProvider));
+    $("#summarizerModel").val(defaultModelForProvider(summarizerProvider));
+    refreshProviderModelSelects();
+    formDirty = true;
+    renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
+    renderQualityProfileCards();
+    renderComposerTools();
+    queueDraftSave();
+  });
+
   $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
     formDirty = true;
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
@@ -4810,7 +4925,9 @@ $(function () {
       objective: payload.objective,
       constraints: JSON.stringify(payload.constraints),
       executionMode: payload.executionMode,
+      provider: payload.provider,
       model: payload.model,
+      summarizerProvider: summarizerConfig.provider || payload.summarizerProvider || payload.provider,
       summarizerModel: summarizerConfig.model || payload.summarizerModel,
       summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "balanced")),
       reasoningEffort: payload.reasoningEffort,

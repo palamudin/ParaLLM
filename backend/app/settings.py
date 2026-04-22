@@ -5,13 +5,16 @@ from typing import Any, Dict, Optional
 
 from runtime.engine import (
     DEFAULT_MODEL_ID,
+    DEFAULT_PROVIDER_ID,
     LoopRuntime,
     RuntimeErrorWithCode,
     coerce_bool,
+    default_model_for_provider,
     normalize_budget_config,
     normalize_dynamic_spinup_config,
     normalize_github_tool_config,
     normalize_model_id,
+    normalize_provider_id,
     normalize_research_config,
     normalize_vetting_config,
     normalize_worker_definition,
@@ -133,8 +136,23 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     if current_reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         current_reasoning_effort = "low"
 
-    model = normalize_model_id(str(payload.get("model") or DEFAULT_MODEL_ID), DEFAULT_MODEL_ID)
-    summarizer_model = normalize_model_id(str(payload.get("summarizerModel") or model), model)
+    current_provider = normalize_provider_id(str(runtime_config.get("provider") or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
+    current_summarizer_provider = normalize_provider_id(
+        str((active_task.get("summarizer") or {}).get("provider") or current_provider),
+        current_provider,
+    )
+    provider = normalize_provider_id(str(payload.get("provider") or current_provider), current_provider)
+    summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider") or current_summarizer_provider), provider)
+    model = normalize_model_id(
+        str(payload.get("model") or default_model_for_provider(provider)),
+        default_model_for_provider(provider),
+        provider,
+    )
+    summarizer_model = normalize_model_id(
+        str(payload.get("summarizerModel") or default_model_for_provider(summarizer_provider)),
+        default_model_for_provider(summarizer_provider),
+        summarizer_provider,
+    )
     reasoning_effort = str(payload.get("reasoningEffort", current_reasoning_effort)).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = current_reasoning_effort
@@ -189,6 +207,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             worker["model"] = model
         task["workers"] = workers
         task_runtime = dict(task.get("runtime") if isinstance(task.get("runtime"), dict) else {})
+        task_runtime["provider"] = provider
         task_runtime["model"] = model
         task_runtime["reasoningEffort"] = reasoning_effort
         task_runtime["budget"] = budget
@@ -200,6 +219,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task["runtime"] = task_runtime
         task["preferredLoop"] = preferred_loop
         summary = summarizer_config(task)
+        summary["provider"] = summarizer_provider
         summary["model"] = summarizer_model
         task["summarizer"] = summary
         state_next["activeTask"] = task
@@ -228,7 +248,9 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     )
     return {
         "message": "Applied runtime settings to the active task.",
+        "provider": provider,
         "workerModel": model,
+        "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
         "reasoningEffort": reasoning_effort,
         "budget": budget,
@@ -259,7 +281,7 @@ def update_worker_config(payload: Dict[str, Any], root: Optional[Path] = None) -
 
     def mutate(current: Dict[str, Any]) -> Dict[str, Any]:
         draft = control.normalize_draft_state(current.get("draft") if isinstance(current.get("draft"), dict) else {})
-        draft_workers = task_workers({"runtime": {"model": draft["model"]}, "workers": draft["workers"]})
+        draft_workers = task_workers({"runtime": {"provider": draft["provider"], "model": draft["model"]}, "workers": draft["workers"]})
         updated = []
         found = False
         for worker in draft_workers:
@@ -276,7 +298,7 @@ def update_worker_config(payload: Dict[str, Any], root: Optional[Path] = None) -
         if not found:
             raise RuntimeErrorWithCode("Unknown worker position.", 409)
         next_state = dict(current)
-        draft["workers"] = task_workers({"runtime": {"model": draft["model"]}, "workers": updated})
+        draft["workers"] = task_workers({"runtime": {"provider": draft["provider"], "model": draft["model"]}, "workers": updated})
         next_state["draft"] = draft
         return next_state
 
@@ -297,10 +319,16 @@ def update_worker_config(payload: Dict[str, Any], root: Optional[Path] = None) -
 
 
 def _next_adversarial_worker_definition(task: Dict[str, Any], requested_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    default_model = normalize_model_id(((task.get("runtime") or {}) if isinstance(task.get("runtime"), dict) else {}).get("model"), DEFAULT_MODEL_ID)
+    runtime_config = (task.get("runtime") or {}) if isinstance(task.get("runtime"), dict) else {}
+    default_provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
+    default_model = normalize_model_id(
+        runtime_config.get("model"),
+        default_model_for_provider(default_provider),
+        default_provider,
+    )
     existing_ids = {str(worker.get("id") or "") for worker in task_workers(task)}
     requested = str(requested_type or "").strip().lower()
-    valid_types = {str(worker.get("type") or "").strip().lower() for worker in control.worker_catalog(default_model)}
+    valid_types = {str(worker.get("type") or "").strip().lower() for worker in control.worker_catalog(default_model, default_provider)}
     for worker_id in worker_slot_ids():
         if worker_id in existing_ids:
             continue
@@ -330,9 +358,9 @@ def add_adversarial_worker(payload: Dict[str, Any], root: Optional[Path] = None)
     def mutate(current: Dict[str, Any]) -> Dict[str, Any]:
         next_state = dict(current)
         next_draft = control.normalize_draft_state(current.get("draft") if isinstance(current.get("draft"), dict) else {})
-        draft_workers = task_workers({"runtime": {"model": next_draft["model"]}, "workers": next_draft["workers"]})
+        draft_workers = task_workers({"runtime": {"provider": next_draft["provider"], "model": next_draft["model"]}, "workers": next_draft["workers"]})
         draft_workers.append(worker)
-        next_draft["workers"] = task_workers({"runtime": {"model": next_draft["model"]}, "workers": draft_workers})
+        next_draft["workers"] = task_workers({"runtime": {"provider": next_draft["provider"], "model": next_draft["model"]}, "workers": draft_workers})
         next_state["draft"] = next_draft
         return next_state
 
@@ -363,7 +391,17 @@ def set_position_model(payload: Dict[str, Any], root: Optional[Path] = None) -> 
     position_id = str(payload.get("positionId") or "").strip()
     if not position_id:
         raise RuntimeErrorWithCode("positionId is required.", 400)
-    model = normalize_model_id(str(payload.get("model") or DEFAULT_MODEL_ID), DEFAULT_MODEL_ID)
+    active_task = state["activeTask"]
+    runtime_config = active_task.get("runtime") if isinstance(active_task.get("runtime"), dict) else {}
+    runtime_provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
+    active_summary = active_task.get("summarizer") if isinstance(active_task.get("summarizer"), dict) else {}
+    summarizer_provider = normalize_provider_id(active_summary.get("provider"), runtime_provider)
+    selected_provider = summarizer_provider if position_id == "summarizer" else runtime_provider
+    model = normalize_model_id(
+        str(payload.get("model") or default_model_for_provider(selected_provider)),
+        default_model_for_provider(selected_provider),
+        selected_provider,
+    )
 
     def mutate(current: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(current.get("activeTask"), dict):

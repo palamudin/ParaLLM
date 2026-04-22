@@ -38,6 +38,18 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
     "gpt-4o-mini": {"label": "GPT-4o mini", "inputPer1M": 0.15, "cachedInputPer1M": 0.075, "outputPer1M": 0.60},
 }
 
+PROVIDER_CATALOG: Dict[str, Dict[str, str]] = {
+    "openai": {"label": "OpenAI"},
+    "ollama": {"label": "Ollama"},
+}
+
+OLLAMA_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "qwen3": {"label": "Qwen3"},
+    "qwen3-coder": {"label": "Qwen3 Coder"},
+    "gemma3": {"label": "Gemma 3"},
+    "llama3.2": {"label": "Llama 3.2"},
+}
+
 WORKER_TEMPERATURE_CATALOG: Dict[str, Dict[str, str]] = {
     "cool": {"label": "Cool", "instruction": "deliberate, restrained, careful under pressure"},
     "balanced": {"label": "Balanced", "instruction": "practical, even-tempered, evidence-first"},
@@ -141,6 +153,8 @@ DEFAULT_WORKER_TYPE_SEQUENCE: List[str] = [
 ]
 
 DEFAULT_MODEL_ID = "gpt-5-mini"
+DEFAULT_PROVIDER_ID = "openai"
+DEFAULT_OLLAMA_MODEL_ID = "qwen3"
 WEB_SEARCH_TOOL_CALL_PRICE_USD = 0.01
 SENSITIVE_PATH_SEGMENTS = {"secrets", ".ssh", ".aws", ".gnupg"}
 SENSITIVE_FILE_NAMES = {
@@ -289,13 +303,33 @@ def default_state() -> Dict[str, Any]:
         "lastUpdated": utc_now(),
     }
 
+def normalize_provider_id(provider: Optional[str], fallback: Optional[str] = None) -> str:
+    candidate = (provider or "").strip().lower()
+    if candidate in PROVIDER_CATALOG:
+        return candidate
+    fallback_value = (fallback or DEFAULT_PROVIDER_ID).strip().lower()
+    return fallback_value if fallback_value in PROVIDER_CATALOG else DEFAULT_PROVIDER_ID
 
-def normalize_model_id(model: Optional[str], fallback: Optional[str] = None) -> str:
+
+def default_model_for_provider(provider: Optional[str]) -> str:
+    normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    if normalized == "ollama":
+        return str(os.getenv("LOOP_OLLAMA_DEFAULT_MODEL") or DEFAULT_OLLAMA_MODEL_ID).strip() or DEFAULT_OLLAMA_MODEL_ID
+    return DEFAULT_MODEL_ID
+
+
+def normalize_model_id(model: Optional[str], fallback: Optional[str] = None, provider: Optional[str] = None) -> str:
+    normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     candidate = (model or "").strip()
+    if normalized_provider == "ollama":
+        if candidate:
+            return candidate
+        fallback_value = (fallback or default_model_for_provider(normalized_provider)).strip()
+        return fallback_value or default_model_for_provider(normalized_provider)
     if candidate in MODEL_CATALOG:
         return candidate
-    fallback_value = (fallback or DEFAULT_MODEL_ID).strip()
-    return fallback_value if fallback_value in MODEL_CATALOG else DEFAULT_MODEL_ID
+    fallback_value = (fallback or default_model_for_provider(normalized_provider)).strip()
+    return fallback_value if fallback_value in MODEL_CATALOG else default_model_for_provider(normalized_provider)
 
 
 def coerce_bool(value: Any, default: bool = False) -> bool:
@@ -652,8 +686,9 @@ def normalize_harness_config(value: Any, fallback_concision: str = "tight") -> D
     }
 
 
-def worker_catalog(default_model: Optional[str] = None) -> List[Dict[str, str]]:
-    model = normalize_model_id(default_model, DEFAULT_MODEL_ID)
+def worker_catalog(default_model: Optional[str] = None, default_provider: Optional[str] = None) -> List[Dict[str, str]]:
+    provider = normalize_provider_id(default_provider, DEFAULT_PROVIDER_ID)
+    model = normalize_model_id(default_model, default_model_for_provider(provider), provider)
     return [normalize_worker_definition({"id": worker_id}, model) for worker_id in worker_slot_ids()]
 
 
@@ -690,7 +725,9 @@ def normalize_worker_definition(worker: Dict[str, Any], default_model: Optional[
 
 
 def task_workers(task: Dict[str, Any], round_number: Optional[int] = None) -> List[Dict[str, str]]:
-    default_model = normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID)
+    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    default_provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
+    default_model = normalize_model_id(runtime_config.get("model"), default_model_for_provider(default_provider), default_provider)
     workers: Dict[str, Dict[str, str]] = {}
     raw_workers = task.get("workers")
     if isinstance(raw_workers, list):
@@ -699,7 +736,7 @@ def task_workers(task: Dict[str, Any], round_number: Optional[int] = None) -> Li
                 normalized = normalize_worker_definition(worker, default_model)
                 workers[normalized["id"]] = normalized
     if not workers:
-        for worker in worker_catalog(default_model)[:2]:
+        for worker in worker_catalog(default_model, default_provider)[:2]:
             normalized = normalize_worker_definition(worker, default_model)
             workers[normalized["id"]] = normalized
     ordered = [workers[key] for key in sorted(workers)]
@@ -722,12 +759,16 @@ def worker_active_from_round(worker: Dict[str, Any]) -> int:
 
 
 def summarizer_config(task: Dict[str, Any]) -> Dict[str, str]:
-    default_model = normalize_model_id((task.get("runtime") or {}).get("model"), DEFAULT_MODEL_ID)
+    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    runtime_provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
+    default_model = normalize_model_id(runtime_config.get("model"), default_model_for_provider(runtime_provider), runtime_provider)
     summary = task.get("summarizer") if isinstance(task.get("summarizer"), dict) else {}
+    provider = normalize_provider_id(summary.get("provider"), runtime_provider)
     return {
         "id": "summarizer",
         "label": str(summary.get("label", "Summarizer")).strip() or "Summarizer",
-        "model": normalize_model_id(summary.get("model"), default_model),
+        "provider": provider,
+        "model": normalize_model_id(summary.get("model"), default_model_for_provider(provider), provider),
         "harness": normalize_harness_config(summary.get("harness"), default_summarizer_harness()["concision"]),
     }
 
@@ -737,6 +778,7 @@ def commander_config(task: Dict[str, Any]) -> Dict[str, str]:
     return {
         "id": "commander",
         "label": "Commander",
+        "provider": summary["provider"],
         "model": summary["model"],
         "harness": summary["harness"],
     }
@@ -747,6 +789,7 @@ def commander_review_config(task: Dict[str, Any]) -> Dict[str, str]:
     return {
         "id": "commander_review",
         "label": "Commander Review",
+        "provider": summary["provider"],
         "model": summary["model"],
         "harness": summary["harness"],
     }
@@ -1659,10 +1702,12 @@ def normalize_summary_line_catalog(catalog: Any) -> List[Dict[str, Any]]:
 
 @dataclass
 class OpenAIResult:
+    provider: str
     parsed: Dict[str, Any]
     response: Dict[str, Any]
     response_id: str
     output_text: Optional[str]
+    thinking_text: Optional[str]
     web_search_queries: List[str]
     web_search_sources: List[str]
     url_citations: List[str]
@@ -2102,9 +2147,16 @@ class LoopRuntime:
                 return normalize_budget_limits(target_budget, budget)
         return normalize_budget_limits(budget, default_budget_config())
 
-    def get_task_runtime(self, task: Dict[str, Any], model_override: Optional[str] = None, budget_target: Optional[str] = None) -> Dict[str, Any]:
+    def get_task_runtime(
+        self,
+        task: Dict[str, Any],
+        model_override: Optional[str] = None,
+        budget_target: Optional[str] = None,
+        provider_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
         runtime = {
             "executionMode": "live",
+            "provider": DEFAULT_PROVIDER_ID,
             "model": DEFAULT_MODEL_ID,
             "reasoningEffort": "low",
             "maxOutputTokens": default_budget_config()["maxOutputTokens"],
@@ -2122,16 +2174,59 @@ class LoopRuntime:
             reasoning_effort = str(task_runtime.get("reasoningEffort", runtime["reasoningEffort"])).strip()
             if reasoning_effort in {"none", "low", "medium", "high", "xhigh"}:
                 runtime["reasoningEffort"] = reasoning_effort
-            runtime["model"] = normalize_model_id(task_runtime.get("model"), runtime["model"])
+            runtime["provider"] = normalize_provider_id(task_runtime.get("provider"), runtime["provider"])
+            runtime["model"] = normalize_model_id(
+                task_runtime.get("model"),
+                default_model_for_provider(runtime["provider"]),
+                runtime["provider"],
+            )
             runtime["research"] = normalize_research_config(task_runtime.get("research") if isinstance(task_runtime.get("research"), dict) else {})
             runtime["localFiles"] = normalize_local_file_tool_config(task_runtime.get("localFiles") if isinstance(task_runtime.get("localFiles"), dict) else {})
             runtime["githubTools"] = normalize_github_tool_config(task_runtime.get("githubTools") if isinstance(task_runtime.get("githubTools"), dict) else {})
             runtime["dynamicSpinup"] = normalize_dynamic_spinup_config(task_runtime.get("dynamicSpinup") if isinstance(task_runtime.get("dynamicSpinup"), dict) else {})
             runtime["vetting"] = normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
         runtime["maxOutputTokens"] = self.get_budget_limits(task, budget_target)["maxOutputTokens"]
+        if provider_override:
+            runtime["provider"] = normalize_provider_id(provider_override, runtime["provider"])
         if model_override:
-            runtime["model"] = normalize_model_id(model_override, runtime["model"])
+            runtime["model"] = normalize_model_id(model_override, runtime["model"], runtime["provider"])
         return runtime
+
+    def provider_uses_api_key_pool(self, provider: Optional[str]) -> bool:
+        return normalize_provider_id(provider, DEFAULT_PROVIDER_ID) == "openai"
+
+    def provider_requires_api_key(self, provider: Optional[str]) -> bool:
+        return self.provider_uses_api_key_pool(provider)
+
+    def provider_auth_assignments(
+        self,
+        provider: Optional[str],
+        target: str = "generic",
+        task: Optional[Dict[str, Any]] = None,
+        round_number: Optional[int] = None,
+        salt: str = "",
+    ) -> List[Dict[str, Any]]:
+        if not self.provider_uses_api_key_pool(provider):
+            return []
+        return self.build_api_key_assignments(target, task, round_number, salt)
+
+    def provider_live_api_key(
+        self,
+        provider: Optional[str],
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        if normalized_provider == "openai":
+            assignment = auth_assignments[0] if auth_assignments else None
+            return str(assignment.get("apiKey")) if isinstance(assignment, dict) else ""
+        if normalized_provider == "ollama":
+            return self.ollama_api_key()
+        return ""
+
+    def live_auth_meta(self, provider: Optional[str], assignment: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        meta = auth_assignment_meta(assignment) or {}
+        meta["provider"] = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        return meta
 
     def get_research_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
@@ -2154,17 +2249,28 @@ class LoopRuntime:
         return normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
 
     def get_model_pricing(self, model: str) -> Dict[str, Any]:
-        resolved = normalize_model_id(model, DEFAULT_MODEL_ID)
+        resolved = normalize_model_id(model, DEFAULT_MODEL_ID, DEFAULT_PROVIDER_ID)
         pricing = MODEL_CATALOG.get(resolved, {"inputPer1M": 0.0, "cachedInputPer1M": 0.0, "outputPer1M": 0.0})
         return {"model": resolved, **pricing}
 
     def get_response_output_text(self, response: Dict[str, Any]) -> Optional[str]:
+        if isinstance(response.get("message"), dict):
+            content = response["message"].get("content")
+            if content:
+                return str(content)
         for item in response.get("output", []):
             if item.get("type") != "message":
                 continue
             for content in item.get("content", []):
                 if content.get("type") == "output_text" and content.get("text"):
                     return str(content["text"])
+        return None
+
+    def get_response_thinking_text(self, response: Dict[str, Any]) -> Optional[str]:
+        if isinstance(response.get("message"), dict):
+            thinking = response["message"].get("thinking")
+            if thinking:
+                return str(thinking)
         return None
 
     def get_web_search_call_items(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2799,36 +2905,53 @@ class LoopRuntime:
 
     def get_response_usage_delta(self, response: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
         usage = response.get("usage")
-        if not isinstance(usage, dict):
-            return None
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
-        output_tokens = int(usage.get("output_tokens", 0) or 0)
-        total_tokens = int(usage.get("total_tokens", 0) or 0)
-        cached_input_tokens = int(((usage.get("input_tokens_details") or {}).get("cached_tokens", 0)) or 0)
-        reasoning_tokens = int(((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0)) or 0)
-        billable_input_tokens = max(0, input_tokens - cached_input_tokens)
-        web_search_calls = len(self.get_web_search_call_items(response))
-        pricing = self.get_model_pricing(model)
-        model_cost = (
-            (billable_input_tokens * float(pricing["inputPer1M"]))
-            + (cached_input_tokens * float(pricing["cachedInputPer1M"]))
-            + (output_tokens * float(pricing["outputPer1M"]))
-        ) / 1_000_000.0
-        tool_cost = web_search_calls * WEB_SEARCH_TOOL_CALL_PRICE_USD
-        estimated_cost = model_cost + tool_cost
-        return {
-            "calls": 1,
-            "webSearchCalls": web_search_calls,
-            "inputTokens": input_tokens,
-            "cachedInputTokens": cached_input_tokens,
-            "billableInputTokens": billable_input_tokens,
-            "outputTokens": output_tokens,
-            "reasoningTokens": reasoning_tokens,
-            "totalTokens": total_tokens,
-            "modelCostUsd": round(model_cost, 6),
-            "toolCostUsd": round(tool_cost, 6),
-            "estimatedCostUsd": round(estimated_cost, 6),
-        }
+        if isinstance(usage, dict):
+            input_tokens = int(usage.get("input_tokens", 0) or 0)
+            output_tokens = int(usage.get("output_tokens", 0) or 0)
+            total_tokens = int(usage.get("total_tokens", 0) or 0)
+            cached_input_tokens = int(((usage.get("input_tokens_details") or {}).get("cached_tokens", 0)) or 0)
+            reasoning_tokens = int(((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0)) or 0)
+            billable_input_tokens = max(0, input_tokens - cached_input_tokens)
+            web_search_calls = len(self.get_web_search_call_items(response))
+            pricing = self.get_model_pricing(model)
+            model_cost = (
+                (billable_input_tokens * float(pricing["inputPer1M"]))
+                + (cached_input_tokens * float(pricing["cachedInputPer1M"]))
+                + (output_tokens * float(pricing["outputPer1M"]))
+            ) / 1_000_000.0
+            tool_cost = web_search_calls * WEB_SEARCH_TOOL_CALL_PRICE_USD
+            estimated_cost = model_cost + tool_cost
+            return {
+                "calls": 1,
+                "webSearchCalls": web_search_calls,
+                "inputTokens": input_tokens,
+                "cachedInputTokens": cached_input_tokens,
+                "billableInputTokens": billable_input_tokens,
+                "outputTokens": output_tokens,
+                "reasoningTokens": reasoning_tokens,
+                "totalTokens": total_tokens,
+                "modelCostUsd": round(model_cost, 6),
+                "toolCostUsd": round(tool_cost, 6),
+                "estimatedCostUsd": round(estimated_cost, 6),
+            }
+        if any(key in response for key in ("prompt_eval_count", "eval_count")):
+            input_tokens = max(0, int(response.get("prompt_eval_count", 0) or 0))
+            output_tokens = max(0, int(response.get("eval_count", 0) or 0))
+            total_tokens = input_tokens + output_tokens
+            return {
+                "calls": 1,
+                "webSearchCalls": 0,
+                "inputTokens": input_tokens,
+                "cachedInputTokens": 0,
+                "billableInputTokens": input_tokens,
+                "outputTokens": output_tokens,
+                "reasoningTokens": 0,
+                "totalTokens": total_tokens,
+                "modelCostUsd": 0.0,
+                "toolCostUsd": 0.0,
+                "estimatedCostUsd": 0.0,
+            }
+        return None
 
     def merge_usage_bucket(self, bucket: Optional[Dict[str, Any]], delta: Dict[str, Any], model: str, response_id: str) -> Dict[str, Any]:
         merged = normalize_usage_bucket(bucket)
@@ -2932,6 +3055,8 @@ class LoopRuntime:
             "incorrect api key",
             "invalid_api_key",
             "organization not found",
+            "provider_does_not_support",
+            "provider_not_configured",
         )
         return not any(marker in message for marker in fatal_markers)
 
@@ -3185,10 +3310,12 @@ class LoopRuntime:
                             raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
 
                         return OpenAIResult(
+                            provider="openai",
                             parsed=parsed,
                             response=response,
                             response_id=str(response.get("id", "")),
                             output_text=output_text,
+                            thinking_text=self.get_response_thinking_text(response),
                             web_search_queries=normalize_string_array_preserve_items(list(web_search_queries.keys())),
                             web_search_sources=normalize_url_array_values(list(web_search_sources.keys())),
                             url_citations=normalize_url_array_values(list(url_citations.keys())),
@@ -3230,6 +3357,155 @@ class LoopRuntime:
         if last_error is not None:
             raise last_error
         raise RuntimeErrorWithCode("Model response did not produce a usable structured output.", 500)
+
+    def ollama_chat_url(self) -> str:
+        base = str(os.getenv("LOOP_OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip() or "http://127.0.0.1:11434"
+        return base.rstrip("/") + "/api/chat"
+
+    def ollama_api_key(self) -> str:
+        return str(os.getenv("LOOP_OLLAMA_API_KEY") or os.getenv("OLLAMA_API_KEY") or "").strip()
+
+    def invoke_ollama_json(
+        self,
+        model: str,
+        instructions: str,
+        input_text: str,
+        schema: Dict[str, Any],
+        max_output_tokens: int = 0,
+        target_kind: str = "generic",
+    ) -> OpenAIResult:
+        attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+        last_error: Optional[RuntimeErrorWithCode] = None
+        api_key = self.ollama_api_key()
+        for effective_tokens in attempts:
+            messages = [
+                {"role": "system", "content": instructions},
+                {
+                    "role": "user",
+                    "content": (
+                        "Return JSON only that matches this schema exactly.\n\n"
+                        f"Schema:\n{json.dumps(schema, ensure_ascii=False)}\n\n"
+                        f"Input:\n{input_text}"
+                    ),
+                },
+            ]
+            body: Dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "format": schema,
+                "options": {},
+            }
+            if effective_tokens > 0:
+                body["options"]["num_predict"] = effective_tokens
+            if not body["options"]:
+                body.pop("options", None)
+
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            request = urllib.request.Request(
+                self.ollama_chat_url(),
+                data=json.dumps(body).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=1800) as handle:
+                    response = json.loads(handle.read().decode("utf-8"))
+            except urllib.error.HTTPError as error:
+                body_text = error.read().decode("utf-8", errors="replace")
+                raise RuntimeErrorWithCode(f"Ollama API request failed: HTTP {error.code} | {body_text}", 500)
+            except Exception as error:
+                raise RuntimeErrorWithCode(f"Ollama API request failed: {error}", 500)
+
+            output_text = self.get_response_output_text(response)
+            if not output_text:
+                last_error = RuntimeErrorWithCode("Ollama response did not include message.content.", 500)
+                continue
+            try:
+                parsed = json.loads(output_text)
+            except json.JSONDecodeError as error:
+                last_error = RuntimeErrorWithCode(f"Ollama response JSON parse failed: {error}", 500)
+                continue
+            if not isinstance(parsed, dict):
+                last_error = RuntimeErrorWithCode("Ollama response JSON parse failed: expected object output.", 500)
+                continue
+
+            response_id = str(response.get("created_at", "") or "") or f"ollama:{int(time.time())}"
+            return OpenAIResult(
+                provider="ollama",
+                parsed=parsed,
+                response=response,
+                response_id=response_id,
+                output_text=output_text,
+                thinking_text=self.get_response_thinking_text(response),
+                web_search_queries=[],
+                web_search_sources=[],
+                url_citations=[],
+                requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                effective_max_output_tokens=effective_tokens,
+                attempts=attempts,
+                recovered_from_incomplete=False,
+                executed_tools=[],
+                auth_assignment=None,
+                auth_failover_history=[],
+            )
+        if last_error is not None:
+            raise last_error
+        raise RuntimeErrorWithCode("Ollama response did not produce a usable structured output.", 500)
+
+    def invoke_provider_json(
+        self,
+        provider: str,
+        api_key: str,
+        model: str,
+        reasoning_effort: str,
+        instructions: str,
+        input_text: str,
+        schema_name: str,
+        schema: Dict[str, Any],
+        max_output_tokens: int = 0,
+        target_kind: str = "generic",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        include: Optional[List[str]] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
+    ) -> OpenAIResult:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        if normalized_provider == "openai":
+            return self.invoke_openai_json(
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                instructions=instructions,
+                input_text=input_text,
+                schema_name=schema_name,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                target_kind=target_kind,
+                tools=tools,
+                tool_choice=tool_choice,
+                include=include,
+                function_handlers=function_handlers,
+                auth_assignments=auth_assignments,
+            )
+        if normalized_provider == "ollama":
+            if tools or tool_choice is not None or include or function_handlers:
+                raise RuntimeErrorWithCode(
+                    "provider_does_not_support: Ollama live mode does not yet support research or function tools in this runtime.",
+                    400,
+                )
+            return self.invoke_ollama_json(
+                model=model,
+                instructions=instructions,
+                input_text=input_text,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                target_kind=target_kind,
+            )
+        raise RuntimeErrorWithCode(f"provider_not_configured: Unsupported provider {normalized_provider}.", 400)
 
     def build_output_token_attempts(self, requested_max_output_tokens: int, target_kind: str) -> List[int]:
         requested = max(0, int(requested_max_output_tokens or 0))
@@ -3639,7 +3915,8 @@ class LoopRuntime:
             f"Prior adjudicated summary (background only):\n{summary_text}\n\n"
             "Produce the commander's first-pass answer direction for this round."
         )
-        result = self.invoke_openai_json(
+        result = self.invoke_provider_json(
+            provider=runtime["provider"],
             api_key=api_key,
             model=runtime["model"],
             reasoning_effort=runtime["reasoningEffort"],
@@ -3851,7 +4128,8 @@ class LoopRuntime:
             f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
             f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
-        result = self.invoke_openai_json(
+        result = self.invoke_provider_json(
+            provider=runtime["provider"],
             api_key=api_key,
             model=runtime["model"],
             reasoning_effort=runtime["reasoningEffort"],
@@ -4171,7 +4449,8 @@ class LoopRuntime:
                 "github_get_pull_request": lambda arguments: self.execute_github_tool_call("github_get_pull_request", arguments, github_tool_config),
                 "github_get_commit": lambda arguments: self.execute_github_tool_call("github_get_commit", arguments, github_tool_config),
             })
-        result = self.invoke_openai_json(
+        result = self.invoke_provider_json(
+            provider=runtime["provider"],
             api_key=api_key,
             model=runtime["model"],
             reasoning_effort=runtime["reasoningEffort"],
@@ -4227,6 +4506,8 @@ class LoopRuntime:
             "syncPolicy": task.get("syncPolicy") if isinstance(task.get("syncPolicy"), dict) else {},
             "runtime": {
                 "executionMode": str(runtime["executionMode"]),
+                "provider": str(runtime["provider"]),
+                "model": str(runtime["model"]),
                 "reasoningEffort": str(runtime["reasoningEffort"]),
                 "budget": self.get_budget_config(task),
                 "research": self.get_research_config(task),
@@ -4997,7 +5278,8 @@ class LoopRuntime:
             f"Worker checkpoint digests:\n{json.dumps(self.project_worker_state_for_summary(worker_state, workers), ensure_ascii=False, indent=2)}\n\n"
             f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
-        result = self.invoke_openai_json(
+        result = self.invoke_provider_json(
+            provider=runtime["provider"],
             api_key=api_key,
             model=runtime["model"],
             reasoning_effort=runtime["reasoningEffort"],
@@ -5172,7 +5454,7 @@ class LoopRuntime:
             )
         round_number = completed_round + 1
         summary_config = commander_config(task)
-        runtime = self.get_task_runtime(task, summary_config["model"], "commander")
+        runtime = self.get_task_runtime(task, summary_config["model"], "commander", summary_config["provider"])
         constraints = normalize_string_array_preserve_items(task.get("constraints", []))
         prior_summary = state.get("summary") if isinstance(state.get("summary"), dict) else None
         checkpoint: Optional[Dict[str, Any]] = None
@@ -5186,12 +5468,12 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignments = self.build_api_key_assignments("commander", task, round_number=round_number)
+        auth_assignments = self.provider_auth_assignments(runtime["provider"], "commander", task, round_number=round_number)
         auth_assignment = auth_assignments[0] if auth_assignments else None
-        auth_meta = auth_assignment_meta(auth_assignment)
+        auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
-            api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
-            if api_key:
+            api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
+            if api_key or not self.provider_requires_api_key(runtime["provider"]):
                 try:
                     self.assert_budget_available("commander", task)
                     checkpoint, response_id, response, call_meta = self.new_live_commander(
@@ -5203,7 +5485,7 @@ class LoopRuntime:
                         constraints,
                         prior_summary,
                     )
-                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
                     self.append_auth_failover_step("commander", str(task["taskId"]), runtime["model"], call_meta, "commander")
                     usage_snapshot = self.update_usage_tracking("commander", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
@@ -5240,7 +5522,8 @@ class LoopRuntime:
                         },
                     )
             else:
-                self.raise_if_managed_secret_backend_unavailable("commander", str(task["taskId"]), runtime["model"], "commander")
+                if self.provider_uses_api_key_pool(runtime["provider"]):
+                    self.raise_if_managed_secret_backend_unavailable("commander", str(task["taskId"]), runtime["model"], "commander")
                 self.append_step("commander", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if checkpoint is None:
             checkpoint = self.new_mock_commander(task, runtime, round_number, constraints, prior_summary)
@@ -5378,7 +5661,7 @@ class LoopRuntime:
                     409,
                 )
         review_config = commander_review_config(task)
-        runtime = self.get_task_runtime(task, review_config["model"], "commander_review")
+        runtime = self.get_task_runtime(task, review_config["model"], "commander_review", review_config["provider"])
         line_catalog = self.build_summary_line_catalog(worker_state, workers)
         checkpoint: Optional[Dict[str, Any]] = None
         response_id: Optional[str] = None
@@ -5391,12 +5674,12 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignments = self.build_api_key_assignments("commander_review", task, round_number=commander_round)
+        auth_assignments = self.provider_auth_assignments(runtime["provider"], "commander_review", task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
-        auth_meta = auth_assignment_meta(auth_assignment)
+        auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
-            api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
-            if api_key:
+            api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
+            if api_key or not self.provider_requires_api_key(runtime["provider"]):
                 try:
                     self.assert_budget_available("commander_review", task)
                     checkpoint, response_id, response, call_meta = self.new_live_commander_review(
@@ -5409,7 +5692,7 @@ class LoopRuntime:
                         runtime,
                         line_catalog,
                     )
-                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
                     self.append_auth_failover_step("commander_review", str(task["taskId"]), runtime["model"], call_meta, "commander_review")
                     usage_snapshot = self.update_usage_tracking("commander_review", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
@@ -5446,7 +5729,8 @@ class LoopRuntime:
                         },
                     )
             else:
-                self.raise_if_managed_secret_backend_unavailable("commander_review", str(task["taskId"]), runtime["model"], "commander_review")
+                if self.provider_uses_api_key_pool(runtime["provider"]):
+                    self.raise_if_managed_secret_backend_unavailable("commander_review", str(task["taskId"]), runtime["model"], "commander_review")
                 self.append_step("commander_review", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if checkpoint is None:
             checkpoint = self.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
@@ -5638,12 +5922,12 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignments = self.build_api_key_assignments(worker_id, task, round_number=commander_round)
+        auth_assignments = self.provider_auth_assignments(runtime["provider"], worker_id, task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
-        auth_meta = auth_assignment_meta(auth_assignment)
+        auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
-            api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
-            if api_key:
+            api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
+            if api_key or not self.provider_requires_api_key(runtime["provider"]):
                 try:
                     self.assert_budget_available(worker_id, task)
                     checkpoint, response_id, response, call_meta = self.new_live_checkpoint(
@@ -5660,7 +5944,7 @@ class LoopRuntime:
                         prior_memory_version,
                         peer_messages,
                     )
-                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
                     self.append_auth_failover_step(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], call_meta, worker_id)
                     usage_snapshot = self.update_usage_tracking(worker_id, str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
@@ -5701,7 +5985,8 @@ class LoopRuntime:
                         },
                     )
             else:
-                self.raise_if_managed_secret_backend_unavailable(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], worker_id)
+                if self.provider_uses_api_key_pool(runtime["provider"]):
+                    self.raise_if_managed_secret_backend_unavailable(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], worker_id)
                 self.append_step(
                     f"worker_{worker_id}",
                     "No API key found; falling back to mock.",
@@ -5856,7 +6141,7 @@ class LoopRuntime:
                 )
             worker_state[worker["id"]] = checkpoint
         summary_config = summarizer_config(task)
-        runtime = self.get_task_runtime(task, summary_config["model"], "summarizer")
+        runtime = self.get_task_runtime(task, summary_config["model"], "summarizer", summary_config["provider"])
         vetting_config = self.get_vetting_config(task)
         line_catalog = self.build_summary_line_catalog(worker_state, workers)
         summary: Optional[Dict[str, Any]] = None
@@ -5870,12 +6155,12 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignments = self.build_api_key_assignments("summarizer", task, round_number=commander_round)
+        auth_assignments = self.provider_auth_assignments(runtime["provider"], "summarizer", task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
-        auth_meta = auth_assignment_meta(auth_assignment)
+        auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
-            api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
-            if api_key:
+            api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
+            if api_key or not self.provider_requires_api_key(runtime["provider"]):
                 try:
                     self.assert_budget_available("summarizer", task)
                     summary, response_id, response, call_meta = self.new_live_summary(
@@ -5890,7 +6175,7 @@ class LoopRuntime:
                         vetting_config,
                         line_catalog,
                     )
-                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
                     self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "summarizer")
                     usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
@@ -5927,7 +6212,8 @@ class LoopRuntime:
                         },
                     )
             else:
-                self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "summarizer")
+                if self.provider_uses_api_key_pool(runtime["provider"]):
+                    self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "summarizer")
                 self.append_step("summarizer", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
             summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
@@ -6034,7 +6320,7 @@ class LoopRuntime:
             else:
                 pending_workers.append(worker["id"])
         summary_config = summarizer_config(task)
-        runtime = self.get_task_runtime(task, summary_config["model"], "summarizer")
+        runtime = self.get_task_runtime(task, summary_config["model"], "summarizer", summary_config["provider"])
         requested_partial_tokens = int(runtime.get("maxOutputTokens", 0) or 0)
         runtime["maxOutputTokens"] = min(max(requested_partial_tokens, 2200), 3200) if requested_partial_tokens > 0 else 2200
         if runtime["reasoningEffort"] in {"high", "xhigh"}:
@@ -6054,12 +6340,12 @@ class LoopRuntime:
             "recoveredFromIncomplete": False,
         }
         mode_used = "mock"
-        auth_assignments = self.build_api_key_assignments("summarizer", task, round_number=commander_round)
+        auth_assignments = self.provider_auth_assignments(runtime["provider"], "summarizer", task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
-        auth_meta = auth_assignment_meta(auth_assignment)
+        auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
-            api_key = str(auth_assignment.get("apiKey")) if auth_assignment else None
-            if api_key:
+            api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
+            if api_key or not self.provider_requires_api_key(runtime["provider"]):
                 try:
                     self.assert_budget_available("summarizer", task)
                     summary, response_id, response, call_meta = self.new_live_summary(
@@ -6076,7 +6362,7 @@ class LoopRuntime:
                         partial_mode=True,
                         pending_workers=pending_workers,
                     )
-                    auth_meta = auth_assignment_meta(call_meta.get("auth"))
+                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
                     self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "answer_now")
                     usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                     mode_used = "live"
@@ -6103,7 +6389,8 @@ class LoopRuntime:
                         },
                     )
             else:
-                self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "answer_now")
+                if self.provider_uses_api_key_pool(runtime["provider"]):
+                    self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "answer_now")
                 self.append_step("summarizer", "No API key found for Answer Now; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if summary is None:
             summary = self.new_mock_summary(

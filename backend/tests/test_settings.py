@@ -38,8 +38,10 @@ class SettingsTests(unittest.TestCase):
     def test_apply_runtime_settings_updates_task_snapshot_and_draft(self) -> None:
         result = settings.apply_runtime_settings(
             {
-                "model": "gpt-5.4-mini",
-                "summarizerModel": "gpt-5.4",
+                "provider": "ollama",
+                "model": "qwen3",
+                "summarizerProvider": "openai",
+                "summarizerModel": "gpt-5.4-mini",
                 "reasoningEffort": "high",
                 "maxCostUsd": 19,
                 "maxTotalTokens": 456000,
@@ -57,15 +59,21 @@ class SettingsTests(unittest.TestCase):
             self.root,
         )
 
-        self.assertEqual(result["workerModel"], "gpt-5.4-mini")
-        self.assertEqual(result["summarizerModel"], "gpt-5.4")
+        self.assertEqual(result["provider"], "ollama")
+        self.assertEqual(result["workerModel"], "qwen3")
+        self.assertEqual(result["summarizerProvider"], "openai")
+        self.assertEqual(result["summarizerModel"], "gpt-5.4-mini")
         self.assertEqual(result["preferredLoop"]["rounds"], 5)
 
         state = storage.read_state_payload(storage.project_paths(self.root))
-        self.assertEqual(state["activeTask"]["runtime"]["model"], "gpt-5.4-mini")
-        self.assertEqual(state["activeTask"]["summarizer"]["model"], "gpt-5.4")
-        self.assertTrue(all(worker["model"] == "gpt-5.4-mini" for worker in state["activeTask"]["workers"]))
-        self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4")
+        self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
+        self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
+        self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
+        self.assertEqual(state["activeTask"]["summarizer"]["model"], "gpt-5.4-mini")
+        self.assertTrue(all(worker["model"] == "qwen3" for worker in state["activeTask"]["workers"]))
+        self.assertEqual(state["draft"]["provider"], "ollama")
+        self.assertEqual(state["draft"]["summarizerProvider"], "openai")
+        self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4-mini")
         self.assertTrue(state["draft"]["githubToolsEnabled"])
 
     def test_update_worker_config_mutates_draft_only(self) -> None:

@@ -9,10 +9,12 @@ from typing import Any, Dict, Optional
 
 from runtime.engine import (
     DEFAULT_MODEL_ID,
+    DEFAULT_PROVIDER_ID,
     LoopRuntime,
     RuntimeErrorWithCode,
     coerce_bool,
     default_budget_config,
+    default_model_for_provider,
     default_dynamic_spinup_config,
     default_github_tool_config,
     default_local_file_tool_config,
@@ -28,6 +30,7 @@ from runtime.engine import (
     normalize_local_file_roots,
     normalize_local_file_tool_config,
     normalize_model_id,
+    normalize_provider_id,
     normalize_research_config,
     normalize_string_list,
     normalize_vetting_config,
@@ -75,6 +78,7 @@ def normalize_loop_preferences(config: Optional[Dict[str, Any]] = None) -> Dict[
 def default_draft_state() -> Dict[str, Any]:
     budget = default_budget_config()
     model = DEFAULT_MODEL_ID
+    provider = DEFAULT_PROVIDER_ID
     loop = default_loop_preferences()
     local_files = default_local_file_tool_config()
     github_tools = default_github_tool_config()
@@ -84,7 +88,9 @@ def default_draft_state() -> Dict[str, Any]:
         "constraints": [],
         "sessionContext": "",
         "executionMode": "live",
+        "provider": provider,
         "model": model,
+        "summarizerProvider": provider,
         "summarizerModel": model,
         "reasoningEffort": "low",
         "maxTotalTokens": budget["maxTotalTokens"],
@@ -103,7 +109,7 @@ def default_draft_state() -> Dict[str, Any]:
         "summarizerHarness": default_summarizer_harness(),
         "loopRounds": loop["rounds"],
         "loopDelayMs": loop["delayMs"],
-        "workers": worker_catalog(model)[:2],
+        "workers": worker_catalog(model, provider)[:2],
         "updatedAt": utc_now(),
     }
 
@@ -146,17 +152,29 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     execution_mode = str(current.get("executionMode", default["executionMode"])).strip()
     if execution_mode not in {"live", "mock"}:
         execution_mode = str(default["executionMode"])
-    model = normalize_model_id(str(current.get("model", default["model"])), str(default["model"]))
+    provider = normalize_provider_id(str(current.get("provider", default["provider"])), str(default["provider"]))
+    model = normalize_model_id(
+        str(current.get("model", default["model"])),
+        default_model_for_provider(provider),
+        provider,
+    )
+    summarizer_provider = normalize_provider_id(
+        str(current.get("summarizerProvider", current.get("provider", default["summarizerProvider"]))),
+        provider,
+    )
     summarizer_model = normalize_model_id(
         str(current.get("summarizerModel", default["summarizerModel"])),
-        model,
+        default_model_for_provider(summarizer_provider),
+        summarizer_provider,
     )
     return {
         "objective": str(current.get("objective", default["objective"])).strip(),
         "constraints": list(normalize_string_list(current.get("constraints", default["constraints"]))),
         "sessionContext": str(current.get("sessionContext", default["sessionContext"])).strip(),
         "executionMode": execution_mode,
+        "provider": provider,
         "model": model,
+        "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
         "reasoningEffort": reasoning_effort,
         "maxTotalTokens": budget["maxTotalTokens"],
@@ -183,7 +201,7 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "loopDelayMs": loop["delayMs"],
         "workers": task_workers(
             {
-                "runtime": {"model": model},
+                "runtime": {"provider": provider, "model": model},
                 "workers": current.get("workers", default["workers"]),
             }
         ),
@@ -206,8 +224,10 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
     github_tools = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
     dynamic_spinup = normalize_dynamic_spinup_config(runtime.get("dynamicSpinup") if isinstance(runtime.get("dynamicSpinup"), dict) else {})
     vetting = normalize_vetting_config(runtime.get("vetting") if isinstance(runtime.get("vetting"), dict) else {})
-    model = normalize_model_id(str(runtime.get("model", default["model"])), str(default["model"]))
+    provider = normalize_provider_id(str(runtime.get("provider", default["provider"])), str(default["provider"]))
+    model = normalize_model_id(str(runtime.get("model", default["model"])), default_model_for_provider(provider), provider)
     summarizer = task.get("summarizer") if isinstance(task.get("summarizer"), dict) else {}
+    summarizer_provider = normalize_provider_id(str(summarizer.get("provider", provider)), provider)
     loop_prefs = normalize_loop_preferences(task.get("preferredLoop") if isinstance(task.get("preferredLoop"), dict) else {})
 
     draft = {
@@ -215,8 +235,14 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         "constraints": list(normalize_string_list(task.get("constraints", default["constraints"]))),
         "sessionContext": str(task.get("sessionContext", default["sessionContext"])).strip(),
         "executionMode": str(runtime.get("executionMode", default["executionMode"])).strip(),
+        "provider": provider,
         "model": model,
-        "summarizerModel": normalize_model_id(str(summarizer.get("model", model)), model),
+        "summarizerProvider": summarizer_provider,
+        "summarizerModel": normalize_model_id(
+            str(summarizer.get("model", default["summarizerModel"])),
+            default_model_for_provider(summarizer_provider),
+            summarizer_provider,
+        ),
         "reasoningEffort": str(runtime.get("reasoningEffort", default["reasoningEffort"])).strip(),
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
@@ -483,7 +509,9 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "constraints": constraints if isinstance(constraints, list) else existing_draft["constraints"],
             "sessionContext": str(payload.get("sessionContext", existing_draft["sessionContext"])).strip(),
             "executionMode": payload.get("executionMode", existing_draft["executionMode"]),
+            "provider": payload.get("provider", existing_draft["provider"]),
             "model": payload.get("model", existing_draft["model"]),
+            "summarizerProvider": payload.get("summarizerProvider", existing_draft["summarizerProvider"]),
             "summarizerModel": payload.get("summarizerModel", existing_draft["summarizerModel"]),
             "reasoningEffort": payload.get("reasoningEffort", existing_draft["reasoningEffort"]),
             "maxCostUsd": payload.get("maxCostUsd", existing_draft["maxCostUsd"]),
@@ -530,8 +558,14 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
     execution_mode = str(payload.get("executionMode", "live")).strip()
     if execution_mode not in {"live", "mock"}:
         execution_mode = "live"
-    model = normalize_model_id(str(payload.get("model", DEFAULT_MODEL_ID)), DEFAULT_MODEL_ID)
-    summarizer_model = normalize_model_id(str(payload.get("summarizerModel", model)), model)
+    provider = normalize_provider_id(str(payload.get("provider", DEFAULT_PROVIDER_ID)), DEFAULT_PROVIDER_ID)
+    model = normalize_model_id(str(payload.get("model", default_model_for_provider(provider))), default_model_for_provider(provider), provider)
+    summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider", provider)), provider)
+    summarizer_model = normalize_model_id(
+        str(payload.get("summarizerModel", default_model_for_provider(summarizer_provider))),
+        default_model_for_provider(summarizer_provider),
+        summarizer_provider,
+    )
     reasoning_effort = str(payload.get("reasoningEffort", "low")).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = "low"
@@ -577,7 +611,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
     )
     workers = task_workers(
         {
-            "runtime": {"model": model},
+            "runtime": {"provider": provider, "model": model},
             "workers": workers_input if isinstance(workers_input, list) else [],
         }
     )
@@ -590,6 +624,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         "createdAt": utc_now(),
         "runtime": {
             "executionMode": execution_mode,
+            "provider": provider,
             "model": model,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
@@ -607,6 +642,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         "summarizer": {
             "id": "summarizer",
             "label": "Summarizer",
+            "provider": summarizer_provider,
             "model": summarizer_model,
             "harness": normalize_harness_config(
                 summarizer_harness_input if isinstance(summarizer_harness_input, dict) else {},
