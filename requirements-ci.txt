@@ -16,7 +16,7 @@ pydantic_core==2.46.3
 psycopg[binary]==3.2.12
 python-dotenv==1.2.2
 PyYAML==6.0.3
-redis==6.4.0
+redis==7.4.0
 starlette==1.0.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
