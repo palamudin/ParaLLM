@@ -13,7 +13,7 @@ httptools==0.7.1
 idna==3.11
 pydantic==2.13.3
 pydantic_core==2.46.3
-psycopg[binary]==3.2.12
+psycopg[binary]==3.3.3
 python-dotenv==1.2.2
 PyYAML==6.0.3
 redis==6.4.0
