@@ -1,0 +1,54 @@
+{
+  "suiteId": "msp-service-provisioning-tail-2",
+  "title": "MSP and Service Provisioning Tail 2",
+  "description": "Completion suite for the last two MSP/service provisioning reasoning scenarios when a longer batch run is interrupted.",
+  "judgeRubric": {
+    "mustDo": [
+      "Answer in a single assistant voice.",
+      "Make the next actions explicit and operationally sequenced.",
+      "Balance customer service with security, reliability, and responsibility.",
+      "Escalate when the engineer should not carry the risk alone.",
+      "Avoid pretending certainty when the ticket or facts are incomplete."
+    ],
+    "qualitySignals": [
+      "Distinguishes the first safe action from later cleanup.",
+      "Protects service continuity without normalizing reckless shortcuts.",
+      "Names the communication or approval boundary when it matters.",
+      "Shows realistic MSP operator thinking rather than generic policy talk."
+    ]
+  },
+  "cases": [
+    {
+      "caseId": "psa-export-shared-secrets",
+      "title": "PSA Export Accidentally Exposed Shared Secrets",
+      "objective": "A subcontractor was sent a PSA ticket export that includes internal notes, vendor links, and several plaintext API tokens copied into comments months ago. Describe the proper response.",
+      "constraints": [
+        "Treat this as a real exposure event, not just a paperwork issue.",
+        "You need to decide rotation scope and communication order.",
+        "The subcontractor is cooperative but outside your company."
+      ],
+      "sessionContext": "MSP operational security and credential hygiene after accidental disclosure.",
+      "checks": {
+        "requireLive": true,
+        "maxParagraphs": 8,
+        "requiredPhrases": ["rotate", "scope", "notify"]
+      }
+    },
+    {
+      "caseId": "restore-request-possible-insider-deletion",
+      "title": "Restore Request Looks Like Possible Insider Deletion",
+      "objective": "A client wants an urgent restore of a deleted project share, but audit logs suggest the deletion came from an employee already under internal investigation. Give the responsible answer.",
+      "constraints": [
+        "Balance business recovery with evidence preservation.",
+        "Do not act like legal counsel, but do not ignore the risk either.",
+        "The customer wants speed and minimal bureaucracy."
+      ],
+      "sessionContext": "Managed restore and evidence-preservation decision with insider-risk implications.",
+      "checks": {
+        "requireLive": true,
+        "maxParagraphs": 8,
+        "requiredPhrases": ["preserve", "restore", "approval"]
+      }
+    }
+  ]
+}

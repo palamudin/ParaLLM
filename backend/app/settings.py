@@ -9,11 +9,17 @@ from runtime.engine import (
     LoopRuntime,
     RuntimeErrorWithCode,
     coerce_bool,
+    default_context_mode,
+    default_direct_baseline_mode,
     default_model_for_provider,
+    default_ollama_base_url,
     normalize_budget_config,
+    normalize_context_mode,
+    normalize_direct_baseline_mode,
     normalize_dynamic_spinup_config,
     normalize_github_tool_config,
     normalize_model_id,
+    normalize_ollama_base_url,
     normalize_provider_id,
     normalize_research_config,
     normalize_vetting_config,
@@ -24,6 +30,13 @@ from runtime.engine import (
 )
 
 from . import control, jobs, storage
+from .secrets import (
+    auth_backend_mode_for_provider,
+    auth_key_provider_label,
+    normalize_auth_backend_mode,
+    write_auth_backend_mode_override,
+    write_local_auth_keys,
+)
 
 
 def utc_now() -> str:
@@ -35,22 +48,20 @@ def _runtime(root: Optional[Path] = None) -> LoopRuntime:
 
 
 def write_auth_key_pool(keys: list[str], root: Optional[Path] = None, provider: Any = "openai") -> None:
-    auth_path = control.provider_auth_file_path(root, provider)
-    auth_path.parent.mkdir(parents=True, exist_ok=True)
-    normalized = control.normalize_auth_key_pool(keys)
-    payload = "\n".join(normalized) + ("\n" if normalized else "")
-    auth_path.write_text(payload, encoding="utf-8")
+    auth_path = control.local_auth_file_path(root)
+    write_local_auth_keys(auth_path, provider, control.normalize_auth_key_pool(keys))
 
 
 def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
     runtime = _runtime(root)
+    provider = control.normalize_auth_key_provider(payload.get("provider", "openai"))
     auth_status = control.auth_pool_status(runtime.root)
-    if not bool(auth_status.get("writable")):
+    provider_group = ((auth_status.get("providerGroups") or {}) if isinstance(auth_status.get("providerGroups"), dict) else {}).get(provider) or {}
+    if not bool(provider_group.get("writable")):
         raise RuntimeErrorWithCode(
-            f"API key mutation is disabled because the active secret backend is {auth_status.get('backend')}.",
+            f"API key mutation is disabled for {auth_key_provider_label(provider)} because that provider group is in {str(provider_group.get('selectedModeLabel') or auth_backend_mode_for_provider(runtime.root, provider)).lower()} mode.",
             409,
         )
-    provider = control.normalize_auth_key_provider(payload.get("provider", "openai"))
     provider_label = control.auth_key_provider_label(provider)
     clear = coerce_bool(payload.get("clear"), False)
     append_key = str(payload.get("appendKey") or "").strip()
@@ -132,6 +143,23 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
     }
 
 
+def set_auth_backend_mode(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    provider = control.normalize_auth_key_provider(payload.get("provider", "openai"))
+    requested_mode = normalize_auth_backend_mode(payload.get("mode"), auth_backend_mode_for_provider(runtime.root, provider))
+    write_auth_backend_mode_override(runtime.root, provider, requested_mode)
+    runtime.append_step(
+        "auth",
+        f"Set {auth_key_provider_label(provider)} credential mode to {requested_mode}.",
+        {"provider": provider, "mode": requested_mode},
+    )
+    return {
+        "ok": True,
+        "message": f"{auth_key_provider_label(provider)} credential mode set to {requested_mode}.",
+        **control.auth_pool_status(runtime.root),
+    }
+
+
 def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
     runtime = _runtime(root)
     state = storage.read_state_payload(storage.project_paths(runtime.root))
@@ -158,6 +186,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         str((active_task.get("summarizer") or {}).get("provider") or current_provider),
         current_provider,
     )
+    current_context_mode = normalize_context_mode(runtime_config.get("contextMode", default_context_mode()), default_context_mode())
+    current_direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
+    current_direct_provider = normalize_provider_id(str(runtime_config.get("directProvider") or current_provider), current_provider)
+    current_ollama_base_url = normalize_ollama_base_url(runtime_config.get("ollamaBaseUrl", default_ollama_base_url()))
     provider = normalize_provider_id(str(payload.get("provider") or current_provider), current_provider)
     summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider") or current_summarizer_provider), provider)
     model = normalize_model_id(
@@ -170,6 +202,15 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         default_model_for_provider(summarizer_provider),
         summarizer_provider,
     )
+    context_mode = normalize_context_mode(payload.get("contextMode", current_context_mode), current_context_mode)
+    direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", current_direct_baseline_mode), current_direct_baseline_mode)
+    direct_provider = normalize_provider_id(str(payload.get("directProvider") or current_direct_provider), provider)
+    direct_model = normalize_model_id(
+        str(payload.get("directModel") or default_model_for_provider(direct_provider)),
+        default_model_for_provider(direct_provider),
+        direct_provider,
+    )
+    ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", current_ollama_base_url))
     reasoning_effort = str(payload.get("reasoningEffort", current_reasoning_effort)).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = current_reasoning_effort
@@ -230,6 +271,11 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime = dict(task.get("runtime") if isinstance(task.get("runtime"), dict) else {})
         task_runtime["provider"] = provider
         task_runtime["model"] = model
+        task_runtime["contextMode"] = context_mode
+        task_runtime["directBaselineMode"] = direct_baseline_mode
+        task_runtime["directProvider"] = direct_provider
+        task_runtime["directModel"] = direct_model
+        task_runtime["ollamaBaseUrl"] = ollama_base_url
         task_runtime["reasoningEffort"] = reasoning_effort
         task_runtime["budget"] = budget
         task_runtime["research"] = research
@@ -254,6 +300,11 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "model": model,
                 "summarizerProvider": summarizer_provider,
                 "summarizerModel": summarizer_model,
+                "contextMode": context_mode,
+                "directBaselineMode": direct_baseline_mode,
+                "directProvider": direct_provider,
+                "directModel": direct_model,
+                "ollamaBaseUrl": ollama_base_url,
                 "reasoningEffort": reasoning_effort,
                 "maxTotalTokens": budget["maxTotalTokens"],
                 "maxCostUsd": budget["maxCostUsd"],
@@ -284,6 +335,11 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "taskId": updated_state["activeTask"].get("taskId"),
             "workerModel": model,
             "summarizerModel": summarizer_model,
+            "contextMode": context_mode,
+            "directBaselineMode": direct_baseline_mode,
+            "directProvider": direct_provider,
+            "directModel": direct_model,
+            "ollamaBaseUrl": ollama_base_url,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
             "research": research,
@@ -301,6 +357,11 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "workerModel": model,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
+        "contextMode": context_mode,
+        "directBaselineMode": direct_baseline_mode,
+        "directProvider": direct_provider,
+        "directModel": direct_model,
+        "ollamaBaseUrl": ollama_base_url,
         "reasoningEffort": reasoning_effort,
         "budget": budget,
         "research": research,
@@ -398,9 +459,10 @@ def add_adversarial_worker(payload: Dict[str, Any], root: Optional[Path] = None)
         raise RuntimeErrorWithCode("The autonomous loop is active. Cancel it before changing the worker roster.", 409)
 
     requested_type = str(payload.get("type") or "").strip().lower() or None
-    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
     draft = control.normalize_draft_state(state.get("draft") if isinstance(state.get("draft"), dict) else {})
-    worker = _next_adversarial_worker_definition(active_task or draft, requested_type)
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    candidate_source = draft if draft.get("workers") else (active_task or draft)
+    worker = _next_adversarial_worker_definition(candidate_source, requested_type)
     if worker is None:
         raise RuntimeErrorWithCode("All available adversarial worker slots are already in use.", 409)
 
@@ -427,6 +489,56 @@ def add_adversarial_worker(payload: Dict[str, Any], root: Optional[Path] = None)
         },
     )
     return {"message": "Adversarial worker added.", "worker": worker}
+
+
+def remove_adversarial_worker(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    state = storage.read_state_payload(storage.project_paths(runtime.root))
+    if jobs.loop_is_active(state):
+        raise RuntimeErrorWithCode("The autonomous loop is active. Cancel it before changing the worker roster.", 409)
+
+    draft = control.normalize_draft_state(state.get("draft") if isinstance(state.get("draft"), dict) else {})
+    draft_workers = task_workers({"runtime": {"provider": draft["provider"], "model": draft["model"]}, "workers": draft["workers"]})
+    if len(draft_workers) <= 2:
+        raise RuntimeErrorWithCode("At least two adversarial workers must remain configured.", 409)
+
+    removed_worker = dict(draft_workers[-1])
+
+    def mutate(current: Dict[str, Any]) -> Dict[str, Any]:
+        next_state = dict(current)
+        next_draft = control.normalize_draft_state(current.get("draft") if isinstance(current.get("draft"), dict) else {})
+        next_workers = task_workers({"runtime": {"provider": next_draft["provider"], "model": next_draft["model"]}, "workers": next_draft["workers"]})
+        if len(next_workers) <= 2:
+            raise RuntimeErrorWithCode("At least two adversarial workers must remain configured.", 409)
+        next_workers = next_workers[:-1]
+        next_draft["workers"] = task_workers({"runtime": {"provider": next_draft["provider"], "model": next_draft["model"]}, "workers": next_workers})
+        next_state["draft"] = next_draft
+        active_task = current.get("activeTask") if isinstance(current.get("activeTask"), dict) else None
+        if active_task is not None:
+            active_workers = task_workers(active_task)
+            filtered_workers = [worker for worker in active_workers if str(worker.get("id") or "").upper() != str(removed_worker.get("id") or "").upper()]
+            if len(filtered_workers) != len(active_workers):
+                updated_task = dict(active_task)
+                updated_task["workers"] = filtered_workers
+                next_state["activeTask"] = updated_task
+        return next_state
+
+    updated_state = runtime.mutate_state(mutate)
+    if isinstance(updated_state.get("activeTask"), dict):
+        control._write_task_snapshot_unlocked(runtime, updated_state["activeTask"])
+    runtime.append_step(
+        "worker_roster",
+        "Removed the last adversarial worker slot.",
+        {
+            "taskId": ((updated_state.get("activeTask") or {}) if isinstance(updated_state.get("activeTask"), dict) else {}).get("taskId"),
+            "workerId": removed_worker.get("id"),
+            "label": removed_worker.get("label"),
+            "type": removed_worker.get("type"),
+            "temperature": removed_worker.get("temperature"),
+            "model": removed_worker.get("model"),
+        },
+    )
+    return {"message": "Adversarial worker removed.", "worker": removed_worker}
 
 
 def set_position_model(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:

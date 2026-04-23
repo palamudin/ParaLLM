@@ -78,7 +78,9 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("assets/app.js", response.text)
         self.assertIn("assets/vendor/jquery/jquery-3.7.1.min.js", response.text)
-        self.assertIn('id="headerApiMode"', response.text)
+        self.assertIn('class="workspace-pill-row"', response.text)
+        self.assertIn('id="headerTaskId"', response.text)
+        self.assertNotIn('id="headerApiMode"', response.text)
 
     def test_topology_endpoint_reports_local_single_node_defaults(self) -> None:
         client = TestClient(create_app())

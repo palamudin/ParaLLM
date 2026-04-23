@@ -4,10 +4,16 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 import traceback
 from copy import deepcopy
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.app import metadata as metadata_store
 from backend.app.control import auth_file_path
@@ -16,15 +22,24 @@ from engine import (
     RuntimeErrorWithCode,
     auth_assignment_meta,
     coerce_bool,
+    default_context_mode,
+    default_direct_baseline_mode,
+    default_summarizer_harness,
     default_model_for_provider,
     default_budget_config,
     default_loop_state,
+    default_ollama_base_url,
     default_research_config,
     default_state,
     default_usage_state,
     default_vetting_config,
+    direct_baseline_harness_instruction_lines,
     normalize_budget_config,
+    normalize_context_mode,
+    normalize_direct_baseline_mode,
+    normalize_harness_config,
     normalize_model_id,
+    normalize_ollama_base_url,
     normalize_provider_id,
     normalize_research_config,
     normalize_string_array_preserve_items,
@@ -45,6 +60,15 @@ QUALITY_SCORE_FIELDS = [
     "overallQuality",
 ]
 
+ANSWER_HEALTH_SCORE_FIELDS = [
+    "instructionFit",
+    "structuralClarity",
+    "confidenceCalibration",
+    "evidenceHygiene",
+    "efficiencyDiscipline",
+    "overallHealth",
+]
+
 CONTROL_SCORE_FIELDS = [
     "leadControl",
     "adversarialDiscipline",
@@ -52,6 +76,41 @@ CONTROL_SCORE_FIELDS = [
     "nonFunnelIntegration",
     "overallControl",
 ]
+
+COMPARISON_SCORE_FIELDS = [
+    "materialDifference",
+    "decisionShift",
+    "validationStrength",
+    "operationalSeparation",
+    "overallDifferentiation",
+]
+
+COMPARE_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "if",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "this",
+    "to",
+    "we",
+    "with",
+    "you",
+}
 
 
 class EvalError(RuntimeError):
@@ -110,6 +169,88 @@ def average_score_blocks(blocks: List[Dict[str, Any]], fields: List[str]) -> Dic
     return {
         field: round(mean([float(block.get(field, 0.0) or 0.0) for block in blocks]), 2)
         for field in fields
+    }
+
+
+def count_sentences(text: str) -> int:
+    parts = [part.strip() for part in re.split(r"[.!?]+\s+", str(text or "").strip()) if part.strip()]
+    return len(parts) if parts else (1 if str(text or "").strip() else 0)
+
+
+def tokenize_compare_text(text: str) -> List[str]:
+    tokens = re.findall(r"[a-z0-9]{2,}", str(text or "").lower())
+    return [token for token in tokens if token not in COMPARE_STOPWORDS]
+
+
+def answer_similarity_metrics(primary_text: str, baseline_text: str) -> Dict[str, Any]:
+    primary = str(primary_text or "").strip()
+    baseline = str(baseline_text or "").strip()
+    normalized_primary = re.sub(r"\s+", " ", primary.lower()).strip()
+    normalized_baseline = re.sub(r"\s+", " ", baseline.lower()).strip()
+    primary_tokens = tokenize_compare_text(primary)
+    baseline_tokens = tokenize_compare_text(baseline)
+    token_union = set(primary_tokens) | set(baseline_tokens)
+    token_overlap = 0.0
+    if token_union:
+        token_overlap = len(set(primary_tokens) & set(baseline_tokens)) / len(token_union)
+    primary_first_sentence = re.split(r"(?<=[.!?])\s+", primary, maxsplit=1)[0].strip().lower()
+    baseline_first_sentence = re.split(r"(?<=[.!?])\s+", baseline, maxsplit=1)[0].strip().lower()
+    sequence_similarity = SequenceMatcher(None, normalized_primary, normalized_baseline).ratio() if normalized_primary or normalized_baseline else 0.0
+    return {
+        "sequenceSimilarity": round(sequence_similarity, 3),
+        "tokenOverlap": round(token_overlap, 3),
+        "sharedOpening": bool(primary_first_sentence and primary_first_sentence == baseline_first_sentence),
+        "primaryParagraphs": count_paragraphs(primary),
+        "baselineParagraphs": count_paragraphs(baseline),
+        "paragraphDelta": count_paragraphs(primary) - count_paragraphs(baseline),
+        "primaryChars": len(primary),
+        "baselineChars": len(baseline),
+        "charDelta": len(primary) - len(baseline),
+        "primaryWords": len(primary_tokens),
+        "baselineWords": len(baseline_tokens),
+        "wordDelta": len(primary_tokens) - len(baseline_tokens),
+    }
+
+
+def build_answer_telemetry(
+    answer_text: str,
+    response_meta: Optional[Dict[str, Any]] = None,
+    provider: str = "",
+    model: str = "",
+) -> Dict[str, Any]:
+    response_meta = response_meta if isinstance(response_meta, dict) else {}
+    usage_delta = normalize_usage_state(response_meta.get("usageDelta") if isinstance(response_meta.get("usageDelta"), dict) else {})
+    search_queries = normalize_string_array_preserve_items(response_meta.get("webSearchQueries", []))
+    search_sources = normalize_string_array_preserve_items(response_meta.get("webSearchSources", []))
+    citations = normalize_string_array_preserve_items(response_meta.get("urlCitations", []))
+    output_tokens = int(usage_delta.get("outputTokens", 0) or 0)
+    reasoning_tokens = int(usage_delta.get("reasoningTokens", 0) or 0)
+    effective_max_tokens = int(response_meta.get("effectiveMaxOutputTokens", 0) or 0)
+    output_budget_utilization = 0.0
+    if effective_max_tokens > 0 and output_tokens > 0:
+        output_budget_utilization = output_tokens / effective_max_tokens
+    reasoning_share = 0.0
+    if output_tokens > 0 and reasoning_tokens > 0:
+        reasoning_share = reasoning_tokens / output_tokens
+    return {
+        "provider": str(provider or "").strip(),
+        "model": str(model or "").strip(),
+        "paragraphCount": count_paragraphs(answer_text),
+        "sentenceCount": count_sentences(answer_text),
+        "charCount": len(str(answer_text or "").strip()),
+        "wordCount": len(tokenize_compare_text(answer_text)),
+        "inputTokens": int(usage_delta.get("inputTokens", 0) or 0),
+        "outputTokens": output_tokens,
+        "reasoningTokens": reasoning_tokens,
+        "totalTokens": int(usage_delta.get("totalTokens", 0) or 0),
+        "webSearchCalls": int(usage_delta.get("webSearchCalls", 0) or 0),
+        "searchQueryCount": len(search_queries),
+        "sourceCount": len(search_sources),
+        "citationCount": len(citations),
+        "recoveredFromIncomplete": bool(response_meta.get("recoveredFromIncomplete", False)),
+        "effectiveMaxOutputTokens": effective_max_tokens,
+        "outputBudgetUtilization": round(output_budget_utilization, 3),
+        "reasoningShare": round(reasoning_share, 3),
     }
 
 
@@ -172,6 +313,32 @@ def quality_judge_schema() -> Dict[str, Any]:
     }
 
 
+def answer_health_judge_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "scores",
+            "verdict",
+            "strongestStrength",
+            "strongestWeakness",
+            "rationale",
+        ],
+        "properties": {
+            "scores": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ANSWER_HEALTH_SCORE_FIELDS,
+                "properties": {field: {"type": "integer"} for field in ANSWER_HEALTH_SCORE_FIELDS},
+            },
+            "verdict": {"type": "string"},
+            "strongestStrength": {"type": "string"},
+            "strongestWeakness": {"type": "string"},
+            "rationale": {"type": "string"},
+        },
+    }
+
+
 def control_judge_schema() -> Dict[str, Any]:
     return {
         "type": "object",
@@ -190,6 +357,59 @@ def control_judge_schema() -> Dict[str, Any]:
             "rationale": {"type": "string"},
         },
     }
+
+
+def comparison_judge_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "scores",
+            "verdict",
+            "decisionRelation",
+            "materialDifference",
+            "primaryEdge",
+            "baselineEdge",
+            "rationale",
+        ],
+        "properties": {
+            "scores": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": COMPARISON_SCORE_FIELDS,
+                "properties": {field: {"type": "integer"} for field in COMPARISON_SCORE_FIELDS},
+            },
+            "verdict": {"type": "string", "enum": ["pressurized_advantage", "baseline_advantage", "mixed"]},
+            "decisionRelation": {"type": "string", "enum": ["same_direction", "refined_direction", "different_direction", "opposed_direction"]},
+            "materialDifference": {"type": "boolean"},
+            "primaryEdge": {"type": "string"},
+            "baselineEdge": {"type": "string"},
+            "rationale": {"type": "string"},
+        },
+    }
+
+
+def comparison_score_delta(primary_scores: Dict[str, Any], baseline_scores: Dict[str, Any], fields: List[str]) -> Dict[str, float]:
+    return {
+        field: round(float(primary_scores.get(field, 0) or 0.0) - float(baseline_scores.get(field, 0) or 0.0), 2)
+        for field in fields
+    }
+
+
+def comparison_verdict_from_delta(overall_delta: float) -> str:
+    if overall_delta >= 0.5:
+        return "pressurized_advantage"
+    if overall_delta <= -0.5:
+        return "baseline_advantage"
+    return "mixed"
+
+
+def comparison_verdict_from_counts(pressurized_wins: int, baseline_wins: int, mean_overall_delta: float) -> str:
+    if pressurized_wins > baseline_wins:
+        return "pressurized_advantage"
+    if baseline_wins > pressurized_wins:
+        return "baseline_advantage"
+    return comparison_verdict_from_delta(mean_overall_delta)
 
 
 def validate_suite_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, Any]:
@@ -267,10 +487,26 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
     execution_mode = str(runtime_payload.get("executionMode", "live")).strip().lower()
     if execution_mode not in {"live", "mock"}:
         execution_mode = "live"
+    context_mode = normalize_context_mode(runtime_payload.get("contextMode", default_context_mode()), default_context_mode())
+    direct_baseline_mode = normalize_direct_baseline_mode(
+        runtime_payload.get("directBaselineMode", default_direct_baseline_mode()),
+        default_direct_baseline_mode(),
+    )
+    direct_provider = normalize_provider_id(str(runtime_payload.get("directProvider", provider)).strip(), provider)
+    direct_model = normalize_model_id(
+        str(runtime_payload.get("directModel", "")).strip(),
+        default_model_for_provider(direct_provider),
+        direct_provider,
+    )
     budget = normalize_budget_config(runtime_payload.get("budget") if isinstance(runtime_payload.get("budget"), dict) else {})
     research = normalize_research_config(runtime_payload.get("research") if isinstance(runtime_payload.get("research"), dict) else {})
     vetting = normalize_vetting_config(runtime_payload.get("vetting") if isinstance(runtime_payload.get("vetting"), dict) else {})
     preferred_loop = normalize_loop_preferences(runtime_payload.get("preferredLoop") if isinstance(runtime_payload.get("preferredLoop"), dict) else {})
+    ollama_base_url = normalize_ollama_base_url(runtime_payload.get("ollamaBaseUrl", default_ollama_base_url()))
+    summarizer_harness = normalize_harness_config(
+        runtime_payload.get("summarizerHarness", default_summarizer_harness()),
+        default_summarizer_harness()["concision"],
+    )
     workers = payload.get("workers") if isinstance(payload.get("workers"), list) else []
     normalized_workers = task_workers({"runtime": {"model": model, "provider": provider}, "workers": workers}) if workers else []
     if arm_type == "steered" and not normalized_workers:
@@ -282,10 +518,16 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         "type": arm_type,
         "runtime": {
             "executionMode": execution_mode,
+            "contextMode": context_mode,
+            "directBaselineMode": direct_baseline_mode,
             "provider": provider,
             "model": model,
+            "directProvider": direct_provider,
+            "directModel": direct_model,
+            "ollamaBaseUrl": ollama_base_url,
             "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
+            "summarizerHarness": summarizer_harness,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
             "research": research,
@@ -315,8 +557,13 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
         "createdAt": utc_now(),
         "runtime": {
             "executionMode": runtime_config["executionMode"],
+            "contextMode": runtime_config["contextMode"],
+            "directBaselineMode": runtime_config["directBaselineMode"],
             "provider": runtime_config["provider"],
             "model": runtime_config["model"],
+            "directProvider": runtime_config["directProvider"],
+            "directModel": runtime_config["directModel"],
+            "ollamaBaseUrl": runtime_config["ollamaBaseUrl"],
             "reasoningEffort": runtime_config["reasoningEffort"],
             "budget": deepcopy(runtime_config["budget"]),
             "research": deepcopy(runtime_config["research"]),
@@ -329,6 +576,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "label": "Summarizer",
             "provider": runtime_config["summarizerProvider"],
             "model": runtime_config["summarizerModel"],
+            "harness": deepcopy(runtime_config["summarizerHarness"]),
         },
         "syncPolicy": {
             "mode": "checkpoint",
@@ -396,14 +644,18 @@ def run_direct_answer(
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
     requested_max_output = int(runtime_config["budget"]["maxOutputTokens"])
+    harness_lines = direct_baseline_harness_instruction_lines(
+        runtime_config.get("summarizerHarness", default_summarizer_harness())
+    )
     instructions = (
         "Answer the user directly as one assistant.\n"
         "Give a decisive but conditional recommendation.\n"
         "Do not narrate hidden process.\n"
         "Absorb tradeoffs into the recommendation itself.\n"
-        "Keep the answer concise and actionable.\n"
-        "Return JSON only that matches the schema."
     )
+    if harness_lines:
+        instructions += "\n".join(harness_lines) + "\n"
+    instructions += "Return JSON only that matches the schema."
     input_text = (
         f"Objective:\n{case['objective']}\n\n"
         f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
@@ -422,6 +674,7 @@ def run_direct_answer(
                 schema=direct_answer_schema(),
                 max_output_tokens=requested_max_output,
                 target_kind="generic",
+                provider_settings=runtime_config,
             )
             usage = runtime.get_response_usage_delta(result.response, model) or default_usage_state()
             return {
@@ -477,25 +730,55 @@ def run_steered_answer(
     task = build_eval_task(case, arm, loop_rounds, seed)
     initialize_steered_workspace(runtime, task)
     worker_ids = [worker["id"] for worker in task_workers(task)]
-    for _round in range(1, max(1, loop_rounds) + 1):
-        runtime.run_target("commander", task["taskId"])
-        for worker_id in worker_ids:
-            runtime.run_target(worker_id, task["taskId"])
-        runtime.run_target("summarizer", task["taskId"])
+    answer_path = normalize_direct_baseline_mode(arm["runtime"].get("directBaselineMode"), default_direct_baseline_mode())
+
+    if answer_path == "single":
+        runtime.run_target("direct_baseline", task["taskId"])
+    else:
+        if answer_path == "both":
+            runtime.run_target("direct_baseline", task["taskId"])
+        for _round in range(1, max(1, loop_rounds) + 1):
+            runtime.run_target("commander", task["taskId"])
+            for worker_id in worker_ids:
+                runtime.run_target(worker_id, task["taskId"])
+            runtime.run_target("commander_review", task["taskId"])
+            runtime.run_target("summarizer", task["taskId"])
     state = runtime.read_state()
     summary = state.get("summary")
-    if not isinstance(summary, dict):
+    direct_baseline = state.get("directBaseline")
+    if answer_path == "single":
+        if not isinstance(direct_baseline, dict):
+            raise EvalError("Single-answer steered run finished without a direct baseline.")
+    elif not isinstance(summary, dict):
         raise EvalError("Steered run finished without a summary.")
     usage = normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
     outputs_root = workspace_root / "data"
+    summary_mode = str(((summary.get("frontAnswer") or {}) if isinstance(summary, dict) else {}).get("confidenceNote", "")).strip()
+    summary_output_payload: Optional[Dict[str, Any]] = None
+    direct_baseline_output_payload: Optional[Dict[str, Any]] = None
+    summary_output_path = outputs_root / "outputs" / f"{task['taskId']}_summary_round{int(loop_rounds):03d}_output.json"
+    if summary_output_path.exists():
+        summary_output_payload = read_json(summary_output_path)
+    direct_baseline_output_path = outputs_root / "outputs" / f"{task['taskId']}_direct_baseline_round001_output.json"
+    if direct_baseline_output_path.exists():
+        direct_baseline_output_payload = read_json(direct_baseline_output_path)
     return {
-        "mode": "live" if str(summary.get("frontAnswer", {}).get("confidenceNote", "")).strip() and usage.get("totalTokens", 0) else "mock",
+        "mode": (
+            str(direct_baseline.get("mode", "mock")).strip().lower()
+            if answer_path == "single" and isinstance(direct_baseline, dict)
+            else ("live" if summary_mode and usage.get("totalTokens", 0) else "mock")
+        ),
         "taskId": task["taskId"],
-        "summary": summary,
+        "summary": summary if isinstance(summary, dict) else None,
+        "directBaseline": direct_baseline if isinstance(direct_baseline, dict) else None,
+        "answerPath": answer_path,
+        "baselineError": None,
         "usage": usage,
         "state": state,
         "workspaceRoot": workspace_root,
         "outputsRoot": outputs_root,
+        "summaryOutput": summary_output_payload,
+        "directBaselineOutput": direct_baseline_output_payload,
     }
 
 
@@ -533,10 +816,9 @@ def quality_judge_live(
         target_kind="generic",
     )
     parsed = result.parsed
-    scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
     return {
         "mode": "live",
-        "scores": {field: int(scores.get(field, 0) or 0) for field in QUALITY_SCORE_FIELDS},
+        "scores": {field: int((parsed.get("scores") or {}).get(field, 0) or 0) for field in QUALITY_SCORE_FIELDS},
         "verdict": str(parsed.get("verdict", "")).strip(),
         "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
         "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
@@ -555,7 +837,7 @@ def heuristic_quality_judge(public_answer: str) -> Dict[str, Any]:
     has_next_step = any(token in lowered for token in ["next step", "first", "start", "launch", "rollout", "shadow mode"])
     mentions_hidden_process = any(token in lowered for token in ["lane", "worker", "summarizer", "adversarial"])
 
-    scores = {
+    quality_scores = {
         "decisiveness": 8 if has_recommendation else 5,
         "tradeoffHandling": 8 if has_tradeoff else 5,
         "objectionAbsorption": 8 if has_conditions else 5,
@@ -564,15 +846,92 @@ def heuristic_quality_judge(public_answer: str) -> Dict[str, Any]:
         "overallQuality": 0,
     }
     penalty = 1 if paragraphs > 3 else 0
-    scores["overallQuality"] = max(1, round(mean([value for key, value in scores.items() if key != "overallQuality"])) - penalty)
+    quality_scores["overallQuality"] = max(1, round(mean([value for key, value in quality_scores.items() if key != "overallQuality"])) - penalty)
     return {
         "mode": "mock",
-        "scores": scores,
+        "scores": quality_scores,
         "verdict": "Heuristic quality estimate.",
         "strongestStrength": "Clear recommendation" if has_recommendation else "Readable structure",
         "strongestWeakness": "Needs a more operational next step" if not has_next_step else "Needs stronger objection absorption",
-        "rationale": "Mock judge used heuristic signals because no live judge model was available.",
+        "rationale": "Mock judge used heuristic quality signals because no live judge model was available.",
         "responseId": None,
+    }
+
+
+def answer_health_judge_live(
+    runtime: LoopRuntime,
+    api_key: str,
+    judge_model: str,
+    case: Dict[str, Any],
+    public_answer: str,
+    telemetry: Dict[str, Any],
+) -> Dict[str, Any]:
+    instructions = (
+        "You are grading the operational health of one candidate assistant answer.\n"
+        "Score from 1 to 10 on instruction fit, structural clarity, confidence calibration, evidence hygiene, and efficiency/discipline.\n"
+        "Use telemetry as supporting context, not as a substitute for reading the answer.\n"
+        "Return JSON only that matches the schema."
+    )
+    input_text = (
+        f"Objective:\n{case['objective']}\n\n"
+        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
+        f"Answer telemetry:\n{json.dumps(telemetry, ensure_ascii=False, indent=2)}\n\n"
+        f"Candidate answer:\n{public_answer}\n"
+    )
+    result = runtime.invoke_openai_json(
+        api_key=api_key,
+        model=judge_model,
+        reasoning_effort="high",
+        instructions=instructions,
+        input_text=input_text,
+        schema_name="eval_answer_health_judge",
+        schema=answer_health_judge_schema(),
+        max_output_tokens=1200,
+        target_kind="generic",
+    )
+    parsed = result.parsed
+    scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
+    return {
+        "mode": "live",
+        "scores": {field: int(scores.get(field, 0) or 0) for field in ANSWER_HEALTH_SCORE_FIELDS},
+        "verdict": str(parsed.get("verdict", "")).strip(),
+        "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
+        "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
+        "rationale": str(parsed.get("rationale", "")).strip(),
+        "responseId": result.response_id,
+        "telemetry": telemetry,
+    }
+
+
+def heuristic_answer_health(public_answer: str, telemetry: Dict[str, Any]) -> Dict[str, Any]:
+    text = str(public_answer or "").strip()
+    lowered = text.lower()
+    paragraphs = count_paragraphs(text)
+    mentions_hidden_process = any(token in lowered for token in ["lane", "worker", "summarizer", "adversarial"])
+    has_calibration = any(token in lowered for token in ["if", "unless", "assume", "likely", "unknown", "depends"])
+    has_evidence_language = any(token in lowered for token in ["evidence", "log", "audit", "source", "trace", "capture"])
+    reasoning_share = float(telemetry.get("reasoningShare", 0.0) or 0.0)
+    recovered = bool(telemetry.get("recoveredFromIncomplete", False))
+    char_count = int(telemetry.get("charCount", 0) or 0)
+    output_budget_utilization = float(telemetry.get("outputBudgetUtilization", 0.0) or 0.0)
+    scores = {
+        "instructionFit": 9 if not mentions_hidden_process and paragraphs <= 4 else 5,
+        "structuralClarity": 8 if 1 <= paragraphs <= 4 and char_count > 0 else 5,
+        "confidenceCalibration": 8 if has_calibration else 5,
+        "evidenceHygiene": 8 if has_evidence_language or int(telemetry.get("citationCount", 0) or 0) > 0 else 5,
+        "efficiencyDiscipline": 8 if not recovered and output_budget_utilization <= 0.9 and reasoning_share <= 1.5 else 5,
+        "overallHealth": 0,
+    }
+    scores["overallHealth"] = max(1, round(mean([value for key, value in scores.items() if key != "overallHealth"])))
+    return {
+        "mode": "mock",
+        "scores": scores,
+        "verdict": "Heuristic answer-health estimate.",
+        "strongestStrength": "The answer stays structurally disciplined." if scores["instructionFit"] >= 8 else "Some structural discipline is present.",
+        "strongestWeakness": "Efficiency/calibration signals are weak." if scores["efficiencyDiscipline"] <= 5 else "Evidence handling remains structurally inferred in mock mode.",
+        "rationale": "Mock judge used telemetry and structural cues because no live judge model was available.",
+        "responseId": None,
+        "telemetry": telemetry,
     }
 
 
@@ -678,6 +1037,22 @@ def run_quality_judge(
     return heuristic_quality_judge(public_answer)
 
 
+def run_answer_health_judge(
+    judge_runtime: LoopRuntime,
+    api_key: Optional[str],
+    judge_model: str,
+    case: Dict[str, Any],
+    public_answer: str,
+    telemetry: Dict[str, Any],
+) -> Dict[str, Any]:
+    if api_key:
+        try:
+            return answer_health_judge_live(judge_runtime, api_key, judge_model, case, public_answer, telemetry)
+        except RuntimeErrorWithCode:
+            pass
+    return heuristic_answer_health(public_answer, telemetry)
+
+
 def run_control_judge(
     judge_runtime: LoopRuntime,
     api_key: Optional[str],
@@ -693,9 +1068,154 @@ def run_control_judge(
     return heuristic_control_judge(summary)
 
 
+def comparison_judge_live(
+    runtime: LoopRuntime,
+    api_key: str,
+    judge_model: str,
+    case: Dict[str, Any],
+    judge_rubric: Any,
+    primary_answer: str,
+    baseline_answer: str,
+    primary_quality: Dict[str, Any],
+    primary_health: Dict[str, Any],
+    baseline_quality: Dict[str, Any],
+    baseline_health: Dict[str, Any],
+    similarity: Dict[str, Any],
+) -> Dict[str, Any]:
+    instructions = (
+        "You are comparing a pressurized multi-lane answer against a single-thread baseline for the same prompt.\n"
+        "Judge whether the answers are materially different, whether the difference changes the operational decision, and whether one answer is genuinely better.\n"
+        "Do not reward superficial paraphrase. If the answers mostly say the same thing, mark material difference low even if wording changes.\n"
+        "Verdict must be exactly one of: pressurized_advantage, baseline_advantage, mixed.\n"
+        "decisionRelation must be exactly one of: same_direction, refined_direction, different_direction, opposed_direction.\n"
+        "Use the supplied quality/health summaries and similarity metrics as context, but base the verdict on the actual answer texts.\n"
+        "Return JSON only that matches the schema."
+    )
+    input_text = (
+        f"Objective:\n{case['objective']}\n\n"
+        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
+        f"Hidden rubric:\n{json.dumps(judge_rubric, ensure_ascii=False, indent=2)}\n\n"
+        f"Hidden gold guidance:\n{json.dumps(case.get('gold', {}), ensure_ascii=False, indent=2)}\n\n"
+        f"Pressurized answer quality summary:\n{json.dumps(primary_quality, ensure_ascii=False, indent=2)}\n\n"
+        f"Pressurized answer health summary:\n{json.dumps(primary_health, ensure_ascii=False, indent=2)}\n\n"
+        f"Baseline answer quality summary:\n{json.dumps(baseline_quality, ensure_ascii=False, indent=2)}\n\n"
+        f"Baseline answer health summary:\n{json.dumps(baseline_health, ensure_ascii=False, indent=2)}\n\n"
+        f"Similarity metrics:\n{json.dumps(similarity, ensure_ascii=False, indent=2)}\n\n"
+        f"Pressurized answer:\n{primary_answer}\n\n"
+        f"Single-thread baseline answer:\n{baseline_answer}\n"
+    )
+    result = runtime.invoke_openai_json(
+        api_key=api_key,
+        model=judge_model,
+        reasoning_effort="high",
+        instructions=instructions,
+        input_text=input_text,
+        schema_name="eval_comparison_judge",
+        schema=comparison_judge_schema(),
+        max_output_tokens=1600,
+        target_kind="generic",
+    )
+    parsed = result.parsed
+    scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
+    return {
+        "mode": "live",
+        "scores": {field: int(scores.get(field, 0) or 0) for field in COMPARISON_SCORE_FIELDS},
+        "verdict": str(parsed.get("verdict", "")).strip() or "mixed",
+        "decisionRelation": str(parsed.get("decisionRelation", "")).strip(),
+        "materialDifference": bool(parsed.get("materialDifference", False)),
+        "primaryEdge": str(parsed.get("primaryEdge", "")).strip(),
+        "baselineEdge": str(parsed.get("baselineEdge", "")).strip(),
+        "rationale": str(parsed.get("rationale", "")).strip(),
+        "responseId": result.response_id,
+    }
+
+
+def heuristic_comparison_judge(
+    primary_answer: str,
+    baseline_answer: str,
+    primary_quality: Dict[str, Any],
+    baseline_quality: Dict[str, Any],
+    similarity: Dict[str, Any],
+) -> Dict[str, Any]:
+    sequence_similarity = float(similarity.get("sequenceSimilarity", 0.0) or 0.0)
+    token_overlap = float(similarity.get("tokenOverlap", 0.0) or 0.0)
+    overlap_mean = mean([sequence_similarity, token_overlap])
+    overall_delta = float((primary_quality.get("scores") or {}).get("overallQuality", 0.0) or 0.0) - float((baseline_quality.get("scores") or {}).get("overallQuality", 0.0) or 0.0)
+    material_difference_score = max(1, min(10, round((1.0 - overlap_mean) * 10)))
+    decision_shift_score = max(1, min(10, round((1.0 - sequence_similarity) * 10)))
+    validation_strength = max(1, min(10, round(5 + abs(overall_delta) * 2 - (2 if material_difference_score <= 3 else 0))))
+    operational_separation = max(1, min(10, round(((1.0 - overlap_mean) * 6) + min(4, abs(int(similarity.get("paragraphDelta", 0) or 0)) + abs(int(similarity.get("wordDelta", 0) or 0)) / 120))))
+    overall_differentiation = max(1, min(10, round(mean([material_difference_score, decision_shift_score, validation_strength, operational_separation]))))
+    if material_difference_score <= 3 and abs(overall_delta) < 0.5:
+        decision_relation = "same_direction"
+    elif sequence_similarity >= 0.55:
+        decision_relation = "refined_direction"
+    else:
+        decision_relation = "different_direction"
+    verdict = comparison_verdict_from_delta(overall_delta)
+    if material_difference_score <= 3 and verdict != "mixed":
+        verdict = "mixed"
+    return {
+        "mode": "mock",
+        "scores": {
+            "materialDifference": material_difference_score,
+            "decisionShift": decision_shift_score,
+            "validationStrength": validation_strength,
+            "operationalSeparation": operational_separation,
+            "overallDifferentiation": overall_differentiation,
+        },
+        "verdict": verdict,
+        "decisionRelation": decision_relation,
+        "materialDifference": material_difference_score >= 5,
+        "primaryEdge": "Pressurized answer shows a stronger net advantage." if overall_delta > 0.4 else "Pressurized answer mostly refines phrasing rather than changing the course.",
+        "baselineEdge": "Baseline answer keeps the stronger immediate call and escalation cadence." if overall_delta < -0.4 else "Baseline answer mostly overlaps the same decision.",
+        "rationale": "Heuristic comparison used quality deltas plus text-similarity signals because no live comparison judge was available.",
+        "responseId": None,
+    }
+
+
+def run_comparison_judge(
+    judge_runtime: LoopRuntime,
+    api_key: Optional[str],
+    judge_model: str,
+    case: Dict[str, Any],
+    judge_rubric: Any,
+    primary_answer: str,
+    baseline_answer: str,
+    primary_quality: Dict[str, Any],
+    primary_health: Dict[str, Any],
+    baseline_quality: Dict[str, Any],
+    baseline_health: Dict[str, Any],
+    similarity: Dict[str, Any],
+) -> Dict[str, Any]:
+    if api_key:
+        try:
+            return comparison_judge_live(
+                judge_runtime,
+                api_key,
+                judge_model,
+                case,
+                judge_rubric,
+                primary_answer,
+                baseline_answer,
+                primary_quality,
+                primary_health,
+                baseline_quality,
+                baseline_health,
+                similarity,
+            )
+        except RuntimeErrorWithCode:
+            pass
+    return heuristic_comparison_judge(primary_answer, baseline_answer, primary_quality, baseline_quality, similarity)
+
+
 def extract_public_answer(arm: Dict[str, Any], result: Dict[str, Any]) -> str:
     if arm["type"] == "direct":
         return str(result.get("answer", {}).get("answer", "")).strip()
+    if normalize_direct_baseline_mode(result.get("answerPath"), "off") == "single":
+        direct_baseline = result.get("directBaseline") if isinstance(result.get("directBaseline"), dict) else {}
+        answer = direct_baseline.get("answer") if isinstance(direct_baseline.get("answer"), dict) else {}
+        return str(answer.get("answer", "")).strip()
     summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
     front_answer = summary.get("frontAnswer", {}) if isinstance(summary.get("frontAnswer"), dict) else {}
     return str(front_answer.get("answer", "")).strip()
@@ -724,6 +1244,7 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
     usage = normalize_usage_state(result.get("usage") if isinstance(result.get("usage"), dict) else {})
     runtime_budget = arm["runtime"]["budget"]
     required_live = bool(checks.get("requireLive")) or bool(arm["runtime"]["requireLive"])
+    answer_path = normalize_direct_baseline_mode(result.get("answerPath"), "off")
     required_fields = ["answer", "stance", "confidenceNote"] if arm["type"] == "direct" else ["frontAnswer", "summarizerOpinion", "controlAudit"]
     result_fields_ok = True
     missing_fields: List[str] = []
@@ -735,6 +1256,19 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
         else:
             missing_fields = [field for field in required_fields if not str(answer.get(field, "")).strip()]
             result_fields_ok = not missing_fields
+    elif answer_path == "single":
+        direct_baseline = result.get("directBaseline")
+        if not isinstance(direct_baseline, dict):
+            result_fields_ok = False
+            missing_fields = ["directBaseline"]
+        else:
+            answer = direct_baseline.get("answer")
+            if not isinstance(answer, dict):
+                result_fields_ok = False
+                missing_fields = ["directBaseline.answer"]
+            else:
+                missing_fields = [field for field in ["answer", "stance", "confidenceNote"] if not str(answer.get(field, "")).strip()]
+                result_fields_ok = not missing_fields
     else:
         summary = result.get("summary")
         if not isinstance(summary, dict):
@@ -750,8 +1284,14 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
     mode_values = []
     if arm["type"] == "direct":
         mode_values = [str(result.get("mode", "unknown")).strip().lower() or "unknown"]
+    elif answer_path == "single":
+        direct_baseline = result.get("directBaseline") if isinstance(result.get("directBaseline"), dict) else {}
+        mode_values = [str(direct_baseline.get("mode", result.get("mode", "unknown"))).strip().lower() or "unknown"]
     else:
         mode_values = list((mode_state.get("workerModes") or {}).values()) + [str(mode_state.get("summaryMode", "unknown"))]
+        if answer_path == "both":
+            direct_baseline = result.get("directBaseline") if isinstance(result.get("directBaseline"), dict) else {}
+            mode_values.append(str(direct_baseline.get("mode", "unknown")).strip().lower() or "unknown")
 
     live_ok = all(mode == "live" for mode in mode_values if mode) if mode_values else False
     mock_fallback_ok = bool(arm["runtime"]["allowMockFallback"]) or all(mode == "live" for mode in mode_values if mode)
@@ -791,6 +1331,12 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
             "passed": live_ok,
             "detail": "Run stayed live throughout." if live_ok else f"Non-live modes observed: {', '.join(mode_values) or 'none'}",
         }
+    if arm["type"] == "steered" and answer_path == "both":
+        has_direct_baseline = isinstance(result.get("directBaseline"), dict)
+        checks_out["directBaselineCaptured"] = {
+            "passed": has_direct_baseline,
+            "detail": "Parallel direct baseline was captured." if has_direct_baseline else f"Direct baseline missing. Error: {result.get('baselineError') or 'none'}",
+        }
     checks_out["noMockFallback"] = {
         "passed": mock_fallback_ok,
         "detail": "Mock fallback policy respected." if mock_fallback_ok else f"Mock fallback occurred in modes: {', '.join(mode_values)}",
@@ -817,12 +1363,21 @@ def artifact_meta_from_payload(path: Path, relative_path: Path, payload: Dict[st
     elif name == "result.json":
         kind = "result"
         target = "result"
+    elif name == "comparison.json":
+        kind = "comparison"
+        target = "compare"
+    elif re.match(r".+_direct_baseline(?:_round\d+)?_output\.json$", name):
+        kind = "direct_output"
+        target = "direct_baseline"
     elif re.match(r".+_[A-Z]_step\d+_output\.json$", name):
         kind = "worker_output"
         target = payload.get("target") or name.split("_")[1]
     elif re.match(r".+_summary_round\d+_output\.json$", name):
         kind = "summary_output"
         target = "summarizer"
+    elif re.match(r".+_direct_baseline(?:_round\d+)?\.json$", name):
+        kind = "direct_round"
+        target = "direct_baseline"
     elif re.match(r".+_[A-Z]_step\d+\.json$", name):
         kind = "worker_step"
         target = name.split("_")[1]
@@ -899,17 +1454,61 @@ def aggregate_variant(variant: Dict[str, Any]) -> Dict[str, Any]:
     replicates = variant.get("replicates", []) if isinstance(variant.get("replicates"), list) else []
     completed = [entry for entry in replicates if str(entry.get("status", "")) == "completed"]
     quality_blocks = [entry["quality"]["scores"] for entry in completed if isinstance(entry.get("quality"), dict) and isinstance(entry["quality"].get("scores"), dict)]
+    answer_health_blocks = [
+        entry["answerHealth"]["scores"]
+        for entry in completed
+        if isinstance(entry.get("answerHealth"), dict) and isinstance(entry["answerHealth"].get("scores"), dict)
+    ]
     control_blocks = [entry["control"]["scores"] for entry in completed if isinstance(entry.get("control"), dict) and isinstance(entry["control"].get("scores"), dict)]
+    baseline_quality_blocks = [
+        entry["baselineQuality"]["scores"]
+        for entry in completed
+        if isinstance(entry.get("baselineQuality"), dict) and isinstance(entry["baselineQuality"].get("scores"), dict)
+    ]
+    baseline_answer_health_blocks = [
+        entry["baselineAnswerHealth"]["scores"]
+        for entry in completed
+        if isinstance(entry.get("baselineAnswerHealth"), dict) and isinstance(entry["baselineAnswerHealth"].get("scores"), dict)
+    ]
+    comparison_blocks = [entry.get("comparison") for entry in completed if isinstance(entry.get("comparison"), dict)]
     deterministic_passes = sum(1 for entry in completed if entry.get("deterministic", {}).get("passed"))
     total_tokens = sum(int((entry.get("usage") or {}).get("totalTokens", 0) or 0) for entry in completed)
     total_cost = sum(float((entry.get("usage") or {}).get("estimatedCostUsd", 0.0) or 0.0) for entry in completed)
+    score_delta_blocks = [
+        block.get("scoreDelta")
+        for block in comparison_blocks
+        if isinstance(block.get("scoreDelta"), dict)
+    ]
+    comparison_score_blocks = [
+        block.get("scores")
+        for block in comparison_blocks
+        if isinstance(block.get("scores"), dict)
+    ]
+    pressurized_wins = sum(1 for block in comparison_blocks if str(block.get("verdict", "")).strip() == "pressurized_advantage")
+    baseline_wins = sum(1 for block in comparison_blocks if str(block.get("verdict", "")).strip() == "baseline_advantage")
+    ties = max(0, len(comparison_blocks) - pressurized_wins - baseline_wins)
+    mean_overall_delta = mean([float(block.get("scoreDelta", {}).get("overallQuality", 0.0) or 0.0) for block in comparison_blocks]) if comparison_blocks else 0.0
+    meaningful_difference_rate = mean([1.0 if bool(block.get("materialDifference")) else 0.0 for block in comparison_blocks]) if comparison_blocks else 0.0
     return {
         "replicateCount": len(replicates),
         "completedReplicates": len(completed),
         "errorCount": sum(1 for entry in replicates if str(entry.get("status", "")) == "error"),
         "deterministicPassRate": round((deterministic_passes / len(completed)) if completed else 0.0, 2),
         "quality": average_score_blocks(quality_blocks, QUALITY_SCORE_FIELDS),
+        "answerHealth": average_score_blocks(answer_health_blocks, ANSWER_HEALTH_SCORE_FIELDS),
         "control": average_score_blocks(control_blocks, CONTROL_SCORE_FIELDS),
+        "baselineQuality": average_score_blocks(baseline_quality_blocks, QUALITY_SCORE_FIELDS),
+        "baselineAnswerHealth": average_score_blocks(baseline_answer_health_blocks, ANSWER_HEALTH_SCORE_FIELDS),
+        "comparison": {
+            "replicateCount": len(comparison_blocks),
+            "pressurizedWins": pressurized_wins,
+            "baselineWins": baseline_wins,
+            "ties": ties,
+            "averageScoreDelta": average_score_blocks(score_delta_blocks, QUALITY_SCORE_FIELDS),
+            "averageScores": average_score_blocks(comparison_score_blocks, COMPARISON_SCORE_FIELDS),
+            "meaningfulDifferenceRate": round(meaningful_difference_rate, 2),
+            "verdict": comparison_verdict_from_counts(pressurized_wins, baseline_wins, mean_overall_delta) if comparison_blocks else "unavailable",
+        },
         "totalTokens": total_tokens,
         "estimatedCostUsd": round(total_cost, 6),
     }
@@ -932,6 +1531,8 @@ def aggregate_run(run: Dict[str, Any]) -> Dict[str, Any]:
                     "armId": variant.get("armId"),
                     "title": variant.get("title"),
                     "type": variant.get("type"),
+                    "answerPath": variant.get("answerPath"),
+                    "contextMode": variant.get("contextMode"),
                     "loopRounds": variant.get("loopRounds"),
                     **variant_summary,
                 }
@@ -939,6 +1540,7 @@ def aggregate_run(run: Dict[str, Any]) -> Dict[str, Any]:
     total_tokens = sum(int(entry.get("totalTokens", 0) or 0) for entry in variant_summaries)
     total_cost = sum(float(entry.get("estimatedCostUsd", 0.0) or 0.0) for entry in variant_summaries)
     quality_blocks = [entry.get("quality", {}) for entry in variant_summaries if isinstance(entry.get("quality"), dict)]
+    answer_health_blocks = [entry.get("answerHealth", {}) for entry in variant_summaries if isinstance(entry.get("answerHealth"), dict)]
     control_blocks = [entry.get("control", {}) for entry in variant_summaries if isinstance(entry.get("control"), dict) and any(entry.get("control", {}).values())]
     return {
         "caseCount": len(run.get("cases", [])),
@@ -947,6 +1549,7 @@ def aggregate_run(run: Dict[str, Any]) -> Dict[str, Any]:
         "totalTokens": total_tokens,
         "estimatedCostUsd": round(total_cost, 6),
         "averageQuality": average_score_blocks(quality_blocks, QUALITY_SCORE_FIELDS),
+        "averageAnswerHealth": average_score_blocks(answer_health_blocks, ANSWER_HEALTH_SCORE_FIELDS),
         "averageControl": average_score_blocks(control_blocks, CONTROL_SCORE_FIELDS),
         "variants": variant_summaries,
     }
@@ -1007,6 +1610,10 @@ def execute_replicate(
     judge_auth_assignment = judge_runtime.get_api_key_assignment("judge", salt=seed + ":judge")
     api_key = str(judge_auth_assignment.get("apiKey")) if judge_auth_assignment else None
     result: Dict[str, Any]
+    baseline_quality: Optional[Dict[str, Any]] = None
+    answer_health: Optional[Dict[str, Any]] = None
+    baseline_answer_health: Optional[Dict[str, Any]] = None
+    comparison: Optional[Dict[str, Any]] = None
     if arm["type"] == "direct":
         runtime = LoopRuntime(replicate_dir / "_direct_runtime", auth_path=auth_path)
         direct = run_direct_answer(runtime, runtime.get_api_key_assignment("direct", salt=seed + ":direct"), case, arm)
@@ -1033,26 +1640,143 @@ def execute_replicate(
             "usage": normalize_usage_state(direct["usage"]),
             "responseId": direct["responseId"],
             "responseMeta": direct["responseMeta"],
+            "model": direct["model"],
             "modeState": {"directMode": direct["mode"]},
         }
     else:
         steered = run_steered_answer(Path("."), auth_path, case, arm, loop_rounds, replicate_dir, seed)
-        mode_state = mode_summary_for_steered(steered["workspaceRoot"], steered["taskId"], loop_rounds)
+        answer_path = normalize_direct_baseline_mode(steered.get("answerPath"), default_direct_baseline_mode())
+        mode_state = (
+            {"workerModes": {}, "summaryMode": str((steered.get("directBaseline") or {}).get("mode", steered.get("mode", "unknown")))}
+            if answer_path == "single"
+            else mode_summary_for_steered(steered["workspaceRoot"], steered["taskId"], loop_rounds)
+        )
         result = {
             "mode": mode_state["summaryMode"],
-            "provider": arm["runtime"]["summarizerProvider"],
-            "providerCapabilities": provider_capability_profile(arm["runtime"]["summarizerProvider"]),
+            "provider": arm["runtime"]["directProvider"] if answer_path == "single" else arm["runtime"]["summarizerProvider"],
+            "providerCapabilities": provider_capability_profile(arm["runtime"]["directProvider"] if answer_path == "single" else arm["runtime"]["summarizerProvider"]),
             "taskId": steered["taskId"],
             "summary": steered["summary"],
+            "directBaseline": steered.get("directBaseline"),
+            "answerPath": answer_path,
+            "baselineError": steered.get("baselineError"),
             "usage": normalize_usage_state(steered["usage"]),
             "responseId": None,
             "responseMeta": None,
+            "summaryResponseMeta": (
+                (steered.get("summaryOutput") or {}).get("responseMeta")
+                if isinstance(steered.get("summaryOutput"), dict)
+                else None
+            ),
+            "directBaselineResponseMeta": (
+                (steered.get("directBaselineOutput") or {}).get("responseMeta")
+                if isinstance(steered.get("directBaselineOutput"), dict)
+                else None
+            ),
+            "model": arm["runtime"]["directModel"] if answer_path == "single" else arm["runtime"]["summarizerModel"],
             "modeState": mode_state,
         }
 
     public_answer = extract_public_answer(arm, result)
-    quality = run_quality_judge(judge_runtime, api_key or None, judge_model, case, run.get("suite", {}).get("judgeRubric", {}), public_answer)
-    control = run_control_judge(judge_runtime, api_key or None, judge_model, case, result["summary"]) if arm["type"] == "steered" else None
+    primary_response_meta = (
+        result.get("responseMeta")
+        if arm["type"] == "direct"
+        else (
+            result.get("directBaselineResponseMeta")
+            if normalize_direct_baseline_mode(result.get("answerPath"), "off") == "single"
+            else result.get("summaryResponseMeta")
+        )
+    )
+    primary_telemetry = build_answer_telemetry(
+        public_answer,
+        primary_response_meta if isinstance(primary_response_meta, dict) else None,
+        str(result.get("provider", "") or ""),
+        str(result.get("model", "") or ""),
+    )
+    quality = run_quality_judge(
+        judge_runtime,
+        api_key or None,
+        judge_model,
+        case,
+        run.get("suite", {}).get("judgeRubric", {}),
+        public_answer,
+    )
+    answer_health = run_answer_health_judge(
+        judge_runtime,
+        api_key or None,
+        judge_model,
+        case,
+        public_answer,
+        primary_telemetry,
+    )
+    control = (
+        run_control_judge(judge_runtime, api_key or None, judge_model, case, result["summary"])
+        if arm["type"] == "steered" and isinstance(result.get("summary"), dict)
+        else None
+    )
+    if arm["type"] == "steered":
+        direct_baseline = result.get("directBaseline") if isinstance(result.get("directBaseline"), dict) else {}
+        baseline_answer = direct_baseline.get("answer") if isinstance(direct_baseline.get("answer"), dict) else {}
+        baseline_text = str(baseline_answer.get("answer", "")).strip()
+        if baseline_text and normalize_direct_baseline_mode(result.get("answerPath"), "off") == "both":
+            baseline_telemetry = build_answer_telemetry(
+                baseline_text,
+                result.get("directBaselineResponseMeta") if isinstance(result.get("directBaselineResponseMeta"), dict) else None,
+                str((direct_baseline.get("provider") if isinstance(direct_baseline, dict) else "") or result.get("provider", "") or ""),
+                str((direct_baseline.get("model") if isinstance(direct_baseline, dict) else "") or arm["runtime"].get("directModel", "") or ""),
+            )
+            baseline_quality = run_quality_judge(
+                judge_runtime,
+                api_key or None,
+                judge_model,
+                case,
+                run.get("suite", {}).get("judgeRubric", {}),
+                baseline_text,
+            )
+            baseline_answer_health = run_answer_health_judge(
+                judge_runtime,
+                api_key or None,
+                judge_model,
+                case,
+                baseline_text,
+                baseline_telemetry,
+            )
+            primary_scores = quality.get("scores") if isinstance(quality.get("scores"), dict) else {}
+            baseline_scores = baseline_quality.get("scores") if isinstance(baseline_quality.get("scores"), dict) else {}
+            score_delta = comparison_score_delta(primary_scores, baseline_scores, QUALITY_SCORE_FIELDS)
+            similarity = answer_similarity_metrics(public_answer, baseline_text)
+            comparison = run_comparison_judge(
+                judge_runtime,
+                api_key or None,
+                judge_model,
+                case,
+                run.get("suite", {}).get("judgeRubric", {}),
+                public_answer,
+                baseline_text,
+                quality,
+                answer_health,
+                baseline_quality,
+                baseline_answer_health,
+                similarity,
+            )
+            comparison = {
+                **comparison,
+                "answerPath": normalize_direct_baseline_mode(result.get("answerPath"), "off"),
+                "contextMode": normalize_context_mode(arm["runtime"].get("contextMode"), default_context_mode()),
+                "primaryLabel": "pressurized_answer",
+                "baselineLabel": "single_thread_baseline",
+                "primaryAnswer": public_answer,
+                "baselineAnswer": baseline_text,
+                "primaryQuality": quality,
+                "primaryAnswerHealth": answer_health,
+                "primaryTelemetry": primary_telemetry,
+                "baselineQuality": baseline_quality,
+                "baselineAnswerHealth": baseline_answer_health,
+                "baselineTelemetry": baseline_telemetry,
+                "scoreDelta": score_delta,
+                "similarity": similarity,
+                "identicalAnswers": public_answer.strip() == baseline_text.strip(),
+            }
     deterministic = deterministic_checks(case, arm, result, public_answer)
     score_payload: Dict[str, Any] = {
         "runId": run["runId"],
@@ -1062,11 +1786,27 @@ def execute_replicate(
         "replicate": replicate_index,
         "deterministic": deterministic,
         "quality": quality,
+        "answerHealth": answer_health,
         "control": control,
+        "baselineQuality": baseline_quality,
+        "baselineAnswerHealth": baseline_answer_health,
+        "comparison": comparison,
         "usage": result["usage"],
         "generatedAt": utc_now(),
     }
     write_json(replicate_dir / "score.json", score_payload)
+
+    if comparison is not None:
+        comparison_payload = {
+            "runId": run["runId"],
+            "caseId": case["caseId"],
+            "armId": arm["armId"],
+            "variantId": variant_id,
+            "replicate": replicate_index,
+            "generatedAt": utc_now(),
+            **comparison,
+        }
+        write_json(replicate_dir / "comparison.json", comparison_payload)
 
     result_payload: Dict[str, Any] = {
         "runId": run["runId"],
@@ -1077,10 +1817,17 @@ def execute_replicate(
         "mode": result["mode"],
         "provider": result.get("provider"),
         "providerCapabilities": result.get("providerCapabilities"),
+        "answerPath": result.get("answerPath") if arm["type"] == "steered" else "off",
+        "contextMode": arm["runtime"].get("contextMode"),
         "modeState": result.get("modeState", {}),
         "usage": result["usage"],
         "publicAnswer": public_answer,
         "answer": result.get("answer"),
+        "directBaseline": result.get("directBaseline"),
+        "answerHealth": answer_health,
+        "baselineQuality": baseline_quality,
+        "baselineAnswerHealth": baseline_answer_health,
+        "comparison": comparison,
         "summary": result.get("summary"),
         "generatedAt": utc_now(),
     }
@@ -1092,10 +1839,16 @@ def execute_replicate(
         "publicAnswer": public_answer,
         "usage": result["usage"],
         "mode": result["mode"],
+        "answerPath": result.get("answerPath") if arm["type"] == "steered" else "off",
+        "contextMode": arm["runtime"].get("contextMode"),
         "modeState": result.get("modeState", {}),
         "deterministic": deterministic,
         "quality": quality,
+        "answerHealth": answer_health,
         "control": control,
+        "baselineQuality": baseline_quality,
+        "baselineAnswerHealth": baseline_answer_health,
+        "comparison": comparison,
         "artifactIds": [entry["artifactId"] for entry in artifacts],
         "artifacts": artifacts,
         "updatedAt": utc_now(),
@@ -1160,10 +1913,14 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
                         "title": arm["title"],
                         "description": arm["description"],
                         "type": arm["type"],
+                        "answerPath": arm["runtime"]["directBaselineMode"] if arm["type"] == "steered" else "off",
+                        "contextMode": arm["runtime"]["contextMode"],
                         "provider": arm["runtime"]["provider"],
                         "summarizerProvider": arm["runtime"]["summarizerProvider"],
                         "model": arm["runtime"]["model"],
                         "summarizerModel": arm["runtime"]["summarizerModel"],
+                        "directProvider": arm["runtime"]["directProvider"],
+                        "directModel": arm["runtime"]["directModel"],
                         "loopRounds": int(loop_rounds),
                         "replicates": [],
                     }

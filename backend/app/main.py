@@ -86,6 +86,15 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)
 
+    @app.post("/v1/auth/mode")
+    async def post_auth_mode(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = settings.set_auth_backend_mode(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
     @app.get("/v1/state")
     def get_state() -> JSONResponse:
         return JSONResponse(storage.read_state_payload(paths))
@@ -220,6 +229,15 @@ def create_app(root: Path | None = None) -> FastAPI:
         payload = await request_payload(request)
         try:
             result = settings.add_adversarial_worker(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/workers/remove")
+    async def post_worker_remove(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = settings.remove_adversarial_worker(payload, paths.root)
         except RuntimeErrorWithCode as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)

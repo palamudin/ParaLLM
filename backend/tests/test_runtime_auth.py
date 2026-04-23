@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from runtime.engine import LoopRuntime, RuntimeErrorWithCode, read_api_key_pool
+from backend.app.secrets import write_auth_backend_mode_override
+from runtime.engine import LoopRuntime, OpenAIResult, RuntimeErrorWithCode, read_api_key_pool
 
 
 class _FakeHTTPResponse:
@@ -26,6 +27,27 @@ class _FakeHTTPResponse:
 
 
 class RuntimeAuthTests(unittest.TestCase):
+    def _stub_openai_result(self, parsed: dict, max_output_tokens: int = 400) -> OpenAIResult:
+        attempts = [int(max_output_tokens)] if int(max_output_tokens) > 0 else []
+        return OpenAIResult(
+            provider="openai",
+            parsed=parsed,
+            response={"status": "completed", "usage": {}},
+            response_id="resp-test",
+            output_text=None,
+            thinking_text=None,
+            web_search_queries=[],
+            web_search_sources=[],
+            url_citations=[],
+            requested_max_output_tokens=int(max_output_tokens),
+            effective_max_output_tokens=int(max_output_tokens),
+            attempts=attempts,
+            recovered_from_incomplete=False,
+            executed_tools=[],
+            auth_assignment=None,
+            auth_failover_history=[],
+        )
+
     def test_read_api_key_pool_uses_env_backend_when_configured(self) -> None:
         missing_path = Path(tempfile.gettempdir()) / "parallm-missing-auth.txt"
         env = {
@@ -74,6 +96,18 @@ class RuntimeAuthTests(unittest.TestCase):
 
         self.assertEqual(keys, ["sk-anthropic"])
 
+    def test_read_api_key_pool_reads_prefixed_shared_auth_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            auth_path = Path(tmpdir) / "Auth.txt"
+            auth_path.write_text("openai:sk-openai\nant:sk-anthropic\n", encoding="utf-8")
+            env = {
+                "LOOP_SECRET_BACKEND": "local_file",
+            }
+            with mock.patch.dict("os.environ", env, clear=False):
+                keys = read_api_key_pool(auth_path, "anthropic")
+
+        self.assertEqual(keys, ["sk-anthropic"])
+
     def test_read_api_key_pool_dedupes_local_file_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             auth_path = Path(tmpdir) / "Auth.txt"
@@ -99,6 +133,20 @@ class RuntimeAuthTests(unittest.TestCase):
                 keys = read_api_key_pool(auth_path)
 
         self.assertEqual(keys, [])
+
+    def test_read_api_key_pool_honors_local_override_over_safe_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            auth_path = Path(tmpdir) / "Auth.txt"
+            auth_path.write_text("openai:sk-local-only\n", encoding="utf-8")
+            write_auth_backend_mode_override(Path(tmpdir), "openai", "local")
+            env = {
+                "LOOP_SECRET_BACKEND": "env",
+                "LOOP_OPENAI_API_KEYS": "sk-env-only\n",
+            }
+            with mock.patch.dict("os.environ", env, clear=False):
+                keys = read_api_key_pool(auth_path, "openai")
+
+        self.assertEqual(keys, ["sk-local-only"])
 
     def test_invoke_openai_json_rotates_to_next_key_after_auth_failure(self) -> None:
         schema = {
@@ -183,6 +231,65 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(result.auth_failover_history[0]["nextKeySlot"], 2)
         self.assertEqual(seen_auth_headers, ["Bearer sk-first", "Bearer sk-second"])
 
+    def test_invoke_openai_json_enables_server_input_autocompress(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        seen_bodies: list[dict] = []
+        response_payload = {
+            "id": "resp-autocompress",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps({"answer": "ok"}),
+                        }
+                    ],
+                }
+            ],
+        }
+
+        def fake_urlopen(request, timeout=0):
+            seen_bodies.append(json.loads(request.data.decode("utf-8")))
+            return _FakeHTTPResponse(response_payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = runtime.invoke_openai_json(
+                    api_key="sk-live",
+                    model="gpt-5.4",
+                    reasoning_effort="high",
+                    instructions="Return JSON only.",
+                    input_text="Say ok.",
+                    schema_name="autocompress_test",
+                    schema=schema,
+                    target_kind="summarizer",
+                )
+
+        self.assertEqual(result.parsed, {"answer": "ok"})
+        self.assertEqual(seen_bodies[0]["truncation"], "auto")
+
+    def test_prompt_text_locally_compacts_when_provider_lacks_server_autocompress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            original = "\n\n".join(
+                [f"Section {index}:\n" + ("x" * 5000) for index in range(1, 7)]
+            )
+            compacted = runtime.maybe_compact_prompt_text(original, {"provider": "anthropic"}, "worker")
+            soft_limit = runtime.prompt_compaction_char_limit("anthropic", "worker")
+
+        self.assertIn("locally compacted", compacted)
+        self.assertLess(len(compacted), len(original))
+        self.assertLessEqual(len(compacted), soft_limit)
+
     def test_runtime_refuses_live_fallback_when_managed_secret_backend_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             env = {
@@ -223,10 +330,15 @@ class RuntimeAuthTests(unittest.TestCase):
             "prompt_eval_count": 123,
             "eval_count": 45,
         }
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=1800):
+            seen_urls.append(str(request.full_url))
+            return _FakeHTTPResponse(payload)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime = LoopRuntime(tmpdir)
-            with mock.patch("urllib.request.urlopen", return_value=_FakeHTTPResponse(payload)):
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
                 result = runtime.invoke_provider_json(
                     provider="ollama",
                     api_key="",
@@ -238,16 +350,315 @@ class RuntimeAuthTests(unittest.TestCase):
                     schema=schema,
                     max_output_tokens=600,
                     target_kind="worker",
+                    provider_settings={"ollamaBaseUrl": "http://192.168.0.26:11434/api"},
                 )
 
         self.assertEqual(result.provider, "ollama")
         self.assertEqual(result.parsed, {"answer": "Local model reply"})
         self.assertEqual(result.thinking_text, "Reasoned locally.")
         self.assertEqual(result.response_id, "2026-04-21T12:34:56Z")
+        self.assertEqual(seen_urls, ["http://192.168.0.26:11434/api/chat"])
         usage = runtime.get_response_usage_delta(result.response, "qwen3")
         self.assertEqual(usage["inputTokens"], 123)
         self.assertEqual(usage["outputTokens"], 45)
         self.assertEqual(usage["estimatedCostUsd"], 0.0)
+
+    def test_get_task_runtime_carries_context_mode_and_ollama_endpoint(self) -> None:
+        task = {
+            "objective": "Validate remote Ollama runtime state.",
+            "runtime": {
+                "provider": "ollama",
+                "model": "qwen3.5:2b",
+                "contextMode": "full",
+                "directBaselineMode": "both",
+                "directProvider": "anthropic",
+                "directModel": "claude-sonnet-4-20250514",
+                "ollamaBaseUrl": "http://192.168.0.26:11434/api",
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            runtime_config = runtime.get_task_runtime(task)
+            direct_runtime = runtime.get_direct_baseline_runtime(task)
+            task_projection = runtime.project_task_for_summary(task)
+
+        self.assertEqual(runtime_config["provider"], "ollama")
+        self.assertEqual(runtime_config["model"], "qwen3.5:2b")
+        self.assertEqual(runtime_config["contextMode"], "full")
+        self.assertEqual(runtime_config["directBaselineMode"], "both")
+        self.assertEqual(runtime_config["directProvider"], "anthropic")
+        self.assertEqual(runtime_config["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(direct_runtime["mode"], "both")
+        self.assertEqual(direct_runtime["provider"], "anthropic")
+        self.assertEqual(direct_runtime["model"], "claude-sonnet-4-20250514")
+        self.assertEqual(runtime_config["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
+        self.assertEqual(task_projection["runtime"]["contextMode"], "full")
+        self.assertEqual(task_projection["runtime"]["directBaselineMode"], "both")
+        self.assertEqual(task_projection["runtime"]["directProvider"], "anthropic")
+        self.assertEqual(task_projection["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(task_projection["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
+
+    def test_runtime_uses_auth_root_for_provider_backend_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as repo_tmpdir:
+            with tempfile.TemporaryDirectory() as workspace_tmpdir:
+                repo_root = Path(repo_tmpdir)
+                auth_path = repo_root / "Auth.txt"
+                auth_path.write_text("openai:sk-local-only\n", encoding="utf-8")
+                write_auth_backend_mode_override(repo_root, "openai", "local")
+                env = {
+                    "LOOP_SECRET_BACKEND": "env",
+                    "LOOP_OPENAI_API_KEYS": "",
+                    "OPENAI_API_KEYS": "",
+                }
+                with mock.patch.dict("os.environ", env, clear=False):
+                    runtime = LoopRuntime(Path(workspace_tmpdir) / "workspace", auth_path=auth_path)
+                    pool = runtime.load_api_key_pool_state("openai")
+
+        self.assertEqual(pool["backend"], "local_file")
+        self.assertEqual(pool["selectedMode"], "local")
+        self.assertEqual(pool["keys"], ["sk-local-only"])
+
+    def test_runtime_preserves_direct_baseline_in_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            baseline = {
+                "taskId": "task-1",
+                "mode": "live",
+                "provider": "openai",
+                "answer": {
+                    "answer": "Direct baseline answer.",
+                    "stance": "contain-first",
+                    "confidenceNote": "high confidence",
+                },
+            }
+
+            runtime.write_state({"activeTask": {"taskId": "task-1"}, "directBaseline": baseline})
+            state = runtime.read_state()
+
+        self.assertEqual(state["directBaseline"], baseline)
+
+    def test_light_workers_mode_keeps_full_packet_on_main_thread(self) -> None:
+        captured: dict[str, str] = {}
+        task = {
+            "taskId": "task-1",
+            "objective": "Stabilize the rollout without hiding the risk.",
+            "constraints": ["Keep production impact low.", "Document the decision path."],
+            "sessionContext": "Customer is already nervous after a failed change window.",
+            "workers": [
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5-mini"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5-mini"},
+            ],
+        }
+        runtime_config = {
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+            "contextMode": "weighted",
+            "localFiles": {"enabled": False},
+            "githubTools": {"enabled": False},
+        }
+        constraints = list(task["constraints"])
+        prior_summary = {
+            "taskId": "task-1",
+            "round": 1,
+            "recommendedNextAction": "Use the safest reversible path first.",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+
+            def fake_invoke_provider_json(**kwargs):
+                captured["instructions"] = kwargs["instructions"]
+                captured["input_text"] = kwargs["input_text"]
+                parsed = runtime.new_mock_commander(task, runtime_config, 1, constraints, prior_summary)
+                return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                runtime.new_live_commander(
+                    api_key="sk-test",
+                    auth_assignments=None,
+                    task=task,
+                    runtime=runtime_config,
+                    round_number=1,
+                    constraints=constraints,
+                    prior_summary=prior_summary,
+                )
+
+        self.assertIn("Main-thread full context is active.", captured["instructions"])
+        self.assertIn("Light Workers mode", captured["instructions"])
+        self.assertIn("Task brief:", captured["input_text"])
+
+    def test_full_workers_mode_controls_worker_packet_scope(self) -> None:
+        task = {
+            "taskId": "task-1",
+            "objective": "Contain risk without overreacting.",
+            "constraints": ["Keep user impact low."],
+            "sessionContext": "The customer wants an answer before business hours.",
+            "workers": [
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5-mini"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5-mini"},
+            ],
+        }
+        worker = {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "temperature": "balanced", "model": "gpt-5-mini"}
+        research_config = {"enabled": False, "externalWebAccess": False, "domains": []}
+        constraints = list(task["constraints"])
+        prior_summary = {"taskId": "task-1", "round": 1, "recommendedNextAction": "Start with reversible containment."}
+        commander_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Use the smallest responsible containment step first.",
+            "whyThisDirection": "It keeps service alive while reducing blast radius.",
+            "questionsForWorkers": [],
+            "pressurePoints": [],
+            "keepCourseIf": [],
+            "changeCourseIf": [],
+            "uncertainty": [],
+            "suggestedLaneTypes": [],
+            "suggestedLaneReason": "",
+            "constraintsSeen": constraints,
+        }
+        observed_inputs: dict[str, dict[str, str]] = {}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+
+            def invoke_for_mode(mode: str) -> tuple[str, str]:
+                runtime_config = {
+                    "provider": "openai",
+                    "model": "gpt-5-mini",
+                    "reasoningEffort": "low",
+                    "maxOutputTokens": 400,
+                    "contextMode": mode,
+                    "localFiles": {"enabled": False},
+                    "githubTools": {"enabled": False},
+                }
+
+                def fake_invoke_provider_json(**kwargs):
+                    observed_inputs[mode] = {
+                        "instructions": kwargs["instructions"],
+                        "input_text": kwargs["input_text"],
+                    }
+                    parsed = runtime.new_mock_checkpoint(
+                        task,
+                        worker,
+                        runtime_config,
+                        research_config,
+                        1,
+                        constraints,
+                        prior_summary,
+                        0,
+                        [],
+                    )
+                    return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+                with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                    runtime.new_live_checkpoint(
+                        api_key="sk-test",
+                        auth_assignments=None,
+                        task=task,
+                        worker=worker,
+                        runtime=runtime_config,
+                        research_config=research_config,
+                        step_number=1,
+                        constraints=constraints,
+                        commander_checkpoint=commander_checkpoint,
+                        prior_summary=prior_summary,
+                        prior_memory_version=0,
+                        peer_messages=[],
+                    )
+                return observed_inputs[mode]["instructions"], observed_inputs[mode]["input_text"]
+
+            light_instructions, light_input = invoke_for_mode("weighted")
+            full_instructions, full_input = invoke_for_mode("full")
+
+        self.assertIn("Light Workers mode is active.", light_instructions)
+        self.assertIn("Full Workers mode is active.", full_instructions)
+        self.assertNotIn("Full commander packet:", light_input)
+        self.assertNotIn("Task brief:", light_input)
+        self.assertIn("Full commander packet:", full_input)
+        self.assertIn("Task brief:", full_input)
+
+    def test_direct_baseline_uses_main_thread_harness(self) -> None:
+        captured: dict[str, str] = {}
+        task = {
+            "taskId": "task-1",
+            "objective": "Stabilize the breach response before executives wake up.",
+            "constraints": ["Be explicit about the first move."],
+            "sessionContext": "The on-call lead is alone and needs a usable answer fast.",
+            "summarizer": {
+                "provider": "openai",
+                "model": "gpt-5-mini",
+                "harness": {"concision": "expansive", "instruction": "Use crisp sections for recommendation, reasoning, and next steps."},
+            },
+        }
+        runtime_config = {
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+
+            def fake_invoke_provider_json(**kwargs):
+                captured["instructions"] = kwargs["instructions"]
+                parsed = runtime.new_mock_direct_baseline_answer(task)
+                return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                runtime.new_live_direct_baseline(
+                    api_key="sk-test",
+                    auth_assignments=[],
+                    task=task,
+                    direct_runtime=runtime_config,
+                )
+
+        self.assertIn("structured, methodical, factual operator response", captured["instructions"])
+        self.assertIn("Use crisp sections for recommendation, reasoning, and next steps.", captured["instructions"])
+        self.assertIn("up to 7 compact paragraphs is acceptable", captured["instructions"])
+
+    def test_direct_baseline_can_run_with_no_harness(self) -> None:
+        captured: dict[str, str] = {}
+        task = {
+            "taskId": "task-1",
+            "objective": "Decide whether to isolate the host immediately.",
+            "constraints": ["Do not overclaim."],
+            "sessionContext": "none",
+            "summarizer": {
+                "provider": "openai",
+                "model": "gpt-5-mini",
+                "harness": {"concision": "none", "instruction": ""},
+            },
+        }
+        runtime_config = {
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+
+            def fake_invoke_provider_json(**kwargs):
+                captured["instructions"] = kwargs["instructions"]
+                parsed = runtime.new_mock_direct_baseline_answer(task)
+                return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                runtime.new_live_direct_baseline(
+                    api_key="sk-test",
+                    auth_assignments=[],
+                    task=task,
+                    direct_runtime=runtime_config,
+                )
+
+        self.assertNotIn("structured, methodical, factual operator response", captured["instructions"])
+        self.assertNotIn("Keep answer to at most", captured["instructions"])
 
     def test_invoke_provider_json_supports_ollama_function_tools(self) -> None:
         schema = {

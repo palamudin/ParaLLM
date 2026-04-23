@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import control, settings, storage
+from backend.app.secrets import write_auth_backend_mode_override
+from runtime.engine import RuntimeErrorWithCode
 
 
 class SettingsTests(unittest.TestCase):
@@ -50,6 +52,42 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(control.read_auth_key_pool(self.root, "openai"), ["sk-openai-1111"])
             self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), [])
 
+    def test_set_auth_keys_migrates_provider_group_into_shared_auth_file(self) -> None:
+        (self.root / "Auth.anthropic.txt").write_text("sk-legacy-1111\n", encoding="utf-8")
+
+        with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
+            settings.set_auth_keys({"provider": "anthropic", "appendKey": "sk-anthropic-2222"}, self.root)
+            shared_after_write = (self.root / "Auth.txt").read_text(encoding="utf-8")
+            settings.set_auth_keys({"provider": "anthropic", "clear": 1}, self.root)
+
+        self.assertIn("ant:sk-anthropic-2222", shared_after_write)
+        self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), [])
+        self.assertFalse((self.root / "Auth.anthropic.txt").exists())
+        self.assertNotIn("ant:", (self.root / "Auth.txt").read_text(encoding="utf-8"))
+
+    def test_set_auth_backend_mode_changes_only_target_provider_group(self) -> None:
+        env = {
+            "LOOP_SECRET_BACKEND": "env",
+            "LOOP_OPENAI_API_KEYS": "sk-env-openai\n",
+            "LOOP_ANTHROPIC_API_KEYS": "sk-env-anthropic\n",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            result = settings.set_auth_backend_mode({"provider": "openai", "mode": "local"}, self.root)
+
+        self.assertEqual(result["providerGroups"]["openai"]["selectedMode"], "local")
+        self.assertEqual(result["providerGroups"]["openai"]["effectiveBackend"], "local_file")
+        self.assertEqual(result["providerGroups"]["anthropic"]["selectedMode"], "safe")
+
+    def test_set_auth_keys_refuses_mutation_for_safe_provider_group(self) -> None:
+        env = {
+            "LOOP_SECRET_BACKEND": "env",
+            "LOOP_OPENAI_API_KEYS": "sk-env-openai\n",
+        }
+        write_auth_backend_mode_override(self.root, "anthropic", "safe")
+        with mock.patch.dict("os.environ", env, clear=False):
+            with self.assertRaises(RuntimeErrorWithCode):
+                settings.set_auth_keys({"provider": "anthropic", "appendKey": "sk-anthropic-2222"}, self.root)
+
     def test_apply_runtime_settings_updates_task_snapshot_and_draft(self) -> None:
         result = settings.apply_runtime_settings(
             {
@@ -57,6 +95,11 @@ class SettingsTests(unittest.TestCase):
                 "model": "qwen3",
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
+                "contextMode": "full",
+                "directBaselineMode": "both",
+                "directProvider": "anthropic",
+                "directModel": "claude-sonnet-4-20250514",
+                "ollamaBaseUrl": "http://192.168.0.26:11434",
                 "reasoningEffort": "high",
                 "maxCostUsd": 19,
                 "maxTotalTokens": 456000,
@@ -78,17 +121,32 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["workerModel"], "qwen3")
         self.assertEqual(result["summarizerProvider"], "openai")
         self.assertEqual(result["summarizerModel"], "gpt-5.4-mini")
+        self.assertEqual(result["contextMode"], "full")
+        self.assertEqual(result["directBaselineMode"], "both")
+        self.assertEqual(result["directProvider"], "anthropic")
+        self.assertEqual(result["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(result["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(result["preferredLoop"]["rounds"], 5)
 
         state = storage.read_state_payload(storage.project_paths(self.root))
         self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
         self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
+        self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
+        self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
+        self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
+        self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
         self.assertEqual(state["activeTask"]["summarizer"]["model"], "gpt-5.4-mini")
         self.assertTrue(all(worker["model"] == "qwen3" for worker in state["activeTask"]["workers"]))
         self.assertEqual(state["draft"]["provider"], "ollama")
         self.assertEqual(state["draft"]["summarizerProvider"], "openai")
         self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4-mini")
+        self.assertEqual(state["draft"]["contextMode"], "full")
+        self.assertEqual(state["draft"]["directBaselineMode"], "both")
+        self.assertEqual(state["draft"]["directProvider"], "anthropic")
+        self.assertEqual(state["draft"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["draft"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertFalse(state["activeTask"]["runtime"]["research"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["localFiles"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["githubTools"]["enabled"])
@@ -106,6 +164,8 @@ class SettingsTests(unittest.TestCase):
                 "model": "qwen3",
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
+                "contextMode": "full",
+                "ollamaBaseUrl": "http://192.168.0.26:11434/api",
             },
             self.root,
         )
@@ -117,6 +177,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual([worker["id"] for worker in state["draft"]["workers"]], ["A", "B", "C"])
         self.assertEqual(state["draft"]["provider"], "ollama")
         self.assertEqual(state["draft"]["model"], "qwen3")
+        self.assertEqual(state["draft"]["contextMode"], "full")
+        self.assertEqual(state["draft"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
         self.assertEqual(next(worker for worker in state["draft"]["workers"] if worker["id"] == "B")["type"], "security")
         self.assertEqual(next(worker for worker in state["draft"]["workers"] if worker["id"] == "B")["temperature"], "hot")
 
@@ -146,6 +208,54 @@ class SettingsTests(unittest.TestCase):
 
         state = storage.read_state_payload(storage.project_paths(self.root))
         self.assertEqual([worker["id"] for worker in state["draft"]["workers"][:3]], ["A", "B", "C"])
+
+    def test_add_adversarial_worker_uses_staged_draft_for_next_slot(self) -> None:
+        first = settings.add_adversarial_worker({"type": "reliability"}, self.root)
+        second = settings.add_adversarial_worker({"type": "security"}, self.root)
+
+        self.assertEqual(first["worker"]["id"], "C")
+        self.assertEqual(second["worker"]["id"], "D")
+
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertEqual([worker["id"] for worker in state["draft"]["workers"][:4]], ["A", "B", "C", "D"])
+        self.assertEqual(next(worker for worker in state["draft"]["workers"] if worker["id"] == "D")["type"], "security")
+
+    def test_remove_adversarial_worker_drops_last_staged_slot_only(self) -> None:
+        settings.add_adversarial_worker({"type": "reliability"}, self.root)
+        settings.add_adversarial_worker({"type": "security"}, self.root)
+
+        result = settings.remove_adversarial_worker({}, self.root)
+
+        self.assertEqual(result["worker"]["id"], "D")
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertEqual([worker["id"] for worker in state["draft"]["workers"][:3]], ["A", "B", "C"])
+        self.assertEqual([worker["id"] for worker in state["activeTask"]["workers"]], ["A", "B"])
+
+    def test_remove_adversarial_worker_updates_active_task_when_lane_is_live(self) -> None:
+        settings.add_adversarial_worker({"type": "reliability"}, self.root)
+
+        runtime = settings._runtime(self.root)
+
+        def mutate(current):
+            next_state = dict(current)
+            active_task = dict(next_state["activeTask"])
+            draft = control.normalize_draft_state(current.get("draft") if isinstance(current.get("draft"), dict) else {})
+            active_task["workers"] = settings.task_workers({"runtime": active_task.get("runtime") or {}, "workers": draft["workers"]})
+            next_state["activeTask"] = active_task
+            return next_state
+
+        runtime.mutate_state(mutate)
+
+        result = settings.remove_adversarial_worker({}, self.root)
+
+        self.assertEqual(result["worker"]["id"], "C")
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertEqual([worker["id"] for worker in state["draft"]["workers"]], ["A", "B"])
+        self.assertEqual([worker["id"] for worker in state["activeTask"]["workers"]], ["A", "B"])
+
+    def test_remove_adversarial_worker_keeps_two_lane_floor(self) -> None:
+        with self.assertRaises(RuntimeErrorWithCode):
+            settings.remove_adversarial_worker({}, self.root)
 
     def test_set_position_model_updates_active_task_position(self) -> None:
         summarizer = settings.set_position_model({"positionId": "summarizer", "model": "gpt-5.4"}, self.root)

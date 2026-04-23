@@ -69,9 +69,13 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Optional commander-review-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
 - Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
-- API keys can now be managed through provider-grouped UI pools, with per-slot inputs, masked previews, and deterministic per-position assignment inside each vendor group
+- Worker context routing is now an explicit runtime choice: `weighted` means `Light Workers`, where the main thread keeps full context while adversarial lanes receive the curated pressure-test packet; `full` means `Full Workers`, where workers also receive the broader packet
+- Answer-path selection is now explicit too: `off` keeps the standard pressurized loop, `single` runs only the direct baseline pipe, and `both` runs the baseline in parallel with the pressurized loop so Review can compare them side by side
+- The isolated eval runner now treats answer path and worker-routing as first-class variant dimensions, so runs can capture and score `single` vs `pressurized` vs `both compare` alongside `light workers` vs `full workers` differences without contaminating live task state
+- API keys can now be managed through provider-grouped UI pools, with per-slot inputs, masked previews, deterministic per-position assignment inside each vendor group, and a per-provider `Local` / `Safe` switch
+- Ollama location is now operator-settable per task/runtime, so remote or dockerized Ollama hosts do not require the whole app to be relaunched just to change where local inference lives
 - Form draft state is persisted locally so edits, roster changes, and loop settings do not get stomped by polling refreshes
-- The transitional local fallback can still store secrets in provider-specific files such as `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, and `Auth.minimax.txt`, but the preferred paths are now `env`, `docker_secret`, or `external`
+- The transitional local fallback now treats shared `Auth.txt` as the canonical local pool with provider prefixes such as `openai:`, `ant:`, `xai:`, and `min:`, while older side files remain compatibility fallback only until a provider group is migrated into the shared file
 
 ## Sync Model
 
@@ -104,7 +108,8 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Live Python dispatch now applies target-aware structured-output token floors and a single retry on `incomplete: max_output_tokens`, while still recording the user-requested cap for auditability
 - Stale queued/running job recovery based on queue age and heartbeat age
 - Per-position model selection in the UI for workers and summarizer
-- Settings now expose `Low` / `Mid` / `High` / `Ultra` runtime profiles that template worker model, summarizer model, reasoning effort, and budget ceilings for the next send
+- Settings now expose `Low` / `Mid` / `High` / `Ultra` runtime profiles that template worker model, summarizer model, reasoning effort, and budget ceilings for the next send (`100k` / `500k` / `1m` / `2m` local token walls)
+- OpenAI live requests now opt into server-side input truncation, and oversized prompt packets can be locally compacted before provider calls when the runtime would otherwise overspill
 - Settings can now apply the current runtime template to all current worker lanes plus the summarizer, without requiring a new task
 - Home now mirrors those runtime profiles with a compact quick-profile dashboard, staged-vs-active runtime summary, and `Sync Active` action so users do not have to dive into Settings for basic cost control
 - The Home rail now lets users spawn the next adversarial lane from a selectable template such as `Security`, `Economist`, `User Advocate`, or other focused viewpoints instead of only taking the next default slot
@@ -571,6 +576,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - hosted profiles default to `docker_secret`
   - `local_file` remains explicit fallback only
 - Provider key groups are now isolated for `openai`, `anthropic`, `xai`, and `minimax` across env, mounted-secret, external-provider, and local-file backends, so one vendor path never reuses another vendor's keys.
+- Provider groups can now resolve credentials independently through `Local` or `Safe` mode, which lets one vendor stay on shared local `Auth.txt` for testing while another vendor stays on the managed path.
 - Live model calls now rotate to the next non-empty key on auth-style failures instead of binding one lane to one dead key for the rest of the run.
 - Managed secret backends now fail loudly when empty or unreachable, so live execution no longer drifts into file/env fallthrough or quiet mock fallback when the selected backend is degraded.
 
@@ -612,6 +618,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - runtime/provider dispatch now supports `openai`, `anthropic`, `xai`, `minimax`, and a native `ollama` path
   - workers inherit the task runtime provider while the summarizer/lead-thread provider can be set separately
   - Ollama supports structured local generation plus local function-tool loops, but not hosted web-search research
+  - the runtime now carries an explicit `ollamaBaseUrl`, so Ollama can live on another host or in a dockerized local stack instead of being treated as fixed localhost
   - eval arms, benchmark runs, and review artifacts now record provider identity/capability metadata so mixed-provider experiments can be compared honestly
   - settings/auth now exposes provider-grouped key pools for `openai`, `anthropic`, `xai`, and `minimax`, with explicit no-bleed assignment rules and ToS warning copy
   - provider-specific runtime behavior now changes auth lanes, live API transport, capability gating, and provider-scoped advisor skills
@@ -625,7 +632,29 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - provider-specific failures surface cleanly without corrupting task state
   - evals can compare same-model vs mixed-model lane stacks honestly
 
-### Milestone 6: Review Surface and Frontend Architecture
+### Milestone 6: Cross-Round Contradiction Memory and Re-Examination
+
+- Goal:
+  - Stop each round from feeling stateless by giving lanes and the lead thread explicit memory of unresolved disagreements, prior reversals, and pressure that should be revisited
+- Scope:
+  - add a cross-round contradiction ledger that survives within a task instead of resetting after each summarize step
+  - preserve lane-to-lane disagreement memory, including:
+    - what a lane objected to
+    - what the commander or commander review accepted
+    - what was rejected
+    - what remained unresolved
+  - allow skill-triggered re-examination when:
+    - new evidence conflicts with a prior direction
+    - a held-out concern survives into the next round
+    - the commander is about to repeat or silently reverse a prior position
+  - surface contradiction carry-forward and course reversals clearly in review artifacts so operators can see why the lead answer changed
+- Acceptance criteria:
+  - a later round can explicitly cite and revisit a disagreement from an earlier round instead of recomputing it from scratch
+  - commander review can trigger targeted re-examination of a prior position when contradiction pressure remains live
+  - saved artifacts show which disagreements were carried forward, resolved, deferred, or reversed
+  - the final answer can reflect continuity or reversal with an auditable reason rather than looking like each round forgot the last one
+
+### Milestone 7: Review Surface and Frontend Architecture
 
 - Goal:
   - Make the review surface worthy of the runtime and make the frontend maintainable enough for a real product
@@ -643,7 +672,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - the frontend codebase is split enough that new product work does not require editing one giant file
   - the shell can support both end-user and operator/review workflows cleanly
 
-### Milestone 7: Cost Governance Without Betraying the Thesis
+### Milestone 8: Cost Governance Without Betraying the Thesis
 
 - Goal:
   - Keep burn visible and governable without weakening the full-context adversarial architecture
@@ -659,5 +688,5 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Notes
 
-- `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, and `Auth.minimax.txt` now act only as local fallback API key pools for testing. They must not be copied into logs, responses, or version control.
+- `Auth.txt` now acts as the canonical local fallback API key pool for testing and uses provider prefixes like `openai:`, `ant:`, `xai:`, and `min:`. Older `Auth.*.txt` files remain compatibility fallback only. None of them may be copied into logs, responses, or version control.
 - Before committing, the repo should ignore secrets and volatile runtime data.

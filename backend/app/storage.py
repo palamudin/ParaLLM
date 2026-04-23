@@ -224,6 +224,7 @@ def default_state() -> Dict[str, Any]:
         "commander": None,
         "commanderReview": None,
         "workers": {},
+        "directBaseline": None,
         "summary": None,
         "memoryVersion": 0,
         "usage": default_usage_state(),
@@ -300,7 +301,7 @@ def normalize_state_contract(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         append_contract_warning(warnings, "draft was not an object; resetting staged draft state.")
     normalized["draft"] = current.get("draft") if isinstance(current.get("draft"), dict) else {}
 
-    for field in ("commander", "commanderReview", "summary"):
+    for field in ("commander", "commanderReview", "directBaseline", "summary"):
         value = current.get(field)
         if value is not None and not isinstance(value, dict):
             append_contract_warning(warnings, f"{field} was not an object; dropping malformed state.")
@@ -798,6 +799,7 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
         enriched_task["stateWorkers"] = copy.deepcopy(state.get("workers") or {})
         enriched_task["stateCommander"] = copy.deepcopy(state.get("commander"))
         enriched_task["stateCommanderReview"] = copy.deepcopy(state.get("commanderReview"))
+        enriched_task["directBaseline"] = copy.deepcopy(state.get("directBaseline"))
         enriched_task["summary"] = copy.deepcopy(state.get("summary"))
         enriched_task["executionHealth"] = copy.deepcopy(state.get("executionHealth") or {})
         enriched_task["contractWarnings"] = copy.deepcopy(state.get("contractWarnings") or [])
@@ -823,11 +825,13 @@ def artifact_visibility_policy() -> Dict[str, Any]:
 ARTIFACT_PATTERNS = [
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)_output\.json$", re.I), "worker_output", lambda m: m.group(2), lambda m: int(m.group(3))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_round(\d+)_output\.json$", re.I), "commander_output", lambda m: "commander", lambda m: int(m.group(2))),
+    (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_direct_baseline_round(\d+)_output\.json$", re.I), "direct_baseline_output", lambda m: "direct_baseline", lambda m: int(m.group(2))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_review_round(\d+)_output\.json$", re.I), "commander_review_output", lambda m: "commander-review", lambda m: int(m.group(2))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_partial_round(\d+)_output\.json$", re.I), "summary_partial_output", lambda m: "summary-partial", lambda m: int(m.group(2))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)_output\.json$", re.I), "summary_output", lambda m: "summary", lambda m: int(m.group(2))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_([A-Z])_step(\d+)\.json$", re.I), "worker_step", lambda m: m.group(2), lambda m: int(m.group(3))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_round(\d+)\.json$", re.I), "commander_round", lambda m: "commander", lambda m: int(m.group(2))),
+    (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_direct_baseline_round(\d+)\.json$", re.I), "direct_baseline_round", lambda m: "direct_baseline", lambda m: int(m.group(2))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_commander_review_round(\d+)\.json$", re.I), "commander_review_round", lambda m: "commander-review", lambda m: int(m.group(2))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_partial_round(\d+)\.json$", re.I), "summary_partial_round", lambda m: "summary-partial", lambda m: int(m.group(2))),
     (re.compile(r"^(t-\d{8}-\d{6}-[a-f0-9]+)_summary_round(\d+)\.json$", re.I), "summary_round", lambda m: "summary", lambda m: int(m.group(2))),
@@ -1008,7 +1012,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
         if (
             entry.get("taskId") is not None
             and entry.get("roundOrStep") is not None
-            and str(entry.get("kind") or "") in {"worker_output", "commander_output", "commander_review_output", "summary_output", "summary_partial_output"}
+            and str(entry.get("kind") or "") in {"worker_output", "commander_output", "direct_baseline_output", "commander_review_output", "summary_output", "summary_partial_output"}
         ):
             round_key = f"{entry['taskId']}:{int(entry['roundOrStep'])}"
             if round_key not in round_groups:
@@ -1019,6 +1023,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
                     "round": int(entry["roundOrStep"]),
                     "capturedAt": entry["modifiedAt"],
                     "commanderArtifact": None,
+                    "directBaselineArtifact": None,
                     "commanderReviewArtifact": None,
                     "summaryArtifact": None,
                     "workerArtifacts": [],
@@ -1026,6 +1031,8 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
                 }
             if entry["kind"] == "commander_output":
                 round_groups[round_key]["commanderArtifact"] = artifact_out
+            elif entry["kind"] == "direct_baseline_output":
+                round_groups[round_key]["directBaselineArtifact"] = artifact_out
             elif entry["kind"] == "commander_review_output":
                 round_groups[round_key]["commanderReviewArtifact"] = artifact_out
             elif entry["kind"] in {"summary_output", "summary_partial_output"}:
@@ -1124,7 +1131,7 @@ def read_recent_jsonl_entries(path: Path, limit: int = 400) -> List[Dict[str, An
 
 def step_target_id(stage: Any) -> Optional[str]:
     text = str(stage or "").strip().lower()
-    if text in {"commander", "commander_review", "summarizer"}:
+    if text in {"commander", "commander_review", "summarizer", "direct_baseline"}:
         return text
     match = re.fullmatch(r"worker_([a-z])", text)
     if match:
@@ -1136,6 +1143,8 @@ def execution_target_label(target_id: str, active_task: Optional[Dict[str, Any]]
     normalized = str(target_id or "").strip()
     if normalized == "commander":
         return "Commander"
+    if normalized == "direct_baseline":
+        return "Direct baseline"
     if normalized == "commander_review":
         return "Commander Review"
     if normalized == "summarizer":
@@ -1417,8 +1426,12 @@ def load_eval_arm_catalog(paths: Optional[Paths] = None) -> Dict[str, Any]:
         lambda manifest: {
             "description": str(manifest.get("description") or "").strip(),
             "type": str(manifest.get("type") or "").strip(),
+            "contextMode": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("contextMode"),
+            "directBaselineMode": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("directBaselineMode"),
             "provider": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("provider"),
             "model": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("model"),
+            "directProvider": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("directProvider"),
+            "directModel": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("directModel"),
             "summarizerProvider": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("summarizerProvider"),
             "summarizerModel": ((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("summarizerModel"),
             "reasoningEffort": str((((manifest.get("runtime") or {}) if isinstance(manifest.get("runtime"), dict) else {}).get("reasoningEffort")) or "low"),
@@ -1482,6 +1495,7 @@ def build_eval_run_preview(run: Dict[str, Any]) -> Dict[str, Any]:
             "totalTokens": int(summary.get("totalTokens") or 0),
             "estimatedCostUsd": float(summary.get("estimatedCostUsd") or 0.0),
             "averageQuality": summary.get("averageQuality") if isinstance(summary.get("averageQuality"), dict) else {},
+            "averageAnswerHealth": summary.get("averageAnswerHealth") if isinstance(summary.get("averageAnswerHealth"), dict) else {},
             "averageControl": summary.get("averageControl") if isinstance(summary.get("averageControl"), dict) else {},
             "variants": (summary.get("variants") or [])[:8] if isinstance(summary.get("variants"), list) else [],
         },

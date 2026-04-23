@@ -166,11 +166,17 @@ const WORKER_TEMPERATURE_CATALOG = {
 };
 const WORKER_TEMPERATURE_ORDER = Object.keys(WORKER_TEMPERATURE_CATALOG);
 const HARNESS_CONCISION_CATALOG = {
+  none: { label: "No harness" },
   tight: { label: "Tight" },
   balanced: { label: "Balanced" },
   expansive: { label: "Expansive" }
 };
 const HARNESS_CONCISION_ORDER = Object.keys(HARNESS_CONCISION_CATALOG);
+const DEFAULT_RUNTIME_BUDGET = {
+  maxCostUsd: 5,
+  maxTotalTokens: 100000,
+  maxOutputTokens: 1200
+};
 const QUALITY_PROFILE_CATALOG = {
   low: {
     label: "Low",
@@ -179,9 +185,9 @@ const QUALITY_PROFILE_CATALOG = {
     workerModel: "gpt-5-mini",
     summarizerModel: "gpt-5-mini",
     reasoningEffort: "low",
-    maxCostUsd: 5,
-    maxTotalTokens: 250000,
-    maxOutputTokens: 1200,
+    maxCostUsd: DEFAULT_RUNTIME_BUDGET.maxCostUsd,
+    maxTotalTokens: 100000,
+    maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
     loopRounds: 3,
     loopDelayMs: 1000
   },
@@ -193,7 +199,7 @@ const QUALITY_PROFILE_CATALOG = {
     summarizerModel: "gpt-5.4-mini",
     reasoningEffort: "medium",
     maxCostUsd: 12,
-    maxTotalTokens: 400000,
+    maxTotalTokens: 500000,
     maxOutputTokens: 1800,
     loopRounds: 4,
     loopDelayMs: 1000
@@ -206,20 +212,20 @@ const QUALITY_PROFILE_CATALOG = {
     summarizerModel: "gpt-5.4",
     reasoningEffort: "high",
     maxCostUsd: 30,
-    maxTotalTokens: 800000,
+    maxTotalTokens: 1000000,
     maxOutputTokens: 2800,
     loopRounds: 6,
     loopDelayMs: 1000
   },
   ultra: {
     label: "Ultra",
-    eyebrow: "Cost wall only",
-    description: "Removes the token wall and leaves spend as the main governor for maximum agentic pressure.",
+    eyebrow: "Long haul",
+    description: "Keeps the spend wall while letting long pressure runs breathe with a very high token ceiling.",
     workerModel: "gpt-5.4",
     summarizerModel: "gpt-5.4",
     reasoningEffort: "xhigh",
     maxCostUsd: 75,
-    maxTotalTokens: 0,
+    maxTotalTokens: 2000000,
     maxOutputTokens: 4000,
     loopRounds: 8,
     loopDelayMs: 1000
@@ -244,6 +250,7 @@ let latestAuthStatus = {
   deprecated: false,
   preferredBackends: ["env", "external"],
   recommendedBackend: "env",
+  defaultMode: "safe",
   statusNote: "",
   rotationPolicy: null,
   providerOrder: ["openai", "anthropic", "xai", "minimax"],
@@ -272,6 +279,8 @@ let latestEvalHistory = null;
 let sidebarCopyCollapseTargets = [];
 let selectedEvalRunId = localStorage.getItem("loopSelectedEvalRunId") || "";
 let evalArtifactSelections = { left: "", right: "" };
+let evalArtifactContentCache = {};
+let evalArtifactRequestState = {};
 let composerToolMenuOpen = false;
 let composerSourceDrawerOpen = false;
 let composerRecentDrawerOpen = false;
@@ -280,6 +289,8 @@ let recentComposerAttachments = [];
 let draftSaveTimer = null;
 let workerControlsSignature = "";
 let workerControlExpanded = safeJsonParse(localStorage.getItem("loopWorkerControlExpanded") || "{}", {});
+let workerEditorOverrides = { workers: {}, summarizer: null };
+let workerEditorModalState = { kind: "", key: "" };
 let debugControlsSignature = "";
 let threadRenderSignature = "";
 let threadRenderTaskId = "";
@@ -291,6 +302,7 @@ const API = {
   draft: "/v1/draft",
   authStatus: "/v1/auth/status",
   authKeys: "/v1/auth/keys",
+  authMode: "/v1/auth/mode",
   evalArtifact: "/v1/evals/artifact",
   evalHistory: "/v1/evals/history",
   exportSession: "/v1/session/export",
@@ -304,6 +316,7 @@ const API = {
   targetsBackground: "/v1/targets/background",
   rounds: "/v1/rounds",
   workersAdd: "/v1/workers/add",
+  workersRemove: "/v1/workers/remove",
   loopsCancel: "/v1/loops/cancel",
   evalRuns: "/v1/evals/runs",
   sessionReset: "/v1/session/reset",
@@ -449,6 +462,135 @@ function setWorkerControlExpandedState(key, open) {
   if (!normalizedKey) return;
   workerControlExpanded[normalizedKey] = !!open;
   localStorage.setItem("loopWorkerControlExpanded", JSON.stringify(workerControlExpanded));
+}
+
+function mergeHarnessOverride(baseHarness, overrideHarness, fallback = "tight") {
+  return normalizeHarnessConfig(Object.assign({}, baseHarness || {}, overrideHarness || {}), fallback);
+}
+
+function editableWorkerSnapshot(worker, provider) {
+  const base = worker && typeof worker === "object" ? worker : {};
+  const typeId = String(base.type || "sceptic").trim().toLowerCase() || "sceptic";
+  const template = WORKER_TYPE_CATALOG[typeId] || WORKER_TYPE_CATALOG.sceptic;
+  return Object.assign({}, base, {
+    id: String(base.id || "").trim(),
+    type: typeId,
+    temperature: String(base.temperature || template.temperature || "balanced").trim().toLowerCase() || "balanced",
+    model: normalizeSelectedModelForProvider(String(base.model || defaultModelForProvider(provider)), provider),
+    label: template.label,
+    role: template.role,
+    focus: template.focus,
+    harness: normalizeHarnessConfig(base.harness, "tight")
+  });
+}
+
+function editableSummarizerSnapshot(summarizer, provider) {
+  const base = summarizer && typeof summarizer === "object" ? summarizer : {};
+  return Object.assign({}, base, {
+    id: "summarizer",
+    label: "Main thread",
+    provider,
+    model: normalizeSelectedModelForProvider(String(base.model || defaultModelForProvider(provider)), provider),
+    harness: normalizeHarnessConfig(base.harness, "expansive")
+  });
+}
+
+function mergeWorkerEditorWorker(worker, override, provider) {
+  const base = worker && typeof worker === "object" ? worker : {};
+  const extra = override && typeof override === "object" ? override : {};
+  const merged = Object.assign({}, base, extra);
+  merged.harness = mergeHarnessOverride(base.harness, extra.harness, "tight");
+  return editableWorkerSnapshot(merged, provider);
+}
+
+function mergeWorkerEditorSummarizer(summarizer, override, provider) {
+  const base = summarizer && typeof summarizer === "object" ? summarizer : {};
+  const extra = override && typeof override === "object" ? override : {};
+  const merged = Object.assign({}, base, extra);
+  merged.harness = mergeHarnessOverride(base.harness, extra.harness, "expansive");
+  return editableSummarizerSnapshot(merged, provider);
+}
+
+function workerEditableSignature(worker) {
+  return JSON.stringify({
+    id: String(worker?.id || "").trim(),
+    type: String(worker?.type || "sceptic"),
+    temperature: String(worker?.temperature || "balanced"),
+    model: String(worker?.model || ""),
+    harness: normalizeHarnessConfig(worker?.harness, "tight")
+  });
+}
+
+function summarizerEditableSignature(summarizer) {
+  return JSON.stringify({
+    provider: String(summarizer?.provider || "openai"),
+    model: String(summarizer?.model || ""),
+    harness: normalizeHarnessConfig(summarizer?.harness, "expansive")
+  });
+}
+
+function setWorkerEditorWorkerOverride(workerId, patch) {
+  const key = normalizeWorkerControlKey(workerId);
+  if (!key) return;
+  const current = workerEditorOverrides.workers[key] && typeof workerEditorOverrides.workers[key] === "object"
+    ? workerEditorOverrides.workers[key]
+    : {};
+  const next = Object.assign({}, current, patch || {});
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "harness")) {
+    next.harness = Object.assign({}, current.harness || {}, patch.harness || {});
+  }
+  workerEditorOverrides.workers[key] = next;
+}
+
+function setWorkerEditorSummarizerOverride(patch) {
+  const current = workerEditorOverrides.summarizer && typeof workerEditorOverrides.summarizer === "object"
+    ? workerEditorOverrides.summarizer
+    : {};
+  const next = Object.assign({}, current, patch || {});
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "harness")) {
+    next.harness = Object.assign({}, current.harness || {}, patch.harness || {});
+  }
+  workerEditorOverrides.summarizer = next;
+}
+
+function visibleWorkerRosterSource(draft = latestState?.draft || null, task = latestState?.activeTask || null) {
+  const provider = runtimeProviderSource(task, draft);
+  return stagedWorkerSource(draft, task).map(function (worker) {
+    return mergeWorkerEditorWorker(worker, workerEditorOverrides.workers[normalizeWorkerControlKey(worker?.id)], provider);
+  });
+}
+
+function visibleSummarizerSource(draft = latestState?.draft || null, task = latestState?.activeTask || null) {
+  const provider = normalizeProviderId($("#summarizerProvider").val() || summarizerProviderSource(task, draft));
+  return mergeWorkerEditorSummarizer(stagedSummarizerSource(draft, task), workerEditorOverrides.summarizer, provider);
+}
+
+function reconcileWorkerEditorOverrides(draft = latestState?.draft || null, task = latestState?.activeTask || null) {
+  const provider = runtimeProviderSource(task, draft);
+  const nextWorkerOverrides = {};
+  const baseWorkers = stagedWorkerSource(draft, task);
+  const byKey = {};
+  baseWorkers.forEach(function (worker) {
+    byKey[normalizeWorkerControlKey(worker?.id)] = worker;
+  });
+  Object.keys(workerEditorOverrides.workers || {}).forEach(function (key) {
+    const base = byKey[key];
+    const override = workerEditorOverrides.workers[key];
+    if (!base || !override || typeof override !== "object") return;
+    const baseSignature = workerEditableSignature(mergeWorkerEditorWorker(base, null, provider));
+    const overrideSignature = workerEditableSignature(mergeWorkerEditorWorker(base, override, provider));
+    if (baseSignature !== overrideSignature) {
+      nextWorkerOverrides[key] = override;
+    }
+  });
+  workerEditorOverrides.workers = nextWorkerOverrides;
+
+  const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || summarizerProviderSource(task, draft));
+  const baseSummarizer = mergeWorkerEditorSummarizer(stagedSummarizerSource(draft, task), null, summarizerProvider);
+  const overrideSummarizer = mergeWorkerEditorSummarizer(stagedSummarizerSource(draft, task), workerEditorOverrides.summarizer, summarizerProvider);
+  if (workerEditorOverrides.summarizer && summarizerEditableSignature(baseSummarizer) === summarizerEditableSignature(overrideSummarizer)) {
+    workerEditorOverrides.summarizer = null;
+  }
 }
 
 function appendCompactHoverPopup($root, lines) {
@@ -602,14 +744,19 @@ function defaultDraftState() {
     constraints: [],
     sessionContext: "",
     executionMode: "live",
+    contextMode: "weighted",
+    directBaselineMode: "off",
     provider: "openai",
     model: "gpt-5-mini",
     summarizerProvider: "openai",
     summarizerModel: "gpt-5-mini",
+    directProvider: "openai",
+    directModel: "gpt-5-mini",
+    ollamaBaseUrl: "http://127.0.0.1:11434",
     reasoningEffort: "low",
-    maxCostUsd: 5.0,
-    maxTotalTokens: 250000,
-    maxOutputTokens: 1200,
+    maxCostUsd: DEFAULT_RUNTIME_BUDGET.maxCostUsd,
+    maxTotalTokens: DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
+    maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
     researchEnabled: false,
     researchExternalWebAccess: true,
     researchDomains: [],
@@ -619,7 +766,7 @@ function defaultDraftState() {
     githubAllowedRepos: [],
     dynamicSpinupEnabled: false,
     vettingEnabled: true,
-    summarizerHarness: { concision: "balanced", instruction: "" },
+    summarizerHarness: { concision: "expansive", instruction: "" },
     loopRounds: 3,
     loopDelayMs: 1000,
     workers: [
@@ -628,6 +775,97 @@ function defaultDraftState() {
     ],
     updatedAt: ""
   };
+}
+
+function normalizeOllamaBaseUrl(value) {
+  const raw = String(value || "").trim();
+  return (raw || "http://127.0.0.1:11434").replace(/\/+$/, "");
+}
+
+function shouldShowOllamaBaseUrl(workerProvider, summarizerProvider) {
+  return normalizeProviderId(workerProvider) === "ollama" || normalizeProviderId(summarizerProvider) === "ollama";
+}
+
+function normalizeContextMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "full" ? "full" : "weighted";
+}
+
+function contextModeLabel(value) {
+  return normalizeContextMode(value) === "full" ? "Full workers" : "Light workers";
+}
+
+function normalizeDirectBaselineMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "single" || raw === "both") return raw;
+  return "off";
+}
+
+function directBaselineModeLabel(value) {
+  const normalized = normalizeDirectBaselineMode(value);
+  if (normalized === "single") return "Single only";
+  if (normalized === "both") return "Both compare";
+  return "Off";
+}
+
+function shouldShowDirectBaselineFields(mode) {
+  return normalizeDirectBaselineMode(mode) !== "off";
+}
+
+function syncDirectBaselineFields() {
+  const mode = normalizeDirectBaselineMode($("#directBaselineMode").val());
+  const visible = shouldShowDirectBaselineFields(mode);
+  const workerProvider = normalizeProviderId($("#provider").val());
+  const $providerField = $("#directProviderField");
+  const $modelField = $("#directModelField");
+  const $provider = $("#directProvider");
+  const $model = $("#directModel");
+  const $hint = $("#directBaselineHint");
+  if (!$providerField.length || !$modelField.length || !$provider.length || !$model.length || !$hint.length) return;
+  $providerField.prop("hidden", !visible);
+  $modelField.prop("hidden", !visible);
+  $provider.prop("disabled", !visible);
+  $model.prop("disabled", !visible);
+  const providerValue = normalizeProviderId($provider.val() || workerProvider);
+  const modelValue = normalizeSelectedModelForProvider($model.val() || $("#model").val(), providerValue);
+  populateStaticModelSelect("#directModel", modelValue, providerValue);
+  $provider.val(providerValue);
+  $model.val(modelValue);
+  $hint.text(
+    visible
+      ? (
+        mode === "both"
+          ? "Runs once in parallel with the pressurized loop and saves a compare-ready artifact in Review."
+          : "Runs one direct single-thread answer instead of the pressurized multi-lane loop."
+      )
+      : "Only used when the single-thread baseline is enabled."
+  );
+}
+
+function syncOllamaBaseUrlField() {
+  const workerProvider = normalizeProviderId($("#provider").val());
+  const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
+  const directMode = normalizeDirectBaselineMode($("#directBaselineMode").val());
+  const directProvider = normalizeProviderId($("#directProvider").val() || workerProvider);
+  const visible = shouldShowOllamaBaseUrl(workerProvider, summarizerProvider) || (directMode !== "off" && directProvider === "ollama");
+  const $field = $("#ollamaBaseUrlField");
+  const $input = $("#ollamaBaseUrl");
+  const $hint = $("#ollamaBaseUrlHint");
+  if (!$field.length || !$input.length || !$hint.length) return;
+  $field.prop("hidden", !visible);
+  $input.prop("disabled", !visible);
+  if (!$input.val().trim()) {
+    $input.val(normalizeOllamaBaseUrl(""));
+  }
+  const roles = [];
+  if (workerProvider === "ollama") roles.push("workers");
+  if (summarizerProvider === "ollama") roles.push("summarizer");
+  if (directMode !== "off" && directProvider === "ollama") roles.push("single-thread baseline");
+  $hint.text(
+    visible
+      ? ("Used by " + roles.join(" and ") + ". Accepts either a host like http://192.168.0.26:11434 or an /api base URL.")
+      : "Only used when an Ollama provider is active."
+  );
 }
 
 function buildWorkerTypeOptions(selectedValue) {
@@ -889,6 +1127,7 @@ function nextAvailableWorkerType(task, draft) {
 
 function renderAddWorkerTypeControl(task, draft, loop) {
   const $select = $("#addWorkerType");
+  const $remove = $("#removeAdversarial");
   if (!$select.length) return;
 
   const workers = stagedWorkerSource(draft, task);
@@ -905,6 +1144,11 @@ function renderAddWorkerTypeControl(task, draft, loop) {
   $select.val(selectedValue);
   $select.data("selectedType", selectedValue);
   $select.prop("disabled", isActive || workers.length >= WORKER_SLOT_IDS.length);
+  if ($remove.length) {
+    const canRemove = workers.length > 2;
+    $remove.prop("hidden", !canRemove);
+    $remove.prop("disabled", isActive || !canRemove);
+  }
 }
 
 function artifactOutputCapParts(artifact) {
@@ -1072,6 +1316,493 @@ function renderArtifactContent(data) {
   return sections.join("\n\n");
 }
 
+function evalArtifactCacheKey(runId, artifactId) {
+  return String(runId || "").trim() + "::" + String(artifactId || "").trim();
+}
+
+function getCachedEvalArtifact(runId, artifactId) {
+  return evalArtifactContentCache[evalArtifactCacheKey(runId, artifactId)] || null;
+}
+
+function rerenderSelectedEvalRunDetail() {
+  if (latestEvalHistory?.selectedRun) {
+    $("#evalRunDetail").html(renderEvalRunDetail(latestEvalHistory.selectedRun));
+  }
+}
+
+function queueEvalArtifactFetch(runId, artifactId) {
+  const normalizedRunId = String(runId || "").trim();
+  const normalizedArtifactId = String(artifactId || "").trim();
+  if (!normalizedRunId || !normalizedArtifactId) return;
+  const cacheKey = evalArtifactCacheKey(normalizedRunId, normalizedArtifactId);
+  if (evalArtifactContentCache[cacheKey] || evalArtifactRequestState[cacheKey]) return;
+  evalArtifactRequestState[cacheKey] = true;
+  $.getJSON(apiRoute(API.evalArtifact), { runId: normalizedRunId, artifactId: normalizedArtifactId })
+    .done(function (data) {
+      evalArtifactContentCache[cacheKey] = data || null;
+      if (selectedEvalRunId === normalizedRunId) {
+        rerenderSelectedEvalRunDetail();
+      }
+    })
+    .always(function () {
+      delete evalArtifactRequestState[cacheKey];
+    });
+}
+
+function evalUsageForTarget(usage, targetId) {
+  const byTarget = usage?.byTarget;
+  if (!byTarget || typeof byTarget !== "object") return null;
+  return byTarget[targetId] && typeof byTarget[targetId] === "object" ? byTarget[targetId] : null;
+}
+
+function normalizeEvalAnswerEntry(payload, fallbackLabel, provider, model, mode, usage) {
+  if (!payload || typeof payload !== "object") return null;
+  const answer = String(payload.answer || "").trim();
+  if (!answer) return null;
+  return {
+    label: String(fallbackLabel || "Answer").trim() || "Answer",
+    answer,
+    stance: String(payload.stance || "").trim(),
+    confidenceNote: String(payload.confidenceNote || "").trim(),
+    provider: provider || "",
+    model: model || "",
+    mode: mode || "",
+    usage: usage || null
+  };
+}
+
+function extractEvalPrimaryAnswer(data) {
+  const content = data?.content || {};
+  const output = content?.output || {};
+  const frontAnswer = output?.frontAnswer || content?.frontAnswer || {};
+  const answer = output?.answer || content?.answer || {};
+  const provider = String(content?.provider || content?.primaryTelemetry?.provider || data?.summary?.provider || "").trim();
+  const model = String(content?.model || content?.primaryTelemetry?.model || data?.summary?.model || "").trim();
+  const mode = String(content?.mode || data?.summary?.mode || "").trim();
+  return (
+    normalizeEvalAnswerEntry(frontAnswer, "Pressurized answer", provider, model, mode, output?.responseMeta?.usageDelta || content?.usage || null)
+    || normalizeEvalAnswerEntry(answer, "Single-thread baseline", provider, model, mode, output?.responseMeta?.usageDelta || content?.usage || null)
+    || (typeof content?.primaryAnswer === "string"
+      ? normalizeEvalAnswerEntry(
+        {
+          answer: content.primaryAnswer,
+          stance: content?.primaryQuality?.verdict || "",
+          confidenceNote: content?.primaryAnswerHealth?.verdict || ""
+        },
+        "Pressurized answer",
+        provider,
+        model,
+        mode,
+        null
+      )
+      : null)
+    || normalizeEvalAnswerEntry(
+      {
+        answer: content?.publicAnswer || "",
+        stance: content?.summary?.frontAnswer?.stance || "",
+        confidenceNote: content?.summary?.frontAnswer?.confidenceNote || content?.quality?.rationale || ""
+      },
+      "Result answer",
+      provider,
+      model,
+      mode,
+      content?.usage || null
+    )
+  );
+}
+
+function extractEvalBaselineAnswer(data) {
+  const content = data?.content || {};
+  const directBaseline = content?.directBaseline || {};
+  const baselineAnswer = directBaseline?.answer || content?.baselineAnswer || content?.directAnswer || {};
+  const provider = String(directBaseline?.provider || content?.baselineTelemetry?.provider || content?.provider || data?.summary?.provider || "").trim();
+  const model = String(directBaseline?.model || content?.baselineTelemetry?.model || content?.model || data?.summary?.model || "").trim();
+  const mode = String(directBaseline?.mode || content?.mode || data?.summary?.mode || "").trim();
+  if (typeof baselineAnswer === "string") {
+    return normalizeEvalAnswerEntry(
+      {
+        answer: baselineAnswer,
+        stance: content?.baselineQuality?.verdict || "",
+        confidenceNote: content?.baselineAnswerHealth?.verdict || ""
+      },
+      "Single-thread baseline",
+      provider,
+      model,
+      mode,
+      directBaseline?.usage || null
+    );
+  }
+  return normalizeEvalAnswerEntry(
+    baselineAnswer,
+    "Single-thread baseline",
+    provider,
+    model,
+    mode,
+    directBaseline?.usage || null
+  );
+}
+
+function renderEvalMetricStrip(metrics) {
+  const items = (metrics || []).filter(function (entry) {
+    return String(entry?.value || "").trim();
+  });
+  if (!items.length) return "";
+  return `
+    <div class="eval-metric-strip">
+      ${items.map(function (entry) {
+        return `
+          <div class="eval-metric-chip">
+            <span class="eval-metric-chip-label">${escapeHtml(entry.label || "Metric")}</span>
+            <strong>${escapeHtml(String(entry.value || ""))}</strong>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderEvalAnswerCard(entry, tone) {
+  const normalized = entry || { label: "Answer", answer: "" };
+  if (!String(normalized.answer || "").trim()) {
+    return `
+      <article class="eval-answer-card${tone ? " " + tone : ""}">
+        <div class="eval-answer-card-kicker">${escapeHtml(normalized.label || "Answer")}</div>
+        <div class="review-empty small">${escapeHtml(normalized.emptyMessage || "No answer captured yet.")}</div>
+      </article>
+    `;
+  }
+  const metaBits = [
+    normalized.stance ? "Stance " + normalized.stance : "",
+    normalized.provider ? providerLabel(normalized.provider) : "",
+    normalized.model ? modelLabel(normalized.model, normalized.provider || "openai") : "",
+    normalized.mode ? "Mode " + normalized.mode : "",
+    normalized.usage?.totalTokens ? "Tokens " + formatInteger(normalized.usage.totalTokens) : "",
+    normalized.usage?.estimatedCostUsd != null ? "Spend " + formatUsd(normalized.usage.estimatedCostUsd || 0) : ""
+  ].filter(Boolean);
+  return `
+    <article class="eval-answer-card${tone ? " " + tone : ""}">
+      <div class="eval-answer-card-kicker">${escapeHtml(normalized.label || "Answer")}</div>
+      <div class="eval-answer-card-body">${escapeHtml(String(normalized.answer || "").trim())}</div>
+      ${normalized.confidenceNote ? `<div class="eval-answer-card-note">${escapeHtml(normalized.confidenceNote)}</div>` : ""}
+      ${metaBits.length ? `<div class="eval-answer-card-meta">${escapeHtml(metaBits.join(" | "))}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderEvalAnswerCompare(pressurizedEntry, baselineEntry, comparison) {
+  const verdictBits = [];
+  if (comparison?.verdict) verdictBits.push("Verdict " + String(comparison.verdict || ""));
+  if (comparison?.scoreDelta?.overallQuality != null) verdictBits.push("Delta " + Number(comparison.scoreDelta.overallQuality || 0).toFixed(1));
+  if (comparison?.baselineQuality?.scores?.overallQuality != null) verdictBits.push("Baseline quality " + Number(comparison.baselineQuality.scores.overallQuality || 0).toFixed(1));
+  if (comparison?.scores?.overallDifferentiation != null) verdictBits.push("Diff " + Number(comparison.scores.overallDifferentiation || 0).toFixed(1));
+  if (comparison?.similarity?.sequenceSimilarity != null) verdictBits.push("Seq " + Number(comparison.similarity.sequenceSimilarity || 0).toFixed(2));
+  if (comparison?.materialDifference === false) verdictBits.push("Near duplicate");
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">Final answer compare</div>
+        ${verdictBits.length ? `<div class="eval-section-meta">${escapeHtml(verdictBits.join(" | "))}</div>` : ""}
+      </div>
+      <div class="eval-answer-compare-grid">
+        ${renderEvalAnswerCard(pressurizedEntry || { label: "Pressurized answer", answer: "" }, "primary")}
+        ${renderEvalAnswerCard(baselineEntry || { label: "Single-thread baseline", answer: "" }, "secondary")}
+      </div>
+    </section>
+  `;
+}
+
+function evalAnswerMetaBits(entry) {
+  if (!entry || typeof entry !== "object") return [];
+  return [
+    entry.stance ? "Stance " + entry.stance : "",
+    entry.provider ? providerLabel(entry.provider) : "",
+    entry.model ? modelLabel(entry.model, entry.provider || "openai") : "",
+    entry.mode ? "Mode " + entry.mode : "",
+    entry.usage?.totalTokens ? "Tokens " + formatInteger(entry.usage.totalTokens) : "",
+    entry.usage?.estimatedCostUsd != null ? "Spend " + formatUsd(entry.usage.estimatedCostUsd || 0) : ""
+  ].filter(Boolean);
+}
+
+function renderEvalCompareToggle(pressurizedEntry, baselineEntry, comparison) {
+  const summaryBits = [];
+  if (comparison?.verdict) summaryBits.push(String(comparison.verdict || ""));
+  if (comparison?.scoreDelta?.overallQuality != null) summaryBits.push("delta " + Number(comparison.scoreDelta.overallQuality || 0).toFixed(1));
+  if (comparison?.scores?.overallDifferentiation != null) summaryBits.push("diff " + Number(comparison.scores.overallDifferentiation || 0).toFixed(1));
+  if (comparison?.materialDifference === false) summaryBits.push("near duplicate");
+  return `
+    <details class="eval-compare-toggle">
+      <summary class="eval-compare-toggle-summary">
+        <div>
+          <div class="eval-section-title">Technical compare</div>
+          ${summaryBits.length ? `<div class="eval-section-meta">${escapeHtml(summaryBits.join(" | "))}</div>` : ""}
+        </div>
+        <span class="eval-compare-toggle-caret" aria-hidden="true">v</span>
+      </summary>
+      <div class="eval-compare-toggle-body">
+        ${renderEvalAnswerCompare(pressurizedEntry, baselineEntry, comparison)}
+      </div>
+    </details>
+  `;
+}
+
+function renderEvalChatColumn(label, answerEntry, objective, tone) {
+  const metaBits = evalAnswerMetaBits(answerEntry);
+  const answerText = String(answerEntry?.answer || "").trim();
+  return `
+    <article class="eval-chat-column${tone ? " " + tone : ""}">
+      <div class="eval-chat-column-head">
+        <div class="eval-chat-column-title">${escapeHtml(label)}</div>
+        ${metaBits.length ? `<div class="eval-chat-column-meta">${escapeHtml(metaBits.join(" | "))}</div>` : ""}
+      </div>
+      <div class="eval-chat-turn user">
+        <div class="eval-chat-turn-kicker">User</div>
+        <div class="eval-chat-turn-body">${escapeHtml(String(objective || "").trim() || "Waiting for case objective...")}</div>
+      </div>
+      <div class="eval-chat-turn assistant">
+        <div class="eval-chat-turn-kicker">Assistant</div>
+        <div class="eval-chat-turn-body">${escapeHtml(answerText || String(answerEntry?.emptyMessage || "Waiting for answer output..."))}</div>
+      </div>
+      ${answerEntry?.confidenceNote ? `<div class="eval-chat-turn-note">${escapeHtml(answerEntry.confidenceNote)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderEvalChatCompare(pressurizedEntry, baselineEntry, objective, comparison) {
+  const headerBits = [];
+  if (comparison?.verdict) headerBits.push("Judge " + String(comparison.verdict || ""));
+  if (comparison?.decisionRelation) headerBits.push("Relation " + String(comparison.decisionRelation || ""));
+  if (comparison?.scores?.overallDifferentiation != null) headerBits.push("Diff " + Number(comparison.scores.overallDifferentiation || 0).toFixed(1));
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">User view compare</div>
+        ${headerBits.length ? `<div class="eval-section-meta">${escapeHtml(headerBits.join(" | "))}</div>` : ""}
+      </div>
+      <div class="eval-chat-compare-grid">
+        ${renderEvalChatColumn("Pressurized path", pressurizedEntry, objective, "primary")}
+        ${renderEvalChatColumn("Single-thread path", baselineEntry, objective, "secondary")}
+      </div>
+    </section>
+  `;
+}
+
+function renderEvalArtifactTrail(replicate) {
+  const artifacts = Array.isArray(replicate?.artifacts) ? replicate.artifacts : [];
+  if (!artifacts.length) return "";
+  const items = artifacts
+    .slice()
+    .sort(function (left, right) {
+      return String(left?.kind || "").localeCompare(String(right?.kind || "")) || String(left?.name || "").localeCompare(String(right?.name || ""));
+    })
+    .map(function (artifact) {
+      const summary = artifact?.summary || {};
+      const parts = [
+        summary?.target ? String(summary.target).replace(/_/g, " ") : "",
+        artifact?.kind ? String(artifact.kind).replace(/_/g, " ") : "",
+        summary?.round ? "round " + Number(summary.round || 0) : "",
+        summary?.step ? "step " + Number(summary.step || 0) : "",
+        summary?.model ? modelLabel(summary.model, summary.provider || "openai") : "",
+        artifact?.name ? String(artifact.name) : ""
+      ].filter(Boolean);
+      return parts.join(" | ");
+    });
+  return renderListSection("Checkpoint trail", items);
+}
+
+function renderEvalHistoricalSummary(replicate, comparison, pressurizedEntry, baselineEntry) {
+  const lines = [
+    "Pressurized quality " + Number(replicate?.quality?.scores?.overallQuality || 0).toFixed(1)
+      + " | health " + Number(replicate?.answerHealth?.scores?.overallHealth || 0).toFixed(1)
+      + (replicate?.control?.scores?.overallControl != null ? " | control " + Number(replicate.control.scores.overallControl || 0).toFixed(1) : ""),
+    baselineEntry?.answer
+      ? (
+        "Single-thread quality " + Number(replicate?.baselineQuality?.scores?.overallQuality || 0).toFixed(1)
+        + " | health " + Number(replicate?.baselineAnswerHealth?.scores?.overallHealth || 0).toFixed(1)
+      )
+      : "",
+    comparison
+      ? (
+        "Difference " + String(comparison.verdict || "mixed")
+        + " | delta " + Number(comparison?.scoreDelta?.overallQuality || 0).toFixed(1)
+        + " | relation " + String(comparison?.decisionRelation || "n/a")
+        + " | similarity " + Number(comparison?.similarity?.sequenceSimilarity || 0).toFixed(2)
+      )
+      : "",
+    "Deterministic " + Number(replicate?.deterministic?.passedCount || 0) + "/" + Number(replicate?.deterministic?.totalCount || 0)
+      + " | Tokens " + formatInteger(replicate?.usage?.totalTokens || 0)
+      + " | Spend " + formatUsd(replicate?.usage?.estimatedCostUsd || 0)
+  ].filter(Boolean);
+  const sections = [
+    renderListSection("Historical summary", lines),
+    renderTextSection("Judge rationale", comparison?.rationale || ""),
+    renderTextSection("Pressurized edge", comparison?.primaryEdge || ""),
+    renderTextSection("Single-thread edge", comparison?.baselineEdge || ""),
+    renderEvalArtifactTrail(replicate)
+  ].filter(Boolean);
+  if (!sections.length) return "";
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">Verification history</div>
+      </div>
+      <div class="eval-history-stack">
+        ${sections.map(function (section) {
+          return `<div class="eval-history-item">${section}</div>`;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderEvalCheckpointVisual(checkpoint, label) {
+  if (!checkpoint || typeof checkpoint !== "object") return "";
+  const sections = [
+    renderTextSection(label || "Checkpoint", checkpoint.observation || checkpoint.requestToPeer || checkpoint.answerDraft || ""),
+    renderListSection("Benefits", (checkpoint.benefits || []).slice(0, 4)),
+    renderListSection("Detriments", (checkpoint.detriments || []).slice(0, 4)),
+    renderListSection("Required circumstances", (checkpoint.requiredCircumstances || []).slice(0, 4)),
+    renderListSection("Invalidating circumstances", (checkpoint.invalidatingCircumstances || []).slice(0, 4)),
+    renderTextSection("Request to peers", checkpoint.requestToPeer || ""),
+    renderTextSection("Lead direction", checkpoint.leadDirection || checkpoint.stance || ""),
+    renderTextSection("Why this direction", checkpoint.whyThisDirection || checkpoint.courseDecisionReason || "")
+  ].filter(Boolean);
+  if (!sections.length) return "";
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">${escapeHtml(label || "Checkpoint")}</div>
+      </div>
+      ${sections.join("")}
+    </section>
+  `;
+}
+
+function renderEvalScoreVisual(content) {
+  const quality = content?.quality?.scores || {};
+  const health = content?.answerHealth?.scores || {};
+  const control = content?.control?.scores || {};
+  const deterministicChecks = content?.deterministic?.checks || {};
+  const failedChecks = Object.keys(deterministicChecks).filter(function (key) {
+    return deterministicChecks[key] && deterministicChecks[key].passed === false;
+  }).map(function (key) {
+    const detail = String(deterministicChecks[key]?.detail || "").trim();
+    return key + (detail ? ": " + detail : "");
+  });
+  const metrics = [
+    { label: "Quality", value: Object.keys(quality).length ? Number(quality.overallQuality || 0).toFixed(1) : "" },
+    { label: "Health", value: Object.keys(health).length ? Number(health.overallHealth || 0).toFixed(1) : "" },
+    { label: "Control", value: Object.keys(control).length ? Number(control.overallControl || 0).toFixed(1) : "" },
+    { label: "Checks", value: String((content?.deterministic?.passedCount || 0)) + "/" + String(content?.deterministic?.totalCount || 0) },
+    { label: "Tokens", value: formatInteger(content?.usage?.totalTokens || 0) },
+    { label: "Spend", value: formatUsd(content?.usage?.estimatedCostUsd || 0) }
+  ];
+  const sections = [
+    renderEvalMetricStrip(metrics),
+    renderTextSection("Quality verdict", content?.quality?.verdict || ""),
+    renderTextSection("Quality rationale", content?.quality?.rationale || ""),
+    renderTextSection("Answer health verdict", content?.answerHealth?.verdict || ""),
+    renderTextSection("Answer health rationale", content?.answerHealth?.rationale || ""),
+    renderTextSection("Control verdict", content?.control?.verdict || ""),
+    renderTextSection("Control rationale", content?.control?.rationale || ""),
+    renderListSection("Failed deterministic checks", failedChecks)
+  ].filter(Boolean);
+  if (!sections.length) return "";
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">Score overview</div>
+      </div>
+      ${sections.join("")}
+    </section>
+  `;
+}
+
+function renderEvalComparisonVisual(content) {
+  const scores = content?.scores || content?.comparison?.scores || {};
+  const similarity = content?.similarity || content?.comparison?.similarity || {};
+  const metrics = [
+    { label: "Diff", value: Object.keys(scores).length ? Number(scores.overallDifferentiation || 0).toFixed(1) : "" },
+    { label: "Decision", value: Object.keys(scores).length ? Number(scores.decisionShift || 0).toFixed(1) : "" },
+    { label: "Validate", value: Object.keys(scores).length ? Number(scores.validationStrength || 0).toFixed(1) : "" },
+    { label: "Separation", value: Object.keys(scores).length ? Number(scores.operationalSeparation || 0).toFixed(1) : "" }
+  ];
+  const similarityBits = [
+    similarity.sequenceSimilarity != null ? "Sequence " + Number(similarity.sequenceSimilarity || 0).toFixed(2) : "",
+    similarity.tokenOverlap != null ? "Token overlap " + Number(similarity.tokenOverlap || 0).toFixed(2) : "",
+    similarity.sharedOpening != null ? "Shared opening " + (similarity.sharedOpening ? "yes" : "no") : ""
+  ].filter(Boolean);
+  const sections = [
+    renderEvalMetricStrip(metrics),
+    renderTextSection("Decision relation", content?.decisionRelation || content?.comparison?.decisionRelation || ""),
+    renderTextSection("Pressurized edge", content?.primaryEdge || content?.comparison?.primaryEdge || ""),
+    renderTextSection("Baseline edge", content?.baselineEdge || content?.comparison?.baselineEdge || ""),
+    renderTextSection("Similarity snapshot", similarityBits.join(" | ")),
+    renderTextSection("Comparison rationale", content?.rationale || content?.comparison?.rationale || "")
+  ].filter(Boolean);
+  if (!sections.length) return "";
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">Difference validation</div>
+        ${(content?.verdict || content?.comparison?.verdict) ? `<div class="eval-section-meta">${escapeHtml(String(content?.verdict || content?.comparison?.verdict || ""))}</div>` : ""}
+      </div>
+      ${sections.join("")}
+    </section>
+  `;
+}
+
+function renderEvalArtifactVisual(data) {
+  const content = data?.content || {};
+  const output = content?.output || {};
+  const kind = String(data?.kind || content?.artifactType || "").trim().toLowerCase();
+  const primaryAnswer = extractEvalPrimaryAnswer(data);
+  const baselineAnswer = extractEvalBaselineAnswer(data);
+  const blocks = [];
+
+  if (primaryAnswer && baselineAnswer) {
+    blocks.push(renderEvalAnswerCompare(primaryAnswer, baselineAnswer, content?.comparison || null));
+  } else if (primaryAnswer) {
+    blocks.push(`
+      <section class="eval-visual-section">
+        <div class="eval-section-head">
+          <div class="eval-section-title">${escapeHtml(primaryAnswer.label || "Answer")}</div>
+        </div>
+        ${renderEvalAnswerCard(primaryAnswer, "primary")}
+      </section>
+    `);
+  }
+
+  if (kind === "score" || content?.quality || content?.control || content?.deterministic) {
+    blocks.push(renderEvalScoreVisual(content));
+  }
+
+  if (kind === "comparison" || content?.comparison || content?.scores?.overallDifferentiation != null) {
+    blocks.push(renderEvalComparisonVisual(content));
+  }
+
+  if (kind === "worker_output" || kind === "worker_step" || output?.workerId || content?.workerId) {
+    blocks.push(renderEvalCheckpointVisual(output?.workerId ? output : content?.output || content, "Worker checkpoint"));
+  } else if (kind === "summary_output" || output?.frontAnswer) {
+    blocks.push(renderEvalCheckpointVisual(output, "Pressurized summary"));
+  } else if (kind === "summary_round" || kind === "commander_review_output" || kind === "commander_output") {
+    blocks.push(renderEvalCheckpointVisual(output || content, "Checkpoint digest"));
+  }
+
+  if (!blocks.length) {
+    const fallbackSections = [
+      renderTextSection("Artifact kind", kind || "artifact"),
+      renderTextSection("Quick summary", truncateText(pretty(content), 900))
+    ].filter(Boolean);
+    if (fallbackSections.length) {
+      blocks.push(`<section class="eval-visual-section">${fallbackSections.join("")}</section>`);
+    }
+  }
+
+  return blocks.length
+    ? `<div class="eval-artifact-visual-stack">${blocks.join("")}</div>`
+    : `<div class="review-empty">No visual summary available for this artifact yet.</div>`;
+}
+
 function setArtifactPane(side, metaText, contentText) {
   $("#artifact" + side + "Meta").text(metaText);
   $("#artifact" + side + "Content").text(contentText);
@@ -1098,12 +1829,12 @@ function syncArtifactReview(artifacts) {
   const names = new Set(list.map(function (artifact) { return artifact.name; }));
 
   if (!artifactSelections.left || !names.has(artifactSelections.left)) {
-    const leftDefault = pickArtifact(list, ["summary_output", "commander_review_output", "commander_output", "summary_round", "commander_review_round", "commander_round", "worker_output", "worker_step"], "");
+    const leftDefault = pickArtifact(list, ["summary_output", "direct_baseline_output", "commander_review_output", "commander_output", "summary_round", "commander_review_round", "commander_round", "worker_output", "worker_step"], "");
     artifactSelections.left = leftDefault ? leftDefault.name : "";
   }
 
   if (!artifactSelections.right || !names.has(artifactSelections.right) || artifactSelections.right === artifactSelections.left) {
-    const rightDefault = pickArtifact(list, ["commander_review_output", "commander_output", "worker_output", "worker_step", "summary_output", "commander_review_round", "commander_round", "summary_round"], artifactSelections.left);
+    const rightDefault = pickArtifact(list, ["direct_baseline_output", "commander_review_output", "commander_output", "worker_output", "worker_step", "summary_output", "commander_review_round", "commander_round", "summary_round"], artifactSelections.left);
     artifactSelections.right = rightDefault ? rightDefault.name : "";
   }
 
@@ -1125,20 +1856,33 @@ function populateStaticModelSelect(selector, selectedValue, provider) {
 function refreshProviderModelSelects() {
   const workerProvider = normalizeProviderId($("#provider").val());
   const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
+  const directProvider = normalizeProviderId($("#directProvider").val() || workerProvider);
   const workerModel = normalizeSelectedModelForProvider($("#model").val(), workerProvider);
   const summarizerModel = normalizeSelectedModelForProvider($("#summarizerModel").val(), summarizerProvider);
+  const directModel = normalizeSelectedModelForProvider($("#directModel").val() || $("#model").val(), directProvider);
   populateStaticModelSelect("#model", workerModel, workerProvider);
   populateStaticModelSelect("#summarizerModel", summarizerModel, summarizerProvider);
+  populateStaticModelSelect("#directModel", directModel, directProvider);
   $("#model").val(workerModel);
   $("#summarizerModel").val(summarizerModel);
+  $("#directModel").val(directModel);
 
-  $("#workerControls .worker-model").each(function () {
+  $(".worker-model").each(function () {
     const nextValue = normalizeSelectedModelForProvider($(this).val(), workerProvider);
     $(this).html(buildModelOptions(nextValue, workerProvider)).val(nextValue);
   });
-  $("#workerControls .summarizer-model-draft").each(function () {
+  $(".summarizer-model-draft").each(function () {
     const nextValue = normalizeSelectedModelForProvider($(this).val(), summarizerProvider);
     $(this).html(buildModelOptions(nextValue, summarizerProvider)).val(nextValue);
+  });
+
+  visibleWorkerRosterSource(latestState?.draft || null, latestState?.activeTask || null).forEach(function (worker) {
+    setWorkerEditorWorkerOverride(worker.id, {
+      model: normalizeSelectedModelForProvider(worker.model, workerProvider)
+    });
+  });
+  setWorkerEditorSummarizerOverride({
+    model: normalizeSelectedModelForProvider(visibleSummarizerSource(latestState?.draft || null, latestState?.activeTask || null).model, summarizerProvider)
   });
 }
 
@@ -1153,14 +1897,19 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.sessionContext || "",
         JSON.stringify(safeDraft.constraints || []),
         safeDraft.executionMode || "live",
+        safeDraft.contextMode || "weighted",
+        safeDraft.directBaselineMode || "off",
         safeDraft.provider || "openai",
         safeDraft.model || "gpt-5-mini",
         safeDraft.summarizerProvider || safeDraft.provider || "openai",
         safeDraft.summarizerModel || "gpt-5-mini",
+        safeDraft.directProvider || safeDraft.provider || "openai",
+        safeDraft.directModel || safeDraft.model || "gpt-5-mini",
+        safeDraft.ollamaBaseUrl || "http://127.0.0.1:11434",
         safeDraft.reasoningEffort || "low",
-        safeDraft.maxCostUsd ?? 5.0,
-        safeDraft.maxTotalTokens ?? 250000,
-        safeDraft.maxOutputTokens ?? 1200,
+        safeDraft.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
+        safeDraft.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
+        safeDraft.maxOutputTokens ?? DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
         safeDraft.researchEnabled ? 1 : 0,
         safeDraft.researchExternalWebAccess === false ? 0 : 1,
         JSON.stringify(safeDraft.researchDomains || []),
@@ -1188,14 +1937,19 @@ function buildCommanderFormSource(task, draft) {
         task.sessionContext || "",
         JSON.stringify(task.constraints || []),
         task.runtime?.executionMode || "live",
+        task.runtime?.contextMode || "weighted",
+        task.runtime?.directBaselineMode || "off",
         task.runtime?.provider || "openai",
         task.runtime?.model || "gpt-5-mini",
         task.summarizer?.provider || task.runtime?.provider || "openai",
         task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
+        task.runtime?.directProvider || task.runtime?.provider || "openai",
+        task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
+        task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
         task.runtime?.reasoningEffort || "low",
-        task.runtime?.budget?.maxCostUsd ?? 5.0,
-        task.runtime?.budget?.maxTotalTokens ?? 250000,
-        task.runtime?.budget?.maxOutputTokens ?? 1200,
+        task.runtime?.budget?.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
+        task.runtime?.budget?.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
+        task.runtime?.budget?.maxOutputTokens ?? DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
         task.runtime?.research?.enabled ? 1 : 0,
         task.runtime?.research?.externalWebAccess === false ? 0 : 1,
         JSON.stringify(task.runtime?.research?.domains || []),
@@ -1215,14 +1969,19 @@ function buildCommanderFormSource(task, draft) {
         constraints: task.constraints || [],
         sessionContext: task.sessionContext || "",
         executionMode: task.runtime?.executionMode || "live",
+        contextMode: task.runtime?.contextMode || "weighted",
+        directBaselineMode: task.runtime?.directBaselineMode || "off",
         provider: task.runtime?.provider || "openai",
         model: task.runtime?.model || "gpt-5-mini",
         summarizerProvider: task.summarizer?.provider || task.runtime?.provider || "openai",
         summarizerModel: task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
+        directProvider: task.runtime?.directProvider || task.runtime?.provider || "openai",
+        directModel: task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
+        ollamaBaseUrl: task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
         reasoningEffort: task.runtime?.reasoningEffort || "low",
-        maxCostUsd: task.runtime?.budget?.maxCostUsd ?? 5.0,
-        maxTotalTokens: task.runtime?.budget?.maxTotalTokens ?? 250000,
-        maxOutputTokens: task.runtime?.budget?.maxOutputTokens ?? 1200,
+        maxCostUsd: task.runtime?.budget?.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
+        maxTotalTokens: task.runtime?.budget?.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
+        maxOutputTokens: task.runtime?.budget?.maxOutputTokens ?? DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
         researchEnabled: task.runtime?.research?.enabled ? true : false,
         researchExternalWebAccess: task.runtime?.research?.externalWebAccess === false ? false : true,
         researchDomains: task.runtime?.research?.domains || [],
@@ -1232,7 +1991,7 @@ function buildCommanderFormSource(task, draft) {
         githubAllowedRepos: task.runtime?.githubTools?.repos || [],
         dynamicSpinupEnabled: task.runtime?.dynamicSpinup?.enabled ? true : false,
         vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true,
-        summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "balanced"),
+        summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "expansive"),
         loopRounds: task.preferredLoop?.rounds ?? 3,
         loopDelayMs: task.preferredLoop?.delayMs ?? 1000,
         workers: task.workers || []
@@ -1255,26 +2014,34 @@ function applyCommanderForm(values) {
   const safe = Object.assign({}, defaultDraftState(), values || {});
   const workerProvider = normalizeProviderId(safe.provider || "openai");
   const summarizerProvider = normalizeProviderId(safe.summarizerProvider || safe.provider || "openai");
+  const directProvider = normalizeProviderId(safe.directProvider || safe.provider || "openai");
   const workerModel = normalizeSelectedModelForProvider(safe.model, workerProvider);
   const summarizerModel = normalizeSelectedModelForProvider(safe.summarizerModel || safe.model, summarizerProvider);
+  const directModel = normalizeSelectedModelForProvider(safe.directModel || safe.model, directProvider);
   $("#sessionContext").val(safe.sessionContext || "");
   $("#objective").val(safe.objective || "");
   $("#constraints").val((safe.constraints || []).join("\n"));
   $("#executionMode").val(safe.executionMode || "live");
+  $("#contextMode").val(normalizeContextMode(safe.contextMode));
+  $("#directBaselineMode").val(normalizeDirectBaselineMode(safe.directBaselineMode));
   $("#provider").val(workerProvider);
   $("#summarizerProvider").val(summarizerProvider);
+  $("#directProvider").val(directProvider);
+  $("#ollamaBaseUrl").val(normalizeOllamaBaseUrl(safe.ollamaBaseUrl));
   populateStaticModelSelect("#model", workerModel, workerProvider);
   populateStaticModelSelect(
     "#summarizerModel",
     summarizerModel,
     summarizerProvider
   );
+  populateStaticModelSelect("#directModel", directModel, directProvider);
   $("#model").val(workerModel);
   $("#summarizerModel").val(summarizerModel);
+  $("#directModel").val(directModel);
   $("#reasoningEffort").val(safe.reasoningEffort || "low");
-  $("#maxCostUsd").val(safe.maxCostUsd ?? 5.0);
-  $("#maxTotalTokens").val(safe.maxTotalTokens ?? 250000);
-  $("#maxOutputTokens").val(safe.maxOutputTokens ?? 1200);
+  $("#maxCostUsd").val(safe.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd);
+  $("#maxTotalTokens").val(safe.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens);
+  $("#maxOutputTokens").val(safe.maxOutputTokens ?? DEFAULT_RUNTIME_BUDGET.maxOutputTokens);
   $("#loopRounds").val(safe.loopRounds ?? 3);
   $("#loopDelayMs").val(safe.loopDelayMs ?? 1000);
   $("#researchEnabled").val(safe.researchEnabled ? "1" : "0");
@@ -1286,6 +2053,8 @@ function applyCommanderForm(values) {
   $("#dynamicSpinupEnabled").val(safe.dynamicSpinupEnabled ? "1" : "0");
   $("#vettingEnabled").val(safe.vettingEnabled === false ? "0" : "1");
   $("#researchDomains").val((safe.researchDomains || []).join(", "));
+  syncDirectBaselineFields();
+  syncOllamaBaseUrlField();
   enforceProviderCapabilitySelections(false);
   renderQualityProfileCards();
   renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
@@ -1308,10 +2077,15 @@ function collectCommanderPayload() {
     objective: $("#objective").val().trim(),
     constraints: $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean),
     executionMode: $("#executionMode").val(),
+    contextMode: normalizeContextMode($("#contextMode").val()),
+    directBaselineMode: normalizeDirectBaselineMode($("#directBaselineMode").val()),
     provider: $("#provider").val(),
     model: $("#model").val(),
     summarizerProvider: $("#summarizerProvider").val(),
     summarizerModel: $("#summarizerModel").val(),
+    directProvider: $("#directProvider").val(),
+    directModel: $("#directModel").val(),
+    ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: parseFloat($("#maxCostUsd").val()) || 0,
     maxTotalTokens: parseInt($("#maxTotalTokens").val(), 10) || 0,
@@ -1359,52 +2133,19 @@ function stagedSummarizerSource(draft, task) {
   const fallback = defaultDraftState();
   return {
     id: "summarizer",
-    label: "Commander / Summarizer",
+    label: "Main thread",
     provider: String(draft?.summarizerProvider || task?.summarizer?.provider || task?.runtime?.provider || fallback.summarizerProvider || fallback.provider),
     model: String(draft?.summarizerModel || task?.summarizer?.model || task?.runtime?.model || fallback.summarizerModel || fallback.model),
-    harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "balanced")
+    harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "expansive")
   };
 }
 
 function collectVisibleSummarizerConfig() {
-  const $card = $("#workerControls .summarizer-control-card").first();
-  if (!$card.length) {
-    return stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null);
-  }
-  return {
-    id: "summarizer",
-    label: "Commander / Summarizer",
-    provider: String($("#summarizerProvider").val() || stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null).provider || "openai"),
-    model: String($card.find(".summarizer-model-draft").val() || stagedSummarizerSource(latestState?.draft || null, latestState?.activeTask || null).model),
-    harness: {
-      concision: String($card.find(".summarizer-harness-profile").val() || "balanced"),
-      instruction: String($card.find(".summarizer-harness-instruction").val() || "").trim()
-    }
-  };
+  return visibleSummarizerSource(latestState?.draft || null, latestState?.activeTask || null);
 }
 
 function collectVisibleWorkerRoster() {
-  const workers = [];
-  $("#workerControls .workercontrol[data-worker-id]").each(function () {
-    const $card = $(this);
-    const id = String($card.data("workerId") || "").trim();
-    if (!id) return;
-    const fallback = WORKER_TYPE_CATALOG[$card.find(".worker-type").val()] || WORKER_TYPE_CATALOG.sceptic;
-    workers.push({
-      id,
-      type: $card.find(".worker-type").val(),
-      temperature: $card.find(".worker-temperature").val(),
-      model: $card.find(".worker-model").val(),
-      label: fallback.label,
-      role: fallback.role,
-      focus: fallback.focus,
-      harness: {
-        concision: String($card.find(".worker-harness-profile").val() || "tight"),
-        instruction: String($card.find(".worker-harness-instruction").val() || "").trim()
-      }
-    });
-  });
-  return workers;
+  return visibleWorkerRosterSource(latestState?.draft || null, latestState?.activeTask || null);
 }
 
 function displayWorkerLabel(worker) {
@@ -1435,7 +2176,7 @@ function buildDraftSavePayload(options = {}) {
   payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
   payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
-  payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
+  payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "expansive"));
   return payload;
 }
 
@@ -1445,14 +2186,25 @@ function buildProfileAppliedWorkerRoster(modelId) {
     ? visibleWorkers
     : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
   return baseWorkers.map(function (worker) {
-    return Object.assign({}, worker, { model: modelId });
+    return Object.assign({}, worker, {
+      model: normalizeSelectedModelForProvider(modelId, runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null))
+    });
   });
 }
 
 function setVisibleWorkerModels(modelId) {
-  $("#workerControls .worker-model").each(function () {
-    $(this).val(modelId);
+  const provider = runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null);
+  visibleWorkerRosterSource(latestState?.draft || null, latestState?.activeTask || null).forEach(function (worker) {
+    setWorkerEditorWorkerOverride(worker.id, { model: normalizeSelectedModelForProvider(modelId, provider) });
   });
+  $("#workerEditorBody .worker-model").val(normalizeSelectedModelForProvider(modelId, provider));
+}
+
+function setVisibleSummarizerModel(modelId) {
+  const provider = normalizeProviderId($("#summarizerProvider").val() || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null));
+  const normalized = normalizeSelectedModelForProvider(modelId, provider);
+  setWorkerEditorSummarizerOverride({ model: normalized });
+  $("#workerEditorBody .summarizer-model-draft").val(normalized);
 }
 
 function buildQualityProfileSnapshot() {
@@ -1463,10 +2215,15 @@ function buildQualityProfileSnapshot() {
     : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
   const summarizerSource = collectVisibleSummarizerConfig();
   return {
+    contextMode: normalizeContextMode(payload.contextMode),
+    directBaselineMode: normalizeDirectBaselineMode(payload.directBaselineMode),
     provider: String(payload.provider || "openai"),
     model: String(payload.model || ""),
     summarizerProvider: String(summarizerSource?.provider || payload.summarizerProvider || payload.provider || "openai"),
     summarizerModel: String(summarizerSource?.model || payload.summarizerModel || payload.model || ""),
+    directProvider: String(payload.directProvider || payload.provider || "openai"),
+    directModel: String(payload.directModel || payload.model || ""),
+    ollamaBaseUrl: normalizeOllamaBaseUrl(payload.ollamaBaseUrl),
     reasoningEffort: String(payload.reasoningEffort || ""),
     maxCostUsd: Number(payload.maxCostUsd || 0),
     maxTotalTokens: Number(payload.maxTotalTokens || 0),
@@ -1511,10 +2268,15 @@ function buildTaskQualityProfileSnapshot(task) {
   if (!task) return null;
   const budget = task?.runtime?.budget || {};
   return {
+    contextMode: normalizeContextMode(task?.runtime?.contextMode),
+    directBaselineMode: normalizeDirectBaselineMode(task?.runtime?.directBaselineMode),
     provider: String(task?.runtime?.provider || "openai"),
     model: String(task?.runtime?.model || "gpt-5-mini"),
     summarizerProvider: String(task?.summarizer?.provider || task?.runtime?.provider || "openai"),
     summarizerModel: String(task?.summarizer?.model || task?.runtime?.model || "gpt-5-mini"),
+    directProvider: String(task?.runtime?.directProvider || task?.runtime?.provider || "openai"),
+    directModel: String(task?.runtime?.directModel || task?.runtime?.model || "gpt-5-mini"),
+    ollamaBaseUrl: normalizeOllamaBaseUrl(task?.runtime?.ollamaBaseUrl),
     reasoningEffort: String(task?.runtime?.reasoningEffort || "low"),
     maxCostUsd: Number(budget.maxCostUsd ?? 0),
     maxTotalTokens: Number(budget.maxTotalTokens ?? 0),
@@ -1538,10 +2300,25 @@ function formatTokenWall(value) {
 
 function runtimeSnapshotsMatch(left, right) {
   if (!left || !right) return false;
+  if (normalizeContextMode(left.contextMode) !== normalizeContextMode(right.contextMode)) return false;
+  if (normalizeDirectBaselineMode(left.directBaselineMode) !== normalizeDirectBaselineMode(right.directBaselineMode)) return false;
   if (normalizeProviderId(left.provider) !== normalizeProviderId(right.provider)) return false;
   if (normalizeProviderId(left.summarizerProvider || left.provider) !== normalizeProviderId(right.summarizerProvider || right.provider)) return false;
   if (left.model !== right.model) return false;
   if (left.summarizerModel !== right.summarizerModel) return false;
+  if (normalizeDirectBaselineMode(left.directBaselineMode) !== "off" || normalizeDirectBaselineMode(right.directBaselineMode) !== "off") {
+    if (normalizeProviderId(left.directProvider || left.provider) !== normalizeProviderId(right.directProvider || right.provider)) return false;
+    if (String(left.directModel || "") !== String(right.directModel || "")) return false;
+  }
+  if (
+    (
+      shouldShowOllamaBaseUrl(left.provider, left.summarizerProvider)
+      || shouldShowOllamaBaseUrl(right.provider, right.summarizerProvider)
+      || (normalizeDirectBaselineMode(left.directBaselineMode) !== "off" && normalizeProviderId(left.directProvider || left.provider) === "ollama")
+      || (normalizeDirectBaselineMode(right.directBaselineMode) !== "off" && normalizeProviderId(right.directProvider || right.provider) === "ollama")
+    )
+    && normalizeOllamaBaseUrl(left.ollamaBaseUrl) !== normalizeOllamaBaseUrl(right.ollamaBaseUrl)
+  ) return false;
   if (left.reasoningEffort !== right.reasoningEffort) return false;
   if (Number(left.maxCostUsd) !== Number(right.maxCostUsd)) return false;
   if (Number(left.maxTotalTokens) !== Number(right.maxTotalTokens)) return false;
@@ -1553,11 +2330,14 @@ function runtimeSnapshotsMatch(left, right) {
   return JSON.stringify(leftModels) === JSON.stringify(rightModels);
 }
 
-function appendHomeRuntimeBlock($root, label, value, detailLines, warning = false) {
+function appendHomeRuntimeBlock($root, label, value, detailLines, warning = false, metaText = "") {
   const $block = $("<div>").addClass("home-runtime-block compact-hover-card");
   if (warning) $block.addClass("warning");
   $block.append($("<div>").addClass("home-runtime-label").text(label));
   $block.append($("<div>").addClass("home-runtime-value").text(value));
+  if (String(metaText || "").trim()) {
+    $block.append($("<div>").addClass("home-runtime-meta").text(metaText));
+  }
   appendCompactHoverPopup($block, detailLines);
   $root.append($block);
 }
@@ -1647,7 +2427,7 @@ function applyQualityProfile(profileId) {
 
   const workerRoster = buildProfileAppliedWorkerRoster(workerModels.workerModel);
   setVisibleWorkerModels(workerModels.workerModel);
-  $("#workerControls .summarizer-model-draft").val(summarizerModels.summarizerModel);
+  setVisibleSummarizerModel(summarizerModels.summarizerModel);
   enforceProviderCapabilitySelections(true);
   formDirty = true;
   renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
@@ -1900,13 +2680,13 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
   const usageWebSearchCalls = usage.webSearchCalls ?? 0;
   const usageCost = formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0);
 
-  $("#taskId, #footerTaskId, #headerTaskId").text(taskId);
-  $("#memoryVersion, #footerMemoryVersion").text(memoryVersion);
-  $("#workerCount, #footerWorkerCount, #headerWorkerCount").text(workerCount);
-  $("#loopJobId, #footerLoopJobId").text(loopJobId);
-  $("#loopStatus, #footerLoopStatus, #headerLoopStatus").text(loopStatus);
-  $("#loopProgress, #footerLoopProgress").text(loopProgress);
-  $("#footerLoopElapsed").text(loopElapsed);
+  $("#taskId, #headerTaskId").text(taskId);
+  $("#memoryVersion, #headerMemoryVersion").text(memoryVersion);
+  $("#workerCount, #headerWorkerCount").text(workerCount);
+  $("#loopJobId, #headerLoopJobId").text(loopJobId);
+  $("#loopStatus, #headerLoopStatus").text(loopStatus);
+  $("#loopProgress, #headerLoopProgress").text(loopProgress);
+  $("#headerLoopElapsed").text(loopElapsed);
   $("#usageTokens, #footerUsageTokens").text(usageTokens);
   $("#usageWebSearchCalls, #footerUsageWebSearchCalls").text(usageWebSearchCalls);
   $("#usageCost, #footerUsageCost").text(usageCost);
@@ -1938,6 +2718,7 @@ function inferFrontActiveTarget(loop, state) {
   const workerMatch = message.match(/worker\s+([a-z0-9_-]+)/i);
   if (workerMatch) return String(workerMatch[1] || "").toUpperCase();
   if (/answer now/i.test(message)) return "answer_now";
+  if (/direct baseline|single-thread baseline/i.test(message)) return "direct_baseline";
   if (/commander review/i.test(message)) return "commander_review";
   if (/summarizer/i.test(message)) return "summarizer";
   if (/commander/i.test(message)) return "commander";
@@ -2010,13 +2791,21 @@ function closeInlineHelpPopovers($except = $()) {
 
 function updateAuthButtons() {
   const inputsLocked = latestLoopActive || activeDispatchCount(latestState) > 0;
-  const writable = !!latestAuthStatus.writable;
-  $(".add-auth-field").prop("disabled", inputsLocked || !writable);
+  $(".add-auth-field").each(function () {
+    const provider = String($(this).data("provider") || "openai");
+    $(this).prop("disabled", inputsLocked || !authProviderGroup(provider).writable);
+  });
   $(".clear-auth").each(function () {
     const provider = String($(this).data("provider") || "openai");
-    $(this).prop("disabled", inputsLocked || !writable || !authProviderGroup(provider).hasKey);
+    const group = authProviderGroup(provider);
+    $(this).prop("disabled", inputsLocked || !group.writable || !group.hasKey);
   });
-  $(".auth-key-input, .auth-key-remove").prop("disabled", inputsLocked);
+  $(".auth-key-input, .auth-key-remove, .auth-mode-toggle").each(function () {
+    const provider = String($(this).data("provider") || $(this).closest(".auth-key-row").data("provider") || "openai");
+    const group = authProviderGroup(provider);
+    const keyControl = $(this).hasClass("auth-key-input") || $(this).hasClass("auth-key-remove");
+    $(this).prop("disabled", inputsLocked || (keyControl && !group.writable));
+  });
 }
 
 function formatKeyCountLabel(count) {
@@ -2047,6 +2836,10 @@ function authProviderGroup(provider) {
     hasKey: false,
     keyCount: 0,
     masks: [],
+    selectedMode: latestAuthStatus.defaultMode || "safe",
+    selectedModeLabel: (latestAuthStatus.defaultMode || "safe") === "local" ? "Local" : "Safe",
+    effectiveBackend: latestAuthStatus.recommendedBackend || "env",
+    safeBackend: latestAuthStatus.recommendedBackend || "env",
     writable: !!latestAuthStatus.writable,
     failureMode: "",
     failureDetail: ""
@@ -2055,7 +2848,7 @@ function authProviderGroup(provider) {
 
 function ensureAuthDynamicRows(provider) {
   const normalized = String(provider || "openai").trim().toLowerCase();
-  if (!latestAuthStatus.writable) return;
+  if (!authProviderGroup(normalized).writable) return;
   if (!authDynamicRowsByProvider[normalized]) authDynamicRowsByProvider[normalized] = [];
   const group = authProviderGroup(normalized);
   if (group.hasKey || authDynamicRowsByProvider[normalized].length) return;
@@ -2113,6 +2906,8 @@ function authPreviewRotationOffset(keyCount) {
 function authPositionPlan() {
   const workerProvider = normalizeProviderId($("#provider").val() || runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null));
   const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null));
+  const directMode = normalizeDirectBaselineMode($("#directBaselineMode").val());
+  const directProvider = normalizeProviderId($("#directProvider").val() || workerProvider);
   const visibleWorkers = $("#workerControls .workercontrol[data-worker-id]").length
     ? collectVisibleWorkerRoster()
     : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
@@ -2128,6 +2923,9 @@ function authPositionPlan() {
   });
   positions.push({ id: "commander_review", label: "Commander Review", provider: workerProvider });
   positions.push({ id: "summarizer", label: "Summarizer", provider: summarizerProvider });
+  if (directMode !== "off") {
+    positions.push({ id: "direct_baseline", label: "Single-thread baseline", provider: directProvider });
+  }
   return positions;
 }
 
@@ -2156,24 +2954,29 @@ function renderAuthProviderCards(force = false) {
   if (!$root.length) return;
   if (!force && hasFocusWithin("#authProviderCards")) return;
 
-  const backend = String(latestAuthStatus.backend || "env");
   const recommended = String(latestAuthStatus.recommendedBackend || "env");
   const inputsLocked = latestLoopActive || activeDispatchCount(latestState) > 0;
   const cards = (latestAuthStatus.providerOrder || []).map(function (providerId) {
     const group = authProviderGroup(providerId);
+    const groupWritable = !!group.writable;
+    const selectedMode = String(group.selectedMode || latestAuthStatus.defaultMode || "safe");
+    const localActive = selectedMode === "local";
+    const modeSummary = localActive
+      ? "Local -> shared Auth.txt using provider prefixes."
+      : ("Safe -> " + String(group.effectiveBackend || group.safeBackend || recommended));
     const rows = [];
 
-    if (!latestAuthStatus.writable) {
+    if (!groupWritable) {
       rows.push(`
         <div class="auth-key-row auth-key-row-readonly">
           <div class="auth-key-row-head">
             <div>
-              <div class="auth-key-row-label">Read-only secret backend</div>
+              <div class="auth-key-row-label">Read-only safe backend</div>
               <div class="auth-key-row-meta">${escapeHtml(group.failureDetail || latestAuthStatus.statusNote || "This backend is not editable from the browser.")}</div>
             </div>
           </div>
           <div class="auth-key-row-inputs">
-            <input class="auth-key-input" type="text" value="${escapeHtml("Backend: " + backend + " | Recommended: " + recommended)}" disabled />
+            <input class="auth-key-input" type="text" value="${escapeHtml("Mode: Safe | Backend: " + (group.effectiveBackend || recommended))}" disabled />
           </div>
         </div>
       `);
@@ -2201,7 +3004,7 @@ function renderAuthProviderCards(force = false) {
             <div class="auth-key-row-head">
               <div>
                 <div class="auth-key-row-label">New key ${index + 1}</div>
-                <div class="auth-key-row-meta">Paste a ${escapeHtml(group.label)} key here and it will append into the transitional local fallback pool automatically.</div>
+                <div class="auth-key-row-meta">Paste a ${escapeHtml(group.label)} key here and it will append into shared Auth.txt using the ${escapeHtml(providerId === "anthropic" ? "ant" : providerId === "minimax" ? "min" : providerId)} prefix.</div>
               </div>
             </div>
             <div class="auth-key-row-inputs">
@@ -2237,13 +3040,18 @@ function renderAuthProviderCards(force = false) {
           <div class="auth-provider-card-title">${escapeHtml(group.label)}</div>
           <span class="secretmask">${escapeHtml(formatKeyCountLabel(group.keyCount))}</span>
         </div>
+        <div class="auth-provider-card-meta">${escapeHtml(modeSummary)}</div>
         <div class="auth-provider-card-meta">${escapeHtml(group.failureDetail || (group.hasKey ? (group.label + " keys available.") : ("No " + group.label + " keys configured.")))}</div>
+        <div class="auth-mode-switch" role="group" aria-label="${escapeHtml(group.label + " credential mode")}">
+          <button type="button" class="auth-mode-toggle${localActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="local" ${inputsLocked ? "disabled" : ""}>Local</button>
+          <button type="button" class="auth-mode-toggle${!localActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="safe" ${inputsLocked ? "disabled" : ""}>Safe</button>
+        </div>
         <div class="key-pool-preview">${previewBits.join("")}</div>
         <div class="key-assignment-list">${assignmentBits.join("")}</div>
         <div class="auth-key-editor">${rows.join("")}</div>
         <div class="integration-actions integration-actions-split">
-          <button type="button" class="add-auth-field" data-provider="${escapeHtml(providerId)}">+ Key</button>
-          <button type="button" class="clear-auth danger" data-provider="${escapeHtml(providerId)}">Clear</button>
+          <button type="button" class="add-auth-field" data-provider="${escapeHtml(providerId)}" ${(!groupWritable || inputsLocked) ? "disabled" : ""}>+ Key</button>
+          <button type="button" class="clear-auth danger" data-provider="${escapeHtml(providerId)}" ${(!groupWritable || inputsLocked) ? "disabled" : ""}>Clear</button>
         </div>
       </div>
     `;
@@ -2274,6 +3082,10 @@ function renderAuthStatus(data) {
       hasKey: !!group.hasKey,
       keyCount: Number(group.keyCount || 0),
       masks: Array.isArray(group.masks) ? group.masks.filter(Boolean) : [],
+      selectedMode: String(group.selectedMode || data?.defaultMode || "safe"),
+      selectedModeLabel: String(group.selectedModeLabel || (String(group.selectedMode || data?.defaultMode || "safe") === "local" ? "Local" : "Safe")),
+      effectiveBackend: String(group.effectiveBackend || data?.backend || "env"),
+      safeBackend: String(group.safeBackend || data?.recommendedBackend || "env"),
       writable: !!group.writable,
       managed: !!group.managed,
       failureMode: String(group.failureMode || ""),
@@ -2289,6 +3101,7 @@ function renderAuthStatus(data) {
     deprecated: !!data?.deprecated,
     preferredBackends: Array.isArray(data?.preferredBackends) ? data.preferredBackends : [],
     recommendedBackend: String(data?.recommendedBackend || "env"),
+    defaultMode: String(data?.defaultMode || "safe"),
     statusNote: String(data?.statusNote || ""),
     rotationPolicy: data?.rotationPolicy || null,
     providerOrder: providerOrder,
@@ -2325,6 +3138,7 @@ function refreshAuth() {
         deprecated: false,
         preferredBackends: ["env", "external"],
         recommendedBackend: "env",
+        defaultMode: "safe",
         statusNote: "",
         rotationPolicy: null,
         providerOrder: ["openai", "anthropic", "xai", "minimax"],
@@ -2631,6 +3445,7 @@ function renderRoundHistory(rounds) {
       ${rounds.map(function (roundEntry) {
         const commanderArtifact = roundEntry.commanderArtifact || null;
         const commanderReviewArtifact = roundEntry.commanderReviewArtifact || null;
+        const directBaselineArtifact = roundEntry.directBaselineArtifact || null;
         const summaryArtifact = roundEntry.summaryArtifact || null;
         const executionHealth = roundEntry.executionHealth || null;
         const tone = executionHealthTone(executionHealth);
@@ -2638,6 +3453,9 @@ function renderRoundHistory(rounds) {
         const primaryWorker = Array.isArray(roundEntry.workerArtifacts) && roundEntry.workerArtifacts.length ? roundEntry.workerArtifacts[0] : null;
         const topActions = [];
 
+        if (summaryArtifact && directBaselineArtifact) {
+          topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(directBaselineArtifact.name)}">Summary vs baseline</button>`);
+        }
         if (summaryArtifact && commanderReviewArtifact) {
           topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(commanderReviewArtifact.name)}">Summary vs review</button>`);
         }
@@ -2650,8 +3468,8 @@ function renderRoundHistory(rounds) {
         if (summaryArtifact && previousSummary) {
           topActions.push(`<button type="button" class="load-round-compare" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(previousSummary.name)}">Summary vs previous</button>`);
         }
-        if (summaryArtifact) {
-          topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(primaryWorker?.name || summaryArtifact.name)}">Load in compare view</button>`);
+        if (!summaryArtifact && directBaselineArtifact && primaryWorker) {
+          topActions.push(`<button type="button" class="load-artifact-pair" data-left="${escapeHtml(directBaselineArtifact.name)}" data-right="${escapeHtml(primaryWorker.name)}">Baseline vs lane</button>`);
         }
 
         return `
@@ -2666,6 +3484,7 @@ function renderRoundHistory(rounds) {
             <div class="round-history-meta">${escapeHtml(truncateText(roundEntry.objective || "No objective recorded.", 180))}</div>
             <div class="round-history-meta">${escapeHtml("Captured " + (roundEntry.capturedAt || "n/a") + (summaryArtifact ? " | summary " + summaryArtifact.name + " | " + artifactOutputCapSummary(summaryArtifact) : ""))}</div>
             <div class="round-history-meta">${escapeHtml(formatExecutionHealthSummary(executionHealth))}</div>
+            ${directBaselineArtifact ? `<div class="round-history-meta">${escapeHtml("Single-thread baseline " + directBaselineArtifact.name + " | " + artifactOutputCapSummary(directBaselineArtifact))}</div>` : ""}
             ${commanderArtifact ? `<div class="round-history-meta">${escapeHtml("Commander draft " + commanderArtifact.name + " | " + artifactOutputCapSummary(commanderArtifact))}</div>` : ""}
             ${commanderReviewArtifact ? `<div class="round-history-meta">${escapeHtml("Commander review " + commanderReviewArtifact.name + " | " + artifactOutputCapSummary(commanderReviewArtifact))}</div>` : ""}
             ${topActions.length ? `<div class="round-history-actions">${topActions.join("")}</div>` : ""}
@@ -2673,14 +3492,16 @@ function renderRoundHistory(rounds) {
               ${(roundEntry.workerArtifacts || []).map(function (artifact) {
                 return `
                   <div class="round-worker-row">
-                    <div>
-                      <div class="history-title">${escapeHtml((artifact.worker || "worker") + " | " + (artifact.model || "model n/a"))} ${renderArtifactExecutionBadge(artifact)}</div>
-                      <div class="round-worker-meta">${escapeHtml((artifact.name || "artifact") + " | " + artifactOutputCapSummary(artifact))}</div>
-                    </div>
-                    ${summaryArtifact ? `<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(artifact.name)}">Compare vs summary</button>` : ""}
-                  </div>
-                `;
-              }).join("") || `<div class="review-empty small">No worker output artifacts were captured for this round.</div>`}
+                      <div>
+                        <div class="history-title">${escapeHtml((artifact.worker || "worker") + " | " + (artifact.model || "model n/a"))} ${renderArtifactExecutionBadge(artifact)}</div>
+                        <div class="round-worker-meta">${escapeHtml((artifact.name || "artifact") + " | " + artifactOutputCapSummary(artifact))}</div>
+                      </div>
+                     ${summaryArtifact
+                        ? `<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(artifact.name)}">Compare vs summary</button>`
+                        : (directBaselineArtifact ? `<button type="button" class="load-artifact-pair" data-left="${escapeHtml(directBaselineArtifact.name)}" data-right="${escapeHtml(artifact.name)}">Compare vs baseline</button>` : "")}
+                   </div>
+                 `;
+               }).join("") || `<div class="review-empty small">No worker output artifacts were captured for this round.</div>`}
             </div>
           </article>
         `;
@@ -2794,14 +3615,25 @@ function renderEvalArmList(arms) {
     const checked = effectiveSelected.includes(armId) ? " checked" : "";
     const workerProvider = arm?.provider || "openai";
     const summarizerProvider = arm?.summarizerProvider || workerProvider;
-    const summary = [
-      (arm?.type || "arm"),
-      providerLabel(workerProvider) + " " + modelLabel(arm?.model || "gpt-5-mini", workerProvider),
-      arm?.type === "steered"
-        ? (providerLabel(summarizerProvider) + " " + modelLabel(arm?.summarizerModel || arm?.model || "gpt-5-mini", summarizerProvider) + " summarizer")
-        : "single answer",
-      (arm?.reasoningEffort || "low") + " reasoning"
-    ].join(" | ");
+    const directProvider = arm?.directProvider || workerProvider;
+    const summary = arm?.type === "steered"
+      ? [
+          (arm?.type || "arm"),
+          directBaselineModeLabel(arm?.directBaselineMode || "off"),
+          contextModeLabel(arm?.contextMode || "weighted"),
+          providerLabel(workerProvider) + " " + modelLabel(arm?.model || "gpt-5-mini", workerProvider),
+          providerLabel(summarizerProvider) + " " + modelLabel(arm?.summarizerModel || arm?.model || "gpt-5-mini", summarizerProvider) + " summarizer",
+          normalizeDirectBaselineMode(arm?.directBaselineMode || "off") !== "off"
+            ? (providerLabel(directProvider) + " " + modelLabel(arm?.directModel || arm?.model || "gpt-5-mini", directProvider) + " baseline")
+            : "",
+          (arm?.reasoningEffort || "low") + " reasoning"
+        ].filter(Boolean).join(" | ")
+      : [
+          (arm?.type || "arm"),
+          providerLabel(workerProvider) + " " + modelLabel(arm?.model || "gpt-5-mini", workerProvider),
+          "single answer",
+          (arm?.reasoningEffort || "low") + " reasoning"
+        ].join(" | ");
     return `
       <label class="eval-arm-option">
         <input class="eval-arm-checkbox" type="checkbox" value="${escapeHtml(armId)}"${checked} />
@@ -2859,23 +3691,25 @@ function pickEvalArtifact(artifacts, preferredKinds, excludeArtifactId) {
   }) || null;
 }
 
-function setEvalArtifactPane(side, metaText, contentText) {
+function setEvalArtifactPane(side, metaText, visualHtml, contentText) {
   $("#evalArtifact" + side + "Meta").text(metaText);
+  $("#evalArtifact" + side + "Visual").html(visualHtml);
   $("#evalArtifact" + side + "Content").text(contentText);
 }
 
 function loadEvalArtifactPane(side, artifactId) {
   if (!artifactId || !selectedEvalRunId) {
-    setEvalArtifactPane(side, "No artifact selected.", "No artifact selected.");
+    setEvalArtifactPane(side, "No artifact selected.", `<div class="review-empty">No artifact selected.</div>`, "No artifact selected.");
     return;
   }
   $.getJSON(apiRoute(API.evalArtifact), { runId: selectedEvalRunId, artifactId: artifactId })
     .done(function (data) {
       if (evalArtifactSelections[side.toLowerCase()] !== artifactId) return;
-      setEvalArtifactPane(side, renderArtifactMeta(data), renderArtifactContent(data));
+      evalArtifactContentCache[evalArtifactCacheKey(selectedEvalRunId, artifactId)] = data || null;
+      setEvalArtifactPane(side, renderArtifactMeta(data), renderEvalArtifactVisual(data), renderArtifactContent(data));
     })
     .fail(function (xhr) {
-      setEvalArtifactPane(side, "Artifact load failed.", xhr.responseText || "Artifact load failed.");
+      setEvalArtifactPane(side, "Artifact load failed.", `<div class="review-empty">Artifact load failed.</div>`, xhr.responseText || "Artifact load failed.");
     });
 }
 
@@ -2883,11 +3717,11 @@ function syncEvalArtifactReview(artifacts) {
   const list = artifacts || [];
   const ids = new Set(list.map(function (artifact) { return artifact.artifactId; }));
   if (!evalArtifactSelections.left || !ids.has(evalArtifactSelections.left)) {
-    const leftDefault = pickEvalArtifact(list, ["score", "summary_output", "direct_output", "result"], "");
+    const leftDefault = pickEvalArtifact(list, ["comparison", "score", "summary_output", "direct_output", "result"], "");
     evalArtifactSelections.left = leftDefault ? leftDefault.artifactId : "";
   }
   if (!evalArtifactSelections.right || !ids.has(evalArtifactSelections.right) || evalArtifactSelections.right === evalArtifactSelections.left) {
-    const rightDefault = pickEvalArtifact(list, ["summary_output", "direct_output", "result", "worker_output", "score"], evalArtifactSelections.left);
+    const rightDefault = pickEvalArtifact(list, ["summary_output", "direct_output", "result", "worker_output", "score", "comparison"], evalArtifactSelections.left);
     evalArtifactSelections.right = rightDefault ? rightDefault.artifactId : "";
   }
   $("#evalArtifactLeftSelect").html(buildEvalArtifactOptions(list, evalArtifactSelections.left));
@@ -2902,17 +3736,78 @@ function applyEvalArtifactSelectionPair(leftArtifactId, rightArtifactId) {
   evalArtifactSelections.left = leftArtifactId && ids.has(leftArtifactId) ? leftArtifactId : "";
   evalArtifactSelections.right = rightArtifactId && ids.has(rightArtifactId) ? rightArtifactId : "";
   if (!evalArtifactSelections.left) {
-    const leftDefault = pickEvalArtifact(artifacts, ["score", "summary_output", "direct_output", "result"], "");
+    const leftDefault = pickEvalArtifact(artifacts, ["comparison", "score", "summary_output", "direct_output", "result"], "");
     evalArtifactSelections.left = leftDefault ? leftDefault.artifactId : "";
   }
   if (!evalArtifactSelections.right || evalArtifactSelections.right === evalArtifactSelections.left) {
-    const rightDefault = pickEvalArtifact(artifacts, ["summary_output", "direct_output", "result", "worker_output"], evalArtifactSelections.left);
+    const rightDefault = pickEvalArtifact(artifacts, ["summary_output", "direct_output", "result", "worker_output", "comparison"], evalArtifactSelections.left);
     evalArtifactSelections.right = rightDefault ? rightDefault.artifactId : "";
   }
   $("#evalArtifactLeftSelect").html(buildEvalArtifactOptions(artifacts, evalArtifactSelections.left));
   $("#evalArtifactRightSelect").html(buildEvalArtifactOptions(artifacts, evalArtifactSelections.right));
   loadEvalArtifactPane("Left", evalArtifactSelections.left);
   loadEvalArtifactPane("Right", evalArtifactSelections.right);
+}
+
+function findEvalReplicateArtifactByKind(replicate, kind) {
+  return (replicate?.artifacts || []).find(function (artifact) {
+    return String(artifact?.kind || "").trim() === String(kind || "").trim();
+  }) || null;
+}
+
+function renderEvalReplicateAnswerCompare(runId, replicate, answerPath, objective) {
+  const directArtifact = findEvalReplicateArtifactByKind(replicate, "direct_output");
+  const summaryArtifact = findEvalReplicateArtifactByKind(replicate, "summary_output");
+  const resultArtifact = findEvalReplicateArtifactByKind(replicate, "result");
+  const shouldCompare = answerPath === "both" || !!directArtifact;
+  if (!shouldCompare) return "";
+
+  const resultData = resultArtifact ? getCachedEvalArtifact(runId, resultArtifact.artifactId) : null;
+  const summaryData = summaryArtifact ? getCachedEvalArtifact(runId, summaryArtifact.artifactId) : null;
+  const directData = directArtifact ? getCachedEvalArtifact(runId, directArtifact.artifactId) : null;
+
+  if (resultArtifact && !resultData) queueEvalArtifactFetch(runId, resultArtifact.artifactId);
+  if (summaryArtifact && !summaryData) queueEvalArtifactFetch(runId, summaryArtifact.artifactId);
+  if (directArtifact && !directData) queueEvalArtifactFetch(runId, directArtifact.artifactId);
+
+  const resultContent = resultData?.content || {};
+  const pressurized = summaryData
+    ? extractEvalPrimaryAnswer(summaryData)
+    : normalizeEvalAnswerEntry(
+        {
+          answer: replicate?.publicAnswer || resultContent?.publicAnswer || "",
+          stance: resultContent?.summary?.frontAnswer?.stance || "",
+          confidenceNote: resultContent?.summary?.frontAnswer?.confidenceNote || ""
+        },
+        "Pressurized answer",
+        summaryData?.summary?.provider || resultContent?.provider || "",
+        summaryData?.summary?.model || resultContent?.model || "",
+        summaryData?.summary?.mode || resultContent?.mode || "",
+        evalUsageForTarget(replicate?.usage || resultContent?.usage || null, "summarizer")
+      );
+  const baseline = directData
+    ? extractEvalPrimaryAnswer(directData)
+    : extractEvalBaselineAnswer(resultData);
+  const comparison = resultContent?.comparison || replicate?.comparison || null;
+
+  const pressurizedEntry = pressurized || {
+    label: "Pressurized answer",
+    answer: "",
+    emptyMessage: summaryArtifact ? "Loading saved pressurized answer..." : "No pressurized answer saved in this run."
+  };
+  const baselineEntry = baseline || {
+    label: "Single-thread baseline",
+    answer: "",
+    emptyMessage: directArtifact ? "Loading saved baseline answer..." : "No baseline answer saved in this run."
+  };
+
+  return `
+    <div class="eval-inline-compare-stack">
+      ${renderEvalCompareToggle(pressurizedEntry, baselineEntry, comparison)}
+      ${renderEvalChatCompare(pressurizedEntry, baselineEntry, objective, comparison)}
+      ${renderEvalHistoricalSummary(replicate, comparison, pressurizedEntry, baselineEntry)}
+    </div>
+  `;
 }
 
 function formatScoreSummary(scores, overallKey, label) {
@@ -2930,6 +3825,9 @@ function renderEvalRunHistory(runs, currentRunId) {
     <div class="history-stack">
       ${runs.map(function (run) {
         const qualityOverall = Number(run?.summary?.averageQuality?.overallQuality || 0).toFixed(1);
+        const healthOverall = run?.summary?.averageAnswerHealth && Object.keys(run.summary.averageAnswerHealth).length
+          ? Number(run.summary.averageAnswerHealth.overallHealth || 0).toFixed(1)
+          : "n/a";
         const controlOverall = Number(run?.summary?.averageControl?.overallControl || 0).toFixed(1);
         return `
           <article class="history-card${String(run?.runId || "") === currentRunId ? " active" : ""}">
@@ -2945,6 +3843,7 @@ function renderEvalRunHistory(runs, currentRunId) {
             )}</div>
             <div class="history-meta">${escapeHtml(
               "Quality " + qualityOverall +
+              " | Health " + healthOverall +
               " | Control " + controlOverall +
               " | Tokens " + formatInteger(run?.summary?.totalTokens || 0) +
               " | Spend " + formatUsd(run?.summary?.estimatedCostUsd || 0)
@@ -2974,6 +3873,10 @@ function renderEvalRunDetail(run) {
         <div class="history-meta">${escapeHtml(formatScoreSummary(summary.averageQuality || {}, "overallQuality", "Average"))}</div>
       </article>
       <article class="history-card">
+        <div class="history-title">Answer health</div>
+        <div class="history-meta">${escapeHtml(formatScoreSummary(summary.averageAnswerHealth || {}, "overallHealth", "Average"))}</div>
+      </article>
+      <article class="history-card">
         <div class="history-title">Control</div>
         <div class="history-meta">${escapeHtml(formatScoreSummary(summary.averageControl || {}, "overallControl", "Average"))}</div>
       </article>
@@ -2985,10 +3888,13 @@ function renderEvalRunDetail(run) {
   `;
 
   const caseCards = (run.cases || []).map(function (caseEntry) {
-    const variantCards = (caseEntry.variants || []).map(function (variant) {
+      const variantCards = (caseEntry.variants || []).map(function (variant) {
+      const answerPath = normalizeDirectBaselineMode(variant?.answerPath || "off");
+      const contextMode = contextModeLabel(variant?.contextMode || "weighted");
       const replicateRows = (variant.replicates || []).map(function (replicate) {
         const artifacts = replicate.artifacts || [];
         const scoreArtifact = artifacts.find(function (artifact) { return artifact.kind === "score"; });
+        const comparisonArtifact = artifacts.find(function (artifact) { return artifact.kind === "comparison"; });
         const resultArtifact = artifacts.find(function (artifact) { return artifact.kind === "result"; });
         const directArtifact = artifacts.find(function (artifact) { return artifact.kind === "direct_output"; });
         const summaryArtifact = artifacts.find(function (artifact) { return artifact.kind === "summary_output"; });
@@ -2998,9 +3904,22 @@ function renderEvalRunDetail(run) {
         if (scoreArtifact && primaryAnswerArtifact) {
           buttons.push(`<button type="button" class="load-eval-artifact-pair" data-left="${escapeHtml(scoreArtifact.artifactId)}" data-right="${escapeHtml(primaryAnswerArtifact.artifactId)}">Score vs answer</button>`);
         }
+        if (summaryArtifact && directArtifact) {
+          buttons.push(`<button type="button" class="load-eval-artifact-pair" data-left="${escapeHtml(summaryArtifact.artifactId)}" data-right="${escapeHtml(directArtifact.artifactId)}">Pressurized vs baseline</button>`);
+        }
+        if (comparisonArtifact && primaryAnswerArtifact) {
+          buttons.push(`<button type="button" class="load-eval-artifact-pair" data-left="${escapeHtml(comparisonArtifact.artifactId)}" data-right="${escapeHtml(primaryAnswerArtifact.artifactId)}">Comparison vs answer</button>`);
+        }
         if (summaryArtifact && workerArtifact) {
           buttons.push(`<button type="button" class="load-eval-artifact-pair" data-left="${escapeHtml(summaryArtifact.artifactId)}" data-right="${escapeHtml(workerArtifact.artifactId)}">Summary vs lane</button>`);
         }
+        const comparison = replicate?.comparison || null;
+        const inlineCompare = renderEvalReplicateAnswerCompare(
+          run?.runId || selectedEvalRunId || "",
+          replicate,
+          answerPath,
+          caseEntry.objective || caseEntry.title || ""
+        );
         return `
           <div class="eval-replicate-row${replicate.status === "error" ? " warning" : ""}">
             <div>
@@ -3012,12 +3931,20 @@ function renderEvalRunDetail(run) {
               )}</div>
               <div class="round-worker-meta">${escapeHtml(
                 "Quality " + Number(replicate.quality?.scores?.overallQuality || 0).toFixed(1) +
+                " | Health " + Number(replicate.answerHealth?.scores?.overallHealth || 0).toFixed(1) +
                 " | Control " + Number(replicate.control?.scores?.overallControl || 0).toFixed(1) +
                 " | Tokens " + formatInteger(replicate.usage?.totalTokens || 0) +
                 " | Spend " + formatUsd(replicate.usage?.estimatedCostUsd || 0)
               )}</div>
+              ${comparison ? `<div class="round-worker-meta">${escapeHtml(
+                "Compare " + String(comparison.verdict || "mixed") +
+                " | delta " + Number(comparison.scoreDelta?.overallQuality || 0).toFixed(1) +
+                " | diff " + Number(comparison.scores?.overallDifferentiation || 0).toFixed(1) +
+                " | baseline quality " + Number(comparison.baselineQuality?.scores?.overallQuality || 0).toFixed(1)
+              )}</div>` : ""}
               <div class="eval-answer-preview">${escapeHtml(truncateText(replicate.publicAnswer || replicate.error || "No answer captured.", 240))}</div>
             </div>
+            ${inlineCompare}
             ${buttons.length ? `<div class="round-history-actions">${buttons.join("")}</div>` : ""}
           </div>
         `;
@@ -3027,21 +3954,35 @@ function renderEvalRunDetail(run) {
         <article class="eval-variant-card">
           <div class="round-history-head">
             <div class="round-history-title">${escapeHtml(variant.title || variant.variantId || "Variant")}</div>
-            <div class="round-history-title">${escapeHtml((variant.type || "variant") + " | loops " + Number(variant.loopRounds || 0))}</div>
+            <div class="round-history-title">${escapeHtml((variant.type || "variant") + " | " + directBaselineModeLabel(answerPath) + " | " + contextMode + " | loops " + Number(variant.loopRounds || 0))}</div>
           </div>
           <div class="round-history-meta">${escapeHtml(
             providerLabel(variant.provider || "openai") + " " + modelLabel(variant.model || "gpt-5-mini", variant.provider || "openai") +
             (variant.type === "steered"
-              ? (" | " + providerLabel(variant.summarizerProvider || variant.provider || "openai") + " " + modelLabel(variant.summarizerModel || variant.model || "gpt-5-mini", variant.summarizerProvider || variant.provider || "openai") + " summarizer")
+              ? (
+                " | " + providerLabel(variant.summarizerProvider || variant.provider || "openai") + " " + modelLabel(variant.summarizerModel || variant.model || "gpt-5-mini", variant.summarizerProvider || variant.provider || "openai") + " summarizer" +
+                (answerPath !== "off"
+                  ? (" | " + providerLabel(variant.directProvider || variant.provider || "openai") + " " + modelLabel(variant.directModel || variant.model || "gpt-5-mini", variant.directProvider || variant.provider || "openai") + " baseline")
+                  : "")
+              )
               : "")
           )}</div>
           <div class="round-history-meta">${escapeHtml(
             "Pass rate " + Number(variant.aggregate?.deterministicPassRate || 0).toFixed(2) +
             " | Quality " + Number(variant.aggregate?.quality?.overallQuality || 0).toFixed(1) +
+            " | Health " + Number(variant.aggregate?.answerHealth?.overallHealth || 0).toFixed(1) +
             " | Control " + Number(variant.aggregate?.control?.overallControl || 0).toFixed(1) +
             " | Tokens " + formatInteger(variant.aggregate?.totalTokens || 0) +
             " | Spend " + formatUsd(variant.aggregate?.estimatedCostUsd || 0)
           )}</div>
+          ${variant.aggregate?.comparison?.replicateCount ? `<div class="round-history-meta">${escapeHtml(
+            "Compare " + String(variant.aggregate.comparison.verdict || "mixed") +
+            " | delta " + Number(variant.aggregate.comparison.averageScoreDelta?.overallQuality || 0).toFixed(2) +
+            " | diff " + Number(variant.aggregate.comparison.averageScores?.overallDifferentiation || 0).toFixed(2) +
+            " | wins " + Number(variant.aggregate.comparison.pressurizedWins || 0) +
+            "/" + Number(variant.aggregate.comparison.baselineWins || 0) +
+            "/" + Number(variant.aggregate.comparison.ties || 0)
+          )}</div>` : ""}
           <div class="eval-replicate-stack">${replicateRows}</div>
         </article>
       `;
@@ -3222,7 +4163,10 @@ function syncComposerAnswerNowButton(state) {
     .prop("disabled", partialAnswerActive || !ready)
     .text(partialAnswerActive ? "Answering..." : "Answer Now")
     .attr("title", title)
-    .attr("aria-label", title);
+    .attr("aria-label", title)
+    .toggle(ready || partialAnswerActive);
+
+  $("#sendPrompt").toggle(!(ready || partialAnswerActive));
 }
 
 function renderWorkerControls(task, loop, stateWorkers) {
@@ -3284,16 +4228,232 @@ function workerTemperatureLabel(worker) {
   return WORKER_TEMPERATURE_CATALOG[temperatureId]?.label || temperatureId;
 }
 
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function dashboardWorkerMenuRoot() {
+  return $();
+}
+
+function dashboardWorkerMenuBody(detailsElement) {
+  return $(detailsElement).children(".workercontrol-body").first();
+}
+
+function restoreDashboardWorkerMenu(detailsElement) {
+  const $body = dashboardWorkerMenuBody(detailsElement);
+  if (!$body.length) return;
+  $body.css({ top: "", left: "", right: "", width: "", maxWidth: "" });
+}
+
+function clearAllDashboardWorkerMenus() {
+  return;
+}
+
+function shouldFloatDashboardWorkerMenus() {
+  return false;
+}
+
+function clearDashboardWorkerMenuPosition(detailsElement) {
+  const $body = dashboardWorkerMenuBody(detailsElement);
+  if (!$body.length) return;
+  $body.css({ top: "", left: "", right: "", width: "", maxWidth: "" });
+}
+
+function positionDashboardWorkerMenu(detailsElement) {
+  restoreDashboardWorkerMenu(detailsElement);
+  clearDashboardWorkerMenuPosition(detailsElement);
+}
+
+function refreshDashboardWorkerMenuPositions() {
+  $("#workerControls .workercontrol-collapsible[open]").each(function () {
+    positionDashboardWorkerMenu(this);
+  });
+}
+
+function syncWorkerEditorModalVisibility() {
+  const visible = !!(workerEditorModalState.kind && workerEditorModalState.key);
+  $("#workerEditorModal").prop("hidden", !visible).attr("aria-hidden", visible ? "false" : "true");
+  $("body").toggleClass("worker-editor-open", visible);
+}
+
+function buildWorkerControlFields(worker, isActive) {
+  const workerId = String(worker?.id || "").trim();
+  const harness = normalizeHarnessConfig(worker?.harness, "tight");
+  const provider = runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null);
+  const $body = $("<div>").addClass("worker-editor-grid");
+
+  const $typeRow = $("<div>").addClass("workercontrol-field");
+  $typeRow.append($("<label>").text("Directive"));
+  $typeRow.append(
+    $("<select>").addClass("worker-type").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTypeOptions(worker.type || "sceptic"))
+  );
+  $body.append($typeRow);
+
+  const $temperatureRow = $("<div>").addClass("workercontrol-field");
+  $temperatureRow.append($("<label>").text("Temperature"));
+  $temperatureRow.append(
+    $("<select>").addClass("worker-temperature").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTemperatureOptions(worker.temperature || "balanced"))
+  );
+  $body.append($temperatureRow);
+
+  const $modelRow = $("<div>").addClass("workercontrol-field");
+  $modelRow.append($("<label>").text("Model"));
+  $modelRow.append(
+    $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model, provider))
+  );
+  $body.append($modelRow);
+
+  const $harnessRow = $("<div>").addClass("workercontrol-field");
+  $harnessRow.append($("<label>").text("Harness"));
+  $harnessRow.append(
+    $("<select>").addClass("worker-harness-profile").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildHarnessConcisionOptions(harness.concision))
+  );
+  $body.append($harnessRow);
+
+  const $instructionRow = $("<div>").addClass("workercontrol-field workercontrol-field-wide");
+  $instructionRow.append($("<label>").text("Harness note"));
+  $instructionRow.append(
+    $("<textarea>")
+      .addClass("worker-harness-instruction")
+      .attr("data-worker-id", workerId)
+      .prop("disabled", isActive)
+      .attr("rows", "3")
+      .attr("placeholder", "Optional extra instruction for this lane's harness.")
+      .val(harness.instruction || "")
+  );
+  $body.append($instructionRow);
+
+  return $body;
+}
+
+function buildSummarizerControlFields(summarizer, isActive) {
+  const harness = normalizeHarnessConfig(summarizer?.harness, "expansive");
+  const provider = normalizeProviderId($("#summarizerProvider").val() || summarizer?.provider || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null));
+  const $body = $("<div>").addClass("worker-editor-grid");
+
+  const $modelRow = $("<div>").addClass("workercontrol-field");
+  $modelRow.append($("<label>").text("Model"));
+  $modelRow.append(
+    $("<select>").addClass("summarizer-model-draft").prop("disabled", isActive).html(buildModelOptions(summarizer?.model || defaultModelForProvider(provider), provider))
+  );
+  $body.append($modelRow);
+
+  const $harnessRow = $("<div>").addClass("workercontrol-field");
+  $harnessRow.append($("<label>").text("Harness"));
+  $harnessRow.append(
+    $("<select>").addClass("summarizer-harness-profile").prop("disabled", isActive).html(buildHarnessConcisionOptions(harness.concision))
+  );
+  $body.append($harnessRow);
+
+  const $instructionRow = $("<div>").addClass("workercontrol-field workercontrol-field-wide");
+  $instructionRow.append($("<label>").text("Harness note"));
+  $instructionRow.append(
+    $("<textarea>")
+      .addClass("summarizer-harness-instruction")
+      .prop("disabled", isActive)
+      .attr("rows", "3")
+      .attr("placeholder", "Optional extra instruction for the main-thread answer harness.")
+      .val(harness.instruction || "")
+  );
+  $body.append($instructionRow);
+
+  return $body;
+}
+
+function renderWorkerEditorModal() {
+  if (!workerEditorModalState.kind || !workerEditorModalState.key) {
+    closeWorkerEditorModal();
+    return;
+  }
+  const $title = $("#workerEditorTitle");
+  const $meta = $("#workerEditorMeta");
+  const $body = $("#workerEditorBody");
+  if (!$title.length || !$meta.length || !$body.length) return;
+
+  const task = latestState?.activeTask || null;
+  const draft = latestState?.draft || null;
+  const loop = latestState?.loop || null;
+  const isActive = loop?.status === "running" || loop?.status === "queued";
+  $body.empty();
+
+  if (workerEditorModalState.kind === "worker") {
+    const worker = visibleWorkerRosterSource(draft, task).find(function (candidate) {
+      return normalizeWorkerControlKey(candidate?.id) === workerEditorModalState.key;
+    });
+    if (!worker) {
+      closeWorkerEditorModal();
+      return;
+    }
+    $title.text(displayWorkerLabel(worker));
+    $meta.text(workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + harnessConcisionLabel(worker.harness, "tight") + " | " + modelLabel(worker.model));
+    $body.append(buildWorkerControlFields(worker, isActive));
+  } else {
+    const summarizer = visibleSummarizerSource(draft, task);
+    $title.text("Main thread");
+    $meta.text("Lead voice | " + harnessConcisionLabel(summarizer.harness, "expansive") + " | " + modelLabel(summarizer.model, summarizer.provider));
+    $body.append(buildSummarizerControlFields(summarizer, isActive));
+  }
+  syncWorkerEditorModalVisibility();
+}
+
+function openWorkerEditorModal(kind, key) {
+  workerEditorModalState = {
+    kind: kind === "summarizer" ? "summarizer" : "worker",
+    key: normalizeWorkerControlKey(key || "")
+  };
+  renderWorkerEditorModal();
+  window.requestAnimationFrame(function () {
+    const $focusTarget = $("#workerEditorBody select, #workerEditorBody textarea").filter(":enabled").first();
+    ($focusTarget.length ? $focusTarget : $("#workerEditorClose")).trigger("focus");
+  });
+}
+
+function closeWorkerEditorModal() {
+  workerEditorModalState = { kind: "", key: "" };
+  $("#workerEditorBody").empty();
+  $("#workerEditorTitle").text("Worker");
+  $("#workerEditorMeta").text("");
+  syncWorkerEditorModalVisibility();
+}
+
+function syncWorkerEditorOverrideFromModalFields() {
+  if ($("#workerEditorModal").prop("hidden")) return;
+  if (workerEditorModalState.kind === "worker") {
+    const workerId = String($("#workerEditorBody .worker-type").attr("data-worker-id") || workerEditorModalState.key || "").trim();
+    if (!workerId) return;
+    setWorkerEditorWorkerOverride(workerId, {
+      type: String($("#workerEditorBody .worker-type").val() || "sceptic"),
+      temperature: String($("#workerEditorBody .worker-temperature").val() || "balanced"),
+      model: String($("#workerEditorBody .worker-model").val() || ""),
+      harness: {
+        concision: String($("#workerEditorBody .worker-harness-profile").val() || "tight"),
+        instruction: String($("#workerEditorBody .worker-harness-instruction").val() || "").trim()
+      }
+    });
+  } else if (workerEditorModalState.kind === "summarizer") {
+    setWorkerEditorSummarizerOverride({
+      model: String($("#workerEditorBody .summarizer-model-draft").val() || ""),
+        harness: {
+        concision: String($("#workerEditorBody .summarizer-harness-profile").val() || "expansive"),
+        instruction: String($("#workerEditorBody .summarizer-harness-instruction").val() || "").trim()
+      }
+    });
+  }
+}
+
 function renderHomeWorkerControls(task, draft, loop) {
   const $controls = $("#workerControls");
-  const workers = stagedWorkerSource(draft, task);
-  const summarizer = stagedSummarizerSource(draft, task);
+  reconcileWorkerEditorOverrides(draft, task);
+  const workers = visibleWorkerRosterSource(draft, task);
+  const summarizer = visibleSummarizerSource(draft, task);
   const workerState = task?.stateWorkers || {};
   const activeTarget = inferFrontActiveTarget(loop, latestState);
   const signature = JSON.stringify({
     mode: "draft",
     workers,
     summarizer,
+    overrides: workerEditorOverrides,
     loopStatus: loop?.status || "idle",
     loopMessage: loop?.lastMessage || "",
     activeTarget,
@@ -3307,9 +4467,11 @@ function renderHomeWorkerControls(task, draft, loop) {
   if (signature === workerControlsSignature || hasFocusWithin("#workerControls")) return;
   workerControlsSignature = signature;
   $controls.empty();
+  $controls.off("scroll.dashboardWorkerMenus");
 
   if (!workers.length) {
     $controls.append($("<div>").addClass("workercontrol").text("No workers configured."));
+    refreshDashboardWorkerMenuPositions();
     return;
   }
 
@@ -3318,6 +4480,13 @@ function renderHomeWorkerControls(task, draft, loop) {
     $controls.append(buildWorkerControlCard(worker, isActive, workerFrontStatus(worker.id, task, loop, latestState)));
   });
   $controls.append(buildSummarizerControlCard(summarizer, isActive, summarizerFrontStatus(task, loop, latestState)));
+  $controls.off("scroll.dashboardWorkerMenus").on("scroll.dashboardWorkerMenus", function () {
+    refreshDashboardWorkerMenuPositions();
+  });
+  refreshDashboardWorkerMenuPositions();
+  if (workerEditorModalState.key && !hasFocusWithin("#workerEditorModal")) {
+    renderWorkerEditorModal();
+  }
 }
 
 function renderDebugTargetControls(task, loop, stateWorkers) {
@@ -3452,14 +4621,15 @@ function renderRosterPanels(task, draft) {
 }
 
 function renderFooterCheckpoints(task) {
-  const $list = $("#footerCheckpointList");
+  const $list = $("#evalCheckpointList");
   if (!$list.length) return;
   $list.empty();
 
   const workers = task?.workers || [];
   const currentCommander = task?.stateCommander || null;
   const currentCommanderReview = task?.stateCommanderReview || null;
-  if (!workers.length && !currentCommander && !currentCommanderReview) {
+  const directBaseline = latestState?.directBaseline || task?.directBaseline || null;
+  if (!workers.length && !currentCommander && !currentCommanderReview && !directBaseline) {
     $list.append($("<div>").addClass("footer-checkpoint-empty").text("No checkpoints yet."));
     return;
   }
@@ -3475,7 +4645,7 @@ function renderFooterCheckpoints(task) {
   });
 
   if (!entries.some(function (entry) { return !!entry.checkpoint; })) {
-    if (!currentCommander) {
+    if (!currentCommander && !directBaseline) {
       $list.append($("<div>").addClass("footer-checkpoint-empty").text("Waiting for the first worker checkpoints."));
       return;
     }
@@ -3519,6 +4689,22 @@ function renderFooterCheckpoints(task) {
     $list.append($item);
   }
 
+  if (directBaseline) {
+    const baselinePreview = truncateText(directBaseline.answer?.answer || "Single-thread baseline available.", 88);
+    const $item = $("<div>").addClass("footer-checkpoint-item compact-hover-card");
+    const $head = $("<div>").addClass("footer-checkpoint-head");
+    $head.append($("<div>").addClass("footer-checkpoint-title").text("Single-thread baseline"));
+    $head.append($("<div>").addClass("footer-checkpoint-step").text("round " + Number(directBaseline.round || 1)));
+    $item.append($head);
+    $item.append($("<div>").addClass("footer-checkpoint-copy").text(baselinePreview));
+    appendCompactHoverPopup($item, [
+      directBaseline.answer?.stance ? "Stance: " + truncateText(directBaseline.answer.stance, 220) : "",
+      directBaseline.answer?.confidenceNote ? "Confidence: " + truncateText(directBaseline.answer.confidenceNote, 220) : "",
+      "Provider: " + providerLabel(directBaseline.provider || "openai") + " | Model: " + modelLabel(directBaseline.model || "n/a", directBaseline.provider || "openai")
+    ]);
+    $list.append($item);
+  }
+
   entries.forEach(function (entry) {
     if (!entry.checkpoint) return;
     const worker = entry.worker;
@@ -3542,18 +4728,20 @@ function renderFooterCheckpoints(task) {
 
 function buildWorkerControlCard(worker, isActive, status) {
   const workerId = String(worker.id || "").trim();
-  const workerKey = normalizeWorkerControlKey(workerId);
   const harness = normalizeHarnessConfig(worker?.harness, "tight");
-  const $card = $("<details>")
-    .addClass("workercontrol workercontrol-collapsible " + statusClassName(status))
+  const $card = $("<div>")
+    .addClass("workercontrol workercontrol-modal-card " + statusClassName(status))
     .attr("data-worker-id", workerId);
-  if (workerControlExpanded[workerKey]) {
-    $card.attr("open", "open");
-  }
 
-  const $summary = $("<summary>").addClass("workercontrol-summary");
+  const $summary = $("<button>")
+    .attr("type", "button")
+    .addClass("workercontrol-summary workercontrol-modal-trigger")
+    .attr("data-worker-editor-kind", "worker")
+    .attr("data-worker-id", workerId)
+    .attr("aria-haspopup", "dialog")
+    .prop("disabled", false);
   const $summaryMain = $("<div>").addClass("workercontrol-summary-main");
-  $summaryMain.append($("<div>").addClass("workercontrol-title").text(workerId + " | " + displayWorkerLabel(worker)));
+  $summaryMain.append($("<div>").addClass("workercontrol-title").text(displayWorkerLabel(worker)));
   $summaryMain.append(
     $("<div>").addClass("workercontrol-meta").text(
       workerDirectiveLabel(worker) + " | " + workerTemperatureLabel(worker) + " | " + harnessConcisionLabel(harness, "tight") + " | " + modelLabel(worker.model)
@@ -3561,108 +4749,34 @@ function buildWorkerControlCard(worker, isActive, status) {
   );
   $summary.append($summaryMain);
   $summary.append(buildStatusBadge(status));
-  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
+  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text(""));
   $card.append($summary);
-
-  const $body = $("<div>").addClass("workercontrol-body");
-
-  const $typeRow = $("<div>").addClass("workercontrol-field");
-  $typeRow.append($("<label>").text("Directive"));
-  $typeRow.append(
-    $("<select>").addClass("worker-type").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTypeOptions(worker.type || "sceptic"))
-  );
-  $body.append($typeRow);
-
-  const $temperatureRow = $("<div>").addClass("workercontrol-field");
-  $temperatureRow.append($("<label>").text("Temperature"));
-  $temperatureRow.append(
-    $("<select>").addClass("worker-temperature").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildWorkerTemperatureOptions(worker.temperature || "balanced"))
-  );
-  $body.append($temperatureRow);
-
-  const $modelRow = $("<div>").addClass("workercontrol-field");
-  $modelRow.append($("<label>").text("Model"));
-  $modelRow.append(
-      $("<select>").addClass("worker-model").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildModelOptions(worker.model, runtimeProviderSource(latestState?.activeTask || null, latestState?.draft || null)))
-  );
-  $body.append($modelRow);
-
-  const $harnessRow = $("<div>").addClass("workercontrol-field");
-  $harnessRow.append($("<label>").text("Harness"));
-  $harnessRow.append(
-    $("<select>").addClass("worker-harness-profile").attr("data-worker-id", workerId).prop("disabled", isActive).html(buildHarnessConcisionOptions(harness.concision))
-  );
-  $body.append($harnessRow);
-
-  const $instructionRow = $("<div>").addClass("workercontrol-field");
-  $instructionRow.append($("<label>").text("Harness note"));
-  $instructionRow.append(
-    $("<textarea>")
-      .addClass("worker-harness-instruction")
-      .attr("data-worker-id", workerId)
-      .prop("disabled", isActive)
-      .attr("rows", "3")
-      .attr("placeholder", "Optional extra instruction for this lane's harness.")
-      .val(harness.instruction || "")
-  );
-  $body.append($instructionRow);
-
-  $card.append($body);
   return $card;
 }
 
 function buildSummarizerControlCard(summarizer, isActive, status) {
-  const summarizerKey = normalizeWorkerControlKey("summarizer");
-  const harness = normalizeHarnessConfig(summarizer?.harness, "balanced");
-  const $card = $("<details>")
-    .addClass("workercontrol workercontrol-collapsible summarizer-control-card " + statusClassName(status))
+  const harness = normalizeHarnessConfig(summarizer?.harness, "expansive");
+  const $card = $("<div>")
+    .addClass("workercontrol workercontrol-modal-card summarizer-control-card " + statusClassName(status))
     .attr("data-position-id", "summarizer");
-  if (workerControlExpanded[summarizerKey]) {
-    $card.attr("open", "open");
-  }
 
-  const $summary = $("<summary>").addClass("workercontrol-summary");
+  const $summary = $("<button>")
+    .attr("type", "button")
+    .addClass("workercontrol-summary workercontrol-modal-trigger")
+    .attr("data-worker-editor-kind", "summarizer")
+    .attr("data-position-id", "summarizer")
+    .attr("aria-haspopup", "dialog");
   const $summaryMain = $("<div>").addClass("workercontrol-summary-main");
-  $summaryMain.append($("<div>").addClass("workercontrol-title").text("Commander / Summarizer"));
+  $summaryMain.append($("<div>").addClass("workercontrol-title").text("Main thread"));
   $summaryMain.append(
     $("<div>").addClass("workercontrol-meta").text(
-      "Lead voice | " + harnessConcisionLabel(harness, "balanced") + " | " + modelLabel(summarizer?.model || "gpt-5-mini")
+      "Lead voice | " + harnessConcisionLabel(harness, "expansive") + " | " + modelLabel(summarizer?.model || "gpt-5-mini", summarizer?.provider)
     )
   );
   $summary.append($summaryMain);
   $summary.append(buildStatusBadge(status));
-  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text("v"));
+  $summary.append($("<div>").addClass("workercontrol-summary-caret").attr("aria-hidden", "true").text(""));
   $card.append($summary);
-
-  const $body = $("<div>").addClass("workercontrol-body");
-
-  const $modelRow = $("<div>").addClass("workercontrol-field");
-  $modelRow.append($("<label>").text("Model"));
-  $modelRow.append(
-    $("<select>").addClass("summarizer-model-draft").prop("disabled", isActive).html(buildModelOptions(summarizer?.model || "gpt-5-mini", summarizer?.provider || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null)))
-  );
-  $body.append($modelRow);
-
-  const $harnessRow = $("<div>").addClass("workercontrol-field");
-  $harnessRow.append($("<label>").text("Harness"));
-  $harnessRow.append(
-    $("<select>").addClass("summarizer-harness-profile").prop("disabled", isActive).html(buildHarnessConcisionOptions(harness.concision))
-  );
-  $body.append($harnessRow);
-
-  const $instructionRow = $("<div>").addClass("workercontrol-field");
-  $instructionRow.append($("<label>").text("Harness note"));
-  $instructionRow.append(
-    $("<textarea>")
-      .addClass("summarizer-harness-instruction")
-      .prop("disabled", isActive)
-      .attr("rows", "3")
-      .attr("placeholder", "Optional extra instruction for the lead answer harness.")
-      .val(harness.instruction || "")
-  );
-  $body.append($instructionRow);
-
-  $card.append($body);
   return $card;
 }
 
@@ -3690,28 +4804,50 @@ function renderHomeRuntimeControls(task, draft, loop) {
   appendHomeRuntimeBlock(
     $summary,
     "Next send",
-    stagedProfileName + " | " + providerLabel(stagedSnapshot.provider) + " -> " + providerLabel(stagedSnapshot.summarizerProvider) + " | " + (stagedPayload.executionMode || "live") + " mode",
+    stagedProfileName,
     [
       "Workers: " + providerLabel(stagedSnapshot.provider) + " / " + modelLabel(stagedSnapshot.model, stagedSnapshot.provider) + " | Summarizer: " + providerLabel(stagedSnapshot.summarizerProvider) + " / " + modelLabel(stagedSnapshot.summarizerModel, stagedSnapshot.summarizerProvider) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
+      "Worker context: " + contextModeLabel(stagedSnapshot.contextMode),
+      "Answer path: " + directBaselineModeLabel(stagedSnapshot.directBaselineMode) + (
+        normalizeDirectBaselineMode(stagedSnapshot.directBaselineMode) === "off"
+          ? ""
+          : " | Baseline: " + providerLabel(stagedSnapshot.directProvider) + " / " + modelLabel(stagedSnapshot.directModel, stagedSnapshot.directProvider)
+      ),
       "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
       "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms",
+      (shouldShowOllamaBaseUrl(stagedSnapshot.provider, stagedSnapshot.summarizerProvider) || (normalizeDirectBaselineMode(stagedSnapshot.directBaselineMode) !== "off" && normalizeProviderId(stagedSnapshot.directProvider) === "ollama"))
+        ? ("Ollama endpoint: " + normalizeOllamaBaseUrl(stagedSnapshot.ollamaBaseUrl))
+        : "Ollama endpoint: inactive for this staged provider mix",
       "Provider capabilities: " + providerCapabilitySummary(stagedCapabilities),
       providerNoteSummary(stagedSnapshot.provider)
-    ]
+    ],
+    false,
+    providerLabel(stagedSnapshot.provider) + " -> " + providerLabel(stagedSnapshot.summarizerProvider) + " | " + (stagedPayload.executionMode || "live") + " mode"
   );
 
   if (hasTask && activeSnapshot) {
     appendHomeRuntimeBlock(
       $summary,
       "Active task",
-      activeProfileName + " | " + providerLabel(activeSnapshot.provider) + " -> " + providerLabel(activeSnapshot.summarizerProvider) + " | " + (task?.runtime?.executionMode || "live") + " mode",
+      activeProfileName,
       [
         "Workers: " + providerLabel(activeSnapshot.provider) + " / " + modelLabel(activeSnapshot.model, activeSnapshot.provider) + " | Summarizer: " + providerLabel(activeSnapshot.summarizerProvider) + " / " + modelLabel(activeSnapshot.summarizerModel, activeSnapshot.summarizerProvider) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
+        "Worker context: " + contextModeLabel(activeSnapshot.contextMode),
+        "Answer path: " + directBaselineModeLabel(activeSnapshot.directBaselineMode) + (
+          normalizeDirectBaselineMode(activeSnapshot.directBaselineMode) === "off"
+            ? ""
+            : " | Baseline: " + providerLabel(activeSnapshot.directProvider) + " / " + modelLabel(activeSnapshot.directModel, activeSnapshot.directProvider)
+        ),
         "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
         "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms",
+        (shouldShowOllamaBaseUrl(activeSnapshot.provider, activeSnapshot.summarizerProvider) || (normalizeDirectBaselineMode(activeSnapshot.directBaselineMode) !== "off" && normalizeProviderId(activeSnapshot.directProvider) === "ollama"))
+          ? ("Ollama endpoint: " + normalizeOllamaBaseUrl(activeSnapshot.ollamaBaseUrl))
+          : "Ollama endpoint: inactive for this active provider mix",
         "Provider capabilities: " + providerCapabilitySummary(activeCapabilities),
         providerNoteSummary(activeSnapshot.provider)
-      ]
+      ],
+      false,
+      providerLabel(activeSnapshot.provider) + " -> " + providerLabel(activeSnapshot.summarizerProvider) + " | " + (task?.runtime?.executionMode || "live") + " mode"
     );
 
     appendHomeRuntimeBlock(
@@ -3726,14 +4862,17 @@ function renderHomeRuntimeControls(task, draft, loop) {
           ? "You can keep prompting without touching settings."
           : "Use Sync Active if you want the current task to adopt the staged profile, loop depth, and budget."
       ],
-      !runtimeMatches
+      !runtimeMatches,
+      runtimeMatches ? "Staged and active runtime match." : "Staged and active runtime differ."
     );
   } else {
     appendHomeRuntimeBlock(
       $summary,
       "Active task",
       "Ready to start",
-      ["Send will start a fresh task with the staged profile, roster, and loop settings."]
+      ["Send will start a fresh task with the staged profile, roster, and loop settings."],
+      false,
+      "Next send will launch a new live task."
     );
   }
 
@@ -3816,6 +4955,7 @@ function friendlyTargetLabel(target, task) {
   if (!id) return "Preparing";
   if (id === "commander") return "Commander";
   if (id === "commander_review") return "Commander Review";
+  if (id === "direct_baseline") return "Single-thread baseline";
   if (id === "summarizer") return "Summarizer";
   if (id === "answer_now") return "Answer Now";
   const worker = (task?.workers || []).find(function (entry) {
@@ -3828,6 +4968,7 @@ function latestCompletedSurface(task, workerState, state) {
   const entries = [];
   const commander = state?.commander || task?.stateCommander || null;
   const commanderReview = state?.commanderReview || task?.stateCommanderReview || null;
+  const directBaseline = state?.directBaseline || task?.directBaseline || null;
   if (commander?.updatedAt || commander?.round) {
     entries.push({
       sortAt: String(commander.updatedAt || ""),
@@ -3851,6 +4992,13 @@ function latestCompletedSurface(task, workerState, state) {
       preview: String(commanderReview.whyThisDirection || commanderReview.answerDraft || commanderReview.leadDirection || "Review checkpoint ready.").trim()
     });
   }
+  if (directBaseline?.capturedAt || directBaseline?.answer?.answer) {
+    entries.push({
+      sortAt: String(directBaseline.capturedAt || ""),
+      label: "Single-thread baseline",
+      preview: String(directBaseline.answer?.answer || "Baseline answer ready.").trim()
+    });
+  }
   entries.sort(function (left, right) {
     return String(right.sortAt || "").localeCompare(String(left.sortAt || ""));
   });
@@ -3862,12 +5010,20 @@ function renderWaitingProgress(task, workerState, loop, state) {
   const executionHealth = state?.executionHealth || task?.executionHealth || {};
   const contractWarnings = Array.isArray(state?.contractWarnings) ? state.contractWarnings.filter(Boolean) : [];
   const activeTarget = inferFrontActiveTarget(loop, state);
-  const totalStages = (task?.workers?.length || 0) + 3;
-  const completedStages =
-    (state?.commander || task?.stateCommander ? 1 : 0) +
-    Object.keys(workerState || {}).length +
-    (state?.commanderReview || task?.stateCommanderReview ? 1 : 0) +
-    (task?.summary || state?.summary ? 1 : 0);
+  const directMode = normalizeDirectBaselineMode(task?.runtime?.directBaselineMode);
+  const hasDirectBaseline = !!(state?.directBaseline || task?.directBaseline);
+  const totalStages = directMode === "single"
+    ? 1
+    : ((task?.workers?.length || 0) + 3 + (directMode === "both" ? 1 : 0));
+  const completedStages = directMode === "single"
+    ? (hasDirectBaseline ? 1 : 0)
+    : (
+      (state?.commander || task?.stateCommander ? 1 : 0) +
+      Object.keys(workerState || {}).length +
+      (state?.commanderReview || task?.stateCommanderReview ? 1 : 0) +
+      (task?.summary || state?.summary ? 1 : 0) +
+      (directMode === "both" && hasDirectBaseline ? 1 : 0)
+    );
   const latestDone = latestCompletedSurface(task, workerState, state);
   const latestIssue = executionHealth?.latestIssue || null;
   let executionNote = "";
@@ -3889,7 +5045,7 @@ function renderWaitingProgress(task, workerState, loop, state) {
         <div class="thread-progress-head">
           <div>
             <div class="thread-progress-kicker">Live status</div>
-            <div class="thread-progress-title">${escapeHtml(friendlyTargetLabel(activeTarget || "summarizer", task))}</div>
+            <div class="thread-progress-title">${escapeHtml(friendlyTargetLabel(activeTarget || (directMode === "single" ? "direct_baseline" : "summarizer"), task))}</div>
           </div>
           <div class="thread-progress-badge ${escapeHtml(statusClassName({ key: activeTarget ? "running" : "waiting" }))}">${escapeHtml(activeTarget ? "Working" : "Waiting")}</div>
         </div>
@@ -3917,8 +5073,11 @@ function renderWaitingProgress(task, workerState, loop, state) {
     executionNote ? renderTextSection("Execution note", truncateText(executionNote, 260)) : "",
     contractWarnings.length ? renderTextSection("State note", truncateText(contractWarnings.join(" "), 260)) : "",
     latestDone ? renderTextSection("Latest completed", `${latestDone.label}: ${truncateText(latestDone.preview, 220)}`) : "",
+    directMode === "both" && hasDirectBaseline && !task?.summary && !state?.summary
+      ? renderTextSection("Compare note", "The single-thread baseline is already captured in Review while the pressurized answer is still running.")
+      : "",
     renderListSection("What you can do now", [
-      completedStages > 0 ? "Use Answer Now to force a partial front answer from completed work." : "",
+      directMode !== "single" && completedStages > 0 ? "Use Answer Now to force a partial front answer from completed work." : "",
       "Leave the tab open and the loop will keep polling live progress.",
       activeTarget ? `${friendlyTargetLabel(activeTarget, task)} is the current active stage.` : ""
     ])
@@ -4188,19 +5347,21 @@ function renderTraceLineSet(label, refs, lineMap, emptyText) {
   `;
 }
 
-function renderSummaryOpinion(summary) {
-  if (!summary) {
-    return `<div class="review-empty">No summary yet.</div>`;
+function renderSummaryOpinion(summary, directBaseline) {
+  if (!summary && !directBaseline) {
+    return `<div class="review-empty">No answer artifact yet.</div>`;
   }
   const executionHealth = latestState?.executionHealth || latestState?.activeTask?.executionHealth || null;
   const contractWarnings = Array.isArray(latestState?.contractWarnings)
     ? latestState.contractWarnings.filter(Boolean)
     : (Array.isArray(latestState?.activeTask?.contractWarnings) ? latestState.activeTask.contractWarnings.filter(Boolean) : []);
-  const frontAnswer = summary.frontAnswer || {};
-  const opinion = summary.summarizerOpinion || {};
-  const controlAudit = summary.controlAudit || {};
-  const dynamicLaneDecision = summary.dynamicLaneDecision || {};
-  const dynamicLaneResolution = summary.dynamicLaneResolution || {};
+  const frontAnswer = summary?.frontAnswer || {};
+  const opinion = summary?.summarizerOpinion || {};
+  const controlAudit = summary?.controlAudit || {};
+  const dynamicLaneDecision = summary?.dynamicLaneDecision || {};
+  const dynamicLaneResolution = summary?.dynamicLaneResolution || {};
+  const directAnswer = directBaseline?.answer || {};
+  const hasSummary = !!summary;
   const blocks = [
     executionHealth
       ? renderReviewBlock("Execution status", formatExecutionHealthSummary(executionHealth))
@@ -4208,28 +5369,41 @@ function renderSummaryOpinion(summary) {
     contractWarnings.length
       ? renderReviewBlock("State contract", contractWarnings.join("\n"))
       : "",
-    renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary)),
-    renderReviewBlock("Lead direction", frontAnswer.leadDirection || frontAnswer.stance || ""),
-    renderReviewBlock("Absorbed adversarial pressure", frontAnswer.adversarialPressure || ""),
-    renderReviewBlock("Current stance", opinion.stance || frontAnswer.stance || ""),
-    renderReviewBlock("Why it landed here", opinion.because || ""),
-    renderReviewBlock("Integration mode", opinion.integrationMode || ""),
-    renderReviewBlock("Lead draft before pressure", controlAudit.leadDraft || ""),
-    renderReviewBlock("Control question", controlAudit.integrationQuestion || ""),
-    renderReviewBlock("Course decision", formatCourseDecisionLabel(controlAudit.courseDecision || "")),
-    renderReviewBlock("Why course changed or held", controlAudit.courseDecisionReason || ""),
-    renderContributionAssessments(controlAudit.contributionAssessments || []),
-    Array.isArray(controlAudit.acceptedAdversarialPoints) && controlAudit.acceptedAdversarialPoints.length
+    hasSummary
+      ? renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary))
+      : renderReviewBlock("Single-thread answer", directAnswer.answer || ""),
+    directBaseline
+      ? renderReviewBlock(
+          "Single-thread baseline",
+          [
+            directAnswer.answer || "",
+            directAnswer.stance ? "Stance: " + directAnswer.stance : "",
+            directAnswer.confidenceNote ? "Confidence: " + directAnswer.confidenceNote : "",
+            "Mode: " + String(directBaseline.mode || "n/a") + " | Provider: " + providerLabel(directBaseline.provider || "openai") + " | Model: " + modelLabel(directBaseline.model || "n/a", directBaseline.provider || "openai")
+          ].filter(Boolean).join("\n\n")
+        )
+      : "",
+    hasSummary ? renderReviewBlock("Lead direction", frontAnswer.leadDirection || frontAnswer.stance || "") : "",
+    hasSummary ? renderReviewBlock("Absorbed adversarial pressure", frontAnswer.adversarialPressure || "") : "",
+    hasSummary ? renderReviewBlock("Current stance", opinion.stance || frontAnswer.stance || "") : "",
+    hasSummary ? renderReviewBlock("Why it landed here", opinion.because || "") : "",
+    hasSummary ? renderReviewBlock("Integration mode", opinion.integrationMode || "") : "",
+    hasSummary ? renderReviewBlock("Lead draft before pressure", controlAudit.leadDraft || "") : "",
+    hasSummary ? renderReviewBlock("Control question", controlAudit.integrationQuestion || "") : "",
+    hasSummary ? renderReviewBlock("Course decision", formatCourseDecisionLabel(controlAudit.courseDecision || "")) : "",
+    hasSummary ? renderReviewBlock("Why course changed or held", controlAudit.courseDecisionReason || "") : "",
+    hasSummary ? renderContributionAssessments(controlAudit.contributionAssessments || []) : "",
+    hasSummary && Array.isArray(controlAudit.acceptedAdversarialPoints) && controlAudit.acceptedAdversarialPoints.length
       ? renderReviewBlock("Accepted adversarial points", controlAudit.acceptedAdversarialPoints.join("\n"))
       : "",
-    Array.isArray(controlAudit.rejectedAdversarialPoints) && controlAudit.rejectedAdversarialPoints.length
+    hasSummary && Array.isArray(controlAudit.rejectedAdversarialPoints) && controlAudit.rejectedAdversarialPoints.length
       ? renderReviewBlock("Rejected adversarial points", controlAudit.rejectedAdversarialPoints.join("\n"))
       : "",
-    Array.isArray(controlAudit.heldOutConcerns) && controlAudit.heldOutConcerns.length
+    hasSummary && Array.isArray(controlAudit.heldOutConcerns) && controlAudit.heldOutConcerns.length
       ? renderReviewBlock("Held-out concerns", controlAudit.heldOutConcerns.join("\n"))
       : "",
-    renderReviewBlock("Pre-release self-check", controlAudit.selfCheck || ""),
-    dynamicLaneDecision.shouldSpawn
+    hasSummary ? renderReviewBlock("Pre-release self-check", controlAudit.selfCheck || "") : "",
+    hasSummary && dynamicLaneDecision.shouldSpawn
       ? renderReviewBlock(
           "Next-round lane request",
           [
@@ -4243,14 +5417,14 @@ function renderSummaryOpinion(summary) {
           ].filter(Boolean).join("\n")
         )
       : "",
-    formatDynamicLaneResolution(dynamicLaneResolution)
+    hasSummary && formatDynamicLaneResolution(dynamicLaneResolution)
       ? renderReviewBlock("Lane resolution", formatDynamicLaneResolution(dynamicLaneResolution))
       : "",
-    renderReviewBlock("Uncertainty", opinion.uncertainty || frontAnswer.confidenceNote || ""),
-    renderReviewBlock("Recommended next action", summary.recommendedNextAction || ""),
-    renderReviewBlock("Vetting note", summary.vettingSummary || "")
+    renderReviewBlock("Uncertainty", hasSummary ? (opinion.uncertainty || frontAnswer.confidenceNote || "") : (directAnswer.confidenceNote || "")),
+    hasSummary ? renderReviewBlock("Recommended next action", summary.recommendedNextAction || "") : "",
+    hasSummary ? renderReviewBlock("Vetting note", summary.vettingSummary || "") : ""
   ].filter(Boolean);
-  return blocks.length ? `<div class="review-stack">${blocks.join("")}</div>` : `<div class="review-empty">No summary yet.</div>`;
+  return blocks.length ? `<div class="review-stack">${blocks.join("")}</div>` : `<div class="review-empty">No answer artifact yet.</div>`;
 }
 
 function renderSummaryTrace(summary, task, workerState) {
@@ -4338,13 +5512,13 @@ function renderSummaryLineCatalog(summary, task, workerState) {
   `;
 }
 
-function renderSummaryReview(summary, task, workerState) {
-  $("#summaryOpinion").html(renderSummaryOpinion(summary));
+function renderSummaryReview(summary, directBaseline, task, workerState) {
+  $("#summaryOpinion").html(renderSummaryOpinion(summary, directBaseline));
   $("#summaryTrace").html(renderSummaryTrace(summary, task, workerState));
   $("#summaryLineCatalog").html(renderSummaryLineCatalog(summary, task, workerState));
 }
 
-function buildConversationRenderSignature(task, summary, workerState, loop, state) {
+function buildConversationRenderSignature(task, summary, directBaseline, workerState, loop, state) {
   if (!task) return "empty";
   const elapsedMarker = formatElapsedCompact(loop?.startedAt || loop?.queuedAt);
 
@@ -4371,6 +5545,12 @@ function buildConversationRenderSignature(task, summary, workerState, loop, stat
       recommendedNextAction: summary.recommendedNextAction || "",
       vettingSummary: summary.vettingSummary || "",
       claimsNeedingVerification: summary.claimsNeedingVerification || []
+    } : null,
+    directBaseline: directBaseline ? {
+      mode: directBaseline.mode || "",
+      provider: directBaseline.provider || "",
+      model: directBaseline.model || "",
+      answer: directBaseline.answer || null
     } : null,
     workers: workerSignature,
     loop: {
@@ -4411,18 +5591,12 @@ function legacyRenderConversationThreadUnused(task, summary, workerState, loop) 
     threadRenderSignature = "empty";
     threadRenderTaskId = "";
     threadInspectorOpen = false;
-    $thread.html(`
-      <div class="empty-thread">
-        <div>
-          <div class="empty-thread-title">No active task yet.</div>
-          <div class="empty-thread-copy">Send a prompt below. The assistant will answer here, and the internal lane trace will stay in Review.</div>
-        </div>
-      </div>
-    `);
+    $thread.empty().addClass("is-empty");
     return;
   }
 
   const messages = [];
+  $thread.removeClass("is-empty");
   messages.push(buildThreadMessage({
     kind: "commander",
     author: "You",
@@ -4543,7 +5717,7 @@ function legacyApplyLoopUiUnused(state) {
   $("#cancelLoop").prop("disabled", !(loop?.status === "running" || loop?.status === "queued"));
 }
 
-function renderConversationThread(task, summary, workerState, loop, state) {
+function renderConversationThread(task, summary, directBaseline, workerState, loop, state) {
   const $thread = $("#conversationThread");
   const threadNode = $thread[0];
 
@@ -4551,16 +5725,11 @@ function renderConversationThread(task, summary, workerState, loop, state) {
     threadRenderSignature = "empty";
     threadRenderTaskId = "";
     threadInspectorOpen = false;
-    $thread.html(`
-      <div class="empty-thread">
-        <div>
-          <div class="empty-thread-title">No active task yet.</div>
-          <div class="empty-thread-copy">Send a prompt below. The assistant will answer here, and the internal lane trace will stay in Review.</div>
-        </div>
-      </div>
-    `);
+    $thread.empty().addClass("is-empty");
     return;
   }
+
+  $thread.removeClass("is-empty");
 
   const nextTaskId = String(task.taskId || "");
   if (threadRenderTaskId !== nextTaskId) {
@@ -4569,7 +5738,7 @@ function renderConversationThread(task, summary, workerState, loop, state) {
     threadInspectorOpen = false;
   }
 
-  const signature = buildConversationRenderSignature(task, summary, workerState, loop, state);
+  const signature = buildConversationRenderSignature(task, summary, directBaseline, workerState, loop, state);
   if (signature === threadRenderSignature) {
     return;
   }
@@ -4598,6 +5767,8 @@ function renderConversationThread(task, summary, workerState, loop, state) {
       if (stepA !== stepB) return stepA - stepB;
       return a.worker.id.localeCompare(b.worker.id);
     });
+  const directMode = normalizeDirectBaselineMode(task?.runtime?.directBaselineMode);
+  const compareStillRunning = directMode === "both" && isWorkspaceBusy(loop, state) && !summary;
 
   if (summary) {
     messages.push(buildThreadMessage({
@@ -4607,13 +5778,30 @@ function renderConversationThread(task, summary, workerState, loop, state) {
         renderPlainTextBlock(buildAgentReplyText(summary))
       ]
     }));
+  } else if (directBaseline?.answer?.answer && (directMode === "single" || !compareStillRunning)) {
+    messages.push(buildThreadMessage({
+      kind: "summary",
+      author: "Assistant",
+      tag: directMode === "single" ? "Single-thread baseline" : "Baseline fallback",
+      sections: [
+        renderPlainTextBlock(String(directBaseline.answer.answer || "").trim())
+      ]
+    }));
   } else {
     messages.push(buildThreadMessage({
       kind: "summary",
       author: "Assistant",
       tag: "Working",
       sections: [
-        renderPlainTextBlock("Working through the live lanes and shaping the final answer."),
+        renderPlainTextBlock(
+          directMode === "single"
+            ? "Working through the single-thread baseline path."
+            : (
+              directMode === "both" && directBaseline?.answer?.answer
+                ? "The single-thread baseline is ready in Review while the pressurized lanes finish shaping the final answer."
+                : "Working through the live lanes and shaping the final answer."
+            )
+        ),
         renderWaitingProgress(task, workerState, loop, state)
       ]
     }));
@@ -4697,6 +5885,7 @@ function refreshState() {
             stateWorkers: data.workers || {},
             stateCommander: data.commander || null,
             stateCommanderReview: data.commanderReview || null,
+            directBaseline: data.directBaseline || null,
             summary: data.summary || null
           })
         : null;
@@ -4709,12 +5898,13 @@ function refreshState() {
       renderQualityProfileCards();
       renderDebugTargetControls(task, data.loop || null, data.workers || {});
       renderFooterCheckpoints(task);
-      renderConversationThread(task, data.summary || null, data.workers || {}, data.loop || null, data);
-      renderSummaryReview(data.summary || null, task, data.workers || {});
+      renderConversationThread(task, data.summary || null, data.directBaseline || null, data.workers || {}, data.loop || null, data);
+      renderSummaryReview(data.summary || null, data.directBaseline || null, task, data.workers || {});
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,
         draft: data.draft,
+        directBaseline: data.directBaseline,
         usage: data.usage,
         loop: data.loop,
         memoryVersion: data.memoryVersion,
@@ -4849,6 +6039,11 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     model: $("#model").val(),
     summarizerProvider: $("#summarizerProvider").val(),
     summarizerModel: $("#summarizerModel").val(),
+    contextMode: normalizeContextMode($("#contextMode").val()),
+    directBaselineMode: normalizeDirectBaselineMode($("#directBaselineMode").val()),
+    directProvider: $("#directProvider").val(),
+    directModel: $("#directModel").val(),
+    ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: $("#maxCostUsd").val(),
     maxTotalTokens: $("#maxTotalTokens").val(),
@@ -4883,8 +6078,10 @@ $(function () {
   recentComposerAttachments = loadRecentComposerAttachments();
   populateStaticProviderSelect("#provider", "openai");
   populateStaticProviderSelect("#summarizerProvider", "openai");
+  populateStaticProviderSelect("#directProvider", "openai");
   populateStaticModelSelect("#model", "gpt-5-mini", "openai");
   populateStaticModelSelect("#summarizerModel", "gpt-5-mini", "openai");
+  populateStaticModelSelect("#directModel", "gpt-5-mini", "openai");
   $("#researchEnabled").val("0");
   $("#researchExternalWebAccess").val("1");
   $("#localFilesEnabled").val("0");
@@ -4937,15 +6134,67 @@ $(function () {
     acceptOperatorNotice();
   });
 
-  $(document).on("toggle", ".workercontrol-collapsible", function () {
-    setWorkerControlExpandedState($(this).data("workerId") || $(this).data("positionId"), this.open);
+  $(document).on("click", ".workercontrol-modal-trigger", function () {
+    const kind = String($(this).data("workerEditorKind") || "worker");
+    const key = kind === "summarizer"
+      ? "summarizer"
+      : String($(this).data("workerId") || $(this).closest(".workercontrol").data("workerId") || "");
+    openWorkerEditorModal(kind, key);
   });
 
-  $("#provider, #summarizerProvider").on("change", function () {
+  $(document).on("click", "#workerEditorClose, [data-worker-editor-close='true']", function () {
+    closeWorkerEditorModal();
+  });
+
+  $(document).on("input change", "#workerEditorModal .worker-type, #workerEditorModal .worker-temperature, #workerEditorModal .worker-model, #workerEditorModal .worker-harness-profile, #workerEditorModal .worker-harness-instruction, #workerEditorModal .summarizer-model-draft, #workerEditorModal .summarizer-harness-profile, #workerEditorModal .summarizer-harness-instruction", function () {
+    syncWorkerEditorOverrideFromModalFields();
+  });
+
+  $(document).on("toggle", ".workercontrol-collapsible", function () {
+    const $details = $(this);
+    const workerKey = $details.data("workerId") || $details.data("positionId");
+    if ($details.closest(".workers-dashboard-panel").length) {
+      if (this.open) {
+        $details.closest("#workerControls").find(".workercontrol-collapsible").not(this).each(function () {
+          if (this.open) {
+            this.open = false;
+            setWorkerControlExpandedState($(this).data("workerId") || $(this).data("positionId"), false);
+          }
+          restoreDashboardWorkerMenu(this);
+          clearDashboardWorkerMenuPosition(this);
+        });
+      }
+      positionDashboardWorkerMenu(this);
+    } else {
+      restoreDashboardWorkerMenu(this);
+      clearDashboardWorkerMenuPosition(this);
+    }
+    if (!this.open) {
+      restoreDashboardWorkerMenu(this);
+      clearDashboardWorkerMenuPosition(this);
+    }
+    setWorkerControlExpandedState(workerKey, this.open);
+  });
+
+  $(window).on("resize scroll", function () {
+    refreshDashboardWorkerMenuPositions();
+  });
+
+  $(document).on("keydown", function (event) {
+    if (event.key === "Escape" && !$("#workerEditorModal").prop("hidden")) {
+      closeWorkerEditorModal();
+    }
+  });
+
+  $("#provider, #summarizerProvider, #directProvider").on("change", function () {
     const workerProvider = normalizeProviderId($("#provider").val());
     const summarizerProvider = normalizeProviderId($("#summarizerProvider").val() || workerProvider);
+    const directProvider = normalizeProviderId($("#directProvider").val() || workerProvider);
     $("#model").val(normalizeSelectedModelForProvider($("#model").val(), workerProvider));
     $("#summarizerModel").val(normalizeSelectedModelForProvider($("#summarizerModel").val(), summarizerProvider));
+    $("#directModel").val(normalizeSelectedModelForProvider($("#directModel").val() || $("#model").val(), directProvider));
+    syncDirectBaselineFields();
+    syncOllamaBaseUrlField();
     refreshProviderModelSelects();
     enforceProviderCapabilitySelections(true);
     formDirty = true;
@@ -4956,11 +6205,14 @@ $(function () {
     queueDraftSave();
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #model, #summarizerModel, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
+    syncDirectBaselineFields();
+    syncOllamaBaseUrlField();
     formDirty = true;
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
     renderQualityProfileCards();
     renderComposerTools();
+    renderAuthPoolPreview();
     queueDraftSave();
   });
 
@@ -4980,11 +6232,16 @@ $(function () {
       objective: payload.objective,
       constraints: JSON.stringify(payload.constraints),
       executionMode: payload.executionMode,
+      contextMode: payload.contextMode,
+      directBaselineMode: payload.directBaselineMode,
       provider: payload.provider,
       model: payload.model,
       summarizerProvider: summarizerConfig.provider || payload.summarizerProvider || payload.provider,
       summarizerModel: summarizerConfig.model || payload.summarizerModel,
-      summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "balanced")),
+      directProvider: payload.directProvider || payload.provider,
+      directModel: payload.directModel || payload.model,
+      ollamaBaseUrl: payload.ollamaBaseUrl,
+      summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "expansive")),
       reasoningEffort: payload.reasoningEffort,
       maxCostUsd: payload.maxCostUsd,
       maxTotalTokens: payload.maxTotalTokens,
@@ -5063,6 +6320,23 @@ $(function () {
         workerControlsSignature = "";
         debugControlsSignature = "";
         $("#addWorkerType").removeData("selectedType");
+      }
+    });
+  });
+
+  $("#removeAdversarial").on("click", function () {
+    postForm(API.workersRemove, {}, "Worker removed", {
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+        const visibleWorkers = visibleWorkerRosterSource(latestState?.draft || null, latestState?.activeTask || null);
+        const lastWorker = visibleWorkers[visibleWorkers.length - 1];
+        if (lastWorker) {
+          delete workerEditorOverrides.workers[normalizeWorkerControlKey(lastWorker.id)];
+          if (workerEditorModalState.kind === "worker" && workerEditorModalState.key === normalizeWorkerControlKey(lastWorker.id)) {
+            closeWorkerEditorModal();
+          }
+        }
       }
     });
   });
@@ -5370,6 +6644,25 @@ $(function () {
     const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
     authDynamicRows(provider).push({ id: nextAuthRowId(), value: "" });
     renderAuthProviderCards(true);
+  });
+
+  $(document).on("click", ".auth-mode-toggle", function () {
+    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
+    const mode = String($(this).data("authMode") || "safe").trim().toLowerCase();
+    const group = authProviderGroup(provider);
+    if (mode === String(group.selectedMode || "")) return;
+    $.post(apiRoute(API.authMode), { provider: provider, mode: mode })
+      .done(function (resp) {
+        handleAuthMutationSuccess(resp, group.label + " credential mode updated", {
+          onSuccess: function () {
+            resetAuthDynamicRows(provider);
+            renderAuthProviderCards(true);
+          }
+        });
+      })
+      .fail(function (xhr) {
+        showMessage(group.label + " credential mode update failed: " + extractErrorMessage(xhr), true);
+      });
   });
 
   $(document).on("click", ".clear-auth", function () {

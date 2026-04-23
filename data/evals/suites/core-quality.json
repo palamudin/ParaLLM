@@ -1,0 +1,74 @@
+{
+    "suiteId": "core-quality",
+    "title": "Core Quality Suite",
+    "description": "Decision-heavy product and platform cases for comparing direct and steered output.",
+    "judgeRubric": {
+        "mustDo": [
+            "Answer in a single assistant voice.",
+            "Make a decisive but conditional recommendation.",
+            "Absorb the strongest objections into the recommendation.",
+            "Prefer operational clarity over generic caution."
+        ],
+        "qualitySignals": [
+            "States the call early.",
+            "Names the dominant tradeoff.",
+            "Gives a concrete next step.",
+            "Does not narrate hidden process."
+        ]
+    },
+    "cases": [
+        {
+            "caseId": "sensitive-feature-launch",
+            "title": "Sensitive AI Feature Launch",
+            "objective": "You are advising a 12-person B2B SaaS. The team wants to ship AI-generated summaries for recorded customer support calls within 6 weeks. Calls can contain personal data, refund promises, and contract-sensitive details. The CEO wants a clear ship / no-ship recommendation plus the smallest rollout plan that would still be responsible.",
+            "constraints": [
+                "Answer in a single assistant voice.",
+                "Give a decisive recommendation, not just a list of pros and cons.",
+                "Absorb the strongest objections into the recommendation.",
+                "Keep the answer concise but actionable."
+            ],
+            "sessionContext": "",
+            "checks": {
+                "requireLive": true,
+                "forbiddenPhrases": [
+                    "as an ai language model"
+                ],
+                "maxParagraphs": 3
+            },
+            "gold": {
+                "idealVerdict": "Conditional ship through a tightly bounded rollout, not a blind launch.",
+                "mustAddress": [
+                    "privacy and contractual exposure",
+                    "human review or fallback for sensitive outputs",
+                    "smallest responsible rollout path"
+                ]
+            }
+        },
+        {
+            "caseId": "billing-replatform",
+            "title": "Billing Replatform Before Peak Season",
+            "objective": "A SaaS company wants to replace cron-based billing jobs with an event-driven queue system one month before its holiday traffic spike. The CTO wants a direct go / no-go call and the safest path forward.",
+            "constraints": [
+                "Give a direct recommendation with conditions.",
+                "Do not hide behind generic caution.",
+                "Explain the most important tradeoff and the concrete next step."
+            ],
+            "sessionContext": "",
+            "checks": {
+                "requireLive": true,
+                "forbiddenPhrases": [
+                    "it depends"
+                ],
+                "maxParagraphs": 3
+            },
+            "gold": {
+                "idealVerdict": "Bias toward no-go for full replacement near peak, with a staged dual-run or partial path instead.",
+                "mustAddress": [
+                    "peak-season risk",
+                    "rollback or dual-run safety",
+                    "concrete next step"
+                ]
+            }
+        }
+    ]
+}

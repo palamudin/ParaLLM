@@ -37,7 +37,7 @@ The current prototype is built to make that test inspectable:
 - Container-friendly secret backends via provider-isolated env keys or mounted secret files
 - Initial multi-provider runtime slice:
   - OpenAI remains the full-featured path
-  - Ollama now works as a native local structured-output path
+  - Ollama now works as a native structured-output path with an operator-set base URL for local or remote/dockerized hosts
   - workers and summarizer can be assigned different providers
 - Reversible QA scripts for mock, live, and eval smoke tests
 
@@ -60,6 +60,7 @@ flowchart LR
 
 - The user-facing answer should read like one assistant, not a debate transcript.
 - All adversarial lanes should receive the same user objective.
+- Full user objective and current constraints stay shared across lanes; only background context routing is allowed to vary.
 - Session memory is background context, not authoritative truth.
 - Contradictions should remain visible in review artifacts.
 - Cost should be controlled, but not by starving the primary reasoning path of user context.
@@ -145,11 +146,17 @@ Current skill layers:
 - Shared lock discipline between the Python control plane and worker subprocesses
 - Stale-job recovery
 - Output artifact persistence for every worker and summary pass
+- Runtime-selectable worker context routing: `Light Workers` keeps full context on the main thread while adversarial lanes receive weighted digests; `Full Workers` sends the broader packet to workers too
+- Runtime-selectable answer path: `Off` keeps the normal pressurized loop, `Single only` runs one direct baseline answer, and `Both compare` runs the direct baseline in parallel with the pressurized loop using its own provider/model lane
+- Runtime profiles now budget the local token wall at `100k` / `500k` / `1m` / `2m` for `Low` / `Mid` / `High` / `Ultra`
+- OpenAI live runs now request server-side input autocompression, and oversized prompt packets are locally compacted before provider calls when needed
+- Task/runtime-scoped Ollama base URL override so remote or dockerized Ollama hosts do not require a control-plane relaunch
 - Read-only local workspace inspection via `local_list_dir`, `local_read_file`, and `local_search_text`
 - Read-only GitHub inspection via `github_list_paths`, `github_read_file`, `github_get_issue`, `github_get_pull_request`, and `github_get_commit`
 - Secret-shaped files are filtered from retrieval listings and blocked from direct local/GitHub reads by default
 - Local/GitHub tool audit in step logs, worker checkpoints, and artifact metadata
 - Summarizer-driven next-round lane requests with audited worker spawn events
+- Editable per-lane harness controls, including `No harness`, with a richer default main-thread harness for structured factual final answers
 - Budget, token, and estimated-spend tracking
 - Requested-vs-effective output-token cap visibility
 
@@ -158,6 +165,8 @@ Current skill layers:
 - Blind direct-vs-steered benchmark harness
 - Control-quality grading for lead-thread discipline
 - Isolated eval runner with per-replicate workspaces
+- Eval arms can now sweep `single`, `off`, and `both compare` answer paths plus `light workers` / `full workers` routing, with saved baseline-vs-pressurized comparison artifacts and score deltas per replicate
+- Eval run detail now exposes a collapsible technical compare, a side-by-side user-view answer compare, and a historical verification trail for each replicate
 - Reusable QA scripts for:
   - mock smoke
   - live smoke
@@ -251,6 +260,7 @@ Milestone 5 is now started with a real first provider split:
   - structured JSON output path
   - local-model experimentation without OpenAI keys
   - local function-tool loop for file/GitHub tools
+  - runtime `Ollama base URL` field can point at a remote or dockerized host instead of assuming `127.0.0.1`
 - `anthropic`, `xai`, `minimax`
   - provider-native live adapters are wired now
   - capability normalization depends on the provider path
@@ -266,6 +276,7 @@ Current honest limitation:
 - Anthropic, xAI, and MiniMax are live runtime paths now, but capability differences are normalized conservatively and will keep evolving as provider docs and model behavior change
 - eval arms, result artifacts, and the blind benchmark now carry provider identity so mixed-provider experiments can be inspected honestly in Review instead of being inferred from model names alone
 - Milestone 5 is not complete until more providers and richer capability normalization land
+- The next major systems milestone after provider work is cross-round contradiction memory, so unresolved lane disagreements can survive across rounds and trigger explicit re-examination instead of being implicitly reset after each summary pass
 
 If you still want the optional compatibility runtime service in the same local session:
 
@@ -381,20 +392,28 @@ The secret backend is now hosted-aware too:
 2. Prefer setting the provider env vars you actually plan to use before launch, especially `LOOP_OPENAI_API_KEYS` for the current full-featured live path
 3. If you explicitly start with `LOOP_SECRET_BACKEND=local_file`, paste keys into the matching provider group cards in Settings
 4. Pick a runtime profile in `Home` or `Settings`
-5. Write a prompt in `Home`
-6. Press `Send`
-7. Inspect `Review` if you want the internal adjudication trace
+5. If workers or the summarizer use `ollama`, set `Ollama base URL` in Runtime controls to the actual host such as `http://192.168.0.26:11434`
+6. Write a prompt in `Home`
+7. Press `Send`
+8. Inspect `Review` if you want the internal adjudication trace
 
 ## Local API Key Pool
 
 ParaLLM still supports local key pools through the UI, but only when you explicitly run with `LOOP_SECRET_BACKEND=local_file`.
 
 - One provider card per vendor group
+- Each provider group can switch between `Local` and `Safe`
 - One key slot per input row inside that provider group
 - `+ Key` adds another slot
 - Pasting into a stored slot replaces it immediately
-- Pasting into a new slot appends it to the matching local fallback file such as `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, or `Auth.minimax.txt`
+- Pasting into a new slot appends it into shared `Auth.txt` using provider prefixes like `openai:`, `ant:`, `xai:`, and `min:`
 - `Clear` wipes the local pool
+
+`Local` versus `Safe`:
+
+- `Local` is the testing path and is browser-editable
+- `Safe` routes that provider group to the managed backend path for the current deployment (`env`, `docker_secret`, or `external`)
+- mixed mode is allowed, so one vendor can stay local while another stays on the safer path
 
 Assignment behavior:
 
@@ -405,7 +424,7 @@ Assignment behavior:
 - if a live lane hits an auth-style key failure, the runtime now retries on the next non-empty key in pool order before giving up
 - if the active backend is managed and exposes no usable keys, live lanes fail loudly instead of downgrading to mock behind your back
 
-Only masked previews are shown in the UI. Raw keys stay in provider-specific env vars for `env`, provider-specific mounted files for `docker_secret`, grouped payloads for `external`, or local fallback files only when `local_file` is explicitly selected as a transitional path.
+Only masked previews are shown in the UI. Raw keys stay in provider-specific env vars for `env`, provider-specific mounted files for `docker_secret`, grouped payloads for `external`, or prefixed local `Auth.txt` entries only when a provider group is explicitly switched into `Local`.
 
 ## Usage Flow
 
@@ -540,7 +559,7 @@ Next milestone track:
 
 ## Safety / Local Data
 
-- `Auth.txt`, `Auth.anthropic.txt`, `Auth.xai.txt`, and `Auth.minimax.txt` are local-only and must never be committed
+- `Auth.txt` is the canonical local test key pool and uses provider prefixes like `openai:`, `ant:`, `xai:`, and `min:`; older `Auth.*.txt` files are compatibility fallback only and must never be committed
 - `data/` contains volatile runtime state and artifacts
 - review artifacts may include sensitive prompt material
 - displayed spend is an operational estimate, not invoice truth

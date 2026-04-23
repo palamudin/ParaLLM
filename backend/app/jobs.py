@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from runtime.engine import LoopRuntime, RuntimeErrorWithCode, task_workers
+from runtime.engine import LoopRuntime, RuntimeErrorWithCode, normalize_direct_baseline_mode, task_workers
 
 from . import control, faults, metadata, queueing, runtime_execution, storage
 from .config import deployment_topology
@@ -181,6 +181,13 @@ def create_loop_job(
     queued_at = utc_now()
     queue_position = max(0, int(overrides.get("queuePosition") or 0))
     update_loop_state = bool(overrides.get("updateLoopState", True))
+    worker_count = overrides.get("workerCount")
+    if worker_count is None:
+        runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode"))
+        resolved_worker_count = 0 if direct_baseline_mode == "single" else len(task_workers(task))
+    else:
+        resolved_worker_count = max(0, int(worker_count))
     queued_message = str(
         overrides.get("lastMessage")
         or ("Queued behind another background loop." if queue_position > 0 else "Queued background loop.")
@@ -198,7 +205,7 @@ def create_loop_job(
             "resumeFromRound": max(1, int(overrides.get("resumeFromRound") or 1)),
             "rounds": rounds,
             "delayMs": delay_ms,
-            "workerCount": len(task_workers(task)),
+            "workerCount": resolved_worker_count,
             "usage": overrides.get("usage") if isinstance(overrides.get("usage"), dict) else storage.default_usage_state(),
             "queuedAt": queued_at,
             "lastMessage": queued_message,
@@ -330,6 +337,8 @@ def loop_target_label(target: str) -> str:
     normalized = str(target or "").strip().lower()
     if normalized == "commander":
         return "Commander"
+    if normalized == "direct_baseline":
+        return "Direct baseline"
     if normalized == "commander_review":
         return "Commander Review"
     if normalized == "summarizer":
@@ -519,6 +528,18 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
     results = list(job.get("results") or [])
     completed_rounds = max(0, int(job.get("completedRounds") or 0))
     cancelled = False
+    snapshot = runtime.read_state()
+    active_task_snapshot = snapshot.get("activeTask") if isinstance(snapshot.get("activeTask"), dict) else None
+    direct_baseline_mode = normalize_direct_baseline_mode(
+        (((active_task_snapshot or {}).get("runtime") or {}) if isinstance((active_task_snapshot or {}).get("runtime"), dict) else {}).get("directBaselineMode")
+    )
+    direct_baseline_existing = isinstance(snapshot.get("directBaseline"), dict)
+    direct_baseline_result: Dict[str, Any] = {"result": None, "error": None}
+    direct_baseline_thread: Optional[threading.Thread] = None
+
+    if direct_baseline_mode == "single":
+        rounds = 1
+        start_round = 1
 
     with runtime.with_lock():
         state = runtime.read_state_unlocked()
@@ -562,6 +583,13 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
         "Background loop runner claimed job.",
         {"taskId": task_id, "jobId": job_id, "mode": "background", "rounds": rounds, "delayMs": delay_ms},
     )
+
+    def _run_parallel_direct_baseline() -> None:
+        try:
+            isolated_runtime = LoopRuntime(runtime.root, auth_path=runtime.auth_path)
+            direct_baseline_result["result"] = runtime_execution.run_target(isolated_runtime, "direct_baseline", task_id, {})
+        except Exception as exc:  # noqa: BLE001
+            direct_baseline_result["error"] = exc
 
     try:
         for round_number in range(start_round, rounds + 1):
@@ -607,8 +635,31 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                 {"taskId": task_id, "jobId": job_id, "round": round_number, "totalRounds": rounds},
             )
 
-            round_workers = task_workers(active_task, round_number)
-            sequence = ["commander", *[str(worker["id"]) for worker in round_workers], "commander_review", "summarizer"]
+            round_workers = [] if direct_baseline_mode == "single" else task_workers(active_task, round_number)
+            if direct_baseline_mode == "both" and not direct_baseline_existing and direct_baseline_thread is None:
+                direct_baseline_thread = threading.Thread(
+                    target=_run_parallel_direct_baseline,
+                    name=f"loop-direct-baseline-{job_id}",
+                    daemon=True,
+                )
+                direct_baseline_thread.start()
+                runtime.append_step(
+                    "direct_baseline",
+                    "Started the direct baseline in parallel with the pressurized loop.",
+                    {"taskId": task_id, "jobId": job_id, "round": round_number},
+                )
+            if direct_baseline_mode == "single":
+                if direct_baseline_existing:
+                    sequence: List[str] = []
+                    runtime.append_step(
+                        "direct_baseline",
+                        "Reused the existing direct baseline for single-answer mode.",
+                        {"taskId": task_id, "jobId": job_id, "round": round_number},
+                    )
+                else:
+                    sequence = ["direct_baseline"]
+            else:
+                sequence = ["commander", *[str(worker["id"]) for worker in round_workers], "commander_review", "summarizer"]
             round_result: Dict[str, Any] = {"round": round_number, "targets": []}
 
             for target in sequence:
@@ -722,6 +773,22 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             if cancelled:
                 break
 
+        if direct_baseline_thread is not None:
+            direct_baseline_thread.join()
+            if isinstance(direct_baseline_result.get("result"), dict) and results:
+                results[0].setdefault("parallelTargets", [])
+                results[0]["parallelTargets"].append(direct_baseline_result["result"])
+            if direct_baseline_result.get("error") is not None:
+                runtime.append_step(
+                    "error",
+                    "Parallel direct baseline failed while the pressurized loop continued.",
+                    {
+                        "taskId": task_id,
+                        "jobId": job_id,
+                        "error": str(direct_baseline_result["error"]),
+                    },
+                )
+
         final_status = "cancelled" if cancelled else "completed"
         final_message = f"Cancelled after {completed_rounds} completed round(s)." if cancelled else f"Completed {completed_rounds} round(s)."
         usage_snapshot = _usage_snapshot(runtime)
@@ -781,6 +848,8 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             "results": results,
         }
     except Exception as exc:  # noqa: BLE001
+        if direct_baseline_thread is not None and direct_baseline_thread.is_alive():
+            direct_baseline_thread.join()
         message = str(exc)
         final_status = "budget_exhausted" if message.startswith("Budget limit reached:") else "error"
         final_message = message if final_status == "budget_exhausted" else f"Loop error: {message}"
@@ -853,18 +922,23 @@ def start_loop(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
 
     rounds = clamp_loop_rounds(payload.get("rounds", 3))
     delay_ms = clamp_loop_delay_ms(payload.get("delayMs", 1000))
+    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode"))
+    effective_rounds = 1 if direct_baseline_mode == "single" else rounds
+    effective_worker_count = 0 if direct_baseline_mode == "single" else len(task_workers(task))
     had_active_loop = loop_is_active(state)
     queue_position = _next_background_queue_position(paths, task_id, "loop") if had_active_loop else 0
     job = create_loop_job(
         runtime,
         task,
-        rounds,
+        effective_rounds,
         delay_ms,
         "background",
         {
             "queuePosition": queue_position,
             "updateLoopState": not had_active_loop,
             "lastMessage": "Queued behind another background loop." if queue_position > 0 else "Queued background loop.",
+            "workerCount": effective_worker_count,
         },
     )
     try:
@@ -881,7 +955,7 @@ def start_loop(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
         return {
             "message": "Background loop queued." if queue_position > 0 or not started else "Background loop started.",
             "jobId": job["jobId"],
-            "rounds": rounds,
+            "rounds": effective_rounds,
             "delayMs": delay_ms,
             "queuePosition": queue_position,
         }

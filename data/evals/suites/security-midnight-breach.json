@@ -1,0 +1,49 @@
+{
+  "suiteId": "security-midnight-breach",
+  "title": "Security Midnight Breach",
+  "description": "High-pressure incident response scenario for a solo on-call security engineer during a suspected overnight breach.",
+  "judgeRubric": {
+    "mustDo": [
+      "Answer in a single assistant voice.",
+      "Prioritize containment, evidence preservation, and escalation order.",
+      "Make the first-hour actions explicit.",
+      "Keep recommendations practical for a single engineer under pressure."
+    ],
+    "qualitySignals": [
+      "Names the immediate call early.",
+      "Separates first 15 minutes from the next hour.",
+      "Includes communications and logging discipline.",
+      "Avoids vague generic security advice."
+    ]
+  },
+  "cases": [
+    {
+      "caseId": "solo-oncall-breach",
+      "title": "Solo Security Engineer at 2:17 AM",
+      "objective": "It is 2:17 AM on a Wednesday. You are the only security engineer currently awake and on desk for a 45-person SaaS company. PagerDuty fires for a surge of impossible-travel admin logins, a burst of token creation from a service account that should be dormant, and outbound traffic from one internal reporting worker to an unfamiliar IP range. Customer-facing systems are still up, leadership is asleep, and no formal incident commander has joined yet. Give the call you would make in the first minute, then the smallest responsible first-hour plan that balances containment, evidence preservation, customer impact, and waking the right people.",
+      "constraints": [
+        "Answer in a single assistant voice.",
+        "Make a decisive first-minute call, not just a menu of options.",
+        "Keep the response concise but operationally useful.",
+        "Assume one engineer is acting alone for the first several minutes."
+      ],
+      "sessionContext": "",
+      "checks": {
+        "requireLive": true,
+        "forbiddenPhrases": [
+          "as an ai language model"
+        ],
+        "maxParagraphs": 4
+      },
+      "gold": {
+        "idealVerdict": "Bias toward immediate containment with targeted isolation, rapid evidence capture, and fast escalation into a formal incident channel.",
+        "mustAddress": [
+          "first-minute containment decision",
+          "preserve logs and volatile evidence before destructive cleanup",
+          "wake the right responders and establish incident command",
+          "protect customer impact while revoking risky access"
+        ]
+      }
+    }
+  ]
+}

@@ -22,11 +22,15 @@ from backend.app import metadata as metadata_store
 from backend.app.config import deployment_topology
 from backend.app.secrets import (
     auth_key_file_path,
+    auth_backend_mode_label,
     auth_key_provider_ids,
     auth_key_provider_label,
     env_secret_status,
     external_secret_status,
     normalize_auth_key_provider,
+    preferred_safe_secret_backend,
+    read_local_auth_keys,
+    resolve_provider_secret_backend,
 )
 
 
@@ -172,6 +176,7 @@ WORKER_TEMPERATURE_CATALOG: Dict[str, Dict[str, str]] = {
 }
 
 HARNESS_CONCISION_CATALOG: Dict[str, Dict[str, str]] = {
+    "none": {"label": "No harness"},
     "tight": {"label": "Tight"},
     "balanced": {"label": "Balanced"},
     "expansive": {"label": "Expansive"},
@@ -422,7 +427,7 @@ def normalize_budget_limits(config: Optional[Dict[str, Any]] = None, fallback: O
 
 
 def default_budget_config() -> Dict[str, Any]:
-    overall = {"maxTotalTokens": 250000, "maxCostUsd": 5.0, "maxOutputTokens": 1200}
+    overall = {"maxTotalTokens": 100000, "maxCostUsd": 5.0, "maxOutputTokens": 1200}
     return {
         "maxTotalTokens": overall["maxTotalTokens"],
         "maxCostUsd": overall["maxCostUsd"],
@@ -449,6 +454,28 @@ def default_dynamic_spinup_config() -> Dict[str, Any]:
 
 def default_vetting_config() -> Dict[str, Any]:
     return {"enabled": False}
+
+
+def default_context_mode() -> str:
+    return "weighted"
+
+
+def normalize_context_mode(value: Any, fallback: str = "weighted") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"weighted", "full"}:
+        return candidate
+    return fallback if fallback in {"weighted", "full"} else default_context_mode()
+
+
+def default_direct_baseline_mode() -> str:
+    return "off"
+
+
+def normalize_direct_baseline_mode(value: Any, fallback: str = "off") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"off", "single", "both"}:
+        return candidate
+    return fallback if fallback in {"off", "single", "both"} else default_direct_baseline_mode()
 
 
 def default_usage_bucket() -> Dict[str, Any]:
@@ -520,6 +547,7 @@ def default_state() -> Dict[str, Any]:
         "commander": None,
         "commanderReview": None,
         "workers": {},
+        "directBaseline": None,
         "summary": None,
         "memoryVersion": 0,
         "usage": default_usage_state(),
@@ -571,6 +599,16 @@ def provider_capability_profile(provider: Optional[str]) -> Dict[str, Any]:
         "reasoningSummary": bool(raw.get("reasoningSummary", False)),
         "notes": limit_string_list(raw.get("notes", []), 6, 180),
     }
+
+
+def default_ollama_base_url() -> str:
+    return str(os.getenv("LOOP_OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip() or "http://127.0.0.1:11434"
+
+
+def normalize_ollama_base_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    base = raw or default_ollama_base_url()
+    return base.rstrip("/")
 
 
 def normalize_model_id(model: Optional[str], fallback: Optional[str] = None, provider: Optional[str] = None) -> str:
@@ -699,7 +737,9 @@ def read_env_api_key_pool(provider: Any = "openai") -> List[str]:
 
 def read_api_key_pool(path: Path, provider: Any = "openai") -> List[str]:
     normalized_provider = normalize_auth_key_provider(provider)
-    secret_backend = str(os.getenv("LOOP_SECRET_BACKEND") or "").strip().lower()
+    root = path.parent if isinstance(path, Path) else None
+    backend_resolution = resolve_provider_secret_backend(root, normalized_provider)
+    secret_backend = backend_resolution["backend"]
     if secret_backend == "env":
         return read_env_api_key_pool(normalized_provider)
     if secret_backend == "external":
@@ -710,15 +750,7 @@ def read_api_key_pool(path: Path, provider: Any = "openai") -> List[str]:
             return normalize_string_array_preserve_items(provider_path.read_text(encoding="utf-8", errors="replace").splitlines())
         return []
     if secret_backend == "local_file":
-        provider_path = auth_key_file_path(path, normalized_provider)
-        if provider_path.exists():
-            return normalize_string_array_preserve_items(provider_path.read_text(encoding="utf-8", errors="replace").splitlines())
-        return []
-    provider_path = auth_key_file_path(path, normalized_provider)
-    if provider_path.exists():
-        keys = normalize_string_array_preserve_items(provider_path.read_text(encoding="utf-8", errors="replace").splitlines())
-        if keys:
-            return keys
+        return normalize_string_array_preserve_items(read_local_auth_keys(path, normalized_provider))
     return read_env_api_key_pool(normalized_provider)
 
 
@@ -832,6 +864,33 @@ def normalize_vetting_config(config: Optional[Dict[str, Any]] = None) -> Dict[st
     return {"enabled": coerce_bool(config.get("enabled", default["enabled"]), default["enabled"])}
 
 
+def context_mode_label(mode: Any) -> str:
+    normalized = normalize_context_mode(mode)
+    return "Full context" if normalized == "full" else "Weighted context"
+
+
+def direct_baseline_mode_label(mode: Any) -> str:
+    normalized = normalize_direct_baseline_mode(mode)
+    if normalized == "single":
+        return "Single only"
+    if normalized == "both":
+        return "Both compare"
+    return "Off"
+
+
+def normalize_direct_answer_payload(payload: Any, objective: str = "") -> Dict[str, str]:
+    current = payload if isinstance(payload, dict) else {}
+    fallback_answer = truncate_text(objective, 3200) or "No direct baseline answer was captured."
+    answer = truncate_text(current.get("answer", ""), 3200) or fallback_answer
+    stance = truncate_text(current.get("stance", ""), 260) or truncate_text(answer, 260) or "No explicit stance was captured."
+    confidence_note = truncate_text(current.get("confidenceNote", ""), 320) or "No confidence note was captured."
+    return {
+        "answer": answer,
+        "stance": stance,
+        "confidenceNote": confidence_note,
+    }
+
+
 def normalize_usage_bucket(bucket: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     bucket = bucket or {}
     default = default_usage_bucket()
@@ -908,7 +967,7 @@ def default_worker_harness() -> Dict[str, str]:
 
 
 def default_summarizer_harness() -> Dict[str, str]:
-    return {"concision": "balanced", "instruction": ""}
+    return {"concision": "expansive", "instruction": ""}
 
 
 def normalize_harness_config(value: Any, fallback_concision: str = "tight") -> Dict[str, str]:
@@ -1120,6 +1179,21 @@ def truncate_text(value: Any, max_length: int = 320) -> str:
     return text[: max(0, max_length - 3)].rstrip() + "..."
 
 
+def compact_text_middle(value: Any, max_length: int = 3200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_length:
+        return text
+    if max_length <= 240:
+        return truncate_text(text, max_length)
+    marker = "\n\n[... auto-compacted ...]\n\n"
+    available = max_length - len(marker)
+    if available <= 120:
+        return truncate_text(text, max_length)
+    head = max(80, int(available * 0.58))
+    tail = max(40, available - head)
+    return text[:head].rstrip() + marker + text[-tail:].lstrip()
+
+
 def limit_string_list(value: Any, max_items: int = 8, max_length: int = 220) -> List[str]:
     items: List[str] = []
     for entry in normalize_string_array_preserve_items(value)[:max_items]:
@@ -1204,6 +1278,8 @@ def normalize_lane_type_list(value: Any, include_utility: bool = False, max_item
 def worker_harness_instruction_lines(harness: Any) -> List[str]:
     config = normalize_harness_config(harness, default_worker_harness()["concision"])
     concision = config["concision"]
+    if concision == "none":
+        return [f"Extra harness instruction: {config['instruction']}"] if config["instruction"] else []
     lines = [
         "Treat Objective as the authoritative current user input.",
         "Treat Session context and Prior summary as background only; if they conflict with Objective or current evidence, Objective wins.",
@@ -1249,6 +1325,8 @@ def worker_harness_instruction_lines(harness: Any) -> List[str]:
 def summarizer_harness_instruction_lines(harness: Any) -> List[str]:
     config = normalize_harness_config(harness, default_summarizer_harness()["concision"])
     concision = config["concision"]
+    if concision == "none":
+        return [f"Extra harness instruction: {config['instruction']}"] if config["instruction"] else []
     lines = [
         "Treat Objective as the authoritative current user input.",
         "Treat Session context as background only; if it conflicts with Objective or current evidence, Objective wins.",
@@ -1289,9 +1367,52 @@ def summarizer_harness_instruction_lines(harness: Any) -> List[str]:
     return lines
 
 
+def direct_baseline_harness_instruction_lines(harness: Any) -> List[str]:
+    config = normalize_harness_config(harness, default_summarizer_harness()["concision"])
+    concision = config["concision"]
+    if concision == "none":
+        return [f"Extra harness instruction: {config['instruction']}"] if config["instruction"] else []
+    lines = [
+        "Treat Objective as the authoritative current user input.",
+        "Treat Session context as background only; if it conflicts with Objective or current evidence, Objective wins.",
+        "Write as a structured, methodical, factual operator response rather than a casual chat reply.",
+        "Make the recommendation explicit, then explain the reasoning and next action without filler.",
+    ]
+    if concision == "tight":
+        lines.extend(
+            [
+                "Keep answer to at most 3 short paragraphs or 6 short bullets.",
+                "Use short, high-signal sentences and skip scene-setting.",
+                "Keep confidenceNote concise and concrete.",
+            ]
+        )
+    elif concision == "balanced":
+        lines.extend(
+            [
+                "Keep answer focused, but allow up to 5 compact paragraphs when the tradeoffs need unpacking.",
+                "Prefer clear sections, factual qualifiers, and explicit operator next steps.",
+                "Keep confidenceNote brief, but explain the main uncertainty or constraint.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Use answer for substantive synthesis when the situation is dense, high-stakes, or operationally messy; up to 7 compact paragraphs is acceptable.",
+                "Prefer a clear structure such as recommendation, reasoning, risks, and next steps.",
+                "Be factual and methodical, and make conditional boundaries explicit instead of implied.",
+                "Use confidenceNote to state the main confidence driver and the main unresolved risk.",
+            ]
+        )
+    if config["instruction"]:
+        lines.append(f"Extra harness instruction: {config['instruction']}")
+    return lines
+
+
 def commander_harness_instruction_lines(harness: Any) -> List[str]:
     config = normalize_harness_config(harness, default_summarizer_harness()["concision"])
     concision = config["concision"]
+    if concision == "none":
+        return [f"Extra harness instruction: {config['instruction']}"] if config["instruction"] else []
     lines = [
         "Treat Objective as the authoritative current user input.",
         "Treat Session context and Prior summary as background only; if they conflict with Objective, Objective wins.",
@@ -1989,6 +2110,7 @@ class LoopRuntime:
         self.events_path = self.data_path / "events.jsonl"
         self.steps_path = self.data_path / "steps.jsonl"
         self.auth_path = Path(auth_path).resolve() if auth_path else (self.root / "Auth.txt")
+        self.config_root = self.auth_path.parent.resolve() if auth_path else self.root
 
     def ensure_data_paths(self) -> None:
         for path in (
@@ -2183,6 +2305,7 @@ class LoopRuntime:
         normalized["commander"] = state.get("commander") if isinstance(state.get("commander"), dict) else None
         normalized["commanderReview"] = state.get("commanderReview") if isinstance(state.get("commanderReview"), dict) else None
         normalized["summary"] = state.get("summary")
+        normalized["directBaseline"] = state.get("directBaseline") if isinstance(state.get("directBaseline"), dict) else None
         normalized["memoryVersion"] = int(state.get("memoryVersion", 0) or 0)
         normalized["usage"] = normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         normalized["lastUpdated"] = state.get("lastUpdated") or utc_now()
@@ -2204,12 +2327,17 @@ class LoopRuntime:
     def load_api_key_pool_state(self, provider: Any = "openai") -> Dict[str, Any]:
         normalized_provider = normalize_auth_key_provider(provider)
         label = auth_key_provider_label(normalized_provider)
-        topology = deployment_topology(self.root)
-        backend = topology.secret_backend
+        topology = deployment_topology(self.config_root)
+        backend_resolution = resolve_provider_secret_backend(self.config_root, normalized_provider)
+        backend_mode = backend_resolution["mode"]
+        backend = backend_resolution["backend"]
         if backend == "env":
             status = env_secret_status(normalized_provider)
             return {
                 "backend": "env",
+                "selectedMode": backend_mode,
+                "selectedModeLabel": auth_backend_mode_label(backend_mode),
+                "safeBackend": preferred_safe_secret_backend(self.config_root),
                 "provider": normalized_provider,
                 "label": label,
                 "keys": normalize_string_array_preserve_items(status.get("keys", [])),
@@ -2224,6 +2352,9 @@ class LoopRuntime:
             status = external_secret_status(self.root, provider=normalized_provider)
             return {
                 "backend": "external",
+                "selectedMode": backend_mode,
+                "selectedModeLabel": auth_backend_mode_label(backend_mode),
+                "safeBackend": preferred_safe_secret_backend(self.config_root),
                 "provider": normalized_provider,
                 "label": label,
                 "keys": normalize_string_array_preserve_items(status.get("keys", [])),
@@ -2235,10 +2366,14 @@ class LoopRuntime:
                 "failureDetail": str(status.get("detail") or ""),
             }
         if backend == "docker_secret":
-            secret_path = auth_key_file_path(self.auth_path, normalized_provider)
+            secret_base_path = topology.secret_file if topology.secret_file is not None else self.auth_path
+            secret_path = auth_key_file_path(secret_base_path, normalized_provider)
             if not secret_path.is_file():
                 return {
                     "backend": "docker_secret",
+                    "selectedMode": backend_mode,
+                    "selectedModeLabel": auth_backend_mode_label(backend_mode),
+                    "safeBackend": preferred_safe_secret_backend(self.config_root),
                     "provider": normalized_provider,
                     "label": label,
                     "keys": [],
@@ -2252,6 +2387,9 @@ class LoopRuntime:
             keys = normalize_string_array_preserve_items(secret_path.read_text(encoding="utf-8", errors="replace").splitlines())
             return {
                 "backend": "docker_secret",
+                "selectedMode": backend_mode,
+                "selectedModeLabel": auth_backend_mode_label(backend_mode),
+                "safeBackend": preferred_safe_secret_backend(self.config_root),
                 "provider": normalized_provider,
                 "label": label,
                 "keys": keys,
@@ -2262,10 +2400,14 @@ class LoopRuntime:
                 "failureMode": None if keys else "empty",
                 "failureDetail": f"Using mounted {label} secret file at {secret_path}." if keys else f"Mounted {label} secret file at {secret_path} is empty.",
             }
-        local_path = auth_key_file_path(self.auth_path, normalized_provider)
-        if not local_path.is_file():
+        local_path = Path(topology.auth_file).resolve() if topology.auth_file is not None else (self.root / "Auth.txt")
+        keys = normalize_string_array_preserve_items(read_local_auth_keys(local_path, normalized_provider))
+        if not local_path.is_file() and not keys:
             return {
                 "backend": "local_file",
+                "selectedMode": backend_mode,
+                "selectedModeLabel": auth_backend_mode_label(backend_mode),
+                "safeBackend": preferred_safe_secret_backend(self.config_root),
                 "provider": normalized_provider,
                 "label": label,
                 "keys": [],
@@ -2276,9 +2418,11 @@ class LoopRuntime:
                 "failureMode": "empty",
                 "failureDetail": f"Local fallback {label} secret file not found at {local_path}.",
             }
-        keys = normalize_string_array_preserve_items(local_path.read_text(encoding="utf-8", errors="replace").splitlines())
         return {
             "backend": "local_file",
+            "selectedMode": backend_mode,
+            "selectedModeLabel": auth_backend_mode_label(backend_mode),
+            "safeBackend": preferred_safe_secret_backend(self.config_root),
             "provider": normalized_provider,
             "label": label,
             "keys": keys,
@@ -2440,6 +2584,11 @@ class LoopRuntime:
             "executionMode": "live",
             "provider": DEFAULT_PROVIDER_ID,
             "model": DEFAULT_MODEL_ID,
+            "contextMode": default_context_mode(),
+            "directBaselineMode": default_direct_baseline_mode(),
+            "directProvider": DEFAULT_PROVIDER_ID,
+            "directModel": DEFAULT_MODEL_ID,
+            "ollamaBaseUrl": default_ollama_base_url(),
             "reasoningEffort": "low",
             "maxOutputTokens": default_budget_config()["maxOutputTokens"],
             "research": default_research_config(),
@@ -2462,6 +2611,15 @@ class LoopRuntime:
                 default_model_for_provider(runtime["provider"]),
                 runtime["provider"],
             )
+            runtime["contextMode"] = normalize_context_mode(task_runtime.get("contextMode"), runtime["contextMode"])
+            runtime["directBaselineMode"] = normalize_direct_baseline_mode(task_runtime.get("directBaselineMode"), runtime["directBaselineMode"])
+            runtime["directProvider"] = normalize_provider_id(task_runtime.get("directProvider"), runtime["provider"])
+            runtime["directModel"] = normalize_model_id(
+                task_runtime.get("directModel"),
+                default_model_for_provider(runtime["directProvider"]),
+                runtime["directProvider"],
+            )
+            runtime["ollamaBaseUrl"] = normalize_ollama_base_url(task_runtime.get("ollamaBaseUrl"))
             runtime["research"] = normalize_research_config(task_runtime.get("research") if isinstance(task_runtime.get("research"), dict) else {})
             runtime["localFiles"] = normalize_local_file_tool_config(task_runtime.get("localFiles") if isinstance(task_runtime.get("localFiles"), dict) else {})
             runtime["githubTools"] = normalize_github_tool_config(task_runtime.get("githubTools") if isinstance(task_runtime.get("githubTools"), dict) else {})
@@ -2473,6 +2631,25 @@ class LoopRuntime:
         if model_override:
             runtime["model"] = normalize_model_id(model_override, runtime["model"], runtime["provider"])
         return runtime
+
+    def get_direct_baseline_runtime(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        runtime = self.get_task_runtime(task)
+        provider = normalize_provider_id(task_runtime.get("directProvider"), runtime["provider"])
+        model = normalize_model_id(
+            task_runtime.get("directModel"),
+            default_model_for_provider(provider),
+            provider,
+        )
+        return {
+            "mode": normalize_direct_baseline_mode(task_runtime.get("directBaselineMode"), runtime.get("directBaselineMode", default_direct_baseline_mode())),
+            "executionMode": runtime["executionMode"],
+            "provider": provider,
+            "model": model,
+            "reasoningEffort": runtime["reasoningEffort"],
+            "maxOutputTokens": runtime["maxOutputTokens"],
+            "ollamaBaseUrl": normalize_ollama_base_url(task_runtime.get("ollamaBaseUrl", runtime.get("ollamaBaseUrl"))),
+        }
 
     def provider_uses_api_key_pool(self, provider: Optional[str]) -> bool:
         normalized = str(provider or "").strip().lower()
@@ -3507,6 +3684,7 @@ class LoopRuntime:
                             "instructions": instructions,
                             "input": pending_input,
                             "reasoning": {"effort": reasoning_effort},
+                            "truncation": "auto",
                             "text": {
                                 "verbosity": "low",
                                 "format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema},
@@ -4278,9 +4456,11 @@ class LoopRuntime:
             raise last_error
         raise RuntimeErrorWithCode(f"{provider_label} response did not produce a usable structured output.", 500)
 
-    def ollama_chat_url(self) -> str:
-        base = str(os.getenv("LOOP_OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip() or "http://127.0.0.1:11434"
-        return base.rstrip("/") + "/api/chat"
+    def ollama_chat_url(self, base_url: Optional[str] = None) -> str:
+        base = normalize_ollama_base_url(base_url)
+        if base.endswith("/api"):
+            return base + "/chat"
+        return base + "/api/chat"
 
     def ollama_api_key(self) -> str:
         return str(os.getenv("LOOP_OLLAMA_API_KEY") or os.getenv("OLLAMA_API_KEY") or "").strip()
@@ -4295,6 +4475,7 @@ class LoopRuntime:
         target_kind: str = "generic",
         tools: Optional[List[Dict[str, Any]]] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
+        base_url: Optional[str] = None,
     ) -> OpenAIResult:
         attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
         last_error: Optional[RuntimeErrorWithCode] = None
@@ -4334,7 +4515,7 @@ class LoopRuntime:
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
                 request = urllib.request.Request(
-                    self.ollama_chat_url(),
+                    self.ollama_chat_url(base_url),
                     data=json.dumps(body).encode("utf-8"),
                     headers=headers,
                     method="POST",
@@ -4475,6 +4656,7 @@ class LoopRuntime:
         include: Optional[List[str]] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
+        provider_settings: Optional[Dict[str, Any]] = None,
     ) -> OpenAIResult:
         normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
         if normalized_provider == "openai":
@@ -4561,6 +4743,9 @@ class LoopRuntime:
             if normalized_tool_choice == "none":
                 normalized_tools = []
                 function_handlers = None
+            ollama_base_url = None
+            if isinstance(provider_settings, dict) and provider_settings.get("ollamaBaseUrl") is not None:
+                ollama_base_url = str(provider_settings.get("ollamaBaseUrl"))
             return self.invoke_ollama_json(
                 model=model,
                 instructions=instructions,
@@ -4570,6 +4755,7 @@ class LoopRuntime:
                 target_kind=target_kind,
                 tools=normalized_tools,
                 function_handlers=function_handlers,
+                base_url=ollama_base_url,
             )
         raise RuntimeErrorWithCode(f"provider_not_configured: Unsupported provider {normalized_provider}.", 400)
 
@@ -4921,6 +5107,8 @@ class LoopRuntime:
         command_config = commander_config(task)
         harness_lines = commander_harness_instruction_lines(command_config.get("harness"))
         skill_context = build_runtime_skill_context(runtime["provider"], "commander")
+        worker_context_mode = normalize_context_mode(runtime.get("contextMode"))
+        main_thread_context_mode = "full"
         session_context = str(task.get("sessionContext", "")).strip()
         summary_projection = self.project_prior_summary_for_worker(prior_summary)
         summary_text = json.dumps(summary_projection, ensure_ascii=False, indent=2) if summary_projection else "none"
@@ -4964,6 +5152,15 @@ class LoopRuntime:
             "Leave suggestedLaneTypes empty when the current roster is sufficient.\n"
             "Keep uncertainty honest, but do not become timid or vague.\n"
             + (
+                "Main-thread full context is active. Read the fuller background packet below, but Objective and current Constraints still win on conflicts.\n"
+                + (
+                    "Workers for this task are set to Light Workers mode, so later adversarial lanes will receive weighted digests instead of the full packet.\n"
+                    if worker_context_mode == "weighted"
+                    else
+                    "Workers for this task are set to Full Workers mode, so later adversarial lanes will also receive the fuller background packet.\n"
+                )
+            )
+            + (
                 "If local file tools are available, inspect the relevant workspace files before asserting repository-specific details.\n"
                 if local_file_config["enabled"]
                 else ""
@@ -4980,10 +5177,26 @@ class LoopRuntime:
         input_text = (
             f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
             f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
-            f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
-            f"Prior adjudicated summary (background only):\n{summary_text}\n\n"
-            "Produce the commander's first-pass answer direction for this round."
+            + self.build_context_weight_block(
+                worker_context_mode,
+                [
+                    ("objective", "primary"),
+                    ("constraints", "high"),
+                    ("prior summary", "medium"),
+                    ("session context", "low"),
+                ],
+            )
+            + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
+            + f"Prior adjudicated summary (background only):\n{summary_text}\n\n"
+            + self.build_full_context_block(
+                main_thread_context_mode,
+                [
+                    ("Task brief", json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)),
+                ],
+            )
+            + "Produce the commander's first-pass answer direction for this round."
         )
+        input_text = self.maybe_compact_prompt_text(input_text, runtime, "commander")
         result = self.invoke_provider_json(
             provider=runtime["provider"],
             api_key=api_key,
@@ -4999,6 +5212,7 @@ class LoopRuntime:
             tool_choice="auto" if tools else None,
             function_handlers=function_handlers if function_handlers else None,
             auth_assignments=auth_assignments,
+            provider_settings=runtime,
         )
         parsed = normalize_commander_checkpoint(dict(result.parsed), task, round_number)
         parsed["localToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("local_",)))
@@ -5150,6 +5364,7 @@ class LoopRuntime:
         auth_assignments: Optional[List[Dict[str, Any]]],
         task: Dict[str, Any],
         commander_checkpoint: Optional[Dict[str, Any]],
+        prior_summary: Optional[Dict[str, Any]],
         workers: List[Dict[str, str]],
         worker_state: Dict[str, Any],
         runtime: Dict[str, Any],
@@ -5158,6 +5373,8 @@ class LoopRuntime:
         review_config = commander_review_config(task)
         harness_lines = summarizer_harness_instruction_lines(review_config.get("harness"))
         skill_context = build_runtime_skill_context(runtime["provider"], "commander_review")
+        worker_context_mode = normalize_context_mode(runtime.get("contextMode"))
+        main_thread_context_mode = "full"
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
         session_context = str(task.get("sessionContext", "")).strip()
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
@@ -5186,6 +5403,15 @@ class LoopRuntime:
             "Leave shouldSpawn false when the current roster already covers the relevant pressure.\n"
             "remainingUncertainty should capture what still stays unresolved after this reevaluation.\n"
             "sourceWorkers should list the workers whose checkpoints materially informed the reevaluation.\n"
+            + (
+                "Main-thread full context is active. Read the fuller background packet below during reevaluation, but Objective and current Constraints still win on conflicts.\n"
+                + (
+                    "Workers for this task are set to Light Workers mode, so lane prompts were intentionally lighter than the full packet.\n"
+                    if worker_context_mode == "weighted"
+                    else
+                    "Workers for this task are set to Full Workers mode, so lane prompts also received the fuller background packet.\n"
+                )
+            )
             + "\n".join(harness_lines)
             + skill_context["prompt"]
             + "\nReturn JSON only that matches the schema exactly."
@@ -5193,13 +5419,31 @@ class LoopRuntime:
         input_text = (
             f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
             f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
-            f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
-            f"Initial commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
-            f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
-            f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
-            f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
-            f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
+            + self.build_context_weight_block(
+                worker_context_mode,
+                [
+                    ("objective", "primary"),
+                    ("constraints", "high"),
+                    ("commander draft", "high"),
+                    ("worker checkpoints", "high"),
+                    ("session context", "low"),
+                ],
+            )
+            + self.build_full_context_block(
+                main_thread_context_mode,
+                [
+                    ("Task brief", json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)),
+                    ("Prior summary packet", json.dumps(self.project_prior_summary_for_worker(prior_summary), ensure_ascii=False, indent=2)),
+                ],
+            )
+            + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
+            + f"Initial commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
+            + f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
+            + f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
+            + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
+            + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
+        input_text = self.maybe_compact_prompt_text(input_text, runtime, "commander_review")
         result = self.invoke_provider_json(
             provider=runtime["provider"],
             api_key=api_key,
@@ -5212,6 +5456,7 @@ class LoopRuntime:
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="commander_review",
             auth_assignments=auth_assignments,
+            provider_settings=runtime,
         )
         parsed = normalize_commander_review_checkpoint(
             dict(result.parsed),
@@ -5439,11 +5684,13 @@ class LoopRuntime:
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         peer_targets = [item["id"] for item in task_workers(task, step_number) if item["id"] != worker["id"]]
         peer_text = "\n".join(f"{item['from']}: {item['message']}" for item in peer_messages) if peer_messages else "No peer steer received yet."
+        worker_context_mode = normalize_context_mode(runtime.get("contextMode"))
         session_context = str(task.get("sessionContext", "")).strip()
         summary_projection = self.project_prior_summary_for_worker(prior_summary)
         summary_text = json.dumps(summary_projection, ensure_ascii=False, indent=2) if summary_projection else "none"
         commander_projection = self.project_commander_for_worker(commander_checkpoint)
         commander_text = json.dumps(commander_projection, ensure_ascii=False, indent=2) if commander_projection else "none"
+        commander_full_text = json.dumps(self.project_commander_for_summary(commander_checkpoint), ensure_ascii=False, indent=2) if isinstance(commander_checkpoint, dict) else "none"
         harness_lines = worker_harness_instruction_lines(worker.get("harness"))
         skill_context = build_runtime_skill_context(runtime["provider"], "worker", worker.get("type"))
         local_file_config = normalize_local_file_tool_config(runtime.get("localFiles") if isinstance(runtime.get("localFiles"), dict) else {})
@@ -5465,6 +5712,12 @@ class LoopRuntime:
             f"requestTargets must only contain peers from this list: {', '.join(peer_targets)}.\n"
             "If researchMode is web_search, use the web search tool before answering and keep evidence grounded in URLs actually consulted.\n"
             + (
+                "Light Workers mode is active. Treat Objective and current Constraints as primary. Treat the commander draft as high-weight. Treat peer steer and prior summary as medium-weight. Treat carry-forward session context as low-weight background.\n"
+                if worker_context_mode == "weighted"
+                else
+                "Full Workers mode is active. The fuller background packet below should inform your lane's judgment, but Objective and current Constraints still win on conflicts.\n"
+            )
+            + (
                 "If local file tools are available, inspect the relevant workspace files before asserting repository-specific details.\n"
                 if local_file_config["enabled"]
                 else ""
@@ -5483,18 +5736,38 @@ class LoopRuntime:
         research_domains_text = ", ".join(research_config["domains"]) if research_config["domains"] else "none"
         input_text = (
             f"Objective:\n{task['objective']}\n\n"
-            f"Session context:\n{session_context or 'none'}\n\n"
-            f"Constraints:\n{chr(10).join(constraints)}\n\n"
-            f"Worker roster:\n{json.dumps(task_workers(task, step_number), ensure_ascii=False, indent=2)}\n\n"
-            f"Research policy:\n{research_description}\n"
-            f"externalWebAccess: {research_config['externalWebAccess']}\n"
-            f"allowedDomains: {research_domains_text}\n\n"
-            f"Shared memory version seen:\n{prior_memory_version}\n\n"
-            f"Current commander draft for this round:\n{commander_text}\n\n"
-            f"Prior summary:\n{summary_text}\n\n"
-            f"Peer steer addressed to this lane:\n{peer_text}\n\n"
-            "Produce a checkpoint from your assigned viewpoint."
+            + self.build_context_weight_block(
+                worker_context_mode,
+                [
+                    ("objective", "primary"),
+                    ("constraints", "high"),
+                    ("commander draft", "high"),
+                    ("peer steer", "medium"),
+                    ("prior summary", "medium"),
+                    ("session context", "low"),
+                ],
+            )
+            + self.build_full_context_block(
+                worker_context_mode,
+                [
+                    ("Task brief", json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)),
+                    ("Full commander packet", commander_full_text),
+                    ("Full prior summary packet", json.dumps(summary_projection, ensure_ascii=False, indent=2) if summary_projection else "none"),
+                ],
+            )
+            + f"Session context:\n{session_context or 'none'}\n\n"
+            + f"Constraints:\n{chr(10).join(constraints)}\n\n"
+            + f"Worker roster:\n{json.dumps(task_workers(task, step_number), ensure_ascii=False, indent=2)}\n\n"
+            + f"Research policy:\n{research_description}\n"
+            + f"externalWebAccess: {research_config['externalWebAccess']}\n"
+            + f"allowedDomains: {research_domains_text}\n\n"
+            + f"Shared memory version seen:\n{prior_memory_version}\n\n"
+            + f"Current commander draft for this round:\n{commander_text}\n\n"
+            + f"Prior summary:\n{summary_text}\n\n"
+            + f"Peer steer addressed to this lane:\n{peer_text}\n\n"
+            + "Produce a checkpoint from your assigned viewpoint."
         )
+        input_text = self.maybe_compact_prompt_text(input_text, runtime, "worker")
         tools: List[Dict[str, Any]] = []
         tool_choice: Optional[str] = None
         include: List[str] = []
@@ -5540,6 +5813,7 @@ class LoopRuntime:
             include=include,
             function_handlers=function_handlers if function_handlers else None,
             auth_assignments=auth_assignments,
+            provider_settings=runtime,
         )
         parsed = dict(result.parsed)
         parsed["researchQueries"] = normalize_string_array_preserve_items(result.web_search_queries)
@@ -5582,6 +5856,11 @@ class LoopRuntime:
             "syncPolicy": task.get("syncPolicy") if isinstance(task.get("syncPolicy"), dict) else {},
             "runtime": {
                 "executionMode": str(runtime["executionMode"]),
+                "contextMode": str(runtime.get("contextMode", default_context_mode())),
+                "directBaselineMode": str(runtime.get("directBaselineMode", default_direct_baseline_mode())),
+                "directProvider": str(runtime.get("directProvider", runtime["provider"])),
+                "directModel": str(runtime.get("directModel", runtime["model"])),
+                "ollamaBaseUrl": str(runtime.get("ollamaBaseUrl", default_ollama_base_url())),
                 "provider": str(runtime["provider"]),
                 "model": str(runtime["model"]),
                 "reasoningEffort": str(runtime["reasoningEffort"]),
@@ -5707,6 +5986,73 @@ class LoopRuntime:
             "recommendedNextAction": truncate_text(prior_summary.get("recommendedNextAction", ""), 220),
             "vettingSummary": truncate_text(prior_summary.get("vettingSummary", ""), 220),
         }
+
+    def build_context_weight_block(self, mode: Any, items: List[tuple[str, str]]) -> str:
+        if normalize_context_mode(mode) != "weighted":
+            return ""
+        lines = [f"{label}: {value}" for label, value in items if str(label).strip() and str(value).strip()]
+        if not lines:
+            return ""
+        return "Context weights:\n" + "\n".join(lines) + "\n\n"
+
+    def build_full_context_block(self, mode: Any, sections: List[tuple[str, str]]) -> str:
+        if normalize_context_mode(mode) != "full":
+            return ""
+        rendered: List[str] = []
+        for label, payload in sections:
+            label_text = str(label or "").strip()
+            payload_text = str(payload or "").strip() or "none"
+            if not label_text:
+                continue
+            rendered.append(f"{label_text}:\n{payload_text}")
+        if not rendered:
+            return ""
+        return "\n\n".join(rendered) + "\n\n"
+
+    def provider_supports_server_input_autocompress(self, provider: Optional[str]) -> bool:
+        return normalize_provider_id(provider, DEFAULT_PROVIDER_ID) == "openai"
+
+    def prompt_compaction_char_limit(self, provider: Optional[str], target_kind: str) -> int:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        normalized_target = str(target_kind or "generic").strip().lower()
+        if self.provider_supports_server_input_autocompress(normalized_provider):
+            limits = {
+                "commander": 22000,
+                "commander_review": 26000,
+                "worker": 24000,
+                "summarizer": 36000,
+                "generic": 18000,
+            }
+        else:
+            limits = {
+                "commander": 14000,
+                "commander_review": 16000,
+                "worker": 15000,
+                "summarizer": 22000,
+                "generic": 12000,
+            }
+        return int(limits.get(normalized_target, limits["generic"]))
+
+    def maybe_compact_prompt_text(self, prompt_text: str, runtime: Optional[Dict[str, Any]], target_kind: str) -> str:
+        raw = str(prompt_text or "").strip()
+        if not raw:
+            return raw
+        provider = runtime.get("provider") if isinstance(runtime, dict) else DEFAULT_PROVIDER_ID
+        soft_limit = self.prompt_compaction_char_limit(provider, target_kind)
+        if len(raw) <= soft_limit:
+            return raw
+        note = (
+            "Context note: part of the background packet was locally compacted to stay within model limits and budget.\n\n"
+        )
+        sections = [section.strip() for section in re.split(r"\n{2,}", raw) if str(section).strip()]
+        if not sections:
+            return note + compact_text_middle(raw, max(600, soft_limit - len(note)))
+        per_section = max(260, int((soft_limit - len(note)) / max(len(sections), 1)))
+        compacted_sections = [compact_text_middle(section, per_section) for section in sections]
+        compacted = note + "\n\n".join(compacted_sections)
+        if len(compacted) <= soft_limit:
+            return compacted
+        return note + compact_text_middle("\n\n".join(compacted_sections), max(600, soft_limit - len(note)))
 
     def project_worker_roster_for_summary(self, workers: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         return [
@@ -6246,6 +6592,7 @@ class LoopRuntime:
         summary_config = summarizer_config(task)
         harness_lines = summarizer_harness_instruction_lines(summary_config.get("harness"))
         skill_context = build_runtime_skill_context(runtime["provider"], "summarizer")
+        worker_context_mode = normalize_context_mode(runtime.get("contextMode"))
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
         session_context = str(task.get("sessionContext", "")).strip()
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
@@ -6330,6 +6677,15 @@ class LoopRuntime:
             "Do not upgrade weak evidence into a supported fact.\n"
             "Do not do new research.\n"
             "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
+            + (
+                "Main-thread full context is active. Read the full task and worker packet below, but Objective and current Constraints still win on conflicts.\n"
+                + (
+                    "Workers for this task are set to Light Workers mode.\n"
+                    if worker_context_mode == "weighted"
+                    else
+                    "Workers for this task are set to Full Workers mode.\n"
+                )
+            )
         )
         if partial_mode:
             instructions += (
@@ -6344,18 +6700,30 @@ class LoopRuntime:
         input_text = (
             f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
             f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
-            f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
-            f"Commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
-            f"Commander review for this round:\n{json.dumps(commander_review_projection, ensure_ascii=False, indent=2)}\n\n"
-            f"Task brief:\n{json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)}\n\n"
-            f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
-            f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
-            f"Partial summary mode:\n{partial_mode}\n\n"
-            f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}\n\n"
-            f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
-            f"Worker checkpoint digests:\n{json.dumps(self.project_worker_state_for_summary(worker_state, workers), ensure_ascii=False, indent=2)}\n\n"
-            f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
+            + self.build_context_weight_block(
+                worker_context_mode,
+                [
+                    ("objective", "primary"),
+                    ("constraints", "high"),
+                    ("commander review", "high"),
+                    ("worker checkpoint digests", "high"),
+                    ("task brief", "high"),
+                    ("session context", "low"),
+                ],
+            )
+            + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
+            + f"Commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
+            + f"Commander review for this round:\n{json.dumps(commander_review_projection, ensure_ascii=False, indent=2)}\n\n"
+            + f"Task brief:\n{json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)}\n\n"
+            + f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
+            + f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
+            + f"Partial summary mode:\n{partial_mode}\n\n"
+            + f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}\n\n"
+            + f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
+            + f"Worker checkpoint digests:\n{json.dumps(self.project_worker_state_for_summary(worker_state, workers), ensure_ascii=False, indent=2)}\n\n"
+            + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
+        input_text = self.maybe_compact_prompt_text(input_text, runtime, "summarizer")
         result = self.invoke_provider_json(
             provider=runtime["provider"],
             api_key=api_key,
@@ -6368,6 +6736,7 @@ class LoopRuntime:
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="summarizer",
             auth_assignments=auth_assignments,
+            provider_settings=runtime,
         )
         parsed = dict(result.parsed)
         authoritative_round = int(commander_review_projection.get("round", 0) or commander_projection.get("round", 0) or 0)
@@ -6485,6 +6854,101 @@ class LoopRuntime:
         summary["sourceWorkers"] = available_workers
         return summary
 
+    def direct_baseline_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer", "stance", "confidenceNote"],
+            "properties": {
+                "answer": {"type": "string"},
+                "stance": {"type": "string"},
+                "confidenceNote": {"type": "string"},
+            },
+        }
+
+    def new_mock_direct_baseline_answer(self, task: Dict[str, Any]) -> Dict[str, str]:
+        objective = str(task.get("objective") or "")
+        lowered = objective.lower()
+        if "billing" in lowered or "holiday" in lowered:
+            answer = (
+                "My recommendation is no-go on a full billing replatform right before peak traffic. The safer path is a staged dual-run or a narrower cutover that proves the queue path without putting revenue collection at risk.\n\n"
+                "The next step is to keep the current system as the source of truth for peak season and run the new path in shadow mode with explicit rollback gates."
+            )
+            stance = "Hold the full cutover and de-risk it through a staged path."
+        else:
+            answer = (
+                "My recommendation is a conditional ship, not a blind launch. Move forward only with a tightly bounded rollout that keeps sensitive outputs behind review and makes privacy or contract-sensitive failures visible fast.\n\n"
+                "The next step is to launch to a small internal or design-partner cohort with manual review, clear escalation rules, and a narrow scope."
+            )
+            stance = "Ship only through a constrained rollout with strong guardrails."
+        return normalize_direct_answer_payload(
+            {
+                "answer": answer,
+                "stance": stance,
+                "confidenceNote": "Mock direct baseline for runtime plumbing; useful for compare flow validation, not factual confidence.",
+            },
+            objective,
+        )
+
+    def new_live_direct_baseline(
+        self,
+        api_key: str,
+        auth_assignments: List[Dict[str, Any]],
+        task: Dict[str, Any],
+        direct_runtime: Dict[str, Any],
+    ) -> tuple[Dict[str, str], Optional[str], Optional[Dict[str, Any]], Dict[str, Any]]:
+        harness_lines = direct_baseline_harness_instruction_lines(summarizer_config(task).get("harness"))
+        instructions = (
+            "Answer the user directly as one assistant.\n"
+            "Give a decisive but conditional recommendation.\n"
+            "Do not narrate hidden process.\n"
+            "Absorb tradeoffs into the recommendation itself.\n"
+        )
+        if harness_lines:
+            instructions += "\n".join(harness_lines) + "\n"
+        instructions += (
+            "Return JSON only that matches the schema exactly."
+        )
+        constraints = normalize_string_array_preserve_items(task.get("constraints", []))
+        input_text = (
+            f"Objective:\n{task.get('objective', '')}\n\n"
+            f"Constraints:\n{json.dumps(constraints, ensure_ascii=False, indent=2)}\n\n"
+            f"Session context:\n{task.get('sessionContext', '') or 'none'}\n"
+        )
+        input_text = self.maybe_compact_prompt_text(input_text, direct_runtime, "generic")
+        result = self.invoke_provider_json(
+            provider=direct_runtime["provider"],
+            api_key=api_key,
+            model=direct_runtime["model"],
+            reasoning_effort=direct_runtime["reasoningEffort"],
+            instructions=instructions,
+            input_text=input_text,
+            schema_name="loop_direct_baseline",
+            schema=self.direct_baseline_schema(),
+            max_output_tokens=int(direct_runtime["maxOutputTokens"]),
+            target_kind="generic",
+            auth_assignments=auth_assignments,
+            provider_settings=direct_runtime,
+        )
+        parsed = normalize_direct_answer_payload(result.parsed, str(task.get("objective") or ""))
+        call_meta = {
+            "requestedMaxOutputTokens": result.requested_max_output_tokens,
+            "effectiveMaxOutputTokens": result.effective_max_output_tokens,
+            "attempts": list(result.attempts),
+            "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "auth": result.auth_assignment,
+            "authFailoverHistory": result.auth_failover_history,
+            "skills": normalize_string_array_preserve_items(getattr(result, "used_skills", [])),
+        }
+        return parsed, result.response_id, result.response, call_meta
+
+    def write_direct_baseline_files(self, task_id: str, round_number: int, baseline: Dict[str, Any]) -> tuple[Path, Path]:
+        latest_name = f"{task_id}_direct_baseline.json"
+        history_name = f"{task_id}_direct_baseline_round{round_number:03d}.json"
+        artifact_store.write_json_artifact(self.root, "checkpoints", latest_name, baseline)
+        artifact_store.write_json_artifact(self.root, "checkpoints", history_name, baseline)
+        return Path(latest_name), Path(history_name)
+
     def write_commander_files(self, task_id: str, round_number: int, checkpoint: Dict[str, Any]) -> tuple[Path, Path]:
         latest_name = f"{task_id}_commander.json"
         history_name = f"{task_id}_commander_round{round_number:03d}.json"
@@ -6518,6 +6982,173 @@ class LoopRuntime:
         artifact_store.write_json_artifact(self.root, "outputs", filename, payload)
         artifact_store.write_json_artifact(self.root, "outputs", history_filename, payload)
         return Path(filename), Path(history_filename)
+
+    def run_direct_baseline(self) -> Dict[str, Any]:
+        state = self.read_state()
+        task = state.get("activeTask")
+        if not isinstance(task, dict):
+            raise RuntimeErrorWithCode("No active task.", 400)
+        if isinstance(state.get("directBaseline"), dict):
+            raise RuntimeErrorWithCode("Direct baseline already exists for the active task.", 409)
+        direct_runtime = self.get_direct_baseline_runtime(task)
+        if normalize_direct_baseline_mode(direct_runtime.get("mode")) == "off":
+            raise RuntimeErrorWithCode("Direct baseline is disabled for the active task.", 409)
+
+        baseline_answer: Optional[Dict[str, str]] = None
+        response_id: Optional[str] = None
+        response: Optional[Dict[str, Any]] = None
+        usage_snapshot: Optional[Dict[str, Any]] = None
+        call_meta: Dict[str, Any] = {
+            "requestedMaxOutputTokens": int(direct_runtime["maxOutputTokens"]),
+            "effectiveMaxOutputTokens": int(direct_runtime["maxOutputTokens"]),
+            "attempts": [int(direct_runtime["maxOutputTokens"])] if int(direct_runtime["maxOutputTokens"]) > 0 else [],
+            "recoveredFromIncomplete": False,
+        }
+        mode_used = "mock"
+        auth_assignments = self.provider_auth_assignments(direct_runtime["provider"], "direct_baseline", task, round_number=1)
+        auth_assignment = auth_assignments[0] if auth_assignments else None
+        auth_meta = self.live_auth_meta(direct_runtime["provider"], auth_assignment)
+        if direct_runtime["executionMode"] == "live":
+            api_key = self.provider_live_api_key(direct_runtime["provider"], auth_assignments)
+            if api_key or not self.provider_requires_api_key(direct_runtime["provider"]):
+                try:
+                    self.assert_budget_available("direct_baseline", task)
+                    baseline_answer, response_id, response, call_meta = self.new_live_direct_baseline(
+                        api_key,
+                        auth_assignments,
+                        task,
+                        direct_runtime,
+                    )
+                    auth_meta = self.live_auth_meta(direct_runtime["provider"], call_meta.get("auth"))
+                    self.append_auth_failover_step("direct_baseline", str(task["taskId"]), direct_runtime["model"], call_meta, "direct_baseline")
+                    usage_snapshot = self.update_usage_tracking("direct_baseline", str(task["taskId"]), direct_runtime["model"], response_id, response)
+                    mode_used = "live"
+                except RuntimeErrorWithCode as error:
+                    if str(error).startswith("Budget limit reached:"):
+                        self.append_step(
+                            "budget",
+                            "Budget stopped the direct baseline before another live call.",
+                            {"taskId": task["taskId"], "model": direct_runtime["model"], "error": str(error), "auth": auth_meta},
+                        )
+                        raise
+                    if not self.should_fallback_to_mock(error):
+                        self.append_step(
+                            "direct_baseline",
+                            "Live API call failed and was not downgraded to mock.",
+                            {
+                                "taskId": task["taskId"],
+                                "model": direct_runtime["model"],
+                                "requestedMaxOutputTokens": int(direct_runtime["maxOutputTokens"]),
+                                "error": str(error),
+                                "auth": auth_meta,
+                            },
+                        )
+                        raise RuntimeErrorWithCode(f"Live run failed for direct baseline: {error}", error.status_code)
+                    self.append_step(
+                        "direct_baseline",
+                        "Live API call failed; falling back to mock.",
+                        {
+                            "taskId": task["taskId"],
+                            "model": direct_runtime["model"],
+                            "requestedMaxOutputTokens": int(direct_runtime["maxOutputTokens"]),
+                            "error": str(error),
+                            "auth": auth_meta,
+                        },
+                    )
+            else:
+                if self.provider_uses_api_key_pool(direct_runtime["provider"]):
+                    self.raise_if_managed_secret_backend_unavailable(
+                        "direct_baseline",
+                        str(task["taskId"]),
+                        direct_runtime["model"],
+                        "direct_baseline",
+                        direct_runtime["provider"],
+                    )
+                self.append_step("direct_baseline", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+        if baseline_answer is None:
+            baseline_answer = self.new_mock_direct_baseline_answer(task)
+
+        baseline = {
+            "taskId": str(task["taskId"]),
+            "round": 1,
+            "capturedAt": utc_now(),
+            "mode": mode_used,
+            "provider": direct_runtime["provider"],
+            "providerCapabilities": provider_capability_profile(direct_runtime["provider"]),
+            "model": direct_runtime["model"],
+            "responseId": response_id,
+            "responseMeta": {
+                "status": str(response.get("status", "completed")),
+                "usageDelta": self.get_response_usage_delta(response, direct_runtime["model"]),
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", direct_runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", direct_runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
+            } if response else None,
+            "authMeta": auth_meta,
+            "answer": normalize_direct_answer_payload(baseline_answer, str(task.get("objective") or "")),
+        }
+
+        state = self.mutate_state(lambda current: {**current, "directBaseline": baseline})
+        _, history_cp = self.write_direct_baseline_files(str(task["taskId"]), 1, baseline)
+        output_artifact = {
+            "taskId": str(task["taskId"]),
+            "artifactType": "direct_baseline_output",
+            "target": "direct_baseline",
+            "label": "Single-thread baseline",
+            "mode": mode_used,
+            "provider": direct_runtime["provider"],
+            "providerCapabilities": provider_capability_profile(direct_runtime["provider"]),
+            "model": direct_runtime["model"],
+            "round": 1,
+            "capturedAt": baseline["capturedAt"],
+            "responseId": response_id,
+            "rawOutputText": self.get_response_output_text(response) if response else None,
+            "responseMeta": baseline["responseMeta"],
+            "authMeta": auth_meta,
+            "output": baseline,
+        }
+        _, history_output = self.write_output_artifact(
+            f"{task['taskId']}_direct_baseline_output.json",
+            f"{task['taskId']}_direct_baseline_round001_output.json",
+            output_artifact,
+        )
+        budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
+        self.append_event(
+            "direct_baseline_written",
+            {
+                "taskId": task["taskId"],
+                "mode": mode_used,
+                "provider": direct_runtime["provider"],
+                "model": direct_runtime["model"],
+            },
+        )
+        self.append_step(
+            "direct_baseline",
+            "Single-thread baseline answer captured.",
+            {
+                "taskId": task["taskId"],
+                "mode": mode_used,
+                "provider": direct_runtime["provider"],
+                "model": direct_runtime["model"],
+                "responseId": response_id,
+                "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", direct_runtime["maxOutputTokens"])),
+                "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", direct_runtime["maxOutputTokens"])),
+                "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
+                "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
+                "totalTokens": int(budget_totals.get("totalTokens", 0)),
+                "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
+                "checkpointFile": history_cp.name,
+                "outputFile": history_output.name,
+                "auth": auth_meta,
+            },
+        )
+        self.append_event(
+            "runtime_run",
+            {"target": "direct_baseline", "backend": "python", "exitCode": 0, "output": "Direct baseline written."},
+        )
+        return {"target": "direct_baseline", "output": "Direct baseline written.", "exitCode": 0}
 
     def run_commander(self) -> Dict[str, Any]:
         state = self.read_state()
@@ -6736,6 +7367,7 @@ class LoopRuntime:
             )
         workers = task_workers(task, commander_round)
         worker_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
+        prior_summary = state.get("summary") if isinstance(state.get("summary"), dict) else None
         for worker in workers:
             checkpoint = worker_state.get(worker["id"])
             if not isinstance(checkpoint, dict) or int(checkpoint.get("step", 0) or 0) != commander_round:
@@ -6770,6 +7402,7 @@ class LoopRuntime:
                         auth_assignments,
                         task,
                         commander_checkpoint,
+                        prior_summary,
                         workers,
                         worker_state,
                         runtime,
@@ -7578,6 +8211,8 @@ class LoopRuntime:
             raise RuntimeErrorWithCode("Requested task does not match the active task.", 409)
         if target == "commander":
             return self.run_commander()
+        if target == "direct_baseline":
+            return self.run_direct_baseline()
         if target == "commander_review":
             return self.run_commander_review()
         if target == "summarizer":

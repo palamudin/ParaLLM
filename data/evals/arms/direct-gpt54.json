@@ -1,0 +1,32 @@
+{
+    "armId": "direct-gpt54",
+    "title": "Direct GPT-5.4",
+    "description": "Single-model baseline with no adversarial steering.",
+    "type": "direct",
+    "runtime": {
+        "executionMode": "live",
+        "model": "gpt-5.4",
+        "summarizerModel": "gpt-5.4",
+        "reasoningEffort": "medium",
+        "budget": {
+            "maxTotalTokens": 120000,
+            "maxCostUsd": 6,
+            "maxOutputTokens": 2200
+        },
+        "research": {
+            "enabled": false,
+            "externalWebAccess": true,
+            "domains": []
+        },
+        "vetting": {
+            "enabled": true
+        },
+        "preferredLoop": {
+            "rounds": 1,
+            "delayMs": 0
+        },
+        "requireLive": true,
+        "allowMockFallback": false
+    },
+    "workers": []
+}

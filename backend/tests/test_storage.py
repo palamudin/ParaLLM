@@ -382,6 +382,56 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(round_entry["executionHealth"]["issueCount"], 2)
         self.assertEqual(round_entry["executionHealth"]["targets"]["A"]["status"], "degraded")
 
+    def test_build_history_payload_surfaces_direct_baseline_artifact(self) -> None:
+        task_id = "t-20260421-120650-dead01"
+        self.write_json(
+            self.paths.tasks / f"{task_id}.json",
+            {
+                "taskId": task_id,
+                "objective": "Compare direct and pressurized answers.",
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_direct_baseline_round001_output.json",
+            {
+                "taskId": task_id,
+                "artifactType": "direct_baseline_output",
+                "target": "direct_baseline",
+                "label": "Single-thread baseline",
+                "mode": "live",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-20250514",
+                "round": 1,
+                "responseMeta": {
+                    "requestedMaxOutputTokens": 800,
+                    "effectiveMaxOutputTokens": 800,
+                },
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_summary_round001_output.json",
+            {
+                "taskId": task_id,
+                "artifactType": "summary_output",
+                "target": "summarizer",
+                "label": "Summarizer",
+                "mode": "live",
+                "model": "gpt-5-mini",
+                "round": 1,
+                "responseMeta": {
+                    "requestedMaxOutputTokens": 1200,
+                    "effectiveMaxOutputTokens": 1200,
+                },
+            },
+        )
+
+        payload = storage.build_history_payload(self.paths)
+        round_entry = payload["rounds"][0]
+
+        self.assertIsNotNone(round_entry["directBaselineArtifact"])
+        self.assertEqual(round_entry["directBaselineArtifact"]["kind"], "direct_baseline_output")
+        self.assertEqual(round_entry["directBaselineArtifact"]["name"], f"{task_id}_direct_baseline_round001_output.json")
+
     def test_build_history_payload_surfaces_job_execution_health(self) -> None:
         task_id = "t-20260421-121000-jobsafe"
         self.write_json(

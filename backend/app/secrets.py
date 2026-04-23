@@ -38,6 +38,26 @@ AUTH_KEY_PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
 }
 AUTH_KEY_PROVIDER_ORDER = list(AUTH_KEY_PROVIDER_CATALOG.keys())
 DEFAULT_AUTH_KEY_PROVIDER = "openai"
+SAFE_SECRET_BACKENDS = {"env", "docker_secret", "external"}
+AUTH_BACKEND_MODES = {"local", "safe"}
+AUTH_LOCAL_FILE_PREFIXES: dict[str, str] = {
+    "openai": "openai",
+    "anthropic": "ant",
+    "xai": "xai",
+    "minimax": "min",
+}
+AUTH_LOCAL_FILE_PREFIX_ALIASES: dict[str, str] = {
+    "openai": "openai",
+    "oai": "openai",
+    "anthropic": "anthropic",
+    "ant": "anthropic",
+    "claude": "anthropic",
+    "xai": "xai",
+    "grok": "xai",
+    "minimax": "minimax",
+    "min": "minimax",
+    "mini": "minimax",
+}
 
 
 def normalize_auth_key_pool(value: Any) -> list[str]:
@@ -69,10 +89,116 @@ def auth_key_provider_label(provider: Any) -> str:
     return str((AUTH_KEY_PROVIDER_CATALOG.get(normalized) or {}).get("label") or normalized.title())
 
 
+def auth_backend_mode_label(mode: Any) -> str:
+    normalized = normalize_auth_backend_mode(mode)
+    return "Local" if normalized == "local" else "Safe"
+
+
 def auth_key_env_vars(provider: Any) -> list[str]:
     normalized = normalize_auth_key_provider(provider)
     catalog = AUTH_KEY_PROVIDER_CATALOG.get(normalized) or {}
     return [str(name) for name in catalog.get("envVars", []) if str(name).strip()]
+
+
+def normalize_auth_backend_mode(value: Any, fallback: str = "safe") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in AUTH_BACKEND_MODES:
+        return candidate
+    normalized_fallback = str(fallback or "safe").strip().lower()
+    return normalized_fallback if normalized_fallback in AUTH_BACKEND_MODES else "safe"
+
+
+def auth_backend_override_path(root: Optional[Path] = None) -> Path:
+    topology = deployment_topology(root)
+    return topology.data_root / "auth_provider_backends.json"
+
+
+def default_auth_backend_mode(root: Optional[Path] = None) -> str:
+    topology = deployment_topology(root)
+    return "local" if str(topology.secret_backend or "").strip().lower() == "local_file" else "safe"
+
+
+def read_auth_backend_mode_overrides(root: Optional[Path] = None) -> dict[str, str]:
+    path = auth_backend_override_path(root)
+    if not path.is_file():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    overrides: dict[str, str] = {}
+    for provider in auth_key_provider_ids():
+        if parsed.get(provider) is None:
+            continue
+        overrides[provider] = normalize_auth_backend_mode(parsed.get(provider), default_auth_backend_mode(root))
+    return overrides
+
+
+def write_auth_backend_mode_override(root: Optional[Path], provider: Any, mode: Any) -> dict[str, str]:
+    normalized_provider = normalize_auth_key_provider(provider)
+    path = auth_backend_override_path(root)
+    overrides = read_auth_backend_mode_overrides(root)
+    default_mode = default_auth_backend_mode(root)
+    normalized_mode = normalize_auth_backend_mode(mode, default_mode)
+    if normalized_mode == default_mode:
+        overrides.pop(normalized_provider, None)
+    else:
+        overrides[normalized_provider] = normalized_mode
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if overrides:
+        path.write_text(json.dumps(overrides, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+    return read_auth_backend_mode_overrides(root)
+
+
+def auth_backend_mode_for_provider(root: Optional[Path], provider: Any) -> str:
+    normalized_provider = normalize_auth_key_provider(provider)
+    overrides = read_auth_backend_mode_overrides(root)
+    return normalize_auth_backend_mode(overrides.get(normalized_provider), default_auth_backend_mode(root))
+
+
+def preferred_safe_secret_backend(root: Optional[Path] = None) -> str:
+    topology = deployment_topology(root)
+    current_backend = str(topology.secret_backend or "").strip().lower()
+    if current_backend in SAFE_SECRET_BACKENDS:
+        return current_backend
+    if topology.profile in {"hosted-single-node", "hosted-distributed"}:
+        if topology.secret_provider_url:
+            return "external"
+        return "docker_secret"
+    if topology.secret_provider_url:
+        return "external"
+    return "env"
+
+
+def resolve_provider_secret_backend(root: Optional[Path], provider: Any) -> dict[str, str]:
+    mode = auth_backend_mode_for_provider(root, provider)
+    backend = "local_file" if mode == "local" else preferred_safe_secret_backend(root)
+    return {
+        "provider": normalize_auth_key_provider(provider),
+        "mode": mode,
+        "backend": backend,
+    }
+
+
+def auth_local_file_prefix(provider: Any) -> str:
+    normalized = normalize_auth_key_provider(provider)
+    return str(AUTH_LOCAL_FILE_PREFIXES.get(normalized) or normalized)
+
+
+def _normalize_local_auth_prefix(prefix: Any) -> Optional[str]:
+    candidate = str(prefix or "").strip().lower()
+    if not candidate:
+        return None
+    normalized = AUTH_LOCAL_FILE_PREFIX_ALIASES.get(candidate)
+    if normalized:
+        return normalized
+    if candidate in AUTH_KEY_PROVIDER_CATALOG:
+        return candidate
+    return None
 
 
 def auth_key_file_path(base_path: Path, provider: Any) -> Path:
@@ -93,6 +219,91 @@ def auth_key_file_path(base_path: Path, provider: Any) -> Path:
     stem = base_path.stem if suffix else base_path.name
     extension = suffix or ".txt"
     return base_path.with_name(f"{stem}.{normalized}{extension}")
+
+
+def _parse_local_auth_line(raw_line: str) -> dict[str, Any]:
+    raw = str(raw_line or "").rstrip("\r\n")
+    stripped = raw.strip()
+    if not stripped:
+        return {"kind": "blank", "raw": raw}
+    if stripped.startswith("#") or stripped.startswith(";"):
+        return {"kind": "comment", "raw": raw}
+    prefix, separator, remainder = stripped.partition(":")
+    if separator:
+        provider = _normalize_local_auth_prefix(prefix)
+        if provider:
+            return {
+                "kind": "provider_key",
+                "provider": provider,
+                "key": remainder.strip(),
+                "raw": raw,
+            }
+        return {"kind": "other", "raw": raw}
+    return {
+        "kind": "legacy_openai_key",
+        "provider": DEFAULT_AUTH_KEY_PROVIDER,
+        "key": stripped,
+        "raw": raw,
+    }
+
+
+def _shared_local_auth_groups(base_path: Path) -> tuple[dict[str, list[str]], dict[str, bool]]:
+    groups = {provider: [] for provider in auth_key_provider_ids()}
+    present = {provider: False for provider in auth_key_provider_ids()}
+    if not base_path.is_file():
+        return groups, present
+    for raw_line in base_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parsed = _parse_local_auth_line(raw_line)
+        provider = parsed.get("provider")
+        key = str(parsed.get("key") or "").strip()
+        if provider in groups and key:
+            groups[str(provider)].append(key)
+            present[str(provider)] = True
+    for provider in auth_key_provider_ids():
+        groups[provider] = normalize_auth_key_pool(groups.get(provider, []))
+    return groups, present
+
+
+def read_local_auth_file_groups(base_path: Path) -> dict[str, list[str]]:
+    groups, present = _shared_local_auth_groups(base_path)
+    for provider in auth_key_provider_ids():
+        if present.get(provider):
+            continue
+        provider_path = auth_key_file_path(base_path, provider)
+        if provider_path != base_path and provider_path.is_file():
+            groups[provider] = normalize_auth_key_pool(provider_path.read_text(encoding="utf-8", errors="replace"))
+    return groups
+
+
+def read_local_auth_keys(base_path: Path, provider: Any = DEFAULT_AUTH_KEY_PROVIDER) -> list[str]:
+    normalized = normalize_auth_key_provider(provider)
+    return list(read_local_auth_file_groups(base_path).get(normalized, []))
+
+
+def write_local_auth_keys(base_path: Path, provider: Any, keys: Any) -> None:
+    normalized = normalize_auth_key_provider(provider)
+    canonical_prefix = auth_local_file_prefix(normalized)
+    shared_path = Path(base_path).resolve()
+    existing_lines = shared_path.read_text(encoding="utf-8", errors="replace").splitlines() if shared_path.is_file() else []
+    kept_lines: list[str] = []
+    for raw_line in existing_lines:
+        parsed = _parse_local_auth_line(raw_line)
+        parsed_provider = parsed.get("provider")
+        if parsed.get("kind") == "provider_key" and parsed_provider == normalized:
+            continue
+        if normalized == DEFAULT_AUTH_KEY_PROVIDER and parsed.get("kind") == "legacy_openai_key":
+            continue
+        kept_lines.append(raw_line.rstrip("\r\n"))
+    for key in normalize_auth_key_pool(keys):
+        kept_lines.append(f"{canonical_prefix}:{key}")
+    payload = "\n".join(kept_lines)
+    if payload:
+        payload += "\n"
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_path.write_text(payload, encoding="utf-8")
+    legacy_path = auth_key_file_path(shared_path, normalized)
+    if legacy_path != shared_path and legacy_path.exists():
+        legacy_path.unlink()
 
 
 def provider_env_secret_keys(provider: Any) -> list[str]:

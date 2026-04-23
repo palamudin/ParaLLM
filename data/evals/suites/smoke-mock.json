@@ -1,0 +1,38 @@
+{
+    "suiteId": "smoke-mock",
+    "title": "Smoke Mock Suite",
+    "description": "Small mock-friendly suite for isolated eval plumbing and UI checks.",
+    "judgeRubric": {
+        "mustDo": [
+            "Stay single-voice.",
+            "Make a recommendation.",
+            "Keep the answer short."
+        ]
+    },
+    "cases": [
+        {
+            "caseId": "internal-rollout",
+            "title": "Internal Rollout Memo",
+            "objective": "Advise a small product team on whether to roll out a new internal dashboard feature this week or hold it for one more sprint. Give a direct recommendation and the safest next step.",
+            "constraints": [
+                "Stay concise.",
+                "Give one recommendation with one next step."
+            ],
+            "sessionContext": "",
+            "checks": {
+                "requireLive": false,
+                "forbiddenPhrases": [
+                    "as an ai language model"
+                ],
+                "maxParagraphs": 2
+            },
+            "gold": {
+                "idealVerdict": "Choose a clear ship-or-hold call with one operational next step.",
+                "mustAddress": [
+                    "recommendation",
+                    "next step"
+                ]
+            }
+        }
+    ]
+}

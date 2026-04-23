@@ -14,15 +14,20 @@ from runtime.engine import (
     RuntimeErrorWithCode,
     coerce_bool,
     default_budget_config,
+    default_context_mode,
+    default_direct_baseline_mode,
     default_model_for_provider,
     default_dynamic_spinup_config,
     default_github_tool_config,
     default_local_file_tool_config,
+    default_ollama_base_url,
     default_research_config,
     default_summarizer_harness,
     default_vetting_config,
     normalize_allowed_domains,
     normalize_budget_config,
+    normalize_context_mode,
+    normalize_direct_baseline_mode,
     normalize_dynamic_spinup_config,
     normalize_github_repos,
     normalize_github_tool_config,
@@ -30,6 +35,7 @@ from runtime.engine import (
     normalize_local_file_roots,
     normalize_local_file_tool_config,
     normalize_model_id,
+    normalize_ollama_base_url,
     normalize_provider_id,
     normalize_research_config,
     normalize_string_list,
@@ -42,12 +48,19 @@ from runtime.engine import (
 from .config import deployment_topology
 from .secrets import (
     auth_key_file_path,
+    auth_backend_mode_for_provider,
+    auth_backend_mode_label,
     auth_key_provider_ids,
     auth_key_provider_label,
+    default_auth_backend_mode,
     env_secret_status,
     external_secret_status,
     normalize_auth_key_pool,
     normalize_auth_key_provider,
+    preferred_safe_secret_backend,
+    read_local_auth_keys,
+    resolve_provider_secret_backend,
+    write_auth_backend_mode_override,
 )
 from . import storage
 
@@ -101,6 +114,11 @@ def default_draft_state() -> Dict[str, Any]:
         "model": model,
         "summarizerProvider": provider,
         "summarizerModel": model,
+        "contextMode": default_context_mode(),
+        "directBaselineMode": default_direct_baseline_mode(),
+        "directProvider": provider,
+        "directModel": model,
+        "ollamaBaseUrl": default_ollama_base_url(),
         "reasoningEffort": "low",
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
@@ -176,6 +194,18 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         default_model_for_provider(summarizer_provider),
         summarizer_provider,
     )
+    context_mode = normalize_context_mode(current.get("contextMode", default["contextMode"]), default["contextMode"])
+    direct_baseline_mode = normalize_direct_baseline_mode(current.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"])
+    direct_provider = normalize_provider_id(
+        str(current.get("directProvider", provider)),
+        provider,
+    )
+    direct_model = normalize_model_id(
+        str(current.get("directModel", default_model_for_provider(direct_provider))),
+        default_model_for_provider(direct_provider),
+        direct_provider,
+    )
+    ollama_base_url = normalize_ollama_base_url(current.get("ollamaBaseUrl", default["ollamaBaseUrl"]))
     feature_alignment = align_provider_runtime_features(
         provider,
         {
@@ -195,6 +225,11 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "model": model,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
+        "contextMode": context_mode,
+        "directBaselineMode": direct_baseline_mode,
+        "directProvider": direct_provider,
+        "directModel": direct_model,
+        "ollamaBaseUrl": ollama_base_url,
         "reasoningEffort": reasoning_effort,
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
@@ -259,6 +294,15 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
             default_model_for_provider(summarizer_provider),
             summarizer_provider,
         ),
+        "contextMode": normalize_context_mode(runtime.get("contextMode", default["contextMode"]), default["contextMode"]),
+        "directBaselineMode": normalize_direct_baseline_mode(runtime.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"]),
+        "directProvider": normalize_provider_id(runtime.get("directProvider"), provider),
+        "directModel": normalize_model_id(
+            runtime.get("directModel"),
+            default_model_for_provider(normalize_provider_id(runtime.get("directProvider"), provider)),
+            normalize_provider_id(runtime.get("directProvider"), provider),
+        ),
+        "ollamaBaseUrl": normalize_ollama_base_url(runtime.get("ollamaBaseUrl", default["ollamaBaseUrl"])),
         "reasoningEffort": str(runtime.get("reasoningEffort", default["reasoningEffort"])).strip(),
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
@@ -293,8 +337,15 @@ def auth_file_path(root: Optional[Path] = None) -> Path:
     return topology.auth_file
 
 
+def local_auth_file_path(root: Optional[Path] = None) -> Path:
+    topology = deployment_topology(root)
+    if topology.auth_file is None:
+        return topology.root / "Auth.txt"
+    return topology.auth_file
+
+
 def provider_auth_file_path(root: Optional[Path] = None, provider: Any = "openai") -> Path:
-    return auth_key_file_path(auth_file_path(root), provider)
+    return auth_key_file_path(local_auth_file_path(root), provider)
 
 
 def read_auth_key_pool(root: Optional[Path] = None, provider: Any = "openai") -> list[str]:
@@ -305,10 +356,16 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
     normalized_provider = normalize_auth_key_provider(provider)
     label = auth_key_provider_label(normalized_provider)
     topology = deployment_topology(root)
-    if topology.secret_backend == "env":
+    backend_resolution = resolve_provider_secret_backend(root, normalized_provider)
+    backend_mode = backend_resolution["mode"]
+    backend_name = backend_resolution["backend"]
+    if backend_name == "env":
         status = env_secret_status(normalized_provider)
         return {
             "backend": "env",
+            "selectedMode": backend_mode,
+            "selectedModeLabel": auth_backend_mode_label(backend_mode),
+            "safeBackend": preferred_safe_secret_backend(root),
             "provider": normalized_provider,
             "label": label,
             "keys": normalize_auth_key_pool(status.get("keys", [])),
@@ -319,10 +376,13 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "managed": True,
             "writable": False,
         }
-    if topology.secret_backend == "external":
+    if backend_name == "external":
         status = external_secret_status(root, provider=normalized_provider)
         return {
             "backend": "external",
+            "selectedMode": backend_mode,
+            "selectedModeLabel": auth_backend_mode_label(backend_mode),
+            "safeBackend": preferred_safe_secret_backend(root),
             "provider": normalized_provider,
             "label": label,
             "keys": normalize_auth_key_pool(status.get("keys", [])),
@@ -333,11 +393,15 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "managed": True,
             "writable": False,
         }
-    if topology.secret_backend == "docker_secret":
-        secret_path = provider_auth_file_path(root, normalized_provider)
+    if backend_name == "docker_secret":
+        secret_base_path = auth_file_path(root)
+        secret_path = auth_key_file_path(secret_base_path, normalized_provider)
         if not secret_path.is_file():
             return {
                 "backend": "docker_secret",
+                "selectedMode": backend_mode,
+                "selectedModeLabel": auth_backend_mode_label(backend_mode),
+                "safeBackend": preferred_safe_secret_backend(root),
                 "provider": normalized_provider,
                 "label": label,
                 "keys": [],
@@ -351,6 +415,9 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
         keys = normalize_auth_key_pool(secret_path.read_text(encoding="utf-8", errors="replace"))
         return {
             "backend": "docker_secret",
+            "selectedMode": backend_mode,
+            "selectedModeLabel": auth_backend_mode_label(backend_mode),
+            "safeBackend": preferred_safe_secret_backend(root),
             "provider": normalized_provider,
             "label": label,
             "keys": keys,
@@ -361,10 +428,14 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "managed": True,
             "writable": False,
         }
-    path = provider_auth_file_path(root, normalized_provider)
-    if not path.is_file():
+    path = local_auth_file_path(root)
+    keys = read_local_auth_keys(path, normalized_provider)
+    if not path.is_file() and not keys:
         return {
             "backend": "local_file",
+            "selectedMode": backend_mode,
+            "selectedModeLabel": auth_backend_mode_label(backend_mode),
+            "safeBackend": preferred_safe_secret_backend(root),
             "provider": normalized_provider,
             "label": label,
             "keys": [],
@@ -375,9 +446,11 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "managed": False,
             "writable": True,
         }
-    keys = normalize_auth_key_pool(path.read_text(encoding="utf-8", errors="replace"))
     return {
         "backend": "local_file",
+        "selectedMode": backend_mode,
+        "selectedModeLabel": auth_backend_mode_label(backend_mode),
+        "safeBackend": preferred_safe_secret_backend(root),
         "provider": normalized_provider,
         "label": label,
         "keys": keys,
@@ -473,6 +546,10 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
         provider_groups[provider_id] = {
             "provider": provider_id,
             "label": auth_key_provider_label(provider_id),
+            "selectedMode": str(pool_state.get("selectedMode") or auth_backend_mode_for_provider(root, provider_id)),
+            "selectedModeLabel": str(pool_state.get("selectedModeLabel") or auth_backend_mode_label(auth_backend_mode_for_provider(root, provider_id))),
+            "effectiveBackend": str(pool_state.get("backend") or ""),
+            "safeBackend": str(pool_state.get("safeBackend") or preferred_safe_secret_backend(root)),
             "hasKey": len(keys) > 0,
             "keyCount": len(keys),
             "last4": last4,
@@ -490,7 +567,7 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
         writable = writable or bool(pool_state.get("writable"))
     failure_mode = None
     failure_detail = ""
-    strict_live_failure = topology.secret_backend in {"env", "docker_secret", "external"} and not has_any_key
+    strict_live_failure = any(bool(group.get("strictLiveFailure")) for group in provider_groups.values())
     if not has_any_key:
         failure_modes = [
             str(group.get("failureMode") or "").strip()
@@ -538,8 +615,9 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
         "preferred": topology.secret_backend in preferred_backends,
         "preferredBackends": preferred_backends,
         "recommendedBackend": recommended_secret_backend(topology),
+        "defaultMode": default_auth_backend_mode(root),
         "deprecated": topology.secret_backend == "local_file",
-        "statusNote": secret_backend_status_note(topology),
+        "statusNote": secret_backend_status_note(topology) + " Provider groups can now run either Local or Safe mode independently.",
         "rotationPolicy": rotation_policy,
         "isolationNote": "Provider pools stay isolated. OpenAI lanes never reuse Anthropic, xAI, or MiniMax keys.",
         "termsWarning": "Cross-vendor orchestration can implicate provider ToS or acceptable-use rules. Review each vendor's terms before mixing providers in one workflow.",
@@ -637,6 +715,11 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "model": payload.get("model", existing_draft["model"]),
             "summarizerProvider": payload.get("summarizerProvider", existing_draft["summarizerProvider"]),
             "summarizerModel": payload.get("summarizerModel", existing_draft["summarizerModel"]),
+            "contextMode": payload.get("contextMode", existing_draft["contextMode"]),
+            "directBaselineMode": payload.get("directBaselineMode", existing_draft["directBaselineMode"]),
+            "directProvider": payload.get("directProvider", existing_draft["directProvider"]),
+            "directModel": payload.get("directModel", existing_draft["directModel"]),
+            "ollamaBaseUrl": payload.get("ollamaBaseUrl", existing_draft["ollamaBaseUrl"]),
             "reasoningEffort": payload.get("reasoningEffort", existing_draft["reasoningEffort"]),
             "maxCostUsd": payload.get("maxCostUsd", existing_draft["maxCostUsd"]),
             "maxTotalTokens": payload.get("maxTotalTokens", existing_draft["maxTotalTokens"]),
@@ -690,6 +773,15 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         default_model_for_provider(summarizer_provider),
         summarizer_provider,
     )
+    context_mode = normalize_context_mode(payload.get("contextMode", default_context_mode()), default_context_mode())
+    direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
+    direct_provider = normalize_provider_id(str(payload.get("directProvider", provider)), provider)
+    direct_model = normalize_model_id(
+        str(payload.get("directModel", default_model_for_provider(direct_provider))),
+        default_model_for_provider(direct_provider),
+        direct_provider,
+    )
+    ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", default_ollama_base_url()))
     reasoning_effort = str(payload.get("reasoningEffort", "low")).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = "low"
@@ -754,6 +846,11 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
             "executionMode": execution_mode,
             "provider": provider,
             "model": model,
+            "contextMode": context_mode,
+            "directBaselineMode": direct_baseline_mode,
+            "directProvider": direct_provider,
+            "directModel": direct_model,
+            "ollamaBaseUrl": ollama_base_url,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
             "research": research,
@@ -793,6 +890,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         next_state["commander"] = None
         next_state["commanderReview"] = None
         next_state["workers"] = _empty_worker_state_map(task_workers(task))
+        next_state["directBaseline"] = None
         next_state["summary"] = None
         next_state["memoryVersion"] = int(current.get("memoryVersion") or 0) + 1
         next_state["usage"] = storage.default_usage_state()

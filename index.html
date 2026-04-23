@@ -29,7 +29,13 @@
 
       <nav class="sidebar-nav scroll-sidebar" aria-label="Primary">
         <ul class="sidebarnav">
-          <li class="nav-small-cap"><span class="hide-menu sidebar-copy collapse collapse-horizontal show"><span class="sidebar-copy-inner">Workspace</span></span></li>
+          <li class="nav-small-cap sidebar-section-head">
+            <span class="hide-menu sidebar-copy collapse collapse-horizontal show"><span class="sidebar-copy-inner">Workspace</span></span>
+            <div class="theme-toggle sidebar-theme-toggle" role="group" aria-label="Color theme">
+              <button type="button" class="theme-toggle-btn" data-theme-option="light" aria-pressed="false">Light</button>
+              <button type="button" class="theme-toggle-btn" data-theme-option="dark" aria-pressed="true">Dark</button>
+            </div>
+          </li>
           <li class="sidebar-item">
             <button class="nav-btn sidebar-link active" data-view="home" data-short="H">
               <span class="nav-btn-mark">H</span>
@@ -67,23 +73,11 @@
 
     <div class="body-wrapper workspace">
       <header class="workspace-header app-header">
-        <div class="workspace-heading">
-          <div class="workspace-overline">Agentic workspace</div>
-          <h2>Super reasoning</h2>
-        </div>
         <div class="workspace-header-actions">
           <div class="workspace-shell-tools">
             <button type="button" id="mobileSidebarToggle" class="workspace-shell-btn" aria-expanded="false" aria-controls="sidebarPanel" hidden>Menu</button>
-            <div class="theme-toggle" role="group" aria-label="Color theme">
-              <button type="button" class="theme-toggle-btn" data-theme-option="light" aria-pressed="false">Light</button>
-              <button type="button" class="theme-toggle-btn" data-theme-option="dark" aria-pressed="true">Dark</button>
-            </div>
           </div>
           <div class="workspace-pill-row">
-            <div class="workspace-pill">
-              <span class="workspace-pill-label">API</span>
-              <span id="headerApiMode" class="workspace-pill-value">Python</span>
-            </div>
             <div class="workspace-pill">
               <span class="workspace-pill-label">Task</span>
               <span id="headerTaskId" class="workspace-pill-value">none</span>
@@ -97,8 +91,24 @@
               <span id="headerLoopStatus" class="workspace-pill-value">idle</span>
             </div>
             <div class="workspace-pill">
+              <span class="workspace-pill-label">Progress</span>
+              <span id="headerLoopProgress" class="workspace-pill-value">0 / 0</span>
+            </div>
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">Elapsed</span>
+              <span id="headerLoopElapsed" class="workspace-pill-value">n/a</span>
+            </div>
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">Job</span>
+              <span id="headerLoopJobId" class="workspace-pill-value">none</span>
+            </div>
+            <div class="workspace-pill">
               <span class="workspace-pill-label">Workers</span>
               <span id="headerWorkerCount" class="workspace-pill-value">0</span>
+            </div>
+            <div class="workspace-pill">
+              <span class="workspace-pill-label">Memory</span>
+              <span id="headerMemoryVersion" class="workspace-pill-value">0</span>
             </div>
           </div>
         </div>
@@ -128,6 +138,20 @@
           </div>
         </div>
       </div>
+      <div id="workerEditorModal" class="worker-editor-modal" hidden aria-hidden="true">
+        <div class="worker-editor-backdrop" data-worker-editor-close="true"></div>
+        <div class="worker-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="workerEditorTitle">
+          <div class="worker-editor-head">
+            <div class="worker-editor-head-copy">
+              <div class="worker-editor-kicker">Lane editor</div>
+              <h3 id="workerEditorTitle">Worker</h3>
+              <p id="workerEditorMeta"></p>
+            </div>
+            <button type="button" id="workerEditorClose" class="worker-editor-close" aria-label="Close worker editor">×</button>
+          </div>
+          <div id="workerEditorBody" class="worker-editor-body"></div>
+        </div>
+      </div>
 
       <section class="workspace-view active" data-view="home">
         <div class="home-layout home-layout-chat-focused">
@@ -147,7 +171,7 @@
             </summary>
 
             <div class="home-rail home-controls-grid">
-              <section class="panel rail-panel">
+              <section class="panel rail-panel quick-profile-panel">
                 <div class="panel-head compact">
                   <div>
                     <div class="panel-kicker">Runtime</div>
@@ -159,6 +183,29 @@
                   <div class="home-runtime-empty">Loading runtime profile...</div>
                 </div>
                 <div id="homeQualityProfiles" class="home-quality-grid"></div>
+              </section>
+
+              <section class="panel rail-panel workers-dashboard-panel">
+                <div class="panel-head compact">
+                  <div>
+                    <div class="panel-kicker">Lane roster</div>
+                    <h3>Workers</h3>
+                  </div>
+                  <div class="composer-actions">
+                    <select id="addWorkerType"></select>
+                    <button id="addAdversarial">+ Add</button>
+                    <button id="removeAdversarial" hidden>- Remove</button>
+                  </div>
+                </div>
+                <div class="section-help-row">
+                  <div class="inline-help">
+                    <button type="button" class="inline-help-trigger" aria-label="Show worker lane guidance">Info</button>
+                    <div id="loopNote" class="inline-help-popup">These lanes auto-run when you press Send. More lanes narrow each perspective instead of making each worker carry the full burden.</div>
+                  </div>
+                </div>
+                <div class="workercontrols-scroll">
+                  <div id="workerControls" class="workercontrols">No active task.</div>
+                </div>
               </section>
 
               <section class="panel rail-panel topology-panel">
@@ -173,8 +220,10 @@
                       </div>
                     </div>
                   </div>
-                  <span class="topology-badge">Preview</span>
+                  <span class="topology-badge">Pressure map</span>
                 </div>
+
+                <p class="topology-summary">Commander shapes the debate, workers push from narrow lanes, and the summarizer returns one accountable voice with the tool plane feeding evidence where needed.</p>
 
                 <div class="topology-canvas" aria-label="Agentic architecture map">
                   <div class="topology-grid"></div>
@@ -215,49 +264,11 @@
                   </div>
                 </div>
               </section>
-
-              <section class="panel rail-panel">
-                <div class="panel-head compact">
-                  <div>
-                    <div class="panel-kicker">Lane roster</div>
-                    <h3>Workers</h3>
-                  </div>
-                  <div class="composer-actions">
-                    <select id="addWorkerType"></select>
-                    <button id="addAdversarial">+ Add</button>
-                  </div>
-                </div>
-                <div class="section-help-row">
-                  <div class="inline-help">
-                    <button type="button" class="inline-help-trigger" aria-label="Show worker lane guidance">Info</button>
-                    <div id="loopNote" class="inline-help-popup">These lanes auto-run when you press Send. More lanes narrow each perspective instead of making each worker carry the full burden.</div>
-                  </div>
-                </div>
-                <div id="workerControls" class="workercontrols">No active task.</div>
-              </section>
             </div>
           </details>
 
           <section class="panel chat-panel">
-            <div class="panel-head">
-              <div>
-                <div class="panel-kicker">Chat / responses</div>
-                <div class="title-help-row">
-                  <h3>Agent</h3>
-                  <div class="inline-help">
-                    <button type="button" class="inline-help-trigger" aria-label="Show agent chat guidance">Info</button>
-                    <div class="inline-help-popup">Send one prompt and read one answer. Internal adversarial review still happens, but the front reply stays in a single assistant voice.</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div id="conversationThread" class="conversation-thread">
-              <div class="empty-thread">
-                <div class="empty-thread-title">No active task yet.</div>
-                <div class="empty-thread-copy">Send a prompt below. The assistant will answer here, and the internal lane trace will stay in Review.</div>
-              </div>
-            </div>
+            <div id="conversationThread" class="conversation-thread"></div>
 
             <div class="composer-shell">
               <label for="objective">Commander prompt</label>
@@ -322,7 +333,7 @@
                       <h3>API key management</h3>
                       <div class="inline-help">
                         <button type="button" class="inline-help-trigger" aria-label="Show API key guidance">Info</button>
-                        <div class="inline-help-popup">Prefer env, Docker secrets, or an external provider. The browser can only edit the transitional local fallback backend.</div>
+                        <div class="inline-help-popup">Each provider group can run in Local or Safe mode. Prefer env, Docker secrets, or an external provider for Safe. The browser only edits Local mode, which writes prefixed entries into shared Auth.txt.</div>
                       </div>
                     </div>
                   </div>
@@ -400,6 +411,33 @@
                     </select>
                   </div>
                   <div>
+                    <div class="label-help-row">
+                      <label for="contextMode">Worker context</label>
+                      <div class="inline-help">
+                        <button type="button" class="inline-help-trigger" aria-label="Show background context guidance">Info</button>
+                        <div class="inline-help-popup">`Light Workers` keeps full context on the main thread, while adversarial lanes receive weighted digests built from the commander draft, prior summary, peer steer, and current constraints. `Full Workers` sends the broader packet to workers too.</div>
+                      </div>
+                    </div>
+                    <select id="contextMode">
+                      <option value="weighted" selected>Light Workers</option>
+                      <option value="full">Full Workers</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div class="label-help-row">
+                      <label for="directBaselineMode">Single-thread baseline</label>
+                      <div class="inline-help">
+                        <button type="button" class="inline-help-trigger" aria-label="Show single-thread baseline guidance">Info</button>
+                        <div class="inline-help-popup">`Off` keeps the current pressurized ParaLLM path only. `Single Only` runs one direct answer pipe without worker pressure. `Both Compare` runs the direct answer once alongside the pressurized loop so Review can compare them.</div>
+                      </div>
+                    </div>
+                    <select id="directBaselineMode">
+                      <option value="off" selected>Off</option>
+                      <option value="single">Single Only</option>
+                      <option value="both">Both Compare</option>
+                    </select>
+                  </div>
+                  <div>
                     <label for="provider">Worker provider</label>
                     <select id="provider"></select>
                   </div>
@@ -414,6 +452,26 @@
                   <div>
                     <label for="summarizerModel">Summarizer model</label>
                     <select id="summarizerModel"></select>
+                  </div>
+                  <div id="directProviderField" hidden>
+                    <label for="directProvider">Baseline provider</label>
+                    <select id="directProvider"></select>
+                  </div>
+                  <div id="directModelField" hidden>
+                    <label for="directModel">Baseline model</label>
+                    <select id="directModel"></select>
+                    <div id="directBaselineHint" class="integration-note">Only used when the single-thread baseline is enabled.</div>
+                  </div>
+                  <div id="ollamaBaseUrlField" class="settings-span-2" hidden>
+                    <div class="label-help-row">
+                      <label for="ollamaBaseUrl">Ollama base URL</label>
+                      <div class="inline-help">
+                        <button type="button" class="inline-help-trigger" aria-label="Show Ollama base URL guidance">Info</button>
+                        <div class="inline-help-popup">Used when workers or the summarizer run on Ollama. Enter the host URL like `http://192.168.0.26:11434` or an `/api` base URL. ParaLLM will route live Ollama calls there instead of assuming localhost.</div>
+                      </div>
+                    </div>
+                    <input id="ollamaBaseUrl" type="text" placeholder="http://127.0.0.1:11434" />
+                    <div id="ollamaBaseUrlHint" class="integration-note">Only used when an Ollama provider is active.</div>
                   </div>
                 </div>
 
@@ -448,7 +506,7 @@
                   </div>
                   <div>
                     <label for="maxTotalTokens">Session token cap (local)</label>
-                    <input id="maxTotalTokens" type="number" min="0" step="1000" value="250000" />
+                    <input id="maxTotalTokens" type="number" min="0" step="1000" value="100000" />
                   </div>
                 </div>
 
@@ -652,7 +710,7 @@
               </div>
               <span class="view-group-summary-caret" aria-hidden="true">v</span>
             </summary>
-            <div class="view-group-body eval-group-grid">
+            <div class="view-group-body eval-group-grid eval-group-grid-single">
               <section class="panel">
                 <div class="panel-head compact">
                   <div>
@@ -714,6 +772,18 @@
                 <div class="panel-head compact">
                   <div>
                     <div class="panel-kicker">Eval</div>
+                    <h3>Live checkpoints</h3>
+                  </div>
+                </div>
+                <div id="evalCheckpointList" class="footer-checkpoint-list">
+                  <div class="footer-checkpoint-empty">No checkpoints yet.</div>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head compact">
+                  <div>
+                    <div class="panel-kicker">Eval</div>
                     <h3>Case results</h3>
                   </div>
                 </div>
@@ -738,13 +808,21 @@
                     <label for="evalArtifactLeftSelect">Left artifact</label>
                     <select id="evalArtifactLeftSelect"></select>
                     <div id="evalArtifactLeftMeta" class="artifact-meta">No artifact selected.</div>
-                    <pre id="evalArtifactLeftContent">No artifact selected.</pre>
+                    <div id="evalArtifactLeftVisual" class="eval-artifact-visual review-empty">No artifact selected.</div>
+                    <details class="artifact-raw-toggle">
+                      <summary>Raw JSON</summary>
+                      <pre id="evalArtifactLeftContent">No artifact selected.</pre>
+                    </details>
                   </div>
                   <div class="artifact-pane">
                     <label for="evalArtifactRightSelect">Right artifact</label>
                     <select id="evalArtifactRightSelect"></select>
                     <div id="evalArtifactRightMeta" class="artifact-meta">No artifact selected.</div>
-                    <pre id="evalArtifactRightContent">No artifact selected.</pre>
+                    <div id="evalArtifactRightVisual" class="eval-artifact-visual review-empty">No artifact selected.</div>
+                    <details class="artifact-raw-toggle">
+                      <summary>Raw JSON</summary>
+                      <pre id="evalArtifactRightContent">No artifact selected.</pre>
+                    </details>
                   </div>
                 </div>
               </section>
@@ -889,37 +967,7 @@
         </div>
       </section>
 
-      <footer class="workspace-footer">
-        <details id="workspaceFooterDetails" class="workspace-footer-details" open>
-          <summary class="workspace-footer-summary">
-            <div class="workspace-footer-summary-main">
-              <div class="workspace-status-label">Footer</div>
-              <div class="workspace-footer-summary-title">Checkpoints and loop state</div>
-            </div>
-            <span class="workspace-footer-summary-caret" aria-hidden="true">v</span>
-          </summary>
-
-          <div class="workspace-footer-body">
-            <section class="workspace-status-card workspace-status-card-checkpoints">
-              <div class="workspace-status-label">Checkpoints</div>
-              <div id="footerCheckpointList" class="footer-checkpoint-list">
-                <div class="footer-checkpoint-empty">No checkpoints yet.</div>
-              </div>
-            </section>
-
-            <section class="workspace-status-card workspace-status-card-runtime">
-              <div class="workspace-status-label">Current task / loop time</div>
-              <div class="workspace-status-meta-row"><span>Task</span><span id="footerTaskId">none</span></div>
-              <div class="workspace-status-meta-row"><span>Status</span><span id="footerLoopStatus">idle</span></div>
-              <div class="workspace-status-meta-row"><span>Elapsed</span><span id="footerLoopElapsed">n/a</span></div>
-              <div class="workspace-status-meta-row"><span>Progress</span><span id="footerLoopProgress">0 / 0</span></div>
-              <div class="workspace-status-meta-row"><span>Job</span><span id="footerLoopJobId">none</span></div>
-              <div class="workspace-status-meta-row"><span>Workers</span><span id="footerWorkerCount">0</span></div>
-              <div class="workspace-status-meta-row"><span>Memory</span><span id="footerMemoryVersion">0</span></div>
-            </section>
-          </div>
-        </details>
-
+      <footer class="workspace-footer workspace-footer-spend-only">
         <section class="workspace-status-card workspace-status-card-spend">
           <div class="workspace-status-label">Expenditure</div>
           <div class="workspace-status-spend-line">

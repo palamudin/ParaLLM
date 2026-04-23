@@ -1,0 +1,64 @@
+{
+    "armId": "steered-mini",
+    "title": "Steered Mini",
+    "description": "Cheap worker lanes with a cheap summarizer for broad coverage at low cost.",
+    "type": "steered",
+    "runtime": {
+        "executionMode": "live",
+        "contextMode": "weighted",
+        "directBaselineMode": "off",
+        "model": "gpt-5-mini",
+        "directProvider": "openai",
+        "directModel": "gpt-5-mini",
+        "summarizerModel": "gpt-5-mini",
+        "reasoningEffort": "medium",
+        "budget": {
+            "maxTotalTokens": 180000,
+            "maxCostUsd": 8,
+            "maxOutputTokens": 2400
+        },
+        "research": {
+            "enabled": false,
+            "externalWebAccess": true,
+            "domains": []
+        },
+        "vetting": {
+            "enabled": true
+        },
+        "preferredLoop": {
+            "rounds": 1,
+            "delayMs": 0
+        },
+        "requireLive": true,
+        "allowMockFallback": false
+    },
+    "workers": [
+        {
+            "id": "A",
+            "type": "proponent",
+            "label": "Proponent",
+            "role": "utility",
+            "focus": "benefits, feasibility, leverage, momentum, practical execution",
+            "temperature": "balanced",
+            "model": "gpt-5-mini"
+        },
+        {
+            "id": "B",
+            "type": "sceptic",
+            "label": "Sceptic",
+            "role": "adversarial",
+            "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+            "temperature": "cool",
+            "model": "gpt-5-mini"
+        },
+        {
+            "id": "C",
+            "type": "security",
+            "label": "Security",
+            "role": "adversarial",
+            "focus": "security abuse, privilege escalation, hostile actors",
+            "temperature": "hot",
+            "model": "gpt-5-mini"
+        }
+    ]
+}

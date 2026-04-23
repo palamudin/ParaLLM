@@ -1,7 +1,12 @@
 Auth.txt
 data/checkpoints/
 data/benchmarks/
-data/evals/
+data/evals/*
+!data/evals/arms/
+!data/evals/arms/*.json
+!data/evals/suites/
+!data/evals/suites/*.json
+data/evals/runs/
 data/outputs/
 data/sessions/
 data/tasks/

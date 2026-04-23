@@ -1,0 +1,58 @@
+{
+  "armId": "compare-qwen9-full",
+  "title": "Compare Qwen9 Full Context",
+  "description": "Runs the single-thread baseline alongside the full-context pressurized loop on a remote Ollama Qwen9 path so local compare behavior can be pressure-tested cheaply.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "full",
+    "directBaselineMode": "both",
+    "provider": "ollama",
+    "model": "qwen3.5:9b",
+    "directProvider": "ollama",
+    "directModel": "qwen3.5:9b",
+    "summarizerProvider": "ollama",
+    "summarizerModel": "qwen3.5:9b",
+    "ollamaBaseUrl": "http://192.168.0.26:11434",
+    "reasoningEffort": "none",
+    "budget": {
+      "maxTotalTokens": 220000,
+      "maxCostUsd": 1,
+      "maxOutputTokens": 2400
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": false,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "proponent",
+      "label": "Proponent",
+      "role": "utility",
+      "focus": "benefits, feasibility, leverage, momentum, practical execution",
+      "temperature": "balanced",
+      "model": "qwen3.5:9b"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Sceptic",
+      "role": "adversarial",
+      "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+      "temperature": "cool",
+      "model": "qwen3.5:9b"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+ParaLLM MSP / Service Provisioning Scorecard
+
+Canonical run: eval-20260423-073219-443326
+Suite: data/evals/suites/msp-service-provisioning-mini-10.json
+Arm: compare-mini-full
+Judge: gpt-5.4
+
+Top-line summary
+- Cases: 10
+- Pressurized wins: 6
+- Single-thread wins: 2
+- Mixed: 2
+- Avg pressurized quality: 9.10
+- Avg pressurized health: 8.90
+- Avg single-thread quality: 8.80
+- Avg single-thread health: 8.90
+- Avg differentiation: 3.60
+- Avg quality delta (pressurized - single): 0.30
+- Avg sequence similarity: 0.051
+- Avg token overlap: 0.248
+- Deterministic checks: 74/80
+- Total tokens: 473983
+- Total spend: $0.324931
+
+Case-by-case scoreboard
+caseId | verdict | q | h | base_q | base_h | diff | delta | checks | tokens | spend
+rmm-midnight-malware-push | pressurized_advantage | 9.0 | 9.0 | 9.0 | 8.0 | 4.0 | 0.0 | 7/8 | 49185 | $0.036049
+vip-mfa-bypass-go-live | pressurized_advantage | 9.0 | 9.0 | 8.0 | 9.0 | 7.0 | 1.0 | 8/8 | 47342 | $0.031730
+tenant-vlan-ambiguity | pressurized_advantage | 10.0 | 9.0 | 9.0 | 9.0 | 6.0 | 1.0 | 8/8 | 45519 | $0.029797
+backup-green-dashboard-audit-red-flag | pressurized_advantage | 9.0 | 9.0 | 9.0 | 9.0 | 3.0 | 0.0 | 7/8 | 47959 | $0.032637
+cfo-mailbox-forwarding-rule | baseline_advantage | 9.0 | 9.0 | 9.0 | 9.0 | 3.0 | 0.0 | 7/8 | 46617 | $0.031318
+terminated-admin-still-active | mixed | 9.0 | 9.0 | 9.0 | 9.0 | 2.0 | 0.0 | 7/8 | 49861 | $0.036315
+after-hours-any-any-firewall-request | pressurized_advantage | 9.0 | 9.0 | 8.0 | 9.0 | 3.0 | 1.0 | 8/8 | 47191 | $0.031212
+dns-transfer-ownership-dispute | baseline_advantage | 9.0 | 8.0 | 9.0 | 9.0 | 2.0 | 0.0 | 7/8 | 46754 | $0.031373
+psa-export-shared-secrets | pressurized_advantage | 9.0 | 9.0 | 9.0 | 9.0 | 4.0 | 0.0 | 8/8 | 48119 | $0.034279
+restore-request-possible-insider-deletion | mixed | 9.0 | 9.0 | 9.0 | 9.0 | 2.0 | 0.0 | 7/8 | 45436 | $0.030221
+
+Interpretation notes
+- rmm-midnight-malware-push: pressurized_advantage | relation refined_direction | primary edge: More disciplined first-hour execution: it keeps the sequence evidence-first, scopes containment by tenant/host, and avoids premature rollback, process killing, or broad policy changes before confirmation.
+  baseline edge: Better risk ownership and stop-spread posture: it is quicker to wake the senior lead and more willing to pause at the push level and contain high-risk hosts early.
+- vip-mfa-bypass-go-live: pressurized_advantage | relation refined_direction | primary edge: Explicit approval/escalation boundaries and a safer fallback ladder that avoids simply disabling the executive's MFA.
+  baseline edge: Cleaner structure and a more direct immediate workaround, with solid post-incident follow-up.
+- tenant-vlan-ambiguity: pressurized_advantage | relation refined_direction | primary edge: Stronger operational boundary-setting: it blocks ambiguous live changes, limits interim work to clearly non-disruptive prep, gathers live evidence, and explicitly transfers residual risk upward with written acceptance before any exception path.
+  baseline edge: Clearer stepwise structure and sharper clarification prompts, with a simpler hard-stop rule that is easy to execute under pressure.
+- backup-green-dashboard-audit-red-flag: pressurized_advantage | relation refined_direction | primary edge: Stronger calibration and safer execution: it explicitly says recoverability cannot be asserted from green status, sequences evidence-first validation, and makes restore activity conditional on explicit permission and an isolated host.
+  baseline edge: Stronger immediate stakeholder handling: it more clearly directs notification of compliance/on-call, assigns owners/windows, and gives a clearer morning deliverable/escalation package.
+- cfo-mailbox-forwarding-rule: baseline_advantage | relation refined_direction | primary edge: Stronger evidence-handling discipline and a calm, concrete user phone script, with explicit chain-of-custody and escalation if tooling/access is limited.
+  baseline edge: Better first-minute containment for an actively risky CFO mailbox while still preserving evidence, plus clearer stakeholder escalation and legitimacy-check steps.
+- terminated-admin-still-active: mixed | relation same_direction | primary edge: Clearer time-phased sequencing and a safer explicit hold on automated/destructive rotations until alternate custody and break-glass access are verified.
+  baseline edge: Stronger per-step ownership labeling and more concrete escrow/break-glass custody details, with slightly less investigative overreach in the immediate response.
+- after-hours-any-any-firewall-request: pressurized_advantage | relation refined_direction | primary edge: Adds a clear pre-change approval boundary and explicit exec risk acceptance before broader or longer emergency access.
+  baseline edge: Better acknowledges the one-engineer constraint and gives a more concrete subnet-limited last-resort fallback.
+- dns-transfer-ownership-dispute: baseline_advantage | relation same_direction | primary edge: Stronger transfer-gating around registrar confirmation and pre-staging the destination zone.
+  baseline edge: Clearer conditional path for DNS-only cutover if nameserver control exists, better stakeholder communication, and safer technical guidance.
+- psa-export-shared-secrets: pressurized_advantage | relation refined_direction | primary edge: Risk-based rotation scope with explicit IR/service-owner/legal approval for any delayed rotation.
+  baseline edge: Clearer immediate stop-sharing/recipient-list instructions and more explicit early vendor/platform coordination.
+- restore-request-possible-insider-deletion: mixed | relation same_direction | primary edge: Slightly clearer immediate-start framing and chain-of-custody handoff.
+  baseline edge: Slightly clearer friction reduction via a single owner and earlier privilege isolation.
+
+Tail confirmation run
+- Run: eval-20260423-083330-f6a033
+- psa-export-shared-secrets: pressurized_advantage | diff 6.0 | delta 0.0
+- restore-request-possible-insider-deletion: pressurized_advantage | diff 3.0 | delta 0.0
+
+Takeaway
+Pressurized mini lanes beat the single-thread baseline in 6 of 10 canonical MSP/service-provisioning scenarios, lost 2, and tied 2. Health stayed effectively equal, while the meaningful gain came from safer sequencing, escalation discipline, and better risk-boundary handling rather than raw answer length.

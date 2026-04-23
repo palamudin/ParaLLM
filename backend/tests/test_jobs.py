@@ -41,6 +41,24 @@ class LoopJobTests(unittest.TestCase):
         self.assertEqual(job["status"], "queued")
         self.assertEqual(job["rounds"], 2)
 
+    def test_start_loop_single_baseline_clamps_rounds_and_worker_count(self) -> None:
+        paths = storage.project_paths(self.root)
+        state = storage.read_state_payload(paths)
+        task = state["activeTask"]
+        task["runtime"]["directBaselineMode"] = "single"
+        paths.state.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        (paths.tasks / f"{task['taskId']}.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+
+        with mock.patch("backend.app.jobs.launch_loop_job_runner") as launcher:
+            result = jobs.start_loop({"rounds": "4", "delayMs": "25"}, self.root)
+
+        self.assertEqual(result["rounds"], 1)
+        launcher.assert_called_once()
+        job = storage.read_json_file(paths.jobs / f"{result['jobId']}.json")
+        self.assertIsInstance(job, dict)
+        self.assertEqual(job["rounds"], 1)
+        self.assertEqual(job["workerCount"], 0)
+
     def test_cancel_loop_cancels_queued_job_before_start(self) -> None:
         with mock.patch("backend.app.jobs.launch_loop_job_runner"):
             queued = jobs.start_loop({"rounds": "2", "delayMs": "0"}, self.root)
@@ -257,6 +275,63 @@ class LoopJobTests(unittest.TestCase):
         self.assertIsInstance(updated_job, dict)
         self.assertEqual(updated_job["status"], "error")
         self.assertIn("loop.execute.before_target.commander", str(updated_job.get("error")))
+
+    def test_execute_loop_job_single_mode_only_runs_direct_baseline(self) -> None:
+        paths = storage.project_paths(self.root)
+        state = storage.read_state_payload(paths)
+        task = state["activeTask"]
+        task["runtime"]["directBaselineMode"] = "single"
+        paths.state.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        (paths.tasks / f"{task['taskId']}.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+
+        runtime = jobs._runtime(self.root)
+        job = jobs.create_loop_job(runtime, task, 4, 0, "background")
+        seen_targets: list[str] = []
+
+        def fake_run_target(_runtime, target, _task_id, _payload):
+            seen_targets.append(str(target))
+            return {"target": target, "output": f"{target} complete", "exitCode": 0}
+
+        with mock.patch("backend.app.jobs.runtime_execution.run_target", side_effect=fake_run_target):
+            result = jobs.execute_loop_job(job["jobId"], self.root)
+
+        self.assertEqual(seen_targets, ["direct_baseline"])
+        self.assertEqual(result["requestedRounds"], 1)
+        self.assertEqual(result["completedRounds"], 1)
+        updated_job = storage.read_json_file(paths.jobs / f"{job['jobId']}.json")
+        self.assertIsInstance(updated_job, dict)
+        self.assertEqual(updated_job["rounds"], 1)
+        self.assertEqual(updated_job["workerCount"], 0)
+
+    def test_execute_loop_job_both_mode_runs_parallel_direct_baseline(self) -> None:
+        paths = storage.project_paths(self.root)
+        state = storage.read_state_payload(paths)
+        task = state["activeTask"]
+        task["runtime"]["directBaselineMode"] = "both"
+        paths.state.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        (paths.tasks / f"{task['taskId']}.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+
+        runtime = jobs._runtime(self.root)
+        job = jobs.create_loop_job(runtime, task, 1, 0, "background")
+        seen_targets: list[str] = []
+
+        def fake_run_target(_runtime, target, _task_id, _payload):
+            seen_targets.append(str(target))
+            return {"target": target, "output": f"{target} complete", "exitCode": 0}
+
+        with mock.patch("backend.app.jobs.runtime_execution.run_target", side_effect=fake_run_target):
+            result = jobs.execute_loop_job(job["jobId"], self.root)
+
+        self.assertIn("direct_baseline", seen_targets)
+        self.assertIn("commander", seen_targets)
+        self.assertIn("commander_review", seen_targets)
+        self.assertIn("summarizer", seen_targets)
+        self.assertIn("A", seen_targets)
+        self.assertIn("B", seen_targets)
+        self.assertEqual(result["requestedRounds"], 1)
+        self.assertTrue(result["results"])
+        self.assertIn("parallelTargets", result["results"][0])
+        self.assertEqual(result["results"][0]["parallelTargets"][0]["target"], "direct_baseline")
 
 
 if __name__ == "__main__":

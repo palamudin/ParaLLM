@@ -1,0 +1,66 @@
+{
+  "armId": "compare-54-full-miniworkers",
+  "title": "Compare 5.4 Full Mini Workers",
+  "description": "Full-context compare run with gpt-5-mini worker lanes, a gpt-5.4 summarizer, and a gpt-5.4 single-thread baseline for apples-to-apples pressure testing.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "full",
+    "directBaselineMode": "both",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5.4",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5.4",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 260000,
+      "maxCostUsd": 18,
+      "maxOutputTokens": 2800
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "proponent",
+      "label": "Proponent",
+      "role": "utility",
+      "focus": "benefits, feasibility, leverage, momentum, practical execution",
+      "temperature": "balanced",
+      "model": "gpt-5-mini"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Sceptic",
+      "role": "adversarial",
+      "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+      "temperature": "cool",
+      "model": "gpt-5-mini"
+    },
+    {
+      "id": "C",
+      "type": "security",
+      "label": "Security",
+      "role": "adversarial",
+      "focus": "security abuse, privilege escalation, hostile actors",
+      "temperature": "hot",
+      "model": "gpt-5-mini"
+    }
+  ]
+}

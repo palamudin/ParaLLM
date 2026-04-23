@@ -212,7 +212,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="gpt-5-mini", help="Worker model for the live smoke.")
     parser.add_argument("--summarizer-model", default="gpt-5-mini", help="Summarizer model for the live smoke.")
     parser.add_argument("--max-cost-usd", type=float, default=0.08, help="Estimated spend cap for the smoke task.")
-    parser.add_argument("--max-total-tokens", type=int, default=40000, help="Token cap for the smoke task.")
+    parser.add_argument("--max-total-tokens", type=int, default=60000, help="Token cap for the smoke task.")
     parser.add_argument("--max-output-tokens", type=int, default=500, help="Requested output cap before runtime floors apply.")
     parser.add_argument(
         "--allowed-domains",

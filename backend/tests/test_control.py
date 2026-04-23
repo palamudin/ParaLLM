@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import control, storage
+from backend.app.secrets import write_auth_backend_mode_override
 from runtime.engine import RuntimeErrorWithCode
 
 
@@ -79,6 +80,35 @@ class ControlPlaneTests(unittest.TestCase):
             self.assertEqual(status["providerGroups"]["anthropic"]["last4"], "2222")
             self.assertIn("isolated", status["isolationNote"].lower())
 
+    def test_auth_pool_status_reads_prefixed_shared_auth_file_groups(self) -> None:
+        (self.root / "Auth.txt").write_text(
+            "openai:sk-openai-1111\nant:sk-anthropic-2222\nxai:sk-xai-3333\nmin:sk-minimax-4444\n",
+            encoding="utf-8",
+        )
+
+        with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
+            status = control.auth_pool_status(self.root)
+            self.assertEqual(control.read_auth_key_pool(self.root, "openai"), ["sk-openai-1111"])
+            self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), ["sk-anthropic-2222"])
+            self.assertEqual(control.read_auth_key_pool(self.root, "xai"), ["sk-xai-3333"])
+            self.assertEqual(control.read_auth_key_pool(self.root, "minimax"), ["sk-minimax-4444"])
+            self.assertEqual(status["providerGroups"]["anthropic"]["selectedMode"], "local")
+            self.assertEqual(status["providerGroups"]["anthropic"]["effectiveBackend"], "local_file")
+
+    def test_auth_pool_status_respects_provider_local_override_under_safe_backend(self) -> None:
+        (self.root / "Auth.txt").write_text("openai:sk-local-1111\n", encoding="utf-8")
+        write_auth_backend_mode_override(self.root, "openai", "local")
+        env = {
+            "LOOP_SECRET_BACKEND": "env",
+            "LOOP_OPENAI_API_KEYS": "sk-env-9999\n",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            status = control.auth_pool_status(self.root)
+
+        self.assertEqual(control.read_auth_key_pool(self.root, "openai"), ["sk-local-1111"])
+        self.assertEqual(status["providerGroups"]["openai"]["selectedMode"], "local")
+        self.assertEqual(status["providerGroups"]["openai"]["effectiveBackend"], "local_file")
+
     def test_auth_file_path_honors_docker_secret_backend(self) -> None:
         secret_path = self.root / "secrets" / "openai_api_keys"
         previous_backend = os.environ.get("LOOP_SECRET_BACKEND")
@@ -108,6 +138,11 @@ class ControlPlaneTests(unittest.TestCase):
                 "model": "qwen3-coder",
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
+                "contextMode": "full",
+                "directBaselineMode": "both",
+                "directProvider": "anthropic",
+                "directModel": "claude-sonnet-4-20250514",
+                "ollamaBaseUrl": "http://192.168.0.26:11434",
                 "researchEnabled": "1",
                 "localFilesEnabled": "1",
                 "localFileRoots": ".,runtime, api",
@@ -129,6 +164,11 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["constraints"], ["No downtime", "Keep backward compatibility"])
         self.assertEqual(draft["model"], "qwen3-coder")
         self.assertEqual(draft["summarizerProvider"], "openai")
+        self.assertEqual(draft["contextMode"], "full")
+        self.assertEqual(draft["directBaselineMode"], "both")
+        self.assertEqual(draft["directProvider"], "anthropic")
+        self.assertEqual(draft["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(draft["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertFalse(draft["researchEnabled"])
         self.assertTrue(draft["localFilesEnabled"])
         self.assertTrue(draft["githubToolsEnabled"])
@@ -141,6 +181,14 @@ class ControlPlaneTests(unittest.TestCase):
         state = storage.read_state_payload(storage.project_paths(self.root))
         self.assertEqual(state["draft"]["objective"], "Map the hosted migration")
 
+    def test_default_draft_budget_uses_100k_floor(self) -> None:
+        draft = control.default_draft_state()
+
+        self.assertEqual(draft["maxTotalTokens"], 100000)
+        self.assertEqual(draft["budgetTargets"]["commander"]["maxTotalTokens"], 100000)
+        self.assertEqual(draft["budgetTargets"]["worker"]["maxTotalTokens"], 100000)
+        self.assertEqual(draft["budgetTargets"]["summarizer"]["maxTotalTokens"], 100000)
+
     def test_create_task_writes_state_snapshot_and_logs(self) -> None:
         result = control.create_task(
             {
@@ -150,6 +198,11 @@ class ControlPlaneTests(unittest.TestCase):
                 "model": "qwen3",
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
+                "contextMode": "full",
+                "directBaselineMode": "both",
+                "directProvider": "anthropic",
+                "directModel": "claude-sonnet-4-20250514",
+                "ollamaBaseUrl": "http://192.168.0.26:11434/api",
                 "reasoningEffort": "medium",
                 "loopRounds": "2",
                 "loopDelayMs": "500",
@@ -167,6 +220,11 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["taskId"], task_id)
         self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
         self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
+        self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
+        self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
+        self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
+        self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
         self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
         self.assertEqual(state["draft"]["objective"], "Design the first hosted topology")
         self.assertIn("A", state["workers"])
