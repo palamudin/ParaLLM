@@ -165,6 +165,7 @@ Current skill layers:
 - Front eval now runs through Home via `Front mode = Eval`; the Eval tab is a legacy archive, not the live launcher
 - Blind direct-vs-steered benchmark harness
 - Control-quality grading for lead-thread discipline
+- Scripted matrix vetting for multi-answer bakeoffs via `scripts/run_vetting_matrix.py`, with blind slot shuffling, generalized score categories, and local benchmark artifacts under `data/benchmarks/vetting/`
 - Isolated eval runner with per-replicate workspaces
 - Eval arms can now sweep `single`, `off`, and `both compare` answer paths plus `light workers` / `full workers` routing, with saved baseline-vs-pressurized comparison artifacts and score deltas per replicate
 - Eval run detail now exposes a collapsible technical compare, a side-by-side user-view answer compare, and a historical verification trail for each replicate
@@ -501,6 +502,7 @@ Useful flags:
 python scripts/qa_check.py --skip-smoke --no-restart-runtime
 python scripts/qa_live_check.py --max-cost-usd 0.08 --max-total-tokens 40000
 python scripts/quality_benchmark.py --case core --repeats 3 --loop-sweep 1,2,3
+python scripts/run_vetting_matrix.py --input scripts/vetting_manifest.example.json
 ```
 
 Internal hardening:
@@ -600,6 +602,16 @@ The next serious tuning work is not more surface polish. It is:
 
 ## Status
 
-This is a real prototype, not a finished product.
+Latest blind external vetting snapshot: `MSP Midnight Breach Bakeoff` on `gpt-5.4` judge. Public timing is intentionally omitted here; internal benchmark artifacts also track latency and speed-adjusted scores while we stabilize the sample size.
 
-It already supports live runs, evals, review traces, runtime profiles, and adversarial lane shaping. The open question is not whether it works at all. The open question is where it is genuinely worth the extra reasoning pressure and spend.
+| Variant | Overall | Current read |
+| --- | --- | --- |
+| `ParaLLM 5.4 full \| mini adversarials` | `9.5` | Best final answer |
+| `Direct GPT-5.4` | `9.0` | Best value |
+| `ParaLLM 5.4 mini \| mini adversarials` | `9.0` | Best tactical detail |
+| `ParaLLM 5.4 full \| full adversarials` | `5.5` | Incomplete / not yet shippable |
+
+- Compute verdict: `mixed`
+- Latest judge read: extra orchestration improved some answers, but not decisively enough to justify the spread in cost across the set
+- Local blind vetting runs recorded so far: `2`
+- Benchmark artifacts: [summary.json](data/benchmarks/vetting/summary.json), [latest blind run](data/benchmarks/vetting/latest.json)

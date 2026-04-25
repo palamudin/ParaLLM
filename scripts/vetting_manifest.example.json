@@ -1,0 +1,40 @@
+{
+  "title": "MSP Midnight Breach Compare",
+  "caseId": "msp-midnight-breach-compare",
+  "objective": "You are the only MSP security engineer awake. Twelve SMB clients report PowerShell spawning from the RMM agent minutes after a new automation package was pushed. Give the first-hour response plan.",
+  "constraints": [
+    "Answer in a single assistant voice.",
+    "Keep the plan factual, methodical, and sequenced.",
+    "Use decision gates before destructive action."
+  ],
+  "answers": [
+    {
+      "id": "para-54mini-miniworkers",
+      "label": "ParaLLM 5.4 mini | mini adversarials",
+      "cohort": "parallm-54mini-miniworkers",
+      "costUsd": 0.036498,
+      "text": "Replace this with the full answer text or point to an artifact file."
+    },
+    {
+      "id": "para-54full-miniworkers",
+      "label": "ParaLLM 5.4 full | mini adversarials",
+      "cohort": "parallm-54full-miniworkers",
+      "costUsd": 0.302014,
+      "text": "Replace this with the full answer text or point to an artifact file."
+    },
+    {
+      "id": "para-54full-fullworkers",
+      "label": "ParaLLM 5.4 full | full adversarials",
+      "cohort": "parallm-54full-fullworkers",
+      "costUsd": 0.450001,
+      "text": "Replace this with the full answer text or point to an artifact file."
+    },
+    {
+      "id": "direct-54",
+      "label": "Direct GPT-5.4",
+      "cohort": "direct-54",
+      "costUsd": 0.017542,
+      "text": "Replace this with the direct answer text or point to an artifact file."
+    }
+  ]
+}

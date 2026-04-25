@@ -16,6 +16,8 @@ data/logs/
 data/exports/
 data/*.json
 data/*.jsonl
+Vetting.txt
+vetting.txt
 build/
 runtime/__pycache__/
 backend/__pycache__/

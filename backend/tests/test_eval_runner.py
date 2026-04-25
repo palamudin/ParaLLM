@@ -220,6 +220,61 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(aggregate["comparison"]["averageScores"]["overallDifferentiation"], 4.5)
         self.assertEqual(aggregate["comparison"]["meaningfulDifferenceRate"], 0.5)
 
+    def test_vetting_matrix_judge_schema_tracks_answer_ids(self) -> None:
+        schema = eval_runner.vetting_matrix_judge_schema(["A", "B", "C"])
+
+        self.assertEqual(schema["properties"]["bestFinalAnswer"]["enum"], ["A", "B", "C"])
+        self.assertEqual(schema["properties"]["computeVerdict"]["enum"], eval_runner.VETTING_COMPUTE_VERDICTS)
+        self.assertEqual(
+            schema["properties"]["scores"]["properties"]["A"]["required"],
+            eval_runner.VETTING_MATRIX_SCORE_FIELDS,
+        )
+
+    def test_normalize_vetting_matrix_result_backfills_ranking_and_leaders(self) -> None:
+        normalized = eval_runner.normalize_vetting_matrix_result(
+            {
+                "scores": {
+                    "A": {
+                        "blastRadiusPerception": 8.2,
+                        "humanUsability": 7.8,
+                        "agentExecutability": 7.6,
+                        "tacticalDetail": 8.9,
+                        "restraintAndCollateral": 8.0,
+                        "decisionGates": 7.3,
+                        "firstHourRealism": 7.9,
+                        "overall": 0,
+                    },
+                    "B": {
+                        "blastRadiusPerception": 9.1,
+                        "humanUsability": 8.6,
+                        "agentExecutability": 8.4,
+                        "tacticalDetail": 7.2,
+                        "restraintAndCollateral": 9.0,
+                        "decisionGates": 8.2,
+                        "firstHourRealism": 8.7,
+                        "overall": 8.8,
+                    },
+                },
+                "bestFinalAnswer": "B",
+                "bestTacticalDetail": "A",
+                "bestValue": "A",
+                "computeVerdict": "earned",
+                "answerNotes": {"A": "More tactical detail.", "B": "Best final answer."},
+                "rationale": "B is cleaner, A is tactically denser.",
+            },
+            ["A", "B"],
+            response_id="resp_123",
+        )
+
+        self.assertEqual(normalized["ranking"], ["B", "A"])
+        self.assertEqual(normalized["bestFinalAnswer"], "B")
+        self.assertEqual(normalized["bestTacticalDetail"], "A")
+        self.assertEqual(normalized["computeVerdict"], "earned")
+        self.assertEqual(normalized["responseId"], "resp_123")
+        self.assertEqual(normalized["scores"]["A"]["overall"], 8.0)
+        self.assertEqual(normalized["categoryLeaders"]["tacticalDetail"], ["A"])
+        self.assertEqual(normalized["categoryLeaders"]["blastRadiusPerception"], ["B"])
+
 
 if __name__ == "__main__":
     unittest.main()
