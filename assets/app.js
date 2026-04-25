@@ -277,14 +277,30 @@ let artifactSelections = { left: "", right: "" };
 let formDirty = false;
 let lastSyncedFormSourceKey = "";
 let activeView = localStorage.getItem("loopActiveView") || "home";
+let activeFrontCanvas = localStorage.getItem("loopActiveFrontCanvas") || "live";
 let sidebarCollapsed = localStorage.getItem("loopSidebarCollapsed") === "1";
 let activeTheme = localStorage.getItem("loopTheme") || "dark";
 let mobileSidebarOpen = false;
 let latestState = null;
 let latestHistoryState = null;
 let latestEvalHistory = null;
+let latestCanvasEvalHistory = { eval: null, judge: null };
 let sidebarCopyCollapseTargets = [];
 let selectedEvalRunId = localStorage.getItem("loopSelectedEvalRunId") || "";
+let selectedFrontEvalRunId = localStorage.getItem("loopSelectedFrontEvalRunId") || "";
+let selectedFrontJudgeRunId = localStorage.getItem("loopSelectedFrontJudgeRunId") || "";
+let frontEvalSelection = safeJsonParse(localStorage.getItem("loopFrontEvalSelection") || "{}", {
+  suiteId: "msp-rmm-midnight-malware-push",
+  caseId: "rmm-midnight-malware-push",
+  judgeModel: "gpt-5.4"
+});
+let frontJudgeSelection = safeJsonParse(localStorage.getItem("loopFrontJudgeSelection") || "{}", {
+  suiteIds: ["msp-rmm-midnight-malware-push"],
+  armIds: ["compare-mini-full", "compare-54-full-miniworkers", "compare-54-full-triple", "direct-gpt54"],
+  judgeModel: "gpt-5.4",
+  replicates: 1,
+  loopSweep: "1"
+});
 let evalArtifactSelections = { left: "", right: "" };
 let evalArtifactContentCache = {};
 let evalArtifactRequestState = {};
@@ -314,6 +330,8 @@ const API = {
   authMode: "/v1/auth/mode",
   evalArtifact: "/v1/evals/artifact",
   evalHistory: "/v1/evals/history",
+  frontEvalRuns: "/v1/front/eval/runs",
+  frontJudgeRuns: "/v1/front/judge/runs",
   exportSession: "/v1/session/export",
   state: "/v1/state",
   events: "/v1/events",
@@ -899,13 +917,12 @@ function shouldShowDirectBaselineFields(mode) {
 }
 
 function syncFrontModeFields() {
-  const frontMode = normalizeFrontMode($("#frontMode").val());
+  const $frontMode = $("#frontMode");
   const $directBaseline = $("#directBaselineMode");
-  if (!$directBaseline.length) return;
-  if (frontMode === "eval") {
-    $directBaseline.val("both");
-    $directBaseline.prop("disabled", true);
-  } else {
+  if ($frontMode.length && normalizeFrontMode($frontMode.val()) !== "full") {
+    $frontMode.val("full");
+  }
+  if ($directBaseline.length) {
     $directBaseline.prop("disabled", false);
   }
 }
@@ -2390,6 +2407,33 @@ function buildDraftSavePayload(options = {}) {
   payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
   payload.targetTimeouts = JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null));
   return payload;
+}
+
+function buildFrontCanvasRuntimePayload() {
+  const base = collectCommanderPayload();
+  const summarizerConfig = collectVisibleSummarizerConfig();
+  return {
+    executionMode: String(base.executionMode || "live"),
+    contextMode: normalizeContextMode(base.contextMode),
+    provider: String(base.provider || "openai"),
+    model: String(base.model || ""),
+    summarizerProvider: String(summarizerConfig?.provider || base.summarizerProvider || base.provider || "openai"),
+    summarizerModel: String(summarizerConfig?.model || base.summarizerModel || base.model || ""),
+    summarizerHarness: normalizeHarnessConfig(summarizerConfig?.harness, "balanced"),
+    directProvider: String(base.directProvider || base.provider || "openai"),
+    directModel: String(base.directModel || base.model || ""),
+    ollamaBaseUrl: normalizeOllamaBaseUrl(base.ollamaBaseUrl),
+    reasoningEffort: String(base.reasoningEffort || "low"),
+    targetTimeouts: currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null),
+    maxCostUsd: Number(base.maxCostUsd || 0),
+    loopRounds: Number(base.loopRounds || 1),
+    loopDelayMs: Number(base.loopDelayMs || 0),
+    researchEnabled: $("#researchEnabled").val() === "1",
+    researchExternalWebAccess: $("#researchExternalWebAccess").val() !== "0",
+    researchDomains: splitCommaList($("#researchDomains").val()),
+    vettingEnabled: $("#vettingEnabled").val() !== "0",
+    workers: collectVisibleWorkerRoster()
+  };
 }
 
 function buildProfileAppliedWorkerRoster(modelId) {
@@ -3985,6 +4029,166 @@ function renderEvalCatalog(data) {
     notes.push("Eval catalogs are loaded from isolated local manifests in data/evals/.");
   }
   $("#evalCatalogNote").text(notes.join(" "));
+}
+
+function frontCanvasRunsFor(canvas) {
+  return latestCanvasEvalHistory?.[canvas]?.runs || [];
+}
+
+function frontCanvasCatalogSource(canvas) {
+  const history = latestCanvasEvalHistory?.[canvas] || {};
+  return {
+    suites: history.suites || [],
+    arms: history.arms || [],
+    suiteErrors: history.suiteErrors || [],
+    armErrors: history.armErrors || []
+  };
+}
+
+function buildEvalCaseOptions(suites, selectedSuiteId, selectedCaseId) {
+  const suite = (suites || []).find(function (entry) {
+    return String(entry?.suiteId || "") === String(selectedSuiteId || "");
+  });
+  const cases = Array.isArray(suite?.cases) ? suite.cases : [];
+  const options = [`<option value="">Choose case</option>`];
+  cases.forEach(function (entry) {
+    const caseId = String(entry?.caseId || "").trim();
+    if (!caseId) return;
+    const selected = caseId === selectedCaseId ? " selected" : "";
+    options.push(`<option value="${escapeHtml(caseId)}"${selected}>${escapeHtml(entry?.title || caseId)}</option>`);
+  });
+  return options.join("");
+}
+
+function renderFrontJudgeChecklist($root, items, selectedIds, idKey, summaryBuilder) {
+  if (!$root.length) return;
+  if (!items || !items.length) {
+    $root.html(`<div class="review-empty">No options available.</div>`);
+    return;
+  }
+  $root.html(items.map(function (item) {
+    const id = String(item?.[idKey] || "").trim();
+    if (!id) return "";
+    const checked = selectedIds.includes(id) ? " checked" : "";
+    return `
+      <label class="front-canvas-check">
+        <input type="checkbox" class="front-judge-check" data-check-type="${escapeHtml(idKey)}" value="${escapeHtml(id)}"${checked} />
+        <span>
+          <strong>${escapeHtml(item?.title || id)}</strong>
+          <span>${escapeHtml(summaryBuilder(item))}</span>
+        </span>
+      </label>
+    `;
+  }).join(""));
+}
+
+function renderFrontCanvasCatalogs() {
+  const evalCatalog = frontCanvasCatalogSource("eval");
+  const suites = evalCatalog.suites || [];
+  const effectiveSuiteId = suites.some(function (suite) { return String(suite?.suiteId || "") === String(frontEvalSelection.suiteId || ""); })
+    ? String(frontEvalSelection.suiteId || "")
+    : String(suites?.[0]?.suiteId || "");
+  frontEvalSelection.suiteId = effectiveSuiteId;
+  const suite = suites.find(function (entry) {
+    return String(entry?.suiteId || "") === effectiveSuiteId;
+  }) || null;
+  const availableCases = Array.isArray(suite?.cases) ? suite.cases : [];
+  const effectiveCaseId = availableCases.some(function (entry) {
+    return String(entry?.caseId || "") === String(frontEvalSelection.caseId || "");
+  })
+    ? String(frontEvalSelection.caseId || "")
+    : String(availableCases?.[0]?.caseId || "");
+  frontEvalSelection.caseId = effectiveCaseId;
+  $("#frontEvalSuiteSelect").html(buildEvalSuiteOptions(suites, effectiveSuiteId)).val(effectiveSuiteId);
+  $("#frontEvalCaseSelect").html(buildEvalCaseOptions(suites, effectiveSuiteId, effectiveCaseId)).val(effectiveCaseId);
+  populateStaticModelSelect("#frontEvalJudgeModel", normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || "gpt-5.4", "openai"), "openai");
+  $("#frontEvalJudgeModel").val(normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || "gpt-5.4", "openai"));
+  persistFrontEvalSelection();
+
+  const judgeCatalog = frontCanvasCatalogSource("judge");
+  const judgeSuites = judgeCatalog.suites || [];
+  const judgeArms = judgeCatalog.arms || [];
+  const suiteIds = (frontJudgeSelection.suiteIds || []).filter(function (suiteId) {
+    return judgeSuites.some(function (entry) { return String(entry?.suiteId || "") === String(suiteId || ""); });
+  });
+  const armIds = (frontJudgeSelection.armIds || []).filter(function (armId) {
+    return judgeArms.some(function (entry) { return String(entry?.armId || "") === String(armId || ""); });
+  });
+  frontJudgeSelection.suiteIds = suiteIds.length ? suiteIds : judgeSuites.slice(0, 1).map(function (suite) { return String(suite.suiteId || ""); });
+  frontJudgeSelection.armIds = armIds.length ? armIds : suggestDefaultEvalArmIds(judgeArms);
+  populateStaticModelSelect("#frontJudgeModel", normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || "gpt-5.4", "openai"), "openai");
+  $("#frontJudgeModel").val(normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || "gpt-5.4", "openai"));
+  $("#frontJudgeReplicates").val(Number(frontJudgeSelection.replicates || 1));
+  $("#frontJudgeLoopSweep").val(String(frontJudgeSelection.loopSweep || "1"));
+  renderFrontJudgeChecklist(
+    $("#frontJudgeSuiteList"),
+    judgeSuites,
+    frontJudgeSelection.suiteIds || [],
+    "suiteId",
+    function (item) {
+      return (item?.description || "") + " | " + Number(item?.caseCount || 0) + " cases";
+    }
+  );
+  renderFrontJudgeChecklist(
+    $("#frontJudgeArmList"),
+    judgeArms,
+    frontJudgeSelection.armIds || [],
+    "armId",
+    function (item) {
+      return [
+        item?.type || "arm",
+        contextModeLabel(item?.contextMode || "weighted"),
+        directBaselineModeLabel(item?.directBaselineMode || "off"),
+        providerLabel(item?.provider || "openai") + " " + modelLabel(item?.model || "gpt-5-mini", item?.provider || "openai")
+      ].filter(Boolean).join(" | ");
+    }
+  );
+  persistFrontJudgeSelection();
+}
+
+function refreshFrontCanvasHistory(canvas) {
+  const normalizedCanvas = normalizeFrontCanvas(canvas);
+  const selectedRunId = normalizedCanvas === "judge" ? selectedFrontJudgeRunId : selectedFrontEvalRunId;
+  const params = { canvas: normalizedCanvas };
+  if (selectedRunId) params.runId = selectedRunId;
+  $.getJSON(apiRoute(API.evalHistory), params)
+    .done(function (data) {
+      if (!data?.selectedRun && selectedRunId && (data?.runs || []).length) {
+        if (normalizedCanvas === "judge") {
+          selectedFrontJudgeRunId = "";
+          localStorage.removeItem("loopSelectedFrontJudgeRunId");
+        } else {
+          selectedFrontEvalRunId = "";
+          localStorage.removeItem("loopSelectedFrontEvalRunId");
+        }
+        refreshFrontCanvasHistory(normalizedCanvas);
+        return;
+      }
+      latestCanvasEvalHistory[normalizedCanvas] = data;
+      const selectedId = String(data?.selectedRunId || "");
+      if (normalizedCanvas === "judge") {
+        selectedFrontJudgeRunId = selectedId;
+        localStorage.setItem("loopSelectedFrontJudgeRunId", selectedFrontJudgeRunId);
+        $("#frontJudgeRunHistory").html(renderEvalRunHistory(data.runs || [], selectedFrontJudgeRunId));
+        $("#frontJudgeRunDetail").html(renderEvalRunDetail(data.selectedRun || null));
+      } else {
+        selectedFrontEvalRunId = selectedId;
+        localStorage.setItem("loopSelectedFrontEvalRunId", selectedFrontEvalRunId);
+        $("#frontEvalRunHistory").html(renderEvalRunHistory(data.runs || [], selectedFrontEvalRunId));
+        $("#frontEvalRunDetail").html(renderEvalRunDetail(data.selectedRun || null));
+      }
+      renderFrontCanvasCatalogs();
+    })
+    .fail(function (xhr) {
+      if (normalizedCanvas === "judge") {
+        $("#frontJudgeRunHistory").html(`<div class="review-empty">Judge history failed to load.</div>`);
+        $("#frontJudgeRunDetail").html(`<div class="review-empty">Judge detail failed to load.</div>`);
+      } else {
+        $("#frontEvalRunHistory").html(`<div class="review-empty">Eval history failed to load.</div>`);
+        $("#frontEvalRunDetail").html(`<div class="review-empty">Eval detail failed to load.</div>`);
+      }
+      showMessage((normalizedCanvas === "judge" ? "Judge" : "Eval") + " history load failed: " + extractErrorMessage(xhr), true);
+    });
 }
 
 function buildEvalArtifactOptions(artifacts, selectedArtifactId) {
@@ -6409,8 +6613,7 @@ function renderConversationThread(task, summary, directBaseline, workerState, lo
     return;
   }
 
-  const frontMode = normalizeFrontMode(task?.runtime?.frontMode);
-  $thread.removeClass("is-empty").toggleClass("is-eval", frontMode === "eval").toggleClass("is-full", frontMode !== "eval");
+  $thread.removeClass("is-empty is-eval").addClass("is-full");
 
   const nextTaskId = String(task.taskId || "");
   if (threadRenderTaskId !== nextTaskId) {
@@ -6450,16 +6653,6 @@ function renderConversationThread(task, summary, directBaseline, workerState, lo
       if (stepA !== stepB) return stepA - stepB;
       return a.worker.id.localeCompare(b.worker.id);
     });
-  if (frontMode === "eval") {
-    $thread.html(renderFrontEvalConversation(task, summary, directBaseline, workerState, loop, state, checkpoints));
-    threadRenderSignature = signature;
-    if (!threadNode || wasNearBottom) {
-      $thread.scrollTop($thread[0].scrollHeight);
-    } else {
-      $thread.scrollTop(previousScrollTop);
-    }
-    return;
-  }
   const directMode = normalizeDirectBaselineMode(task?.runtime?.directBaselineMode);
   const compareStillRunning = directMode === "both" && isWorkspaceBusy(loop, state) && !summary;
 
@@ -6647,6 +6840,9 @@ function refreshState() {
       syncSessionArchiveClearButton(null);
       showMessage("History load failed: " + (xhr.responseText || "Unknown error"), true);
     });
+
+  refreshFrontCanvasHistory("eval");
+  refreshFrontCanvasHistory("judge");
 }
 
 function extractErrorMessage(xhr) {
@@ -6970,6 +7166,67 @@ function setActiveView(viewName) {
   $(".workspace-view").removeClass("active").filter(`[data-view="${normalized}"]`).addClass("active");
 }
 
+function normalizeFrontCanvas(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "eval" || raw === "judge" ? raw : "live";
+}
+
+function setActiveFrontCanvas(canvas) {
+  activeFrontCanvas = normalizeFrontCanvas(canvas);
+  localStorage.setItem("loopActiveFrontCanvas", activeFrontCanvas);
+  $(".front-canvas-switch-btn")
+    .attr("aria-selected", "false")
+    .removeClass("active")
+    .filter(`[data-canvas="${activeFrontCanvas}"]`)
+    .attr("aria-selected", "true")
+    .addClass("active");
+  $("[data-canvas-panel]").each(function () {
+    const match = String($(this).data("canvasPanel") || "") === activeFrontCanvas;
+    $(this).prop("hidden", !match).toggleClass("active", match);
+  });
+}
+
+function persistFrontEvalSelection() {
+  localStorage.setItem("loopFrontEvalSelection", JSON.stringify(frontEvalSelection));
+}
+
+function persistFrontJudgeSelection() {
+  localStorage.setItem("loopFrontJudgeSelection", JSON.stringify(frontJudgeSelection));
+}
+
+function splitCommaList(value) {
+  return String(value || "").split(",").map(function (part) { return part.trim(); }).filter(Boolean);
+}
+
+function postJson(url, payload, successText, options = {}) {
+  const dispatchLabel = typeof options.manualDispatch === "string"
+    ? options.manualDispatch
+    : (options.manualDispatch && options.manualDispatch.label) || "";
+  const manualDispatchId = dispatchLabel ? beginManualDispatch(dispatchLabel) : null;
+  $.ajax({
+    url: apiRoute(url),
+    method: "POST",
+    data: JSON.stringify(payload || {}),
+    contentType: "application/json; charset=utf-8"
+  })
+    .done(function (resp) {
+      const out = resp && typeof resp === "object" ? resp : {};
+      showMessage(successText + (out.message ? " | " + out.message : ""));
+      if (typeof options.onSuccess === "function") {
+        options.onSuccess(out);
+      }
+      refreshState();
+    })
+    .fail(function (xhr) {
+      showMessage(extractErrorMessage(xhr), true);
+    })
+    .always(function () {
+      if (manualDispatchId) {
+        endManualDispatch(manualDispatchId);
+      }
+    });
+}
+
 $(function () {
   recentComposerAttachments = loadRecentComposerAttachments();
   populateStaticProviderSelect("#provider", "openai");
@@ -6993,9 +7250,12 @@ $(function () {
   initializeSidebarBootstrapCollapse();
   setSidebarCollapsed(sidebarCollapsed);
   setActiveView(activeView);
+  setActiveFrontCanvas(activeFrontCanvas);
   renderApiModeStatus();
   renderDispatchActivity();
   syncOperatorNoticeVisibility();
+  populateStaticModelSelect("#frontEvalJudgeModel", normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || "gpt-5.4", "openai"), "openai");
+  populateStaticModelSelect("#frontJudgeModel", normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || "gpt-5.4", "openai"), "openai");
   refreshState();
   setInterval(refreshState, 2000);
 
@@ -7004,6 +7264,10 @@ $(function () {
     if (isMobileShell()) {
       setMobileSidebarOpen(false);
     }
+  });
+
+  $(".front-canvas-switch-btn").on("click", function () {
+    setActiveFrontCanvas($(this).data("canvas"));
   });
 
   $("#sidebarToggle").on("click", function () {
@@ -7016,6 +7280,74 @@ $(function () {
 
   $("#mobileSidebarToggle, #sidebarBackdrop").on("click", function () {
     setMobileSidebarOpen(!mobileSidebarOpen);
+  });
+
+  $("#frontEvalSuiteSelect").on("change", function () {
+    frontEvalSelection.suiteId = String($(this).val() || "");
+    frontEvalSelection.caseId = "";
+    persistFrontEvalSelection();
+    renderFrontCanvasCatalogs();
+  });
+
+  $("#frontEvalCaseSelect").on("change", function () {
+    frontEvalSelection.caseId = String($(this).val() || "");
+    persistFrontEvalSelection();
+  });
+
+  $("#frontEvalJudgeModel").on("change", function () {
+    frontEvalSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), "openai");
+    persistFrontEvalSelection();
+  });
+
+  $("#frontJudgeModel").on("change", function () {
+    frontJudgeSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), "openai");
+    persistFrontJudgeSelection();
+  });
+
+  $("#frontJudgeReplicates").on("change input", function () {
+    frontJudgeSelection.replicates = Math.max(1, parseInt($(this).val(), 10) || 1);
+    persistFrontJudgeSelection();
+  });
+
+  $("#frontJudgeLoopSweep").on("change input", function () {
+    frontJudgeSelection.loopSweep = String($(this).val() || "1");
+    persistFrontJudgeSelection();
+  });
+
+  $("#runFrontEval").on("click", function () {
+    const payload = Object.assign({}, buildFrontCanvasRuntimePayload(), {
+      suiteId: String(frontEvalSelection.suiteId || ""),
+      caseId: String(frontEvalSelection.caseId || ""),
+      judgeModel: String(frontEvalSelection.judgeModel || "gpt-5.4")
+    });
+    postJson(API.frontEvalRuns, payload, "Front eval queued", {
+      manualDispatch: "Front eval",
+      onSuccess: function (resp) {
+        selectedFrontEvalRunId = String(resp?.runId || "");
+        localStorage.setItem("loopSelectedFrontEvalRunId", selectedFrontEvalRunId);
+        setActiveFrontCanvas("eval");
+        refreshFrontCanvasHistory("eval");
+      }
+    });
+  });
+
+  $("#runFrontJudge").on("click", function () {
+    const payload = {
+      suiteIds: frontJudgeSelection.suiteIds || [],
+      armIds: frontJudgeSelection.armIds || [],
+      judgeModel: String(frontJudgeSelection.judgeModel || "gpt-5.4"),
+      replicates: Math.max(1, parseInt(frontJudgeSelection.replicates, 10) || 1),
+      loopSweep: splitCommaList(frontJudgeSelection.loopSweep || "1")
+    };
+    postJson(API.frontJudgeRuns, payload, "Front judge queued", {
+      manualDispatch: "Front judge",
+      onSuccess: function (resp) {
+        selectedFrontJudgeRunId = String(resp?.runId || "");
+        localStorage.setItem("loopSelectedFrontJudgeRunId", selectedFrontJudgeRunId);
+        setActiveFrontCanvas("judge");
+        refreshFrontCanvasHistory("judge");
+      }
+    });
   });
 
   $(window).on("resize", function () {
@@ -7679,6 +8011,38 @@ $(function () {
         debugControlsSignature = "";
       }
     });
+  });
+
+  $(document).on("change", ".front-judge-check", function () {
+    const checkType = String($(this).data("checkType") || "").trim();
+    const value = String($(this).val() || "").trim();
+    if (!value) return;
+    const key = checkType === "armId" ? "armIds" : "suiteIds";
+    const current = Array.isArray(frontJudgeSelection[key]) ? frontJudgeSelection[key].slice() : [];
+    if ($(this).is(":checked")) {
+      if (!current.includes(value)) current.push(value);
+    } else {
+      frontJudgeSelection[key] = current.filter(function (entry) { return entry !== value; });
+      persistFrontJudgeSelection();
+      return;
+    }
+    frontJudgeSelection[key] = current;
+    persistFrontJudgeSelection();
+  });
+
+  $(document).on("click", ".select-eval-run", function () {
+    const runId = String($(this).data("runId") || "").trim();
+    if (!runId) return;
+    const $panel = $(this).closest("[data-canvas-panel='judge']").length ? "judge" : "eval";
+    if ($panel === "judge") {
+      selectedFrontJudgeRunId = runId;
+      localStorage.setItem("loopSelectedFrontJudgeRunId", selectedFrontJudgeRunId);
+      refreshFrontCanvasHistory("judge");
+    } else {
+      selectedFrontEvalRunId = runId;
+      localStorage.setItem("loopSelectedFrontEvalRunId", selectedFrontEvalRunId);
+      refreshFrontCanvasHistory("eval");
+    }
   });
 
   $("#artifactLeftSelect").on("change", function () {

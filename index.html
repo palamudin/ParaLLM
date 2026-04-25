@@ -106,6 +106,11 @@
               <span id="headerMemoryVersion" class="workspace-pill-value">0</span>
             </div>
           </div>
+          <div class="front-canvas-switch" role="tablist" aria-label="Front canvas mode">
+            <button type="button" class="front-canvas-switch-btn" data-canvas="live" aria-selected="true">Live</button>
+            <button type="button" class="front-canvas-switch-btn" data-canvas="eval" aria-selected="false">Eval</button>
+            <button type="button" class="front-canvas-switch-btn" data-canvas="judge" aria-selected="false">Judge</button>
+          </div>
         </div>
       </header>
 
@@ -263,47 +268,163 @@
           </details>
 
           <section class="panel chat-panel">
-            <div id="conversationThread" class="conversation-thread"></div>
+            <div class="front-canvas-stack">
+              <section class="front-canvas-panel" data-canvas-panel="live">
+                <div id="conversationThread" class="conversation-thread"></div>
 
-            <div class="composer-shell">
-              <label for="objective">Commander prompt</label>
-              <textarea id="objective" rows="5" placeholder="Describe what you want the lane stack to investigate, build, or write..."></textarea>
+                <div class="composer-shell">
+                  <label for="objective">Commander prompt</label>
+                  <textarea id="objective" rows="5" placeholder="Describe what you want the lane stack to investigate, build, or write..."></textarea>
 
-              <div id="composerTools" class="composer-tools">
-                <div id="composerSourceDrawer" class="composer-inline-drawer" hidden>
-                  <div class="composer-inline-grid">
-                    <div>
-                      <label for="composerResearchDomainsInput">Allowed sources</label>
-                      <input id="composerResearchDomainsInput" type="text" placeholder="Optional comma-separated domains like openai.com, sec.gov" />
+                  <div id="composerTools" class="composer-tools">
+                    <div id="composerSourceDrawer" class="composer-inline-drawer" hidden>
+                      <div class="composer-inline-grid">
+                        <div>
+                          <label for="composerResearchDomainsInput">Allowed sources</label>
+                          <input id="composerResearchDomainsInput" type="text" placeholder="Optional comma-separated domains like openai.com, sec.gov" />
+                        </div>
+                        <div>
+                          <label for="composerResearchModeSelect">Web access</label>
+                          <select id="composerResearchModeSelect">
+                            <option value="1">Live web</option>
+                            <option value="0">Cached / indexed only</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <label for="composerResearchModeSelect">Web access</label>
-                      <select id="composerResearchModeSelect">
-                        <option value="1">Live web</option>
-                        <option value="0">Cached / indexed only</option>
-                      </select>
+
+                    <div id="composerRecentDrawer" class="composer-inline-drawer" hidden></div>
+                    <div id="composerAttachmentList" class="composer-attachment-list"></div>
+                  </div>
+
+                  <div class="composer-footer">
+                    <div class="composer-tool-row composer-tool-row-inline">
+                      <div class="composer-tool-launcher">
+                        <button type="button" id="composerToolMenuToggle" class="composer-tool-toggle" aria-expanded="false" aria-controls="composerToolMenu">+</button>
+                        <div id="composerToolMenu" class="composer-tool-menu" hidden></div>
+                        <input id="composerFileInput" type="file" multiple hidden />
+                      </div>
+                      <div id="composerToolStatus" class="composer-tool-status"></div>
+                    </div>
+                    <div class="composer-actions">
+                      <button id="answerNowPrompt" class="run-target secondary" data-target="answer_now" type="button">Answer Now</button>
+                      <button id="sendPrompt">Send</button>
                     </div>
                   </div>
                 </div>
+              </section>
 
-                <div id="composerRecentDrawer" class="composer-inline-drawer" hidden></div>
-                <div id="composerAttachmentList" class="composer-attachment-list"></div>
-              </div>
-
-              <div class="composer-footer">
-                <div class="composer-tool-row composer-tool-row-inline">
-                  <div class="composer-tool-launcher">
-                    <button type="button" id="composerToolMenuToggle" class="composer-tool-toggle" aria-expanded="false" aria-controls="composerToolMenu">+</button>
-                    <div id="composerToolMenu" class="composer-tool-menu" hidden></div>
-                    <input id="composerFileInput" type="file" multiple hidden />
+              <section class="front-canvas-panel" data-canvas-panel="eval" hidden>
+                <div class="front-canvas-head">
+                  <div>
+                    <div class="panel-kicker">Canvas / Eval</div>
+                    <h3>Current setup vs single thread</h3>
                   </div>
-                  <div id="composerToolStatus" class="composer-tool-status"></div>
+                  <div class="front-canvas-note">Runs the current staged worker stack against a single-thread baseline in an isolated workspace.</div>
                 </div>
-                <div class="composer-actions">
-                  <button id="answerNowPrompt" class="run-target secondary" data-target="answer_now" type="button">Answer Now</button>
-                  <button id="sendPrompt">Send</button>
+                <div class="front-canvas-controls">
+                  <div>
+                    <label for="frontEvalSuiteSelect">Scenario suite</label>
+                    <select id="frontEvalSuiteSelect"></select>
+                  </div>
+                  <div>
+                    <label for="frontEvalCaseSelect">Scenario case</label>
+                    <select id="frontEvalCaseSelect"></select>
+                  </div>
+                  <div>
+                    <label for="frontEvalJudgeModel">Judge model</label>
+                    <select id="frontEvalJudgeModel"></select>
+                  </div>
+                  <div class="front-canvas-action">
+                    <button id="runFrontEval" type="button">Run Eval</button>
+                  </div>
                 </div>
-              </div>
+                <div class="front-canvas-grid">
+                  <section class="panel">
+                    <div class="panel-head compact">
+                      <div>
+                        <div class="panel-kicker">Canvas / Eval</div>
+                        <h3>Run history</h3>
+                      </div>
+                    </div>
+                    <div id="frontEvalRunHistory" class="review-empty">No eval runs yet.</div>
+                  </section>
+                  <section class="panel">
+                    <div class="panel-head compact">
+                      <div>
+                        <div class="panel-kicker">Canvas / Eval</div>
+                        <h3>Run detail</h3>
+                      </div>
+                    </div>
+                    <div id="frontEvalRunDetail" class="review-empty">Pick a run to inspect.</div>
+                  </section>
+                </div>
+              </section>
+
+              <section class="front-canvas-panel" data-canvas-panel="judge" hidden>
+                <div class="front-canvas-head">
+                  <div>
+                    <div class="panel-kicker">Canvas / Judge</div>
+                    <h3>Preset suite spread</h3>
+                  </div>
+                  <div class="front-canvas-note">Runs selected repo suites against selected preset arms in isolated eval workspaces, then scores them with the external judge.</div>
+                </div>
+                <div class="front-canvas-controls">
+                  <div>
+                    <label for="frontJudgeModel">Judge model</label>
+                    <select id="frontJudgeModel"></select>
+                  </div>
+                  <div>
+                    <label for="frontJudgeReplicates">Replicates</label>
+                    <input id="frontJudgeReplicates" type="number" min="1" max="5" step="1" value="1" />
+                  </div>
+                  <div>
+                    <label for="frontJudgeLoopSweep">Loop sweep</label>
+                    <input id="frontJudgeLoopSweep" type="text" value="1" placeholder="Comma-separated, e.g. 1,2" />
+                  </div>
+                  <div class="front-canvas-action">
+                    <button id="runFrontJudge" type="button">Run Judge</button>
+                  </div>
+                </div>
+                <div class="front-canvas-grid front-canvas-grid-triple">
+                  <section class="panel">
+                    <div class="panel-head compact">
+                      <div>
+                        <div class="panel-kicker">Canvas / Judge</div>
+                        <h3>Suites</h3>
+                      </div>
+                    </div>
+                    <div id="frontJudgeSuiteList" class="front-canvas-checklist review-empty">No suites available.</div>
+                  </section>
+                  <section class="panel">
+                    <div class="panel-head compact">
+                      <div>
+                        <div class="panel-kicker">Canvas / Judge</div>
+                        <h3>Preset arms</h3>
+                      </div>
+                    </div>
+                    <div id="frontJudgeArmList" class="front-canvas-checklist review-empty">No arms available.</div>
+                  </section>
+                  <section class="panel">
+                    <div class="panel-head compact">
+                      <div>
+                        <div class="panel-kicker">Canvas / Judge</div>
+                        <h3>Run history</h3>
+                      </div>
+                    </div>
+                    <div id="frontJudgeRunHistory" class="review-empty">No judge runs yet.</div>
+                  </section>
+                </div>
+                <section class="panel">
+                  <div class="panel-head compact">
+                    <div>
+                      <div class="panel-kicker">Canvas / Judge</div>
+                      <h3>Run detail</h3>
+                    </div>
+                  </div>
+                  <div id="frontJudgeRunDetail" class="review-empty">Pick a judge run to inspect.</div>
+                </section>
+              </section>
             </div>
           </section>
         </div>
@@ -405,7 +526,7 @@
                       <option value="mock">Mock</option>
                     </select>
                   </div>
-                  <div>
+                  <div id="legacyFrontModeField" hidden>
                     <div class="label-help-row">
                       <label for="frontMode">Front mode</label>
                       <div class="inline-help">

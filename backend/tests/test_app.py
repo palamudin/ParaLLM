@@ -53,6 +53,8 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("/v1/artifact", paths)
         self.assertIn("/v1/evals/history", paths)
         self.assertIn("/v1/evals/runs", paths)
+        self.assertIn("/v1/front/eval/runs", paths)
+        self.assertIn("/v1/front/judge/runs", paths)
         self.assertIn("/v1/evals/artifact", paths)
         self.assertIn("/v1/evals/artifacts/{run_id}/{artifact_id}", paths)
         self.assertIn("/v1/draft", paths)

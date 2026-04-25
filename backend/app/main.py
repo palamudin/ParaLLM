@@ -132,8 +132,8 @@ def create_app(root: Path | None = None) -> FastAPI:
         return JSONResponse(payload)
 
     @app.get("/v1/evals/history")
-    def get_eval_history(runId: str = "") -> JSONResponse:
-        return JSONResponse(storage.build_eval_history_payload(paths, selected_run_id=runId.strip()))
+    def get_eval_history(runId: str = "", canvas: str = "") -> JSONResponse:
+        return JSONResponse(storage.build_eval_history_payload(paths, selected_run_id=runId.strip(), canvas=canvas.strip()))
 
     @app.get("/v1/evals/artifacts/{run_id}/{artifact_id}")
     def get_eval_artifact(run_id: str, artifact_id: str) -> JSONResponse:
@@ -317,6 +317,28 @@ def create_app(root: Path | None = None) -> FastAPI:
         payload = await request_payload(request)
         try:
             result = evals.start_eval_run(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/front/eval/runs")
+    async def post_front_eval_run(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = evals.start_front_eval_run(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/front/judge/runs")
+    async def post_front_judge_run(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = evals.start_front_judge_run(payload, paths.root)
         except RuntimeErrorWithCode as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         except ValueError as exc:

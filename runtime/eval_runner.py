@@ -2092,10 +2092,19 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
     run_dir = root / "data" / "evals" / "runs" / run_id
     run_path = run_dir / "run.json"
     run = read_run(root, run_id)
-    suite_path = root / "data" / "evals" / "suites" / f"{run['suiteId']}.json"
-    suite = validate_suite_manifest(read_json(suite_path), suite_path)
+    inline_suite = run.get("inlineSuite") if isinstance(run.get("inlineSuite"), dict) else None
+    if inline_suite:
+        suite = validate_suite_manifest(inline_suite, run_dir / "_inline_suite.json")
+    else:
+        suite_path = root / "data" / "evals" / "suites" / f"{run['suiteId']}.json"
+        suite = validate_suite_manifest(read_json(suite_path), suite_path)
+    inline_arms = run.get("inlineArms") if isinstance(run.get("inlineArms"), dict) else {}
     arm_map: Dict[str, Dict[str, Any]] = {}
     for arm_id in run.get("armIds", []):
+        inline_arm = inline_arms.get(arm_id) if isinstance(inline_arms.get(arm_id), dict) else None
+        if inline_arm:
+            arm_map[arm_id] = validate_arm_manifest(inline_arm, run_dir / f"_inline_arm_{arm_id}.json")
+            continue
         arm_path = root / "data" / "evals" / "arms" / f"{arm_id}.json"
         arm_map[arm_id] = validate_arm_manifest(read_json(arm_path), arm_path)
     auth_path = auth_file_path(root)

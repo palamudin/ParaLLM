@@ -1474,6 +1474,14 @@ def load_eval_suite_catalog(paths: Optional[Paths] = None) -> Dict[str, Any]:
         lambda manifest: {
             "description": str(manifest.get("description") or "").strip(),
             "caseCount": len(manifest.get("cases") or []) if isinstance(manifest.get("cases"), list) else 0,
+            "cases": [
+                {
+                    "caseId": str(case.get("caseId") or "").strip(),
+                    "title": str(case.get("title") or case.get("caseId") or "").strip(),
+                }
+                for case in (manifest.get("cases") or [])
+                if isinstance(case, dict) and str(case.get("caseId") or "").strip()
+            ],
         },
     )
 
@@ -1539,6 +1547,8 @@ def build_eval_run_preview(run: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "runId": run.get("runId"),
         "suiteId": run.get("suiteId"),
+        "canvas": str(run.get("canvas") or "").strip() or None,
+        "source": str(run.get("source") or "").strip() or None,
         "status": run.get("status") or "unknown",
         "createdAt": run.get("createdAt"),
         "updatedAt": run.get("updatedAt"),
@@ -1580,11 +1590,17 @@ def eval_resolve_run_file(paths: Optional[Paths], run_id: str, relative_path: st
     return candidate if candidate.is_file() else None
 
 
-def build_eval_history_payload(paths: Optional[Paths] = None, selected_run_id: str = "") -> Dict[str, Any]:
+def build_eval_history_payload(paths: Optional[Paths] = None, selected_run_id: str = "", canvas: str = "") -> Dict[str, Any]:
     paths = paths or project_paths()
     suite_catalog = load_eval_suite_catalog(paths)
     arm_catalog = load_eval_arm_catalog(paths)
     run_payloads = list_eval_runs(paths)
+    normalized_canvas = str(canvas or "").strip().lower()
+    if normalized_canvas:
+        run_payloads = [
+            run for run in run_payloads
+            if str(run.get("canvas") or "").strip().lower() == normalized_canvas
+        ]
     run_payloads.sort(
         key=lambda item: (
             str(item.get("updatedAt") or item.get("createdAt") or ""),
@@ -1612,6 +1628,7 @@ def build_eval_history_payload(paths: Optional[Paths] = None, selected_run_id: s
         "suiteErrors": suite_catalog["errors"],
         "arms": arm_catalog["items"],
         "armErrors": arm_catalog["errors"],
+        "canvas": normalized_canvas or None,
         "runs": runs,
         "selectedRunId": selected_run_id or None,
         "selectedRun": selected_run,

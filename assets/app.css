@@ -600,6 +600,33 @@ textarea {
   scrollbar-width: auto;
 }
 
+.front-canvas-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(128, 186, 224, 0.18);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pill-background) 82%, transparent);
+}
+
+.front-canvas-switch-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 9px 14px;
+  border-radius: 999px;
+}
+
+.front-canvas-switch-btn[aria-selected="true"] {
+  background: color-mix(in srgb, var(--accent) 22%, var(--pill-background));
+  color: var(--text);
+}
+
 .workspace-shell-tools {
   display: flex;
   align-items: center;
@@ -1595,6 +1622,81 @@ textarea {
 .front-eval-thread {
   display: grid;
   gap: 18px;
+}
+
+.front-canvas-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.front-canvas-panel {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.front-canvas-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.front-canvas-note {
+  max-width: 72ch;
+  color: var(--muted-strong);
+  line-height: 1.6;
+}
+
+.front-canvas-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+.front-canvas-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.front-canvas-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.6fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.front-canvas-grid-triple {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.front-canvas-checklist {
+  display: grid;
+  gap: 10px;
+}
+
+.front-canvas-check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(128, 186, 224, 0.12);
+  border-radius: var(--radius-card);
+  background: transparent;
+}
+
+.front-canvas-check strong {
+  display: block;
+  color: var(--text);
+}
+
+.front-canvas-check span {
+  display: block;
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .front-eval-compare-grid {
@@ -4272,6 +4374,16 @@ label {
 
   .front-eval-compare-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .front-canvas-controls,
+  .front-canvas-grid,
+  .front-canvas-grid-triple {
+    grid-template-columns: 1fr;
+  }
+
+  .front-canvas-action {
+    justify-content: flex-start;
   }
 
   .workspace-status-card-wide {
