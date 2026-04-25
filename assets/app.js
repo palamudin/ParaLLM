@@ -504,7 +504,7 @@ function editableSummarizerSnapshot(summarizer, provider) {
     label: "Main thread",
     provider,
     model: normalizeSelectedModelForProvider(String(base.model || defaultModelForProvider(provider)), provider),
-    harness: normalizeHarnessConfig(base.harness, "expansive")
+    harness: normalizeHarnessConfig(base.harness, "balanced")
   });
 }
 
@@ -520,7 +520,7 @@ function mergeWorkerEditorSummarizer(summarizer, override, provider) {
   const base = summarizer && typeof summarizer === "object" ? summarizer : {};
   const extra = override && typeof override === "object" ? override : {};
   const merged = Object.assign({}, base, extra);
-  merged.harness = mergeHarnessOverride(base.harness, extra.harness, "expansive");
+  merged.harness = mergeHarnessOverride(base.harness, extra.harness, "balanced");
   return editableSummarizerSnapshot(merged, provider);
 }
 
@@ -538,7 +538,7 @@ function summarizerEditableSignature(summarizer) {
   return JSON.stringify({
     provider: String(summarizer?.provider || "openai"),
     model: String(summarizer?.model || ""),
-    harness: normalizeHarnessConfig(summarizer?.harness, "expansive")
+    harness: normalizeHarnessConfig(summarizer?.harness, "balanced")
   });
 }
 
@@ -781,7 +781,7 @@ function defaultDraftState() {
     githubAllowedRepos: [],
     dynamicSpinupEnabled: false,
     vettingEnabled: true,
-    summarizerHarness: { concision: "expansive", instruction: "" },
+    summarizerHarness: { concision: "balanced", instruction: "" },
     loopRounds: 3,
     loopDelayMs: 1000,
     workers: [
@@ -2205,7 +2205,7 @@ function buildCommanderFormSource(task, draft) {
         githubAllowedRepos: task.runtime?.githubTools?.repos || [],
         dynamicSpinupEnabled: task.runtime?.dynamicSpinup?.enabled ? true : false,
         vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true,
-        summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "expansive"),
+        summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "balanced"),
         loopRounds: task.preferredLoop?.rounds ?? 3,
         loopDelayMs: task.preferredLoop?.delayMs ?? 1000,
         workers: task.workers || []
@@ -2352,7 +2352,7 @@ function stagedSummarizerSource(draft, task) {
     label: "Main thread",
     provider: String(draft?.summarizerProvider || task?.summarizer?.provider || task?.runtime?.provider || fallback.summarizerProvider || fallback.provider),
     model: String(draft?.summarizerModel || task?.summarizer?.model || task?.runtime?.model || fallback.summarizerModel || fallback.model),
-    harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "expansive")
+    harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "balanced")
   };
 }
 
@@ -2392,7 +2392,7 @@ function buildDraftSavePayload(options = {}) {
   payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
   payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
-  payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "expansive"));
+  payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
   payload.targetTimeouts = JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null));
   return payload;
 }
@@ -4657,7 +4657,7 @@ function buildWorkerControlFields(worker, isActive) {
 }
 
 function buildSummarizerControlFields(summarizer, isActive) {
-  const harness = normalizeHarnessConfig(summarizer?.harness, "expansive");
+  const harness = normalizeHarnessConfig(summarizer?.harness, "balanced");
   const provider = normalizeProviderId($("#summarizerProvider").val() || summarizer?.provider || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null));
   const $body = $("<div>").addClass("worker-editor-grid");
 
@@ -4720,7 +4720,7 @@ function renderWorkerEditorModal() {
   } else {
     const summarizer = visibleSummarizerSource(draft, task);
     $title.text("Main thread");
-    $meta.text("Lead voice | " + harnessConcisionLabel(summarizer.harness, "expansive") + " | " + modelLabel(summarizer.model, summarizer.provider));
+    $meta.text("Lead voice | " + harnessConcisionLabel(summarizer.harness, "balanced") + " | " + modelLabel(summarizer.model, summarizer.provider));
     $body.append(buildSummarizerControlFields(summarizer, isActive));
   }
   syncWorkerEditorModalVisibility();
@@ -4764,7 +4764,7 @@ function syncWorkerEditorOverrideFromModalFields() {
     setWorkerEditorSummarizerOverride({
       model: String($("#workerEditorBody .summarizer-model-draft").val() || ""),
         harness: {
-        concision: String($("#workerEditorBody .summarizer-harness-profile").val() || "expansive"),
+        concision: String($("#workerEditorBody .summarizer-harness-profile").val() || "balanced"),
         instruction: String($("#workerEditorBody .summarizer-harness-instruction").val() || "").trim()
       }
     });
@@ -5126,7 +5126,7 @@ function buildWorkerControlCard(worker, isActive, status) {
 }
 
 function buildSummarizerControlCard(summarizer, isActive, status) {
-  const harness = normalizeHarnessConfig(summarizer?.harness, "expansive");
+  const harness = normalizeHarnessConfig(summarizer?.harness, "balanced");
   const $card = $("<div>")
     .addClass("workercontrol workercontrol-modal-card summarizer-control-card " + statusClassName(status))
     .attr("data-position-id", "summarizer");
@@ -5141,7 +5141,7 @@ function buildSummarizerControlCard(summarizer, isActive, status) {
   $summaryMain.append($("<div>").addClass("workercontrol-title").text("Main thread"));
   $summaryMain.append(
     $("<div>").addClass("workercontrol-meta").text(
-      "Lead voice | " + harnessConcisionLabel(harness, "expansive") + " | " + modelLabel(summarizer?.model || "gpt-5-mini", summarizer?.provider)
+      "Lead voice | " + harnessConcisionLabel(harness, "balanced") + " | " + modelLabel(summarizer?.model || "gpt-5-mini", summarizer?.provider)
     )
   );
   $summary.append($summaryMain);
@@ -7136,7 +7136,7 @@ $(function () {
       directModel: payload.directModel || payload.model,
       ollamaBaseUrl: payload.ollamaBaseUrl,
       targetTimeouts: JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
-      summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "expansive")),
+      summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "balanced")),
       reasoningEffort: payload.reasoningEffort,
       maxCostUsd: payload.maxCostUsd,
       maxTotalTokens: payload.maxTotalTokens,

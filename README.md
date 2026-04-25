@@ -606,12 +606,12 @@ Latest blind external vetting snapshot: `MSP Midnight Breach Bakeoff` on `gpt-5.
 
 | Variant | Overall | Current read |
 | --- | --- | --- |
-| `ParaLLM 5.4 full \| mini adversarials` | `9.5` | Best final answer |
-| `Direct GPT-5.4` | `9.0` | Best value |
-| `ParaLLM 5.4 mini \| mini adversarials` | `9.0` | Best tactical detail |
-| `ParaLLM 5.4 full \| full adversarials` | `5.5` | Incomplete / not yet shippable |
+| `Direct GPT-5.4` | `9.5` | Best final answer and best value |
+| `ParaLLM 5.4 full \| mini adversarials` | `9.0` | Strong second; best restraint / decision gates |
+| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Best tactical detail |
+| `ParaLLM 5.4 full \| full adversarials` | `6.5` | Improved, but still incomplete as presented |
 
-- Compute verdict: `mixed`
-- Latest judge read: extra orchestration improved some answers, but not decisively enough to justify the spread in cost across the set
-- Local blind vetting runs recorded so far: `2`
+- Compute verdict: `did_not_earn`
+- Latest judge read: the direct `gpt-5.4` answer was the strongest overall; extra compute/orchestration did not justify itself in this snapshot
+- Local blind vetting runs recorded so far: `3`
 - Benchmark artifacts: [summary.json](data/benchmarks/vetting/summary.json), [latest blind run](data/benchmarks/vetting/latest.json)

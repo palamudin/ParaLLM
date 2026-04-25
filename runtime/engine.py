@@ -1051,7 +1051,10 @@ def default_worker_harness() -> Dict[str, str]:
 
 
 def default_summarizer_harness() -> Dict[str, str]:
-    return {"concision": "expansive", "instruction": ""}
+    return {"concision": "balanced", "instruction": ""}
+
+
+SUMMARIZER_MAX_OUTPUT_TOKENS = 5200
 
 
 def normalize_harness_config(value: Any, fallback_concision: str = "tight") -> Dict[str, str]:
@@ -2941,8 +2944,20 @@ class LoopRuntime:
         if scope_key:
             target_budget = budget.get("targets", {}).get(scope_key)
             if isinstance(target_budget, dict):
-                return normalize_budget_limits(target_budget, budget)
-        return normalize_budget_limits(budget, default_budget_config())
+                limits = normalize_budget_limits(target_budget, budget)
+                if scope_key == "summarizer":
+                    limits["maxOutputTokens"] = min(
+                        max(0, int(limits.get("maxOutputTokens", 0) or 0)),
+                        SUMMARIZER_MAX_OUTPUT_TOKENS,
+                    )
+                return limits
+        limits = normalize_budget_limits(budget, default_budget_config())
+        if scope_key == "summarizer":
+            limits["maxOutputTokens"] = min(
+                max(0, int(limits.get("maxOutputTokens", 0) or 0)),
+                SUMMARIZER_MAX_OUTPUT_TOKENS,
+            )
+        return limits
 
     def get_target_timeout_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
@@ -5422,13 +5437,16 @@ class LoopRuntime:
             retry_floor = 3200
             hard_ceiling = 12000
         elif kind == "summarizer":
-            floor = 2400
-            retry_floor = 5200
-            hard_ceiling = 18000
+            floor = 2200
+            retry_floor = 3600
+            hard_ceiling = SUMMARIZER_MAX_OUTPUT_TOKENS
         else:
             floor = 1600
             retry_floor = 3200
             hard_ceiling = 12000
+
+        if kind == "summarizer" and requested > 0:
+            requested = min(requested, hard_ceiling)
 
         initial = max(requested, floor)
         attempts = [initial]
