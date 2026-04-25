@@ -54,6 +54,17 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(state["activeTask"])
         self.assertEqual(state["loop"]["status"], "idle")
 
+    def test_clear_session_archives_deletes_saved_archives(self) -> None:
+        reset = sessions.reset_session(self.root)
+        archive_path = storage.project_paths(self.root).sessions / str(reset["archiveFile"])
+
+        self.assertTrue(archive_path.is_file())
+
+        result = sessions.clear_session_archives(self.root)
+
+        self.assertEqual(result["deleted"], 1)
+        self.assertFalse(archive_path.exists())
+
     def test_replay_session_restores_archived_state(self) -> None:
         reset = sessions.reset_session(self.root)
         result = sessions.replay_session({"archiveFile": reset["archiveFile"]}, self.root)

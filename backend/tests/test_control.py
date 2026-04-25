@@ -188,13 +188,14 @@ class ControlPlaneTests(unittest.TestCase):
         state = storage.read_state_payload(storage.project_paths(self.root))
         self.assertEqual(state["draft"]["objective"], "Map the hosted migration")
 
-    def test_default_draft_budget_uses_100k_floor(self) -> None:
+    def test_default_draft_budget_is_cost_only(self) -> None:
         draft = control.default_draft_state()
 
-        self.assertEqual(draft["maxTotalTokens"], 100000)
-        self.assertEqual(draft["budgetTargets"]["commander"]["maxTotalTokens"], 100000)
-        self.assertEqual(draft["budgetTargets"]["worker"]["maxTotalTokens"], 100000)
-        self.assertEqual(draft["budgetTargets"]["summarizer"]["maxTotalTokens"], 100000)
+        self.assertEqual(draft["maxTotalTokens"], 0)
+        self.assertEqual(draft["maxOutputTokens"], 0)
+        self.assertEqual(draft["budgetTargets"]["commander"]["maxTotalTokens"], 0)
+        self.assertEqual(draft["budgetTargets"]["worker"]["maxTotalTokens"], 0)
+        self.assertEqual(draft["budgetTargets"]["summarizer"]["maxTotalTokens"], 0)
 
     def test_create_task_writes_state_snapshot_and_logs(self) -> None:
         result = control.create_task(

@@ -4090,6 +4090,10 @@ button.danger {
   background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 22%, var(--button-background) 78%), color-mix(in srgb, var(--danger) 30%, var(--surface-raised) 70%));
 }
 
+.session-archive-alert {
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.16), 0 0 18px rgba(248, 113, 113, 0.22);
+}
+
 .thread-progress-card {
   margin-top: 12px;
   padding: 14px;

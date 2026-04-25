@@ -989,6 +989,11 @@ def list_session_archives(paths: Optional[Paths] = None, max_items: int = 10) ->
     return archives
 
 
+def count_session_archives(paths: Optional[Paths] = None) -> int:
+    paths = paths or project_paths()
+    return sum(1 for entry in artifacts.list_json_artifacts(paths.root, ["sessions"]) if str(entry.get("name") or "").strip())
+
+
 def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max_artifacts: int = 30, max_rounds: int = 12, max_sessions: int = 10) -> Dict[str, Any]:
     paths = paths or project_paths()
     state = read_state_payload(paths)
@@ -1112,6 +1117,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
         "artifacts": artifact_entries,
         "rounds": rounds,
         "sessions": list_session_archives(paths, max_sessions),
+        "sessionArchiveCount": count_session_archives(paths),
         "contractWarnings": (state.get("contractWarnings") or [])[:20] if isinstance(state.get("contractWarnings"), list) else [],
         "artifactPolicy": artifact_visibility_policy(),
         "queueLimit": LOOP_QUEUE_LIMIT,

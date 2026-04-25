@@ -68,7 +68,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Optional read-only GitHub repo tools for commander and worker lanes with owner/repo allow-lists
 - Optional commander-review-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Summarizer evidence-vetting mode that scores worker claims without doing its own web research
-- Session budget guardrails for total tokens, estimated spend, per-call output tokens, and web-search tool calls
+- Session budget guardrails centered on estimated spend, with token accounting retained for diagnostics
 - Worker context routing is now an explicit runtime choice: `weighted` means `Light Workers`, where the main thread keeps full context while adversarial lanes receive the curated pressure-test packet; `full` means `Full Workers`, where workers also receive the broader packet
 - Answer-path selection is now explicit too: `off` keeps the standard pressurized loop, `single` runs only the direct baseline pipe, and `both` runs the baseline in parallel with the pressurized loop so Review can compare them side by side
 - The isolated eval runner now treats answer path and worker-routing as first-class variant dimensions, so runs can capture and score `single` vs `pressurized` vs `both compare` alongside `light workers` vs `full workers` differences without contaminating live task state
@@ -106,10 +106,10 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Shared-state locking between the Python control plane and worker subprocesses
 - Python dispatch now runs directly through the backend control plane and worker subprocesses
 - Windows background launches now use a detached `cmd /c start` path instead of a PowerShell shim
-- Live Python dispatch now applies target-aware structured-output token floors and a single retry on `incomplete: max_output_tokens`, while still recording the user-requested cap for auditability
+- Live Python dispatch now keeps internal incomplete-output recovery notes while leaving user-facing budget control centered on spend
 - Stale queued/running job recovery based on queue age and heartbeat age
 - Per-position model selection in the UI for workers and summarizer
-- Settings now expose `Low` / `Mid` / `High` / `Ultra` runtime profiles that template worker model, summarizer model, reasoning effort, and budget ceilings for the next send (`100k` / `500k` / `1m` / `2m` local token walls)
+- Settings now expose `Low` / `Mid` / `High` / `Ultra` runtime profiles that template worker model, summarizer model, reasoning effort, and spend wall for the next send
 - OpenAI live requests now opt into server-side input truncation, and oversized prompt packets can be locally compacted before provider calls when the runtime would otherwise overspill
 - Settings can now apply the current runtime template to all current worker lanes plus the summarizer, without requiring a new task
 - Home now mirrors those runtime profiles with a compact quick-profile dashboard, staged-vs-active runtime summary, and `Sync Active` action so users do not have to dive into Settings for basic cost control

@@ -197,6 +197,33 @@ def reset_state(root: Optional[Path] = None) -> Dict[str, Any]:
     return {"message": "State reset."}
 
 
+def clear_session_archives(root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    paths = storage.project_paths(runtime.root)
+    files = artifacts.list_json_artifacts(paths.root, ["sessions"])
+    deleted = 0
+    failed: list[str] = []
+    for entry in files:
+        name = Path(str(entry.get("name") or "").strip()).name
+        if not name:
+            continue
+        if artifacts.delete_json_artifact(paths.root, "sessions", name):
+            deleted += 1
+        else:
+            failed.append(name)
+    runtime.append_event("session_archives_cleared", {"deleted": deleted, "failed": failed[:20]})
+    runtime.append_step(
+        "session",
+        "Cleared archived session files." if deleted else "No archived session files needed clearing.",
+        {"deleted": deleted, "failed": failed[:20]},
+    )
+    return {
+        "message": "Archived sessions cleared." if deleted else "No archived sessions found.",
+        "deleted": deleted,
+        "failed": failed[:20],
+    }
+
+
 def replay_session(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
     runtime = _runtime(root)
     paths = storage.project_paths(runtime.root)

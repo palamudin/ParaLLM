@@ -122,12 +122,13 @@ class RuntimeAuthTests(unittest.TestCase):
 
         self.assertEqual(keys, ["sk-one", "sk-two"])
 
-    def test_summarizer_budget_limit_caps_max_output_tokens(self) -> None:
+    def test_budget_limits_ignore_token_caps(self) -> None:
         task = {
             "taskId": "task-1",
             "runtime": {
                 "budget": {
                     "maxOutputTokens": 1200,
+                    "maxTotalTokens": 900000,
                     "targets": {
                         "summarizer": {"maxOutputTokens": 9000},
                     },
@@ -139,14 +140,15 @@ class RuntimeAuthTests(unittest.TestCase):
             runtime = LoopRuntime(tmpdir)
             limits = runtime.get_budget_limits(task, "summarizer")
 
-        self.assertEqual(limits["maxOutputTokens"], 5200)
+        self.assertEqual(limits["maxOutputTokens"], 0)
+        self.assertEqual(limits["maxTotalTokens"], 0)
 
-    def test_summarizer_output_attempts_do_not_exceed_final_cap(self) -> None:
+    def test_zero_requested_output_tokens_leave_provider_uncapped(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime = LoopRuntime(tmpdir)
-            attempts = runtime.build_output_token_attempts(9000, "summarizer")
+            attempts = runtime.build_output_token_attempts(0, "summarizer")
 
-        self.assertEqual(attempts, [5200])
+        self.assertEqual(attempts, [0])
 
     def test_read_api_key_pool_honors_env_backend_without_falling_back_to_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -40,6 +40,7 @@ from runtime.engine import (
     normalize_harness_config,
     normalize_model_id,
     normalize_ollama_base_url,
+    normalize_target_timeout_config,
     normalize_provider_id,
     normalize_research_config,
     normalize_string_array_preserve_items,
@@ -663,6 +664,9 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
     research = normalize_research_config(runtime_payload.get("research") if isinstance(runtime_payload.get("research"), dict) else {})
     vetting = normalize_vetting_config(runtime_payload.get("vetting") if isinstance(runtime_payload.get("vetting"), dict) else {})
     preferred_loop = normalize_loop_preferences(runtime_payload.get("preferredLoop") if isinstance(runtime_payload.get("preferredLoop"), dict) else {})
+    target_timeouts = normalize_target_timeout_config(
+        runtime_payload.get("targetTimeouts") if isinstance(runtime_payload.get("targetTimeouts"), dict) else {}
+    )
     ollama_base_url = normalize_ollama_base_url(runtime_payload.get("ollamaBaseUrl", default_ollama_base_url()))
     summarizer_harness = normalize_harness_config(
         runtime_payload.get("summarizerHarness", default_summarizer_harness()),
@@ -694,6 +698,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "research": research,
             "vetting": vetting,
             "preferredLoop": preferred_loop,
+            "targetTimeouts": target_timeouts,
             "requireLive": coerce_bool(runtime_payload.get("requireLive"), execution_mode == "live"),
             "allowMockFallback": coerce_bool(runtime_payload.get("allowMockFallback"), execution_mode == "mock"),
         },
@@ -729,6 +734,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "budget": deepcopy(runtime_config["budget"]),
             "research": deepcopy(runtime_config["research"]),
             "vetting": deepcopy(runtime_config["vetting"]),
+            "targetTimeouts": deepcopy(runtime_config["targetTimeouts"]),
             "pricingSource": None,
             "pricingCheckedAt": None,
         },
@@ -1528,6 +1534,9 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
     found_forbidden = [phrase for phrase in forbidden_phrases if phrase.lower() in lowered_answer]
     token_ok = int(runtime_budget["maxTotalTokens"]) <= 0 or int(usage["totalTokens"]) <= int(runtime_budget["maxTotalTokens"])
     cost_ok = float(runtime_budget["maxCostUsd"]) <= 0 or float(usage["estimatedCostUsd"]) <= float(runtime_budget["maxCostUsd"])
+    budget_detail = f"cost ${float(usage['estimatedCostUsd']):0.4f}/${float(runtime_budget['maxCostUsd']):0.4f}"
+    if int(runtime_budget["maxTotalTokens"]) > 0:
+        budget_detail = f"tokens {int(usage['totalTokens'])}/{int(runtime_budget['maxTotalTokens'])} | {budget_detail}"
     checks_out = {
         "requiredArtifactFields": {
             "passed": result_fields_ok,
@@ -1535,7 +1544,7 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
         },
         "budgetCompliance": {
             "passed": token_ok and cost_ok,
-            "detail": f"tokens {int(usage['totalTokens'])}/{int(runtime_budget['maxTotalTokens'])} | cost ${float(usage['estimatedCostUsd']):0.4f}/${float(runtime_budget['maxCostUsd']):0.4f}",
+            "detail": budget_detail,
         },
         "requiredPhrases": {
             "passed": not missing_phrases,

@@ -422,14 +422,14 @@ def normalize_budget_limits(config: Optional[Dict[str, Any]] = None, fallback: O
     config = config or {}
     base = fallback or {"maxTotalTokens": 0, "maxCostUsd": 0.0, "maxOutputTokens": 0}
     return {
-        "maxTotalTokens": max(0, int(config.get("maxTotalTokens", base["maxTotalTokens"]))),
+        "maxTotalTokens": 0,
         "maxCostUsd": round(max(0.0, float(config.get("maxCostUsd", base["maxCostUsd"]))), 6),
-        "maxOutputTokens": max(0, int(config.get("maxOutputTokens", base["maxOutputTokens"]))),
+        "maxOutputTokens": 0,
     }
 
 
 def default_budget_config() -> Dict[str, Any]:
-    overall = {"maxTotalTokens": 100000, "maxCostUsd": 5.0, "maxOutputTokens": 1200}
+    overall = {"maxTotalTokens": 0, "maxCostUsd": 5.0, "maxOutputTokens": 0}
     return {
         "maxTotalTokens": overall["maxTotalTokens"],
         "maxCostUsd": overall["maxCostUsd"],
@@ -1052,9 +1052,6 @@ def default_worker_harness() -> Dict[str, str]:
 
 def default_summarizer_harness() -> Dict[str, str]:
     return {"concision": "balanced", "instruction": ""}
-
-
-SUMMARIZER_MAX_OUTPUT_TOKENS = 5200
 
 
 def normalize_harness_config(value: Any, fallback_concision: str = "tight") -> Dict[str, str]:
@@ -1815,7 +1812,7 @@ def normalize_commander_review_checkpoint(
         "round": max(1, int(fallback_round or 1)),
         "stance": truncate_text(base_commander.get("stance", ""), 260) or "No reviewed stance was captured.",
         "leadDirection": truncate_text(base_commander.get("leadDirection", ""), 280) or "No reviewed lead direction was captured.",
-        "answerDraft": truncate_text(base_commander.get("answerDraft", ""), 1800) or "No reviewed answer draft was captured.",
+        "answerDraft": truncate_text(base_commander.get("answerDraft", ""), 3200) or "No reviewed answer draft was captured.",
         "whyThisDirection": (
             truncate_text(base_commander.get("whyThisDirection", ""), 360)
             or "No commander reevaluation rationale was captured."
@@ -1831,7 +1828,7 @@ def normalize_commander_review_checkpoint(
         normalized["round"] = max(1, int(fallback_round or normalized["round"]))
         stance = truncate_text(checkpoint.get("stance", ""), 260)
         lead_direction = truncate_text(checkpoint.get("leadDirection", ""), 280)
-        answer_draft = truncate_text(checkpoint.get("answerDraft", ""), 1800)
+        answer_draft = truncate_text(checkpoint.get("answerDraft", ""), 3200)
         why_this_direction = truncate_text(checkpoint.get("whyThisDirection", ""), 360)
         if stance:
             normalized["stance"] = stance
@@ -2944,20 +2941,8 @@ class LoopRuntime:
         if scope_key:
             target_budget = budget.get("targets", {}).get(scope_key)
             if isinstance(target_budget, dict):
-                limits = normalize_budget_limits(target_budget, budget)
-                if scope_key == "summarizer":
-                    limits["maxOutputTokens"] = min(
-                        max(0, int(limits.get("maxOutputTokens", 0) or 0)),
-                        SUMMARIZER_MAX_OUTPUT_TOKENS,
-                    )
-                return limits
-        limits = normalize_budget_limits(budget, default_budget_config())
-        if scope_key == "summarizer":
-            limits["maxOutputTokens"] = min(
-                max(0, int(limits.get("maxOutputTokens", 0) or 0)),
-                SUMMARIZER_MAX_OUTPUT_TOKENS,
-            )
-        return limits
+                return normalize_budget_limits(target_budget, budget)
+        return normalize_budget_limits(budget, default_budget_config())
 
     def get_target_timeout_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
@@ -4827,9 +4812,10 @@ class LoopRuntime:
                     retry_attempt = False
 
                     while True:
+                        transport_max_tokens = effective_tokens if effective_tokens > 0 else 8192
                         body: Dict[str, Any] = {
                             "model": model,
-                            "max_tokens": effective_tokens,
+                            "max_tokens": transport_max_tokens,
                             "system": instructions,
                             "messages": messages,
                         }
@@ -5431,6 +5417,8 @@ class LoopRuntime:
 
     def build_output_token_attempts(self, requested_max_output_tokens: int, target_kind: str) -> List[int]:
         requested = max(0, int(requested_max_output_tokens or 0))
+        if requested <= 0:
+            return [0]
         kind = target_kind.strip().lower()
         if kind == "worker":
             floor = 1600
@@ -5439,14 +5427,11 @@ class LoopRuntime:
         elif kind == "summarizer":
             floor = 2200
             retry_floor = 3600
-            hard_ceiling = SUMMARIZER_MAX_OUTPUT_TOKENS
+            hard_ceiling = 12000
         else:
             floor = 1600
             retry_floor = 3200
             hard_ceiling = 12000
-
-        if kind == "summarizer" and requested > 0:
-            requested = min(requested, hard_ceiling)
 
         initial = max(requested, floor)
         attempts = [initial]
@@ -5458,9 +5443,6 @@ class LoopRuntime:
         final_candidate = min(max(retry_candidate * 2, retry_floor), hard_ceiling)
         if final_candidate > retry_candidate:
             attempts.append(final_candidate)
-        if kind == "summarizer" and final_candidate < hard_ceiling:
-            attempts.append(hard_ceiling)
-
         deduped: List[int] = []
         for value in attempts:
             if value not in deduped:
@@ -6952,6 +6934,13 @@ class LoopRuntime:
         primary = next((worker for worker in workers if worker["id"] == "A"), workers[0] if workers else None)
         challengers = [worker for worker in workers if worker["id"] != "A"][:3]
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
+        commander_review_fallback = normalize_commander_review_checkpoint(
+            commander_review_checkpoint,
+            task,
+            max(round_number, int(commander_projection.get("round", 0) or 1)),
+            commander_checkpoint,
+            [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)],
+        )
         commander_review_projection = self.project_commander_review_for_summary(
             commander_review_checkpoint,
             task,
@@ -7055,9 +7044,9 @@ class LoopRuntime:
             "taskId": task["taskId"],
             "round": round_number,
             "frontAnswer": {
-                "answer": truncate_text(commander_review_projection.get("answerDraft", ""), 3200) or front_answer_text,
-                "stance": truncate_text(commander_review_projection.get("stance", ""), 260) or lead_direction,
-                "leadDirection": truncate_text(commander_review_projection.get("leadDirection", ""), 260) or lead_direction,
+                "answer": truncate_text(commander_review_fallback.get("answerDraft", ""), 3200) or front_answer_text,
+                "stance": truncate_text(commander_review_fallback.get("stance", ""), 260) or lead_direction,
+                "leadDirection": truncate_text(commander_review_fallback.get("leadDirection", ""), 260) or lead_direction,
                 "adversarialPressure": strongest_pressure,
                 "confidenceNote": (
                     "This is a fallback summary based on task and checkpoint structure, so the reasoning shape is stronger than the factual validation."
@@ -8793,7 +8782,7 @@ class LoopRuntime:
         summary_config = summarizer_config(task)
         runtime = self.get_task_runtime(task, summary_config["model"], "summarizer", summary_config["provider"])
         requested_partial_tokens = int(runtime.get("maxOutputTokens", 0) or 0)
-        runtime["maxOutputTokens"] = min(max(requested_partial_tokens, 2200), 3200) if requested_partial_tokens > 0 else 2200
+        runtime["maxOutputTokens"] = requested_partial_tokens if requested_partial_tokens > 0 else 0
         if runtime["reasoningEffort"] in {"high", "xhigh"}:
             runtime["reasoningEffort"] = "medium"
         elif runtime["reasoningEffort"] == "none":

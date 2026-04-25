@@ -185,8 +185,8 @@ const HARNESS_CONCISION_CATALOG = {
 const HARNESS_CONCISION_ORDER = Object.keys(HARNESS_CONCISION_CATALOG);
 const DEFAULT_RUNTIME_BUDGET = {
   maxCostUsd: 5,
-  maxTotalTokens: 100000,
-  maxOutputTokens: 1200
+  maxTotalTokens: 0,
+  maxOutputTokens: 0
 };
 const QUALITY_PROFILE_CATALOG = {
   low: {
@@ -197,7 +197,6 @@ const QUALITY_PROFILE_CATALOG = {
     summarizerModel: "gpt-5-mini",
     reasoningEffort: "low",
     maxCostUsd: DEFAULT_RUNTIME_BUDGET.maxCostUsd,
-    maxTotalTokens: 100000,
     maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
     loopRounds: 3,
     loopDelayMs: 1000
@@ -210,8 +209,7 @@ const QUALITY_PROFILE_CATALOG = {
     summarizerModel: "gpt-5.4-mini",
     reasoningEffort: "medium",
     maxCostUsd: 12,
-    maxTotalTokens: 500000,
-    maxOutputTokens: 1800,
+    maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
     loopRounds: 4,
     loopDelayMs: 1000
   },
@@ -223,8 +221,7 @@ const QUALITY_PROFILE_CATALOG = {
     summarizerModel: "gpt-5.4",
     reasoningEffort: "high",
     maxCostUsd: 30,
-    maxTotalTokens: 1000000,
-    maxOutputTokens: 2800,
+    maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
     loopRounds: 6,
     loopDelayMs: 1000
   },
@@ -236,8 +233,7 @@ const QUALITY_PROFILE_CATALOG = {
     summarizerModel: "gpt-5.4",
     reasoningEffort: "xhigh",
     maxCostUsd: 75,
-    maxTotalTokens: 2000000,
-    maxOutputTokens: 4000,
+    maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
     loopRounds: 8,
     loopDelayMs: 1000
   }
@@ -333,6 +329,7 @@ const API = {
   loopsCancel: "/v1/loops/cancel",
   evalRuns: "/v1/evals/runs",
   sessionReset: "/v1/session/reset",
+  sessionArchivesClear: "/v1/session/archives/clear",
   stateReset: "/v1/state/reset",
   positionModel: "/v1/positions/model",
   sessionReplay: "/v1/session/replay",
@@ -2255,8 +2252,6 @@ function applyCommanderForm(values) {
   $("#directModel").val(directModel);
   $("#reasoningEffort").val(safe.reasoningEffort || "low");
   $("#maxCostUsd").val(safe.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd);
-  $("#maxTotalTokens").val(safe.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens);
-  $("#maxOutputTokens").val(safe.maxOutputTokens ?? DEFAULT_RUNTIME_BUDGET.maxOutputTokens);
   $("#loopRounds").val(safe.loopRounds ?? 3);
   $("#loopDelayMs").val(safe.loopDelayMs ?? 1000);
   $("#researchEnabled").val(safe.researchEnabled ? "1" : "0");
@@ -2304,8 +2299,8 @@ function collectCommanderPayload() {
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: parseFloat($("#maxCostUsd").val()) || 0,
-    maxTotalTokens: parseInt($("#maxTotalTokens").val(), 10) || 0,
-    maxOutputTokens: parseInt($("#maxOutputTokens").val(), 10) || 0,
+    maxTotalTokens: 0,
+    maxOutputTokens: 0,
     loopRounds: parseInt($("#loopRounds").val(), 10) || 1,
     loopDelayMs: parseInt($("#loopDelayMs").val(), 10) || 0,
     researchEnabled: $("#researchEnabled").val(),
@@ -2514,7 +2509,7 @@ function profileDisplayName(profileId) {
 
 function formatTokenWall(value) {
   const amount = Number(value || 0);
-  return amount > 0 ? amount.toLocaleString() + " token wall" : "token wall off";
+  return amount > 0 ? amount.toLocaleString() + " token wall" : "spend wall only";
 }
 
 function runtimeSnapshotsMatch(left, right) {
@@ -2581,7 +2576,6 @@ function renderQualityProfileCards() {
     const profile = QUALITY_PROFILE_CATALOG[profileId];
     const workerModels = qualityProfileModelConfig(profileId, workerProvider);
     const summarizerModels = qualityProfileModelConfig(profileId, summarizerProvider);
-    const tokenText = Number(profile.maxTotalTokens) > 0 ? Number(profile.maxTotalTokens).toLocaleString() + " local tokens" : "cost wall only";
     const $button = $("<button>")
       .attr("type", "button")
       .addClass("quality-profile-card compact-hover-card")
@@ -2594,7 +2588,7 @@ function renderQualityProfileCards() {
       "Workers: " + providerLabel(workerProvider) + " / " + modelLabel(workerModels.workerModel, workerProvider),
       "Summarizer: " + providerLabel(summarizerProvider) + " / " + modelLabel(summarizerModels.summarizerModel, summarizerProvider),
       "Reasoning: " + profile.reasoningEffort + " | Budget: " + formatUsdBudget(profile.maxCostUsd),
-      tokenText + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
+      "Spend wall only | Loop: " + Number(profile.loopRounds || 0) + " rounds"
     ]);
     $root.append($button);
   });
@@ -2608,7 +2602,7 @@ function renderQualityProfileCards() {
       " matches the current runtime template. " +
       "Workers use " + providerLabel(workerProvider) + " / " + modelLabel(workerModels.workerModel, workerProvider) +
       ", summarizer uses " + providerLabel(summarizerProvider) + " / " + modelLabel(summarizerModels.summarizerModel, summarizerProvider) +
-      ", the token wall is " + (profile.maxTotalTokens > 0 ? Number(profile.maxTotalTokens).toLocaleString() : "off") +
+      ", the spend wall is " + formatUsdBudget(profile.maxCostUsd) +
       ", and auto loop depth is " + Number(profile.loopRounds || 0) + " rounds."
     );
     return;
@@ -2640,8 +2634,6 @@ function applyQualityProfile(profileId) {
   refreshProviderModelSelects();
   $("#reasoningEffort").val(profile.reasoningEffort);
   $("#maxCostUsd").val(profile.maxCostUsd);
-  $("#maxTotalTokens").val(profile.maxTotalTokens);
-  $("#maxOutputTokens").val(profile.maxOutputTokens);
   $("#loopRounds").val(profile.loopRounds);
   $("#loopDelayMs").val(profile.loopDelayMs);
 
@@ -2896,8 +2888,6 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
     ? (Number(dispatch.runningCount || 0) + " running | " + Number(dispatch.queuedCount || 0) + " queued")
     : ((loop?.completedRounds ?? 0) + " / " + (loop?.totalRounds ?? 0));
   const loopElapsed = formatElapsedCompact(dispatchPrimary?.startedAt || dispatchPrimary?.queuedAt || loop?.startedAt || loop?.queuedAt) || "n/a";
-  const usageTokens = (usage.totalTokens ?? 0) + " / " + (budget.maxTotalTokens ?? 0);
-  const usageWebSearchCalls = usage.webSearchCalls ?? 0;
   const usageCost = formatUsd(usage.estimatedCostUsd || 0) + " / " + formatUsd(budget.maxCostUsd || 0);
 
   $("#taskId, #headerTaskId").text(taskId);
@@ -2907,8 +2897,6 @@ function syncWorkspaceStatus(task, state, workers, loop, usage, budget) {
   $("#loopStatus, #headerLoopStatus").text(loopStatus);
   $("#loopProgress, #headerLoopProgress").text(loopProgress);
   $("#headerLoopElapsed").text(loopElapsed);
-  $("#usageTokens, #footerUsageTokens").text(usageTokens);
-  $("#usageWebSearchCalls, #footerUsageWebSearchCalls").text(usageWebSearchCalls);
   $("#usageCost, #footerUsageCost").text(usageCost);
   renderApiModeStatus();
 }
@@ -4958,6 +4946,24 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   $controls.append($summaryCard);
 }
 
+function syncSessionArchiveClearButton(history = null) {
+  const $button = $("#clearSessionArchives");
+  if (!$button.length) return;
+  const archiveCount = Number(history?.sessionArchiveCount || 0);
+  const hasArchives = archiveCount > 0;
+  $button
+    .prop("disabled", !hasArchives)
+    .toggleClass("danger", hasArchives)
+    .toggleClass("session-archive-alert", hasArchives)
+    .text(hasArchives ? ("Clear Session Archives (" + archiveCount + ")") : "Clear Session Archives")
+    .attr(
+      "title",
+      hasArchives
+        ? ("Archived sessions are still present in storage. Clear " + archiveCount + " archive" + (archiveCount === 1 ? "" : "s") + " if you want a clean room.")
+        : "No archived sessions are present."
+    );
+}
+
 function renderRosterPanels(task, draft) {
   const $grid = $("#workerGrid");
   $grid.empty();
@@ -5184,7 +5190,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
           ? ""
           : " | Baseline: " + providerLabel(stagedSnapshot.directProvider) + " / " + modelLabel(stagedSnapshot.directModel, stagedSnapshot.directProvider)
       ),
-      "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | " + formatTokenWall(stagedSnapshot.maxTotalTokens) + " | " + Number(stagedSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+      "Budget: " + formatUsdBudget(stagedSnapshot.maxCostUsd) + " | spend wall only",
       "Research: " + (stagedPayload.researchEnabled === "1" ? "on" : "off") + " | Vetting: " + (stagedPayload.vettingEnabled === "0" ? "off" : "on") + " | Auto loop: " + Number(stagedPayload.loopRounds || 0) + " rounds / " + Number(stagedPayload.loopDelayMs || 0) + " ms",
       (shouldShowOllamaBaseUrl(stagedSnapshot.provider, stagedSnapshot.summarizerProvider) || (normalizeDirectBaselineMode(stagedSnapshot.directBaselineMode) !== "off" && normalizeProviderId(stagedSnapshot.directProvider) === "ollama"))
         ? ("Ollama endpoint: " + normalizeOllamaBaseUrl(stagedSnapshot.ollamaBaseUrl))
@@ -5209,7 +5215,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
             ? ""
             : " | Baseline: " + providerLabel(activeSnapshot.directProvider) + " / " + modelLabel(activeSnapshot.directModel, activeSnapshot.directProvider)
         ),
-        "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | " + formatTokenWall(activeSnapshot.maxTotalTokens) + " | " + Number(activeSnapshot.maxOutputTokens || 0).toLocaleString() + " max out",
+        "Budget: " + formatUsdBudget(activeSnapshot.maxCostUsd) + " | spend wall only",
         "Auto loop: " + Number(activeSnapshot.loopRounds || 0) + " rounds / " + Number(activeSnapshot.loopDelayMs || 0) + " ms",
         (shouldShowOllamaBaseUrl(activeSnapshot.provider, activeSnapshot.summarizerProvider) || (normalizeDirectBaselineMode(activeSnapshot.directBaselineMode) !== "off" && normalizeProviderId(activeSnapshot.directProvider) === "ollama"))
           ? ("Ollama endpoint: " + normalizeOllamaBaseUrl(activeSnapshot.ollamaBaseUrl))
@@ -5265,7 +5271,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
       profile.description,
       "Workers: " + providerLabel(stagedWorkerProvider) + " / " + modelLabel(workerModels.workerModel, stagedWorkerProvider),
       "Summarizer: " + providerLabel(stagedSummarizerProvider) + " / " + modelLabel(summarizerModels.summarizerModel, stagedSummarizerProvider),
-      "Budget: " + formatUsdBudget(profile.maxCostUsd) + " | " + formatTokenWall(profile.maxTotalTokens),
+      "Budget: " + formatUsdBudget(profile.maxCostUsd) + " | spend wall only",
       "Reasoning: " + profile.reasoningEffort + " | Loop: " + Number(profile.loopRounds || 0) + " rounds"
     ]);
     $grid.append($button);
@@ -6633,10 +6639,12 @@ function refreshState() {
       $("#roundHistory").html(renderRoundHistory(data.rounds || []));
       $("#sessionArchives").html(renderSessionArchives(data.sessions || []));
       $("#artifactPolicy").html(renderArtifactPolicy(data.artifactPolicy || null));
+      syncSessionArchiveClearButton(data);
       syncArtifactReview(data.artifacts || []);
     })
     .fail(function (xhr) {
       latestHistoryState = null;
+      syncSessionArchiveClearButton(null);
       showMessage("History load failed: " + (xhr.responseText || "Unknown error"), true);
     });
 }
@@ -6890,8 +6898,6 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     targetTimeouts: JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: $("#maxCostUsd").val(),
-    maxTotalTokens: $("#maxTotalTokens").val(),
-    maxOutputTokens: $("#maxOutputTokens").val(),
     loopRounds: $("#loopRounds").val(),
     loopDelayMs: $("#loopDelayMs").val(),
     researchEnabled: $("#researchEnabled").val(),
@@ -7095,7 +7101,7 @@ $(function () {
     queueDraftSave();
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #reasoningEffort, #maxCostUsd, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
     syncDirectBaselineFields();
     syncOllamaBaseUrlField();
     formDirty = true;
@@ -7139,8 +7145,6 @@ $(function () {
       summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "balanced")),
       reasoningEffort: payload.reasoningEffort,
       maxCostUsd: payload.maxCostUsd,
-      maxTotalTokens: payload.maxTotalTokens,
-      maxOutputTokens: payload.maxOutputTokens,
       loopRounds: payload.loopRounds,
       loopDelayMs: payload.loopDelayMs,
       researchEnabled: payload.researchEnabled,
@@ -7496,6 +7500,17 @@ $(function () {
         workerControlsSignature = "";
         debugControlsSignature = "";
         setActiveView("home");
+      }
+    });
+  });
+
+  $("#clearSessionArchives").on("click", function () {
+    const archiveCount = Number(latestHistoryState?.sessionArchiveCount || 0);
+    if (archiveCount <= 0) return;
+    if (!confirm("Delete " + archiveCount + " archived session file" + (archiveCount === 1 ? "" : "s") + " from storage?")) return;
+    postForm(API.sessionArchivesClear, {}, "Session archives cleared", {
+      onSuccess: function () {
+        syncSessionArchiveClearButton(null);
       }
     });
   });

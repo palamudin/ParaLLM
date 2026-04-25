@@ -148,7 +148,7 @@ Current skill layers:
 - Output artifact persistence for every worker and summary pass
 - Runtime-selectable worker context routing: `Light Workers` keeps full context on the main thread while adversarial lanes receive weighted digests; `Full Workers` sends the broader packet to workers too
 - Runtime-selectable answer path: `Off` keeps the normal pressurized loop, `Single only` runs one direct baseline answer, and `Both compare` runs the direct baseline in parallel with the pressurized loop using its own provider/model lane
-- Runtime profiles now budget the local token wall at `100k` / `500k` / `1m` / `2m` for `Low` / `Mid` / `High` / `Ultra`
+- Runtime profiles now tune model mix, reasoning effort, auto-loop depth, and spend wall for `Low` / `Mid` / `High` / `Ultra`
 - OpenAI live runs now request server-side input autocompression, and oversized prompt packets are locally compacted before provider calls when needed
 - Task/runtime-scoped Ollama base URL override so remote or dockerized Ollama hosts do not require a control-plane relaunch
 - Read-only local workspace inspection via `local_list_dir`, `local_read_file`, and `local_search_text`
@@ -157,8 +157,7 @@ Current skill layers:
 - Local/GitHub tool audit in step logs, worker checkpoints, and artifact metadata
 - Summarizer-driven next-round lane requests with audited worker spawn events
 - Editable per-lane harness controls, including `No harness`, with a richer default main-thread harness for structured factual final answers
-- Budget, token, and estimated-spend tracking
-- Requested-vs-effective output-token cap visibility
+- Cost-first budget tracking with internal token accounting still available for diagnostics
 
 ### Eval / QA
 
@@ -606,12 +605,12 @@ Latest blind external vetting snapshot: `MSP Midnight Breach Bakeoff` on `gpt-5.
 
 | Variant | Overall | Current read |
 | --- | --- | --- |
-| `Direct GPT-5.4` | `9.5` | Best final answer and best value |
-| `ParaLLM 5.4 full \| mini adversarials` | `9.0` | Strong second; best restraint / decision gates |
-| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Best tactical detail |
-| `ParaLLM 5.4 full \| full adversarials` | `6.5` | Improved, but still incomplete as presented |
+| `ParaLLM 5.4 full \| full adversarials` | `9.5` | Best final answer and best tactical detail |
+| `Direct GPT-5.4` | `9.0` | Best value |
+| `ParaLLM 5.4 full \| mini adversarials` | `9.0` | Strong second; restrained and shippable |
+| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Strong artifact detail, but under-escalates early |
 
-- Compute verdict: `did_not_earn`
-- Latest judge read: the direct `gpt-5.4` answer was the strongest overall; extra compute/orchestration did not justify itself in this snapshot
-- Local blind vetting runs recorded so far: `3`
+- Compute verdict: `mixed`
+- Latest judge read: the full-full ParaLLM answer was strongest overall, but not by enough to clearly earn its much higher cost over direct `gpt-5.4`
+- Local blind vetting runs recorded so far: `4`
 - Benchmark artifacts: [summary.json](data/benchmarks/vetting/summary.json), [latest blind run](data/benchmarks/vetting/latest.json)

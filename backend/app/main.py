@@ -181,6 +181,14 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)
 
+    @app.post("/v1/session/archives/clear")
+    def post_session_archives_clear() -> JSONResponse:
+        try:
+            result = sessions.clear_session_archives(paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
     @app.post("/v1/state/reset")
     def post_state_reset() -> JSONResponse:
         try:

@@ -183,3 +183,21 @@ def list_json_artifacts(root: Optional[Path], categories: Optional[List[str]] = 
             continuation_token = str(response.get("NextContinuationToken") or "").strip() or None
     entries.sort(key=lambda item: str(item.get("modifiedAt") or ""), reverse=True)
     return entries
+
+
+def delete_json_artifact(root: Optional[Path], category: str, name: str) -> bool:
+    safe_name = Path(str(name or "")).name
+    if not object_storage_enabled(root):
+        topology = deployment_topology(root)
+        target_path = topology.data_root / str(category).strip().lower() / safe_name
+        if not target_path.exists():
+            return False
+        target_path.unlink()
+        return True
+
+    client = _s3_client(root)
+    try:
+        client.delete_object(Bucket=_bucket_name(root), Key=_object_key(category, safe_name))
+    except Exception:  # noqa: BLE001
+        return False
+    return True

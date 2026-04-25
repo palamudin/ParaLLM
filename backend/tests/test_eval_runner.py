@@ -29,6 +29,7 @@ class EvalRunnerTests(unittest.TestCase):
                     "directProvider": "ollama",
                     "directModel": "qwen3.5:2b",
                     "ollamaBaseUrl": "http://192.168.0.26:11434/api",
+                    "targetTimeouts": {"directBaseline": 300, "commanderReview": 540, "summarizer": 720},
                 },
                 "workers": [{"id": "A", "type": "proponent", "label": "Proponent", "model": "gpt-5-mini"}],
             },
@@ -40,6 +41,9 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(manifest["runtime"]["directProvider"], "ollama")
         self.assertEqual(manifest["runtime"]["directModel"], "qwen3.5:2b")
         self.assertEqual(manifest["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
+        self.assertEqual(manifest["runtime"]["targetTimeouts"]["directBaseline"], 300)
+        self.assertEqual(manifest["runtime"]["targetTimeouts"]["commanderReview"], 540)
+        self.assertEqual(manifest["runtime"]["targetTimeouts"]["summarizer"], 720)
 
     def test_build_eval_task_includes_answer_path_runtime_fields(self) -> None:
         arm = eval_runner.validate_arm_manifest(
@@ -56,6 +60,7 @@ class EvalRunnerTests(unittest.TestCase):
                     "directBaselineMode": "single",
                     "directProvider": "openai",
                     "directModel": "gpt-5-mini",
+                    "targetTimeouts": {"commander": 210, "workerDefault": 240, "workers": {"A": 180}},
                 },
                 "workers": [{"id": "A", "type": "proponent", "label": "Proponent", "model": "gpt-5-mini"}],
             },
@@ -78,6 +83,9 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(task["runtime"]["directBaselineMode"], "single")
         self.assertEqual(task["runtime"]["directProvider"], "openai")
         self.assertEqual(task["runtime"]["directModel"], "gpt-5-mini")
+        self.assertEqual(task["runtime"]["targetTimeouts"]["commander"], 210)
+        self.assertEqual(task["runtime"]["targetTimeouts"]["workerDefault"], 240)
+        self.assertEqual(task["runtime"]["targetTimeouts"]["workers"]["A"], 180)
 
     def test_build_eval_task_carries_main_thread_harness(self) -> None:
         arm = eval_runner.validate_arm_manifest(

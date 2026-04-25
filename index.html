@@ -392,7 +392,7 @@
                   <div class="section-help-row">
                     <div class="inline-help">
                       <button type="button" class="inline-help-trigger" aria-label="Show profile template detail">Info</button>
-                      <div class="inline-help-popup">Profiles change worker default model, summarizer model, reasoning effort, auto-loop depth, session cost cap, local token cap, and per-call output cap. Research and vetting still stay manual.</div>
+                      <div class="inline-help-popup">Profiles change worker default model, summarizer model, reasoning effort, auto-loop depth, and session spend wall. Research and vetting still stay manual.</div>
                     </div>
                   </div>
                 </div>
@@ -512,17 +512,9 @@
                     <label for="maxCostUsd">Session budget USD</label>
                     <input id="maxCostUsd" type="number" min="0" step="0.01" value="5.00" />
                   </div>
-                  <div>
-                    <label for="maxTotalTokens">Session token cap (local)</label>
-                    <input id="maxTotalTokens" type="number" min="0" step="1000" value="100000" />
-                  </div>
                 </div>
 
                 <div class="settings-grid">
-                  <div>
-                    <label for="maxOutputTokens">Max output tokens / call</label>
-                    <input id="maxOutputTokens" type="number" min="0" step="50" value="1200" />
-                  </div>
                   <div>
                     <label for="loopRounds">Auto loop rounds</label>
                     <input id="loopRounds" type="number" min="1" max="12" value="3" />
@@ -658,6 +650,7 @@
                 <div class="action-grid">
                   <button id="refresh">Refresh</button>
                   <button id="resetSession">Reset Session</button>
+                  <button id="clearSessionArchives">Clear Session Archives</button>
                   <button id="runRound">Run Round</button>
                   <button id="runLoop">Run Auto Loop</button>
                   <button id="summarize">Summarize</button>
@@ -848,8 +841,6 @@
         <section class="workspace-status-card workspace-status-card-spend">
           <div class="workspace-status-label">Expenditure</div>
           <div class="workspace-status-spend-line">
-            <span>Tokens <strong id="footerUsageTokens">0 / 0</strong></span>
-            <span>Web search <strong id="footerUsageWebSearchCalls">0</strong></span>
             <span>Approx spend <strong id="footerUsageCost">$0.0000 / $0.0000</strong></span>
           </div>
         </section>

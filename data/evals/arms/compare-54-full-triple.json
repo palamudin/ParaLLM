@@ -21,6 +21,15 @@
       "extraInstruction": "Be explicit, methodical, and factual. Separate assumptions from verified facts, and keep sequencing operational."
     },
     "reasoningEffort": "xhigh",
+    "targetTimeouts": {
+      "directBaseline": 300,
+      "commander": 240,
+      "workerDefault": 300,
+      "commanderReview": 600,
+      "summarizer": 180,
+      "answerNow": 300,
+      "arbiter": 300
+    },
     "budget": {
       "maxTotalTokens": 320000,
       "maxCostUsd": 35,

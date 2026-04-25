@@ -58,6 +58,7 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("/v1/draft", paths)
         self.assertIn("/v1/tasks", paths)
         self.assertIn("/v1/session/reset", paths)
+        self.assertIn("/v1/session/archives/clear", paths)
         self.assertIn("/v1/session/replay", paths)
         self.assertIn("/v1/session/export", paths)
         self.assertIn("/v1/runtime/apply", paths)
@@ -226,6 +227,28 @@ class AppRouteTests(unittest.TestCase):
         payload = response.json()
         self.assertTrue(payload["contractWarnings"])
         self.assertIn("steps.jsonl dropped 1 malformed JSONL line", payload["contractWarnings"][0])
+
+    def test_session_archive_clear_route_reports_deleted_count(self) -> None:
+        self.paths.sessions.mkdir(parents=True, exist_ok=True)
+        (self.paths.sessions / "session-test.json").write_text(
+            json.dumps({"taskId": "t-archive", "createdAt": "2026-04-25T00:00:00+00:00"}, indent=2),
+            encoding="utf-8",
+        )
+        previous = os.environ.get("LOOP_DATA_ROOT")
+        os.environ["LOOP_DATA_ROOT"] = str(self.paths.data)
+        try:
+            client = TestClient(create_app())
+            response = client.post("/v1/session/archives/clear")
+        finally:
+            if previous is None:
+                os.environ.pop("LOOP_DATA_ROOT", None)
+            else:
+                os.environ["LOOP_DATA_ROOT"] = previous
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["deleted"], 1)
+        self.assertFalse((self.paths.sessions / "session-test.json").exists())
 
 
 if __name__ == "__main__":
