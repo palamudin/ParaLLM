@@ -1909,9 +1909,26 @@ textarea {
 }
 
 .lane-inspector-copy {
+  display: grid;
+  gap: 8px;
   margin-top: 8px;
   color: var(--muted-strong);
   line-height: 1.55;
+}
+
+.lane-inspector-copy-block {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lane-inspector-copy-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .review-empty {
@@ -3775,6 +3792,46 @@ textarea {
   color: var(--muted);
 }
 
+.eval-score-matrix {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 0.8fr);
+  border-top: 1px solid rgba(128, 186, 224, 0.14);
+}
+
+.eval-score-matrix.compare {
+  grid-template-columns: minmax(0, 1.8fr) repeat(3, minmax(0, 0.8fr));
+}
+
+.eval-score-matrix-cell {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(128, 186, 224, 0.1);
+  min-width: 0;
+}
+
+.eval-score-matrix-cell.head {
+  padding-top: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.eval-score-matrix-cell.label {
+  color: var(--muted-strong);
+  line-height: 1.45;
+}
+
+.eval-score-matrix-cell.value {
+  text-align: right;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.eval-score-matrix-cell.delta {
+  color: var(--accent-strong);
+}
+
 .eval-answer-compare-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3886,9 +3943,9 @@ textarea {
   word-break: break-word;
   line-height: 1.7;
   color: var(--text);
-  max-height: 420px;
-  overflow: auto;
-  padding-right: 4px;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
 }
 
 .eval-history-stack {

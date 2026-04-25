@@ -1828,6 +1828,103 @@ function renderEvalScoreVisual(content) {
   `;
 }
 
+const EVAL_SCORE_LABELS = {
+  overallQuality: "Overall quality",
+  decisiveness: "Decisiveness",
+  tradeoffHandling: "Tradeoff handling",
+  objectionAbsorption: "Objection absorption",
+  actionability: "Actionability",
+  singleVoice: "Single voice",
+  overallHealth: "Overall health",
+  instructionFit: "Instruction fit",
+  structuralClarity: "Structural clarity",
+  confidenceCalibration: "Confidence calibration",
+  evidenceHygiene: "Evidence hygiene",
+  efficiencyDiscipline: "Efficiency discipline",
+  overallControl: "Overall control",
+  leadControl: "Lead control",
+  adversarialDiscipline: "Adversarial discipline",
+  selfCheckQuality: "Self-check quality",
+  nonFunnelIntegration: "Non-funnel integration",
+  overallDifferentiation: "Overall differentiation",
+  materialDifference: "Material difference",
+  decisionShift: "Decision shift",
+  validationStrength: "Validation strength",
+  operationalSeparation: "Operational separation"
+};
+
+function formatEvalScoreValue(value, fallback = "—") {
+  if (value == null || value === "") return fallback;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1).replace(/\.0$/, "");
+}
+
+function formatEvalScoreDelta(primaryValue, baselineValue) {
+  const primary = Number(primaryValue);
+  const baseline = Number(baselineValue);
+  if (!Number.isFinite(primary) || !Number.isFinite(baseline)) return "—";
+  const delta = primary - baseline;
+  const sign = delta > 0 ? "+" : "";
+  return `${sign}${formatEvalScoreValue(delta, "0")}`;
+}
+
+function humanizeEvalScoreLabel(key) {
+  const normalized = String(key || "").trim();
+  if (!normalized) return "Metric";
+  if (EVAL_SCORE_LABELS[normalized]) return EVAL_SCORE_LABELS[normalized];
+  return normalized
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^\w/, function (character) {
+      return character.toUpperCase();
+    });
+}
+
+function renderEvalScoreMatrix(title, primaryScores, baselineScores, options) {
+  const config = options || {};
+  const primary = primaryScores && typeof primaryScores === "object" ? primaryScores : {};
+  const baseline = baselineScores && typeof baselineScores === "object" ? baselineScores : {};
+  const includeBaseline = !!Object.keys(baseline).length;
+  const primaryLabel = String(config.primaryLabel || "Pressurized");
+  const baselineLabel = String(config.baselineLabel || "Single-thread");
+  const orderedKeys = Array.isArray(config.order) ? config.order : [];
+  const numericKeys = Array.from(new Set([
+    ...orderedKeys,
+    ...Object.keys(primary || {}),
+    ...Object.keys(baseline || {})
+  ])).filter(function (key) {
+    const primaryValue = Number(primary?.[key]);
+    const baselineValue = Number(baseline?.[key]);
+    return Number.isFinite(primaryValue) || Number.isFinite(baselineValue);
+  });
+  if (!numericKeys.length) return "";
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">${escapeHtml(title || "Score matrix")}</div>
+      </div>
+      <div class="eval-score-matrix${includeBaseline ? " compare" : ""}">
+        <div class="eval-score-matrix-cell head">Area</div>
+        <div class="eval-score-matrix-cell head value">${escapeHtml(primaryLabel)}</div>
+        ${includeBaseline ? `<div class="eval-score-matrix-cell head value">${escapeHtml(baselineLabel)}</div>` : ""}
+        ${includeBaseline ? `<div class="eval-score-matrix-cell head value">Delta</div>` : ""}
+        ${numericKeys.map(function (key) {
+          const primaryValue = primary?.[key];
+          const baselineValue = baseline?.[key];
+          return `
+            <div class="eval-score-matrix-cell label">${escapeHtml(humanizeEvalScoreLabel(key))}</div>
+            <div class="eval-score-matrix-cell value">${escapeHtml(formatEvalScoreValue(primaryValue))}</div>
+            ${includeBaseline ? `<div class="eval-score-matrix-cell value">${escapeHtml(formatEvalScoreValue(baselineValue))}</div>` : ""}
+            ${includeBaseline ? `<div class="eval-score-matrix-cell value delta">${escapeHtml(formatEvalScoreDelta(primaryValue, baselineValue))}</div>` : ""}
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderEvalComparisonVisual(content) {
   const scores = content?.scores || content?.comparison?.scores || {};
   const similarity = content?.similarity || content?.comparison?.similarity || {};
@@ -5344,9 +5441,9 @@ function renderWaitingProgress(task, workerState, loop, state) {
       </div>
     `,
     renderTextSection("Loop message", loop?.lastMessage || "Working through the current stage."),
-    executionNote ? renderTextSection("Execution note", truncateText(executionNote, 260)) : "",
-    contractWarnings.length ? renderTextSection("State note", truncateText(contractWarnings.join(" "), 260)) : "",
-    latestDone ? renderTextSection("Latest completed", `${latestDone.label}: ${truncateText(latestDone.preview, 220)}`) : "",
+    executionNote ? renderTextSection("Execution note", executionNote) : "",
+    contractWarnings.length ? renderTextSection("State note", contractWarnings.join("\n")) : "",
+    latestDone ? renderTextSection("Latest completed", `${latestDone.label}: ${latestDone.preview}`) : "",
     directMode === "both" && hasDirectBaseline && !task?.summary && !state?.summary
       ? renderTextSection("Compare note", "The single-thread baseline is already captured in Review while the pressurized answer is still running.")
       : "",
@@ -5401,12 +5498,30 @@ function buildWorkerInspector(checkpoints) {
 
   const cards = entries.map(function (entry) {
     const checkpoint = entry.checkpoint || {};
-    const insights = [];
+    const copyBlocks = [];
     if (checkpoint.observation) {
-      insights.push(truncateText(checkpoint.observation, 220));
+      copyBlocks.push(`
+        <div class="lane-inspector-copy-block">
+          <span class="lane-inspector-copy-label">Observation</span>
+          ${escapeHtml(checkpoint.observation)}
+        </div>
+      `);
     }
     if (checkpoint.requestToPeer) {
-      insights.push("Peer steer: " + truncateText(checkpoint.requestToPeer, 180));
+      copyBlocks.push(`
+        <div class="lane-inspector-copy-block">
+          <span class="lane-inspector-copy-label">Peer steer</span>
+          ${escapeHtml(checkpoint.requestToPeer)}
+        </div>
+      `);
+    }
+    if (checkpoint.leadDirection || checkpoint.answerDraft) {
+      copyBlocks.push(`
+        <div class="lane-inspector-copy-block">
+          <span class="lane-inspector-copy-label">Lead direction</span>
+          ${escapeHtml(String(checkpoint.leadDirection || checkpoint.answerDraft || "").trim())}
+        </div>
+      `);
     }
     const confidence = checkpoint.confidence != null && !Number.isNaN(Number(checkpoint.confidence))
       ? "Confidence " + Math.round(Number(checkpoint.confidence) * 100) + "%"
@@ -5418,7 +5533,7 @@ function buildWorkerInspector(checkpoints) {
           <div class="lane-inspector-tag">${escapeHtml(confidence)}</div>
         </div>
         <div class="lane-inspector-meta">${escapeHtml((entry.worker.type || entry.worker.role || "lane") + " | " + (entry.worker.model || "model n/a"))}</div>
-        <div class="lane-inspector-copy">${escapeHtml(insights.join(" "))}</div>
+        <div class="lane-inspector-copy">${copyBlocks.join("") || `<div class="lane-inspector-copy-block">No detailed checkpoint copy captured.</div>`}</div>
       </div>
     `;
   }).join("");
@@ -5928,6 +6043,24 @@ function renderFrontEvalArbiterSummary(task, arbiter, comparison, similarity) {
   ].filter(Boolean);
   const sections = [
     renderEvalMetricStrip(metrics),
+    renderEvalScoreMatrix("Quality matrix", arbiter?.quality?.scores || null, arbiter?.baselineQuality?.scores || null, {
+      primaryLabel: "Pressurized",
+      baselineLabel: "Single-thread",
+      order: ["overallQuality", "decisiveness", "tradeoffHandling", "objectionAbsorption", "actionability", "singleVoice"]
+    }),
+    renderEvalScoreMatrix("Answer health matrix", arbiter?.answerHealth?.scores || null, arbiter?.baselineAnswerHealth?.scores || null, {
+      primaryLabel: "Pressurized",
+      baselineLabel: "Single-thread",
+      order: ["overallHealth", "instructionFit", "structuralClarity", "confidenceCalibration", "evidenceHygiene", "efficiencyDiscipline"]
+    }),
+    renderEvalScoreMatrix("Control signal", arbiter?.control?.scores || null, null, {
+      primaryLabel: "Pressurized",
+      order: ["overallControl", "leadControl", "adversarialDiscipline", "selfCheckQuality", "nonFunnelIntegration"]
+    }),
+    renderEvalScoreMatrix("Difference signal", comparison?.scores || null, null, {
+      primaryLabel: "Signal",
+      order: ["overallDifferentiation", "decisionShift", "validationStrength", "operationalSeparation"]
+    }),
     renderTextSection("Judge verdict", comparison?.verdict || ""),
     renderTextSection("Judge rationale", comparison?.rationale || ""),
     renderTextSection("Pressurized edge", comparison?.primaryEdge || ""),
