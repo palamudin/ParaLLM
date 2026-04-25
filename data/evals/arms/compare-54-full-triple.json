@@ -1,0 +1,73 @@
+{
+  "armId": "compare-54-full-triple",
+  "title": "Compare GPT-5.4 Triple vs Single",
+  "description": "Three GPT-5.4 adversarial lanes plus GPT-5.4 summarizer versus a GPT-5.4 single-thread baseline, with full-worker context and expansive factual output style.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "full",
+    "directBaselineMode": "both",
+    "provider": "openai",
+    "model": "gpt-5.4",
+    "directProvider": "openai",
+    "directModel": "gpt-5.4",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5.4",
+    "summarizerHarness": {
+      "concision": "expansive",
+      "structure": true,
+      "factsFirst": true,
+      "counterposition": true,
+      "extraInstruction": "Be explicit, methodical, and factual. Separate assumptions from verified facts, and keep sequencing operational."
+    },
+    "reasoningEffort": "xhigh",
+    "budget": {
+      "maxTotalTokens": 320000,
+      "maxCostUsd": 35,
+      "maxOutputTokens": 4200
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "proponent",
+      "label": "Proponent",
+      "role": "utility",
+      "focus": "benefits, feasibility, leverage, momentum, practical execution",
+      "temperature": "balanced",
+      "model": "gpt-5.4"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Sceptic",
+      "role": "adversarial",
+      "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+      "temperature": "cool",
+      "model": "gpt-5.4"
+    },
+    {
+      "id": "C",
+      "type": "security",
+      "label": "Security",
+      "role": "adversarial",
+      "focus": "security abuse, privilege escalation, hostile actors",
+      "temperature": "hot",
+      "model": "gpt-5.4"
+    }
+  ]
+}

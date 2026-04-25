@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -19,6 +20,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from backend.app import artifacts as artifact_store
 from backend.app import metadata as metadata_store
+from backend.app import storage
 from backend.app.config import deployment_topology
 from backend.app.secrets import (
     auth_key_file_path,
@@ -467,6 +469,17 @@ def normalize_context_mode(value: Any, fallback: str = "weighted") -> str:
     return fallback if fallback in {"weighted", "full"} else default_context_mode()
 
 
+def default_front_mode() -> str:
+    return "full"
+
+
+def normalize_front_mode(value: Any, fallback: str = "full") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"full", "eval"}:
+        return candidate
+    return fallback if fallback in {"full", "eval"} else default_front_mode()
+
+
 def default_direct_baseline_mode() -> str:
     return "off"
 
@@ -476,6 +489,74 @@ def normalize_direct_baseline_mode(value: Any, fallback: str = "off") -> str:
     if candidate in {"off", "single", "both"}:
         return candidate
     return fallback if fallback in {"off", "single", "both"} else default_direct_baseline_mode()
+
+
+def default_target_timeout_config() -> Dict[str, Any]:
+    return {
+        "directBaseline": 150,
+        "commander": 180,
+        "workerDefault": 180,
+        "workers": {},
+        "commanderReview": 240,
+        "summarizer": 240,
+        "answerNow": 180,
+        "arbiter": 180,
+    }
+
+
+def clamp_timeout_seconds(value: Any, fallback: int) -> int:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        candidate = int(fallback)
+    return max(15, min(3600, candidate))
+
+
+def normalize_worker_timeout_overrides(value: Any) -> Dict[str, int]:
+    overrides: Dict[str, int] = {}
+    if not isinstance(value, dict):
+        return overrides
+    for worker_id, seconds in value.items():
+        candidate = str(worker_id or "").strip().upper()
+        if not re.match(r"^[A-Z]$", candidate):
+            continue
+        overrides[candidate] = clamp_timeout_seconds(seconds, default_target_timeout_config()["workerDefault"])
+    return overrides
+
+
+def normalize_target_timeout_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or {}
+    default = default_target_timeout_config()
+    return {
+        "directBaseline": clamp_timeout_seconds(config.get("directBaseline"), default["directBaseline"]),
+        "commander": clamp_timeout_seconds(config.get("commander"), default["commander"]),
+        "workerDefault": clamp_timeout_seconds(config.get("workerDefault"), default["workerDefault"]),
+        "workers": normalize_worker_timeout_overrides(config.get("workers")),
+        "commanderReview": clamp_timeout_seconds(config.get("commanderReview"), default["commanderReview"]),
+        "summarizer": clamp_timeout_seconds(config.get("summarizer"), default["summarizer"]),
+        "answerNow": clamp_timeout_seconds(config.get("answerNow"), default["answerNow"]),
+        "arbiter": clamp_timeout_seconds(config.get("arbiter"), default["arbiter"]),
+    }
+
+
+def target_timeout_seconds(config: Optional[Dict[str, Any]], target: Any) -> int:
+    normalized_config = normalize_target_timeout_config(config)
+    normalized_target = normalize_auth_target(target)
+    if re.match(r"^[A-Z]$", normalized_target):
+        return int(normalized_config["workers"].get(normalized_target, normalized_config["workerDefault"]))
+    if normalized_target == "direct_baseline":
+        return int(normalized_config["directBaseline"])
+    if normalized_target == "commander":
+        return int(normalized_config["commander"])
+    if normalized_target == "commander_review":
+        return int(normalized_config["commanderReview"])
+    if normalized_target == "summarizer":
+        return int(normalized_config["summarizer"])
+    if normalized_target == "answer_now":
+        return int(normalized_config["answerNow"])
+    if normalized_target == "arbiter":
+        return int(normalized_config["arbiter"])
+    return int(normalized_config["workerDefault"])
 
 
 def default_usage_bucket() -> Dict[str, Any]:
@@ -537,6 +618,8 @@ def default_loop_state() -> Dict[str, Any]:
         "finishedAt": None,
         "lastHeartbeatAt": None,
         "lastMessage": "Ready.",
+        "activeTargets": [],
+        "providerTrace": None,
     }
 
 
@@ -549,6 +632,7 @@ def default_state() -> Dict[str, Any]:
         "workers": {},
         "directBaseline": None,
         "summary": None,
+        "arbiter": None,
         "memoryVersion": 0,
         "usage": default_usage_state(),
         "loop": default_loop_state(),
@@ -2094,6 +2178,36 @@ class OpenAIResult:
     executed_tools: List[Dict[str, Any]]
     auth_assignment: Optional[Dict[str, Any]]
     auth_failover_history: List[Dict[str, Any]]
+    provider_trace: Optional[Dict[str, Any]] = None
+
+
+PROVIDER_TRACE_STAGE_LABELS: Dict[str, str] = {
+    "sending": "Sending request",
+    "headers": "Headers received",
+    "retrying": "Retrying request",
+    "completed": "Completed",
+    "error": "Provider error",
+    "timeout": "Timed out",
+}
+
+
+def provider_trace_target_label(target: Any) -> str:
+    normalized = str(target or "").strip().lower()
+    if normalized == "commander":
+        return "Commander"
+    if normalized == "direct_baseline":
+        return "Direct baseline"
+    if normalized == "commander_review":
+        return "Commander review"
+    if normalized == "summarizer":
+        return "Summarizer"
+    if normalized == "answer_now":
+        return "Answer now"
+    if normalized == "arbiter":
+        return "External arbiter"
+    if len(normalized) == 1 and normalized.isalpha():
+        return f"Worker {normalized.upper()}"
+    return normalized or "Target"
 
 
 class LoopRuntime:
@@ -2111,6 +2225,7 @@ class LoopRuntime:
         self.steps_path = self.data_path / "steps.jsonl"
         self.auth_path = Path(auth_path).resolve() if auth_path else (self.root / "Auth.txt")
         self.config_root = self.auth_path.parent.resolve() if auth_path else self.root
+        self._current_execution_context: Dict[str, Any] = {}
 
     def ensure_data_paths(self) -> None:
         for path in (
@@ -2298,6 +2413,261 @@ class LoopRuntime:
 
         return self.mutate_job(job_id, updater)
 
+    def set_execution_context(self, context: Optional[Dict[str, Any]]) -> None:
+        self._current_execution_context = dict(context or {})
+
+    def clear_execution_context(self) -> None:
+        self._current_execution_context = {}
+
+    def current_execution_context(self) -> Dict[str, Any]:
+        return dict(self._current_execution_context)
+
+    def current_trace_target(self, fallback: str = "generic") -> str:
+        context = self.current_execution_context()
+        candidate = str(context.get("traceTarget") or context.get("target") or fallback).strip()
+        return candidate or fallback
+
+    def normalize_provider_trace(self, trace: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(trace, dict):
+            return None
+        normalized: Dict[str, Any] = {}
+        for key, value in trace.items():
+            field = str(key or "").strip()
+            if not field:
+                continue
+            if value is None or isinstance(value, (str, int, float, bool)):
+                normalized[field] = value
+                continue
+            if isinstance(value, list):
+                normalized[field] = [
+                    item
+                    for item in value
+                    if item is None or isinstance(item, (str, int, float, bool))
+                ][:20]
+                continue
+            if isinstance(value, dict):
+                child: Dict[str, Any] = {}
+                for child_key, child_value in value.items():
+                    child_field = str(child_key or "").strip()
+                    if not child_field:
+                        continue
+                    if child_value is None or isinstance(child_value, (str, int, float, bool)):
+                        child[child_field] = child_value
+                normalized[field] = child
+        return normalized or None
+
+    def provider_trace_header_map(self, response: Any) -> Dict[str, str]:
+        headers_node = None
+        if hasattr(response, "headers"):
+            headers_node = getattr(response, "headers")
+        elif hasattr(response, "info"):
+            try:
+                headers_node = response.info()
+            except Exception:  # noqa: BLE001
+                headers_node = None
+        headers: Dict[str, str] = {}
+        if headers_node is None:
+            return headers
+        try:
+            items = headers_node.items()
+        except Exception:  # noqa: BLE001
+            return headers
+        for key, value in items:
+            name = str(key or "").strip().lower()
+            if not name:
+                continue
+            headers[name] = str(value or "").strip()
+        return headers
+
+    def provider_trace_header_value(self, headers: Dict[str, str], *names: str) -> str:
+        for name in names:
+            value = str(headers.get(str(name or "").strip().lower()) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def provider_trace_int(self, value: Any) -> Optional[int]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return int(float(text))
+        except ValueError:
+            return None
+
+    def provider_trace_ms_from_ns(self, value: Any) -> Optional[int]:
+        parsed = self.provider_trace_int(value)
+        if parsed is None:
+            return None
+        return max(0, int(parsed / 1_000_000))
+
+    def build_provider_trace_base(
+        self,
+        provider: str,
+        model: str,
+        target_kind: str,
+        request_timeout_seconds: int,
+    ) -> Dict[str, Any]:
+        trace_target = self.current_trace_target(target_kind)
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        return {
+            "target": trace_target,
+            "targetLabel": provider_trace_target_label(trace_target),
+            "provider": normalized_provider,
+            "providerLabel": PROVIDER_CATALOG.get(normalized_provider, {}).get("label") or normalized_provider.title(),
+            "model": str(model or "").strip(),
+            "stage": "sending",
+            "stageLabel": PROVIDER_TRACE_STAGE_LABELS["sending"],
+            "requestTimeoutSeconds": max(1, int(request_timeout_seconds or 0)),
+            "requestCount": 0,
+            "startedAt": utc_now(),
+            "updatedAt": utc_now(),
+        }
+
+    def provider_trace_from_headers(self, provider: str, headers: Dict[str, str]) -> Dict[str, Any]:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        trace: Dict[str, Any] = {}
+        request_id = self.provider_trace_header_value(headers, "x-request-id", "request-id")
+        if request_id:
+            trace["providerRequestId"] = request_id
+        processing_ms = self.provider_trace_int(self.provider_trace_header_value(headers, "openai-processing-ms"))
+        if processing_ms is not None:
+            trace["providerProcessingMs"] = processing_ms
+        remaining_requests = self.provider_trace_int(
+            self.provider_trace_header_value(
+                headers,
+                "x-ratelimit-remaining-requests",
+                "anthropic-ratelimit-requests-remaining",
+            )
+        )
+        if remaining_requests is not None:
+            trace["rateLimitRequestsRemaining"] = remaining_requests
+        remaining_tokens = self.provider_trace_int(
+            self.provider_trace_header_value(
+                headers,
+                "x-ratelimit-remaining-tokens",
+                "anthropic-ratelimit-tokens-remaining",
+            )
+        )
+        if remaining_tokens is not None:
+            trace["rateLimitTokensRemaining"] = remaining_tokens
+        remaining_input_tokens = self.provider_trace_int(
+            self.provider_trace_header_value(headers, "anthropic-ratelimit-input-tokens-remaining")
+        )
+        if remaining_input_tokens is not None:
+            trace["rateLimitInputTokensRemaining"] = remaining_input_tokens
+        remaining_output_tokens = self.provider_trace_int(
+            self.provider_trace_header_value(headers, "anthropic-ratelimit-output-tokens-remaining")
+        )
+        if remaining_output_tokens is not None:
+            trace["rateLimitOutputTokensRemaining"] = remaining_output_tokens
+        retry_after = self.provider_trace_int(self.provider_trace_header_value(headers, "retry-after"))
+        if retry_after is not None:
+            trace["retryAfterSeconds"] = retry_after
+        if normalized_provider == "ollama":
+            server = self.provider_trace_header_value(headers, "server")
+            if server:
+                trace["providerServer"] = server
+        return trace
+
+    def provider_trace_message(self, trace: Dict[str, Any]) -> str:
+        provider_label = str(trace.get("providerLabel") or trace.get("provider") or "Provider").strip()
+        target_label = str(trace.get("targetLabel") or trace.get("target") or "target").strip()
+        stage_label = str(trace.get("stageLabel") or trace.get("stage") or "in flight").strip()
+        parts = [provider_label, target_label, stage_label]
+        request_id = str(trace.get("providerRequestId") or "").strip()
+        if request_id:
+            parts.append("request " + truncate_text(request_id, 32))
+        error = str(trace.get("error") or "").strip()
+        if error:
+            parts.append(truncate_text(error, 120))
+        return " | ".join(part for part in parts if part)
+
+    def update_provider_trace(self, trace: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        normalized = self.normalize_provider_trace(trace)
+        if normalized is None:
+            return None
+        normalized["updatedAt"] = utc_now()
+        message = self.provider_trace_message(normalized)
+        context = self.current_execution_context()
+        task_id = str(context.get("taskId") or "").strip()
+        dispatch_job_id = str(context.get("dispatchJobId") or "").strip()
+
+        with self.with_lock():
+            if dispatch_job_id:
+                existing_job = self.read_job_unlocked(dispatch_job_id)
+                if isinstance(existing_job, dict):
+                    metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
+                    metadata["providerTrace"] = normalized
+                    self.write_job_unlocked(
+                        storage.default_job(
+                            {
+                                **existing_job,
+                                "metadata": metadata,
+                                "lastHeartbeatAt": utc_now(),
+                                "lastMessage": message,
+                            }
+                        )
+                    )
+                return normalized
+
+            state = self.read_state_unlocked()
+            active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+            active_task_id = str((active_task or {}).get("taskId") or "").strip()
+            if task_id and active_task_id and task_id == active_task_id:
+                loop = dict(storage.default_loop_state(), **(state.get("loop") if isinstance(state.get("loop"), dict) else {}))
+                loop["providerTrace"] = normalized
+                loop["lastHeartbeatAt"] = utc_now()
+                loop["lastMessage"] = message
+                state["loop"] = loop
+                self.write_state_unlocked(state)
+                loop_job_id = str(loop.get("jobId") or "").strip()
+                if loop_job_id:
+                    existing_job = self.read_job_unlocked(loop_job_id)
+                    if isinstance(existing_job, dict):
+                        metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
+                        metadata["providerTrace"] = normalized
+                        self.write_job_unlocked(
+                            storage.default_job(
+                                {
+                                    **existing_job,
+                                    "metadata": metadata,
+                                    "lastHeartbeatAt": utc_now(),
+                                }
+                            )
+                        )
+        return normalized
+
+    def clear_provider_trace(self) -> None:
+        context = self.current_execution_context()
+        task_id = str(context.get("taskId") or "").strip()
+        dispatch_job_id = str(context.get("dispatchJobId") or "").strip()
+
+        with self.with_lock():
+            if dispatch_job_id:
+                existing_job = self.read_job_unlocked(dispatch_job_id)
+                if isinstance(existing_job, dict):
+                    metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
+                    metadata.pop("providerTrace", None)
+                    self.write_job_unlocked(storage.default_job({**existing_job, "metadata": metadata}))
+                return
+
+            state = self.read_state_unlocked()
+            active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+            active_task_id = str((active_task or {}).get("taskId") or "").strip()
+            if task_id and active_task_id and task_id == active_task_id:
+                loop = dict(storage.default_loop_state(), **(state.get("loop") if isinstance(state.get("loop"), dict) else {}))
+                loop["providerTrace"] = None
+                state["loop"] = loop
+                self.write_state_unlocked(state)
+                loop_job_id = str(loop.get("jobId") or "").strip()
+                if loop_job_id:
+                    existing_job = self.read_job_unlocked(loop_job_id)
+                    if isinstance(existing_job, dict):
+                        metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
+                        metadata.pop("providerTrace", None)
+                        self.write_job_unlocked(storage.default_job({**existing_job, "metadata": metadata}))
+
     def normalize_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
         normalized = default_state()
         normalized["activeTask"] = state.get("activeTask")
@@ -2306,6 +2676,7 @@ class LoopRuntime:
         normalized["commanderReview"] = state.get("commanderReview") if isinstance(state.get("commanderReview"), dict) else None
         normalized["summary"] = state.get("summary")
         normalized["directBaseline"] = state.get("directBaseline") if isinstance(state.get("directBaseline"), dict) else None
+        normalized["arbiter"] = state.get("arbiter") if isinstance(state.get("arbiter"), dict) else None
         normalized["memoryVersion"] = int(state.get("memoryVersion", 0) or 0)
         normalized["usage"] = normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         normalized["lastUpdated"] = state.get("lastUpdated") or utc_now()
@@ -2573,6 +2944,15 @@ class LoopRuntime:
                 return normalize_budget_limits(target_budget, budget)
         return normalize_budget_limits(budget, default_budget_config())
 
+    def get_target_timeout_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        return normalize_target_timeout_config(
+            task_runtime.get("targetTimeouts") if isinstance(task_runtime.get("targetTimeouts"), dict) else {}
+        )
+
+    def get_request_timeout_seconds(self, task: Dict[str, Any], target: Optional[str] = None) -> int:
+        return target_timeout_seconds(self.get_target_timeout_config(task), target)
+
     def get_task_runtime(
         self,
         task: Dict[str, Any],
@@ -2584,6 +2964,7 @@ class LoopRuntime:
             "executionMode": "live",
             "provider": DEFAULT_PROVIDER_ID,
             "model": DEFAULT_MODEL_ID,
+            "frontMode": default_front_mode(),
             "contextMode": default_context_mode(),
             "directBaselineMode": default_direct_baseline_mode(),
             "directProvider": DEFAULT_PROVIDER_ID,
@@ -2591,6 +2972,8 @@ class LoopRuntime:
             "ollamaBaseUrl": default_ollama_base_url(),
             "reasoningEffort": "low",
             "maxOutputTokens": default_budget_config()["maxOutputTokens"],
+            "targetTimeouts": default_target_timeout_config(),
+            "requestTimeoutSeconds": default_target_timeout_config()["workerDefault"],
             "research": default_research_config(),
             "localFiles": default_local_file_tool_config(),
             "githubTools": default_github_tool_config(),
@@ -2611,6 +2994,7 @@ class LoopRuntime:
                 default_model_for_provider(runtime["provider"]),
                 runtime["provider"],
             )
+            runtime["frontMode"] = normalize_front_mode(task_runtime.get("frontMode"), runtime["frontMode"])
             runtime["contextMode"] = normalize_context_mode(task_runtime.get("contextMode"), runtime["contextMode"])
             runtime["directBaselineMode"] = normalize_direct_baseline_mode(task_runtime.get("directBaselineMode"), runtime["directBaselineMode"])
             runtime["directProvider"] = normalize_provider_id(task_runtime.get("directProvider"), runtime["provider"])
@@ -2620,12 +3004,16 @@ class LoopRuntime:
                 runtime["directProvider"],
             )
             runtime["ollamaBaseUrl"] = normalize_ollama_base_url(task_runtime.get("ollamaBaseUrl"))
+            runtime["targetTimeouts"] = normalize_target_timeout_config(
+                task_runtime.get("targetTimeouts") if isinstance(task_runtime.get("targetTimeouts"), dict) else {}
+            )
             runtime["research"] = normalize_research_config(task_runtime.get("research") if isinstance(task_runtime.get("research"), dict) else {})
             runtime["localFiles"] = normalize_local_file_tool_config(task_runtime.get("localFiles") if isinstance(task_runtime.get("localFiles"), dict) else {})
             runtime["githubTools"] = normalize_github_tool_config(task_runtime.get("githubTools") if isinstance(task_runtime.get("githubTools"), dict) else {})
             runtime["dynamicSpinup"] = normalize_dynamic_spinup_config(task_runtime.get("dynamicSpinup") if isinstance(task_runtime.get("dynamicSpinup"), dict) else {})
             runtime["vetting"] = normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
         runtime["maxOutputTokens"] = self.get_budget_limits(task, budget_target)["maxOutputTokens"]
+        runtime["requestTimeoutSeconds"] = self.get_request_timeout_seconds(task, budget_target)
         if provider_override:
             runtime["provider"] = normalize_provider_id(provider_override, runtime["provider"])
         if model_override:
@@ -2649,6 +3037,10 @@ class LoopRuntime:
             "reasoningEffort": runtime["reasoningEffort"],
             "maxOutputTokens": runtime["maxOutputTokens"],
             "ollamaBaseUrl": normalize_ollama_base_url(task_runtime.get("ollamaBaseUrl", runtime.get("ollamaBaseUrl"))),
+            "targetTimeouts": normalize_target_timeout_config(
+                task_runtime.get("targetTimeouts") if isinstance(task_runtime.get("targetTimeouts"), dict) else {}
+            ),
+            "requestTimeoutSeconds": self.get_request_timeout_seconds(task, "direct_baseline"),
         }
 
     def provider_uses_api_key_pool(self, provider: Optional[str]) -> bool:
@@ -3583,6 +3975,17 @@ class LoopRuntime:
         )
         return not any(marker in message for marker in fatal_markers)
 
+    def is_request_timeout_error(self, error: Exception) -> bool:
+        if isinstance(error, (TimeoutError, socket.timeout)):
+            return True
+        if isinstance(error, urllib.error.URLError):
+            reason = getattr(error, "reason", None)
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                return True
+            if reason and "timed out" in str(reason).lower():
+                return True
+        return "timed out" in str(error).lower()
+
     def is_auth_rotation_error(self, error: RuntimeErrorWithCode) -> bool:
         message = str(error).lower()
         markers = (
@@ -3649,6 +4052,7 @@ class LoopRuntime:
         include: Optional[List[str]] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
+        request_timeout_seconds: int = 1800,
     ) -> OpenAIResult:
         handlers = function_handlers if isinstance(function_handlers, dict) else {}
         assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
@@ -3659,6 +4063,13 @@ class LoopRuntime:
 
         auth_failover_history: List[Dict[str, Any]] = []
         last_error: Optional[RuntimeErrorWithCode] = None
+        provider_trace = self.build_provider_trace_base("openai", model, target_kind, request_timeout_seconds)
+
+        def report_trace(stage: str, **updates: Any) -> None:
+            provider_trace.update({key: value for key, value in updates.items() if value is not None})
+            provider_trace["stage"] = stage
+            provider_trace["stageLabel"] = PROVIDER_TRACE_STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+            self.update_provider_trace(provider_trace)
 
         for assignment_index, assignment in enumerate(assignment_candidates):
             current_api_key = str(assignment.get("apiKey", "")).strip()
@@ -3707,13 +4118,47 @@ class LoopRuntime:
                             headers={"Authorization": f"Bearer {current_api_key}", "Content-Type": "application/json"},
                             method="POST",
                         )
+                        report_trace(
+                            "sending",
+                            requestCount=int(provider_trace.get("requestCount") or 0) + 1,
+                            attemptIndex=index + 1,
+                            effectiveMaxOutputTokens=effective_tokens,
+                            toolTurn=tool_turns,
+                            authKeySlot=int(assignment.get("keySlot", 0) or 0) if assignment.get("keySlot") is not None else None,
+                            authMasked=str(assignment.get("masked", "")).strip() or None,
+                            requestUrl=request.full_url,
+                            sentAt=utc_now(),
+                        )
                         try:
-                            with urllib.request.urlopen(request, timeout=1800) as handle:
+                            with urllib.request.urlopen(request, timeout=request_timeout_seconds) as handle:
+                                header_map = self.provider_trace_header_map(handle)
+                                report_trace(
+                                    "headers",
+                                    headersAt=utc_now(),
+                                    httpStatus=getattr(handle, "status", None) or getattr(handle, "code", None) or 200,
+                                    **self.provider_trace_from_headers("openai", header_map),
+                                )
                                 response = json.loads(handle.read().decode("utf-8"))
                         except urllib.error.HTTPError as error:
                             body_text = error.read().decode("utf-8", errors="replace")
+                            header_map = self.provider_trace_header_map(error)
+                            report_trace(
+                                "error",
+                                headersAt=utc_now(),
+                                completedAt=utc_now(),
+                                httpStatus=error.code,
+                                error=f"HTTP {error.code}",
+                                **self.provider_trace_from_headers("openai", header_map),
+                            )
                             raise RuntimeErrorWithCode(f"OpenAI API request failed: HTTP {error.code} | {body_text}", 500)
                         except Exception as error:
+                            if self.is_request_timeout_error(error):
+                                report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
+                                raise RuntimeErrorWithCode(
+                                    f"OpenAI API request timed out after {request_timeout_seconds}s.",
+                                    504,
+                                )
+                            report_trace("error", completedAt=utc_now(), error=str(error))
                             raise RuntimeErrorWithCode(f"OpenAI API request failed: {error}", 500)
 
                         if isinstance(response.get("error"), dict):
@@ -3729,6 +4174,13 @@ class LoopRuntime:
                         incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
                         incomplete_reason = str(incomplete_details.get("reason", "")).strip()
                         if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
+                            report_trace(
+                                "retrying",
+                                completedAt=utc_now(),
+                                responseStatus=str(response.get("status", "")).strip() or None,
+                                incompleteReason=incomplete_reason,
+                                providerResponseId=str(response.get("id", "")).strip() or None,
+                            )
                             recovered_from_incomplete = True
                             last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
                             retry_attempt = True
@@ -3850,6 +4302,19 @@ class LoopRuntime:
                             executed_tools=executed_tools,
                             auth_assignment=auth_assignment_meta(assignment),
                             auth_failover_history=list(auth_failover_history),
+                            provider_trace=self.update_provider_trace(
+                                {
+                                    **provider_trace,
+                                    "stage": "completed",
+                                    "stageLabel": PROVIDER_TRACE_STAGE_LABELS["completed"],
+                                    "completedAt": utc_now(),
+                                    "providerResponseId": str(response.get("id", "")).strip() or None,
+                                    "responseStatus": str(response.get("status", "completed")).strip() or "completed",
+                                    "toolTurn": tool_turns,
+                                    "localToolCallCount": len(executed_tools),
+                                    "webSearchQueryCount": len(web_search_queries),
+                                }
+                            ),
                         )
 
                     if retry_attempt:
@@ -3969,6 +4434,7 @@ class LoopRuntime:
         include: Optional[List[str]] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
+        request_timeout_seconds: int = 1800,
     ) -> OpenAIResult:
         handlers = function_handlers if isinstance(function_handlers, dict) else {}
         assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
@@ -3979,6 +4445,13 @@ class LoopRuntime:
 
         auth_failover_history: List[Dict[str, Any]] = []
         last_error: Optional[RuntimeErrorWithCode] = None
+        provider_trace = self.build_provider_trace_base("xai", model, target_kind, request_timeout_seconds)
+
+        def report_trace(stage: str, **updates: Any) -> None:
+            provider_trace.update({key: value for key, value in updates.items() if value is not None})
+            provider_trace["stage"] = stage
+            provider_trace["stageLabel"] = PROVIDER_TRACE_STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+            self.update_provider_trace(provider_trace)
 
         for assignment_index, assignment in enumerate(assignment_candidates):
             current_api_key = str(assignment.get("apiKey", "")).strip()
@@ -4027,13 +4500,47 @@ class LoopRuntime:
                             headers={"Authorization": f"Bearer {current_api_key}", "Content-Type": "application/json"},
                             method="POST",
                         )
+                        report_trace(
+                            "sending",
+                            requestCount=int(provider_trace.get("requestCount") or 0) + 1,
+                            attemptIndex=index + 1,
+                            effectiveMaxOutputTokens=effective_tokens,
+                            toolTurn=tool_turns,
+                            authKeySlot=int(assignment.get("keySlot", 0) or 0) if assignment.get("keySlot") is not None else None,
+                            authMasked=str(assignment.get("masked", "")).strip() or None,
+                            requestUrl=request.full_url,
+                            sentAt=utc_now(),
+                        )
                         try:
-                            with urllib.request.urlopen(request, timeout=1800) as handle:
+                            with urllib.request.urlopen(request, timeout=request_timeout_seconds) as handle:
+                                header_map = self.provider_trace_header_map(handle)
+                                report_trace(
+                                    "headers",
+                                    headersAt=utc_now(),
+                                    httpStatus=getattr(handle, "status", None) or getattr(handle, "code", None) or 200,
+                                    **self.provider_trace_from_headers("xai", header_map),
+                                )
                                 response = json.loads(handle.read().decode("utf-8"))
                         except urllib.error.HTTPError as error:
                             body_text = error.read().decode("utf-8", errors="replace")
+                            header_map = self.provider_trace_header_map(error)
+                            report_trace(
+                                "error",
+                                headersAt=utc_now(),
+                                completedAt=utc_now(),
+                                httpStatus=error.code,
+                                error=f"HTTP {error.code}",
+                                **self.provider_trace_from_headers("xai", header_map),
+                            )
                             raise RuntimeErrorWithCode(f"xAI API request failed: HTTP {error.code} | {body_text}", 500)
                         except Exception as error:
+                            if self.is_request_timeout_error(error):
+                                report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
+                                raise RuntimeErrorWithCode(
+                                    f"xAI API request timed out after {request_timeout_seconds}s.",
+                                    504,
+                                )
+                            report_trace("error", completedAt=utc_now(), error=str(error))
                             raise RuntimeErrorWithCode(f"xAI API request failed: {error}", 500)
 
                         if isinstance(response.get("error"), dict):
@@ -4049,6 +4556,13 @@ class LoopRuntime:
                         incomplete_details = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
                         incomplete_reason = str(incomplete_details.get("reason", "")).strip()
                         if response.get("status") == "incomplete" and incomplete_reason == "max_output_tokens" and index < len(attempts) - 1:
+                            report_trace(
+                                "retrying",
+                                completedAt=utc_now(),
+                                responseStatus=str(response.get("status", "")).strip() or None,
+                                incompleteReason=incomplete_reason,
+                                providerResponseId=str(response.get("id", "")).strip() or None,
+                            )
                             recovered_from_incomplete = True
                             last_error = RuntimeErrorWithCode(f"Model response incomplete: {incomplete_reason}", 500)
                             retry_attempt = True
@@ -4170,6 +4684,19 @@ class LoopRuntime:
                             executed_tools=executed_tools,
                             auth_assignment=auth_assignment_meta(assignment),
                             auth_failover_history=list(auth_failover_history),
+                            provider_trace=self.update_provider_trace(
+                                {
+                                    **provider_trace,
+                                    "stage": "completed",
+                                    "stageLabel": PROVIDER_TRACE_STAGE_LABELS["completed"],
+                                    "completedAt": utc_now(),
+                                    "providerResponseId": str(response.get("id", "")).strip() or None,
+                                    "responseStatus": str(response.get("status", "completed")).strip() or "completed",
+                                    "toolTurn": tool_turns,
+                                    "localToolCallCount": len(executed_tools),
+                                    "webSearchQueryCount": len(web_search_queries),
+                                }
+                            ),
                         )
 
                     if retry_attempt:
@@ -4216,6 +4743,7 @@ class LoopRuntime:
         tool_choice: Optional[Any] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
+        request_timeout_seconds: int = 1800,
     ) -> OpenAIResult:
         normalized_provider = normalize_provider_id(provider, "anthropic")
         provider_label = provider_capability_profile(normalized_provider)["provider"]
@@ -4255,6 +4783,13 @@ class LoopRuntime:
 
         auth_failover_history: List[Dict[str, Any]] = []
         last_error: Optional[RuntimeErrorWithCode] = None
+        provider_trace = self.build_provider_trace_base(normalized_provider, model, target_kind, request_timeout_seconds)
+
+        def report_trace(stage: str, **updates: Any) -> None:
+            provider_trace.update({key: value for key, value in updates.items() if value is not None})
+            provider_trace["stage"] = stage
+            provider_trace["stageLabel"] = PROVIDER_TRACE_STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+            self.update_provider_trace(provider_trace)
 
         for assignment_index, assignment in enumerate(assignment_candidates):
             current_api_key = str(assignment.get("apiKey", "")).strip()
@@ -4299,13 +4834,47 @@ class LoopRuntime:
                             },
                             method="POST",
                         )
+                        report_trace(
+                            "sending",
+                            requestCount=int(provider_trace.get("requestCount") or 0) + 1,
+                            attemptIndex=index + 1,
+                            effectiveMaxOutputTokens=effective_tokens,
+                            toolTurn=tool_turns,
+                            authKeySlot=int(assignment.get("keySlot", 0) or 0) if assignment.get("keySlot") is not None else None,
+                            authMasked=str(assignment.get("masked", "")).strip() or None,
+                            requestUrl=request.full_url,
+                            sentAt=utc_now(),
+                        )
                         try:
-                            with urllib.request.urlopen(request, timeout=1800) as handle:
+                            with urllib.request.urlopen(request, timeout=request_timeout_seconds) as handle:
+                                header_map = self.provider_trace_header_map(handle)
+                                report_trace(
+                                    "headers",
+                                    headersAt=utc_now(),
+                                    httpStatus=getattr(handle, "status", None) or getattr(handle, "code", None) or 200,
+                                    **self.provider_trace_from_headers(normalized_provider, header_map),
+                                )
                                 response = json.loads(handle.read().decode("utf-8"))
                         except urllib.error.HTTPError as error:
                             body_text = error.read().decode("utf-8", errors="replace")
+                            header_map = self.provider_trace_header_map(error)
+                            report_trace(
+                                "error",
+                                headersAt=utc_now(),
+                                completedAt=utc_now(),
+                                httpStatus=error.code,
+                                error=f"HTTP {error.code}",
+                                **self.provider_trace_from_headers(normalized_provider, header_map),
+                            )
                             raise RuntimeErrorWithCode(f"{PROVIDER_CATALOG[normalized_provider]['label']} API request failed: HTTP {error.code} | {body_text}", 500)
                         except Exception as error:
+                            if self.is_request_timeout_error(error):
+                                report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
+                                raise RuntimeErrorWithCode(
+                                    f"{PROVIDER_CATALOG[normalized_provider]['label']} API request timed out after {request_timeout_seconds}s.",
+                                    504,
+                                )
+                            report_trace("error", completedAt=utc_now(), error=str(error))
                             raise RuntimeErrorWithCode(f"{PROVIDER_CATALOG[normalized_provider]['label']} API request failed: {error}", 500)
 
                         if isinstance(response.get("error"), dict):
@@ -4390,6 +4959,12 @@ class LoopRuntime:
                         output_text = self.get_response_output_text(response)
                         if not output_text:
                             if stop_reason == "max_tokens" and index < len(attempts) - 1:
+                                report_trace(
+                                    "retrying",
+                                    completedAt=utc_now(),
+                                    responseStatus=stop_reason,
+                                    providerResponseId=str(response.get("id", "")).strip() or None,
+                                )
                                 recovered_from_incomplete = True
                                 retry_attempt = True
                                 break
@@ -4424,6 +4999,19 @@ class LoopRuntime:
                             executed_tools=executed_tools,
                             auth_assignment=auth_assignment_meta(assignment),
                             auth_failover_history=list(auth_failover_history),
+                            provider_trace=self.update_provider_trace(
+                                {
+                                    **provider_trace,
+                                    "stage": "completed",
+                                    "stageLabel": PROVIDER_TRACE_STAGE_LABELS["completed"],
+                                    "completedAt": utc_now(),
+                                    "providerResponseId": str(response.get("id", "")).strip() or None,
+                                    "responseStatus": stop_reason or "completed",
+                                    "toolTurn": tool_turns,
+                                    "localToolCallCount": len(executed_tools),
+                                    "webSearchQueryCount": len(web_search_queries),
+                                }
+                            ),
                         )
 
                     if retry_attempt:
@@ -4476,12 +5064,21 @@ class LoopRuntime:
         tools: Optional[List[Dict[str, Any]]] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         base_url: Optional[str] = None,
+        request_timeout_seconds: int = 1800,
     ) -> OpenAIResult:
         attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
         last_error: Optional[RuntimeErrorWithCode] = None
         api_key = self.ollama_api_key()
         ollama_tools = self.convert_function_tools_to_ollama(tools)
         handlers = function_handlers if isinstance(function_handlers, dict) else {}
+        provider_trace = self.build_provider_trace_base("ollama", model, target_kind, request_timeout_seconds)
+
+        def report_trace(stage: str, **updates: Any) -> None:
+            provider_trace.update({key: value for key, value in updates.items() if value is not None})
+            provider_trace["stage"] = stage
+            provider_trace["stageLabel"] = PROVIDER_TRACE_STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+            self.update_provider_trace(provider_trace)
+
         for effective_tokens in attempts:
             messages = [
                 {"role": "system", "content": instructions},
@@ -4520,13 +5117,45 @@ class LoopRuntime:
                     headers=headers,
                     method="POST",
                 )
+                report_trace(
+                    "sending",
+                    requestCount=int(provider_trace.get("requestCount") or 0) + 1,
+                    attemptIndex=max(1, attempts.index(effective_tokens) + 1 if effective_tokens in attempts else 1),
+                    effectiveMaxOutputTokens=effective_tokens,
+                    toolTurn=tool_turns,
+                    requestUrl=request.full_url,
+                    sentAt=utc_now(),
+                )
                 try:
-                    with urllib.request.urlopen(request, timeout=1800) as handle:
+                    with urllib.request.urlopen(request, timeout=request_timeout_seconds) as handle:
+                        header_map = self.provider_trace_header_map(handle)
+                        report_trace(
+                            "headers",
+                            headersAt=utc_now(),
+                            httpStatus=getattr(handle, "status", None) or getattr(handle, "code", None) or 200,
+                            **self.provider_trace_from_headers("ollama", header_map),
+                        )
                         response = json.loads(handle.read().decode("utf-8"))
                 except urllib.error.HTTPError as error:
                     body_text = error.read().decode("utf-8", errors="replace")
+                    header_map = self.provider_trace_header_map(error)
+                    report_trace(
+                        "error",
+                        headersAt=utc_now(),
+                        completedAt=utc_now(),
+                        httpStatus=error.code,
+                        error=f"HTTP {error.code}",
+                        **self.provider_trace_from_headers("ollama", header_map),
+                    )
                     raise RuntimeErrorWithCode(f"Ollama API request failed: HTTP {error.code} | {body_text}", 500)
                 except Exception as error:
+                    if self.is_request_timeout_error(error):
+                        report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
+                        raise RuntimeErrorWithCode(
+                            f"Ollama API request timed out after {request_timeout_seconds}s.",
+                            504,
+                        )
+                    report_trace("error", completedAt=utc_now(), error=str(error))
                     raise RuntimeErrorWithCode(f"Ollama API request failed: {error}", 500)
 
                 message_node = response.get("message") if isinstance(response.get("message"), dict) else {}
@@ -4634,6 +5263,24 @@ class LoopRuntime:
                     executed_tools=executed_tools,
                     auth_assignment=None,
                     auth_failover_history=[],
+                    provider_trace=self.update_provider_trace(
+                        {
+                            **provider_trace,
+                            "stage": "completed",
+                            "stageLabel": PROVIDER_TRACE_STAGE_LABELS["completed"],
+                            "completedAt": utc_now(),
+                            "providerResponseId": response_id,
+                            "responseStatus": "completed" if bool(response.get("done")) else "partial",
+                            "toolTurn": tool_turns,
+                            "localToolCallCount": len(executed_tools),
+                            "ollamaTotalDurationMs": self.provider_trace_ms_from_ns(response.get("total_duration")),
+                            "ollamaLoadDurationMs": self.provider_trace_ms_from_ns(response.get("load_duration")),
+                            "ollamaPromptEvalCount": self.provider_trace_int(response.get("prompt_eval_count")),
+                            "ollamaPromptEvalDurationMs": self.provider_trace_ms_from_ns(response.get("prompt_eval_duration")),
+                            "ollamaEvalCount": self.provider_trace_int(response.get("eval_count")),
+                            "ollamaEvalDurationMs": self.provider_trace_ms_from_ns(response.get("eval_duration")),
+                        }
+                    ),
                 )
         if last_error is not None:
             raise last_error
@@ -4659,6 +5306,10 @@ class LoopRuntime:
         provider_settings: Optional[Dict[str, Any]] = None,
     ) -> OpenAIResult:
         normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        request_timeout_seconds = clamp_timeout_seconds(
+            (provider_settings or {}).get("requestTimeoutSeconds"),
+            target_timeout_seconds(default_target_timeout_config(), target_kind),
+        )
         if normalized_provider == "openai":
             return self.invoke_openai_json(
                 api_key=api_key,
@@ -4675,6 +5326,7 @@ class LoopRuntime:
                 include=include,
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
+                request_timeout_seconds=request_timeout_seconds,
             )
         if normalized_provider == "xai":
             return self.invoke_xai_json(
@@ -4692,6 +5344,7 @@ class LoopRuntime:
                 include=include,
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
+                request_timeout_seconds=request_timeout_seconds,
             )
         if normalized_provider in {"anthropic", "minimax"}:
             if include:
@@ -4709,6 +5362,7 @@ class LoopRuntime:
                 tool_choice=tool_choice,
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
+                request_timeout_seconds=request_timeout_seconds,
             )
         if normalized_provider == "ollama":
             normalized_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
@@ -4756,6 +5410,7 @@ class LoopRuntime:
                 tools=normalized_tools,
                 function_handlers=function_handlers,
                 base_url=ollama_base_url,
+                request_timeout_seconds=request_timeout_seconds,
             )
         raise RuntimeErrorWithCode(f"provider_not_configured: Unsupported provider {normalized_provider}.", 400)
 
@@ -5112,6 +5767,7 @@ class LoopRuntime:
         session_context = str(task.get("sessionContext", "")).strip()
         summary_projection = self.project_prior_summary_for_worker(prior_summary)
         summary_text = json.dumps(summary_projection, ensure_ascii=False, indent=2) if summary_projection else "none"
+        task_brief = self.project_task_for_adjudication(task)
         local_file_config = normalize_local_file_tool_config(runtime.get("localFiles") if isinstance(runtime.get("localFiles"), dict) else {})
         github_tool_config = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
         tools: List[Dict[str, Any]] = []
@@ -5191,7 +5847,7 @@ class LoopRuntime:
             + self.build_full_context_block(
                 main_thread_context_mode,
                 [
-                    ("Task brief", json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)),
+                    ("Task brief", json.dumps(task_brief, ensure_ascii=False, indent=2)),
                 ],
             )
             + "Produce the commander's first-pass answer direction for this round."
@@ -5225,6 +5881,7 @@ class LoopRuntime:
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
             "skills": skill_context["names"],
+            "providerTrace": result.provider_trace,
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
             "localToolCalls": parsed["localToolCalls"],
@@ -5379,7 +6036,9 @@ class LoopRuntime:
         session_context = str(task.get("sessionContext", "")).strip()
         commander_projection = self.project_commander_for_summary(commander_checkpoint)
         round_number = int(commander_projection.get("round", 0) or 1)
-        worker_projection = self.project_worker_state_for_summary(worker_state, workers)
+        worker_projection = self.project_worker_state_for_adjudication(worker_state, workers)
+        task_brief = self.project_task_for_adjudication(task)
+        lane_type_catalog = normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 12)
         source_workers = [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)]
         instructions = (
             "You are the commander_review stage in a sparse multi-lane reasoning loop.\n"
@@ -5438,8 +6097,7 @@ class LoopRuntime:
             )
             + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
             + f"Initial commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
-            + f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
-            + f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
+            + f"Known adversarial lane types:\n{json.dumps(lane_type_catalog, ensure_ascii=False, indent=2)}\n\n"
             + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
             + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
@@ -5471,6 +6129,7 @@ class LoopRuntime:
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
             "skills": skill_context["names"],
+            "providerTrace": result.provider_trace,
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
         }
@@ -5837,6 +6496,7 @@ class LoopRuntime:
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
             "skills": skill_context["names"],
+            "providerTrace": result.provider_trace,
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
             "localToolCalls": parsed["localToolCalls"],
@@ -5871,6 +6531,18 @@ class LoopRuntime:
                 "dynamicSpinup": self.get_dynamic_spinup_config(task),
                 "vetting": self.get_vetting_config(task),
             },
+        }
+
+    def project_task_for_adjudication(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        runtime = self.get_task_runtime(task)
+        return {
+            "taskId": str(task.get("taskId", "")),
+            "objectivePreview": truncate_text(task.get("objective", ""), 280),
+            "sessionContextPreview": truncate_text(task.get("sessionContext", ""), 240),
+            "constraints": limit_string_list(task.get("constraints", []), 10, 200),
+            "contextMode": normalize_context_mode(runtime.get("contextMode")),
+            "dynamicSpinupEnabled": bool(self.get_dynamic_spinup_config(task).get("enabled")),
+            "vettingEnabled": bool(self.get_vetting_config(task).get("enabled")),
         }
 
     def project_commander_for_worker(self, commander: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -6118,6 +6790,50 @@ class LoopRuntime:
         projected: List[Dict[str, Any]] = []
         for worker in workers:
             checkpoint = self.project_worker_checkpoint_for_summary(worker_state.get(worker["id"]))
+            if checkpoint is not None:
+                projected.append(checkpoint)
+        return projected
+
+    def project_worker_checkpoint_for_adjudication(self, checkpoint: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(checkpoint, dict):
+            return None
+        ledger: List[Dict[str, Any]] = []
+        for entry in checkpoint.get("evidenceLedger", [])[:3] if isinstance(checkpoint.get("evidenceLedger"), list) else []:
+            if not isinstance(entry, dict):
+                continue
+            ledger.append(
+                {
+                    "claim": truncate_text(entry.get("claim", ""), 220),
+                    "supportLevel": str(entry.get("supportLevel", "")),
+                    "note": truncate_text(entry.get("note", ""), 160),
+                    "sourceUrls": limit_url_list(entry.get("sourceUrls", []), 3),
+                }
+            )
+        return {
+            "workerId": str(checkpoint.get("workerId", "")),
+            "label": str(checkpoint.get("label", "")),
+            "role": str(checkpoint.get("role", "")),
+            "focus": truncate_text(checkpoint.get("focus", ""), 140),
+            "step": int(checkpoint.get("step", 0) or 0),
+            "observation": truncate_text(checkpoint.get("observation", ""), 320),
+            "benefits": limit_string_list(checkpoint.get("benefits", []), 2, 160),
+            "detriments": limit_string_list(checkpoint.get("detriments", []), 2, 160),
+            "requiredCircumstances": limit_string_list(checkpoint.get("requiredCircumstances", []), 2, 160),
+            "invalidatingCircumstances": limit_string_list(checkpoint.get("invalidatingCircumstances", []), 2, 160),
+            "immediateConsequences": limit_string_list(checkpoint.get("immediateConsequences", []), 2, 160),
+            "downstreamConsequences": limit_string_list(checkpoint.get("downstreamConsequences", []), 2, 160),
+            "uncertainty": limit_string_list(checkpoint.get("uncertainty", []), 2, 160),
+            "reversalConditions": limit_string_list(checkpoint.get("reversalConditions", []), 2, 160),
+            "evidenceGaps": limit_string_list(checkpoint.get("evidenceGaps", []), 3, 160),
+            "evidenceLedger": ledger,
+            "confidence": float(checkpoint.get("confidence", 0.0) or 0.0),
+            "requestToPeer": truncate_text(checkpoint.get("requestToPeer", ""), 180),
+        }
+
+    def project_worker_state_for_adjudication(self, worker_state: Dict[str, Any], workers: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        projected: List[Dict[str, Any]] = []
+        for worker in workers:
+            checkpoint = self.project_worker_checkpoint_for_adjudication(worker_state.get(worker["id"]))
             if checkpoint is not None:
                 projected.append(checkpoint)
         return projected
@@ -6603,6 +7319,8 @@ class LoopRuntime:
             commander_checkpoint,
             [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)],
         )
+        task_brief = self.project_task_for_adjudication(task)
+        worker_projection = self.project_worker_state_for_adjudication(worker_state, workers)
         pending_workers = normalize_worker_id_list(pending_workers or [])
         has_commander_review = isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) > 0
         instructions = (
@@ -6714,13 +7432,11 @@ class LoopRuntime:
             + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
             + f"Commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
             + f"Commander review for this round:\n{json.dumps(commander_review_projection, ensure_ascii=False, indent=2)}\n\n"
-            + f"Task brief:\n{json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)}\n\n"
-            + f"Worker lineup:\n{json.dumps(self.project_worker_roster_for_summary(workers), ensure_ascii=False, indent=2)}\n\n"
-            + f"Known adversarial lane types:\n{json.dumps(normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 32), ensure_ascii=False, indent=2)}\n\n"
+            + f"Task brief:\n{json.dumps(task_brief, ensure_ascii=False, indent=2)}\n\n"
             + f"Partial summary mode:\n{partial_mode}\n\n"
             + f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}\n\n"
             + f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
-            + f"Worker checkpoint digests:\n{json.dumps(self.project_worker_state_for_summary(worker_state, workers), ensure_ascii=False, indent=2)}\n\n"
+            + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
             + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
         input_text = self.maybe_compact_prompt_text(input_text, runtime, "summarizer")
@@ -6761,6 +7477,7 @@ class LoopRuntime:
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
             "skills": skill_context["names"],
+            "providerTrace": result.provider_trace,
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
         }
@@ -6821,6 +7538,7 @@ class LoopRuntime:
     def annotate_partial_summary(self, summary: Dict[str, Any], available_workers: List[str], pending_workers: List[str]) -> Dict[str, Any]:
         available_workers = normalize_worker_id_list(available_workers)
         pending_workers = normalize_worker_id_list(pending_workers)
+        summary["partialSummary"] = True
         note_bits = []
         if available_workers:
             note_bits.append("Used current checkpoints from " + ", ".join(available_workers) + ".")
@@ -6939,6 +7657,7 @@ class LoopRuntime:
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
             "skills": normalize_string_array_preserve_items(getattr(result, "used_skills", [])),
+            "providerTrace": result.provider_trace,
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -7085,6 +7804,7 @@ class LoopRuntime:
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
+                "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
             } if response else None,
             "authMeta": auth_meta,
             "answer": normalize_direct_answer_payload(baseline_answer, str(task.get("objective") or "")),
@@ -7270,6 +7990,7 @@ class LoopRuntime:
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
+                "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
                 "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
                 "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
                 "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
@@ -7377,7 +8098,7 @@ class LoopRuntime:
                 )
         review_config = commander_review_config(task)
         runtime = self.get_task_runtime(task, review_config["model"], "commander_review", review_config["provider"])
-        line_catalog = self.build_summary_line_catalog(worker_state, workers)
+        line_catalog = self.build_summary_line_catalog(worker_state, workers, max_items_per_worker=8)
         checkpoint: Optional[Dict[str, Any]] = None
         response_id: Optional[str] = None
         response: Optional[Dict[str, Any]] = None
@@ -7506,6 +8227,7 @@ class LoopRuntime:
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
+                "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
                 "dynamicLaneDecision": dynamic_lane_decision,
                 "dynamicLaneResolution": dynamic_lane_resolution,
                 "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
@@ -7746,6 +8468,7 @@ class LoopRuntime:
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
+                "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
                 "localToolCalls": normalize_local_tool_calls(call_meta.get("localToolCalls", [])),
                 "localFileSources": normalize_string_array_preserve_items(call_meta.get("localFileSources", [])),
                 "githubToolCalls": normalize_local_tool_calls(call_meta.get("githubToolCalls", [])),
@@ -7867,7 +8590,7 @@ class LoopRuntime:
         summary_config = summarizer_config(task)
         runtime = self.get_task_runtime(task, summary_config["model"], "summarizer", summary_config["provider"])
         vetting_config = self.get_vetting_config(task)
-        line_catalog = self.build_summary_line_catalog(worker_state, workers)
+        line_catalog = self.build_summary_line_catalog(worker_state, workers, max_items_per_worker=10)
         summary: Optional[Dict[str, Any]] = None
         response_id: Optional[str] = None
         response: Optional[Dict[str, Any]] = None
@@ -7942,6 +8665,7 @@ class LoopRuntime:
         if summary is None:
             summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
         summary = self.normalize_summary(summary, line_catalog)
+        summary["partialSummary"] = False
         summary["round"] = commander_round
         dynamic_lane_decision = summary.get("dynamicLaneDecision") if isinstance(summary.get("dynamicLaneDecision"), dict) else {}
 
@@ -7973,6 +8697,7 @@ class LoopRuntime:
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
+                "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
             } if response else None,
             "authMeta": auth_meta,
             "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
@@ -8056,7 +8781,7 @@ class LoopRuntime:
         elif runtime["reasoningEffort"] == "none":
             runtime["reasoningEffort"] = "low"
         vetting_config = self.get_vetting_config(task)
-        line_catalog = self.build_summary_line_catalog(worker_state, workers)
+        line_catalog = self.build_summary_line_catalog(worker_state, workers, max_items_per_worker=10)
         summary: Optional[Dict[str, Any]] = None
         response_id: Optional[str] = None
         response: Optional[Dict[str, Any]] = None
@@ -8133,9 +8858,22 @@ class LoopRuntime:
         summary = self.normalize_summary(summary, line_catalog)
         summary["round"] = commander_round
         summary = self.annotate_partial_summary(summary, list(worker_state.keys()), pending_workers)
+        summary_write_applied = {"value": False}
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
+            current_summary = current.get("summary") if isinstance(current.get("summary"), dict) else None
+            current_summary_round = int((current_summary or {}).get("round", 0) or 0)
+            current_summary_partial = bool((current_summary or {}).get("partialSummary"))
+            current_commander = current.get("commander") if isinstance(current.get("commander"), dict) else None
+            current_commander_round = int((current_commander or {}).get("round", 0) or 0)
+            if current_commander_round > commander_round:
+                return current
+            if current_summary_round > commander_round:
+                return current
+            if current_summary_round == commander_round and not current_summary_partial:
+                return current
             current["summary"] = summary
             current["memoryVersion"] = int(current.get("memoryVersion", 0) or 0) + 1
+            summary_write_applied["value"] = True
             return current
         state = self.mutate_state(update_state)
         current_memory_version = int(state.get("memoryVersion", 0) or 0)
@@ -8161,6 +8899,7 @@ class LoopRuntime:
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "partialSummary": True,
+                "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
                 "pendingWorkers": pending_workers,
             } if response else None,
             "authMeta": auth_meta,
@@ -8193,6 +8932,7 @@ class LoopRuntime:
                 "estimatedCostUsd": float(budget_totals.get("estimatedCostUsd", 0.0)),
                 "checkpointFile": history_summary.name,
                 "outputFile": history_output.name,
+                "stateSummaryUpdated": bool(summary_write_applied["value"]),
                 "auth": auth_meta,
             },
         )
@@ -8209,14 +8949,22 @@ class LoopRuntime:
             raise RuntimeErrorWithCode("No active task.", 400)
         if task_id and str(task.get("taskId", "")) != str(task_id):
             raise RuntimeErrorWithCode("Requested task does not match the active task.", 409)
-        if target == "commander":
-            return self.run_commander()
-        if target == "direct_baseline":
-            return self.run_direct_baseline()
-        if target == "commander_review":
-            return self.run_commander_review()
-        if target == "summarizer":
-            return self.run_summarizer()
-        if target == "answer_now" or (isinstance(options, dict) and options.get("partialSummary") and target == "summarizer"):
-            return self.run_answer_now()
-        return self.run_worker(target)
+        execution_context = dict(options or {})
+        execution_context["taskId"] = str(task.get("taskId") or "")
+        execution_context["traceTarget"] = str(target or "").strip()
+        self.set_execution_context(execution_context)
+        self.clear_provider_trace()
+        try:
+            if target == "commander":
+                return self.run_commander()
+            if target == "direct_baseline":
+                return self.run_direct_baseline()
+            if target == "commander_review":
+                return self.run_commander_review()
+            if target == "summarizer":
+                return self.run_summarizer()
+            if target == "answer_now" or (isinstance(options, dict) and options.get("partialSummary") and target == "summarizer"):
+                return self.run_answer_now()
+            return self.run_worker(target)
+        finally:
+            self.clear_execution_context()

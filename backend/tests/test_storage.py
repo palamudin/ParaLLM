@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -45,6 +46,92 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["loop"]["status"], "idle")
         self.assertEqual(payload["dispatch"]["status"], "idle")
         self.assertEqual(payload["dispatch"]["activeJobs"], [])
+        self.assertIsNone(payload["dispatch"]["providerTrace"])
+
+    def test_read_state_payload_surfaces_dispatch_provider_trace(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-dispatch-trace",
+                    "objective": "Surface the active provider trace.",
+                },
+            },
+        )
+        self.write_json(
+            self.paths.jobs / "dispatch-1.json",
+            {
+                "jobId": "dispatch-1",
+                "taskId": "t-dispatch-trace",
+                "jobType": "target",
+                "target": "commander_review",
+                "status": "running",
+                "queuedAt": (now - timedelta(seconds=6)).isoformat(),
+                "startedAt": (now - timedelta(seconds=3)).isoformat(),
+                "lastHeartbeatAt": (now - timedelta(seconds=1)).isoformat(),
+                "lastMessage": "OpenAI | Commander review | Headers received",
+                "metadata": {
+                    "providerTrace": {
+                        "provider": "openai",
+                        "target": "commander_review",
+                        "stage": "headers",
+                        "providerRequestId": "req_dispatch_trace",
+                    }
+                },
+            },
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertEqual(payload["dispatch"]["status"], "running")
+        self.assertEqual(payload["dispatch"]["providerTrace"]["providerRequestId"], "req_dispatch_trace")
+        self.assertEqual(payload["dispatch"]["activeJobs"][0]["providerTrace"]["stage"], "headers")
+
+    def test_read_state_payload_recovers_loop_provider_trace_from_job_metadata(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-loop-trace",
+                    "objective": "Recover provider trace on loop reload.",
+                },
+                "loop": {
+                    "status": "running",
+                    "jobId": "job-loop-1",
+                    "totalRounds": 2,
+                    "currentRound": 1,
+                    "lastMessage": "Waiting on commander review.",
+                },
+            },
+        )
+        self.write_json(
+            self.paths.jobs / "job-loop-1.json",
+            {
+                "jobId": "job-loop-1",
+                "taskId": "t-loop-trace",
+                "jobType": "loop",
+                "status": "running",
+                "queuedAt": (now - timedelta(seconds=8)).isoformat(),
+                "startedAt": (now - timedelta(seconds=5)).isoformat(),
+                "lastHeartbeatAt": (now - timedelta(seconds=1)).isoformat(),
+                "lastMessage": "OpenAI | Commander review | Headers received",
+                "metadata": {
+                    "providerTrace": {
+                        "provider": "openai",
+                        "target": "commander_review",
+                        "stage": "headers",
+                        "providerRequestId": "req_loop_trace",
+                    }
+                },
+            },
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertEqual(payload["loop"]["status"], "running")
+        self.assertEqual(payload["loop"]["providerTrace"]["providerRequestId"], "req_loop_trace")
 
     def test_read_state_payload_enriches_active_task_runtime_mirrors(self) -> None:
         self.write_json(
@@ -69,6 +156,10 @@ class StorageReadModelTests(unittest.TestCase):
                     "round": 1,
                     "frontAnswer": {"answer": "Proceed carefully."},
                 },
+                "arbiter": {
+                    "taskId": "t-1",
+                    "comparison": {"verdict": "pressurized_advantage"},
+                },
             },
         )
 
@@ -78,6 +169,7 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["activeTask"]["stateCommander"]["round"], 1)
         self.assertEqual(payload["activeTask"]["stateCommanderReview"]["courseDecision"], "maintain")
         self.assertEqual(payload["activeTask"]["summary"]["frontAnswer"]["answer"], "Proceed carefully.")
+        self.assertEqual(payload["activeTask"]["arbiter"]["comparison"]["verdict"], "pressurized_advantage")
         self.assertNotIn("stateWorkers", self.read_json(self.paths.state)["activeTask"])
 
     def test_read_state_payload_surfaces_execution_health_from_recent_steps(self) -> None:

@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.app import metadata as metadata_store
 from backend.app.control import auth_file_path
-from engine import (
+from runtime.engine import (
     LoopRuntime,
     RuntimeErrorWithCode,
     auth_assignment_meta,

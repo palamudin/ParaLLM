@@ -8,11 +8,14 @@ from typing import Any, Dict, Optional
 
 from runtime.engine import LoopRuntime, RuntimeErrorWithCode
 
+from . import arbiter
 from .config import deployment_topology
 
 
 def run_target(runtime: LoopRuntime, target: str, task_id: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     execution_options = dict(options or {})
+    if str(target or "").strip().lower() == "arbiter":
+        return arbiter.run_current_task_arbiter(runtime, task_id, execution_options)
     topology = deployment_topology(runtime.root)
     if topology.runtime_execution_backend != "runtime_service":
         return runtime.run_target(target, task_id, execution_options)

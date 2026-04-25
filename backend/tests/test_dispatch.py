@@ -105,6 +105,26 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result["backend"], "python")
         run_target.assert_called_once()
 
+    def test_arbiter_preflight_uses_existing_score_without_crashing(self) -> None:
+        state = self._read_state()
+        state["summary"] = {
+            "round": 1,
+            "mergedAt": "2026-04-24T00:00:00+00:00",
+            "frontAnswer": {"answer": "Pressurized answer."},
+        }
+        state["directBaseline"] = {
+            "capturedAt": "2026-04-24T00:00:01+00:00",
+            "answer": {"answer": "Baseline answer."},
+        }
+        fingerprint = dispatch.arbiter.current_answer_fingerprint(state["activeTask"], state["summary"], state["directBaseline"])
+        state["arbiter"] = {"fingerprint": fingerprint}
+
+        result = dispatch.target_dispatch_preflight("arbiter", state)
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["code"], 409)
+        self.assertIn("already scored", result["message"])
+
     def test_run_round_with_redis_ready_queue_launches_commander(self) -> None:
         fake = FakeRedis()
         env = {

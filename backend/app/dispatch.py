@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from runtime.engine import LoopRuntime, RuntimeErrorWithCode, task_workers
 
-from . import control, faults, jobs, queueing, runtime_execution, storage
+from . import arbiter, control, faults, jobs, queueing, runtime_execution, storage
 
 
 def utc_now() -> str:
@@ -65,10 +65,10 @@ def find_task_worker(task: Optional[Dict[str, Any]], worker_id: str) -> Optional
 
 def available_targets(task: Optional[Dict[str, Any]]) -> List[str]:
     if not isinstance(task, dict):
-        return ["commander", "commander_review", "summarizer", "answer_now"]
+        return ["commander", "commander_review", "summarizer", "answer_now", "arbiter"]
     targets = [str(worker["id"]) for worker in task_workers(task)]
     targets.insert(0, "commander")
-    targets.extend(["commander_review", "summarizer", "answer_now"])
+    targets.extend(["commander_review", "summarizer", "answer_now", "arbiter"])
     seen: Dict[str, bool] = {}
     ordered: List[str] = []
     for target in targets:
@@ -165,6 +165,18 @@ def target_dispatch_preflight(target: str, state: Dict[str, Any]) -> Optional[Di
                 "message": f"Summarizer already exists for round {summary_round}. Start the next round instead.",
             }
 
+    if target == "arbiter":
+        summary = state.get("summary") if isinstance(state.get("summary"), dict) else None
+        direct_baseline = state.get("directBaseline") if isinstance(state.get("directBaseline"), dict) else None
+        existing_arbiter = state.get("arbiter") if isinstance(state.get("arbiter"), dict) else None
+        if not isinstance(summary, dict):
+            return {"code": 409, "message": "Arbiter is not ready yet. Run the pressurized answer first."}
+        if not isinstance(direct_baseline, dict):
+            return {"code": 409, "message": "Arbiter is not ready yet. Capture the single-thread baseline first."}
+        expected_fingerprint = arbiter.current_answer_fingerprint(task or {}, summary, direct_baseline)
+        if expected_fingerprint and isinstance(existing_arbiter, dict) and str(existing_arbiter.get("fingerprint") or "") == expected_fingerprint:
+            return {"code": 409, "message": "Arbiter already scored the current answer pair."}
+
     return None
 
 
@@ -192,12 +204,16 @@ def dispatch_target_label(job: Dict[str, Any]) -> str:
     target = str(job.get("target") or "target").lower()
     if target == "answer_now":
         return "Answer now"
+    if target == "direct_baseline":
+        return "Single-thread baseline"
     if target == "commander":
         return "Commander"
     if target == "commander_review":
         return "Commander review"
     if target == "summarizer":
         return "Summarizer (partial)" if bool(job.get("partialSummary")) else "Summarizer"
+    if target == "arbiter":
+        return "External arbiter"
     return f"Worker {target.upper()}"
 
 

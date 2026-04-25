@@ -124,6 +124,17 @@ const PROVIDER_DEFAULT_MODELS = {
   minimax: "MiniMax-M2.7",
   ollama: "qwen3"
 };
+
+const DEFAULT_TARGET_TIMEOUTS = {
+  directBaseline: 150,
+  commander: 180,
+  workerDefault: 180,
+  workers: {},
+  commanderReview: 240,
+  summarizer: 240,
+  answerNow: 180,
+  arbiter: 180
+};
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
 const WORKER_SLOT_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WORKER_TYPE_CATALOG = {
@@ -295,6 +306,8 @@ let debugControlsSignature = "";
 let threadRenderSignature = "";
 let threadRenderTaskId = "";
 let threadInspectorOpen = false;
+let frontEvalTechnicalOpen = false;
+let frontEvalArbiterRequestKey = "";
 let exportPreviewKey = "";
 let operatorNoticeAcceptedThisSession = false;
 const API = {
@@ -744,6 +757,7 @@ function defaultDraftState() {
     constraints: [],
     sessionContext: "",
     executionMode: "live",
+    frontMode: "full",
     contextMode: "weighted",
     directBaselineMode: "off",
     provider: "openai",
@@ -754,6 +768,7 @@ function defaultDraftState() {
     directModel: "gpt-5-mini",
     ollamaBaseUrl: "http://127.0.0.1:11434",
     reasoningEffort: "low",
+    targetTimeouts: Object.assign({}, DEFAULT_TARGET_TIMEOUTS, { workers: {} }),
     maxCostUsd: DEFAULT_RUNTIME_BUDGET.maxCostUsd,
     maxTotalTokens: DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
     maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
@@ -791,6 +806,80 @@ function normalizeContextMode(value) {
   return raw === "full" ? "full" : "weighted";
 }
 
+function clampTimeoutSeconds(value, fallback) {
+  const parsed = parseInt(value, 10);
+  const candidate = Number.isFinite(parsed) ? parsed : parseInt(fallback, 10);
+  return Math.max(15, Math.min(3600, Number.isFinite(candidate) ? candidate : 180));
+}
+
+function normalizeTargetTimeouts(value) {
+  let config = value;
+  if (typeof config === "string") {
+    const trimmed = config.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        config = JSON.parse(trimmed);
+      } catch (_) {
+        config = {};
+      }
+    } else {
+      config = {};
+    }
+  }
+  const source = (config && typeof config === "object") ? config : {};
+  const workers = {};
+  const rawWorkers = source.workers && typeof source.workers === "object" ? source.workers : {};
+  Object.keys(rawWorkers).forEach(function (workerId) {
+    const key = String(workerId || "").trim().toUpperCase();
+    if (!/^[A-Z]$/.test(key)) return;
+    workers[key] = clampTimeoutSeconds(rawWorkers[workerId], DEFAULT_TARGET_TIMEOUTS.workerDefault);
+  });
+  return {
+    directBaseline: clampTimeoutSeconds(source.directBaseline, DEFAULT_TARGET_TIMEOUTS.directBaseline),
+    commander: clampTimeoutSeconds(source.commander, DEFAULT_TARGET_TIMEOUTS.commander),
+    workerDefault: clampTimeoutSeconds(source.workerDefault, DEFAULT_TARGET_TIMEOUTS.workerDefault),
+    workers: workers,
+    commanderReview: clampTimeoutSeconds(source.commanderReview, DEFAULT_TARGET_TIMEOUTS.commanderReview),
+    summarizer: clampTimeoutSeconds(source.summarizer, DEFAULT_TARGET_TIMEOUTS.summarizer),
+    answerNow: clampTimeoutSeconds(source.answerNow, DEFAULT_TARGET_TIMEOUTS.answerNow),
+    arbiter: clampTimeoutSeconds(source.arbiter, DEFAULT_TARGET_TIMEOUTS.arbiter)
+  };
+}
+
+function currentTargetTimeoutsSource(task, draft) {
+  return normalizeTargetTimeouts(
+    draft?.targetTimeouts
+    || task?.runtime?.targetTimeouts
+    || DEFAULT_TARGET_TIMEOUTS
+  );
+}
+
+function targetTimeoutSeconds(config, target) {
+  const normalized = normalizeTargetTimeouts(config);
+  const key = String(target || "").trim();
+  if (/^[A-Za-z]$/.test(key)) {
+    const workerId = key.toUpperCase();
+    return normalized.workers[workerId] || normalized.workerDefault;
+  }
+  const lowered = key.toLowerCase();
+  if (lowered === "direct_baseline") return normalized.directBaseline;
+  if (lowered === "commander") return normalized.commander;
+  if (lowered === "commander_review") return normalized.commanderReview;
+  if (lowered === "summarizer") return normalized.summarizer;
+  if (lowered === "answer_now") return normalized.answerNow;
+  if (lowered === "arbiter") return normalized.arbiter;
+  return normalized.workerDefault;
+}
+
+function normalizeFrontMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "eval" ? "eval" : "full";
+}
+
+function frontModeLabel(value) {
+  return normalizeFrontMode(value) === "eval" ? "Eval" : "Full";
+}
+
 function contextModeLabel(value) {
   return normalizeContextMode(value) === "full" ? "Full workers" : "Light workers";
 }
@@ -812,7 +901,20 @@ function shouldShowDirectBaselineFields(mode) {
   return normalizeDirectBaselineMode(mode) !== "off";
 }
 
+function syncFrontModeFields() {
+  const frontMode = normalizeFrontMode($("#frontMode").val());
+  const $directBaseline = $("#directBaselineMode");
+  if (!$directBaseline.length) return;
+  if (frontMode === "eval") {
+    $directBaseline.val("both");
+    $directBaseline.prop("disabled", true);
+  } else {
+    $directBaseline.prop("disabled", false);
+  }
+}
+
 function syncDirectBaselineFields() {
+  syncFrontModeFields();
   const mode = normalizeDirectBaselineMode($("#directBaselineMode").val());
   const visible = shouldShowDirectBaselineFields(mode);
   const workerProvider = normalizeProviderId($("#provider").val());
@@ -1276,6 +1378,7 @@ function renderArtifactMeta(data) {
   const githubSources = Array.isArray(summary.githubSources) ? summary.githubSources : [];
   const activeSkills = Array.isArray(summary.skills) ? summary.skills.filter(Boolean) : [];
   const contractWarnings = Array.isArray(summary.contractWarnings) ? summary.contractWarnings.filter(Boolean) : [];
+  const providerTraceLines = providerTraceSummaryLines(summary.providerTrace);
   const provider = summary.provider || "openai";
   const capabilitySummary = providerCapabilitySummary(summary.providerCapabilities);
   const bits = [
@@ -1293,20 +1396,28 @@ function renderArtifactMeta(data) {
       + " | local sources: " + (localFileSources.length ? localFileSources.length : 0),
     "GitHub tools: " + (githubToolCalls.length ? githubToolCalls.length + " call" + (githubToolCalls.length === 1 ? "" : "s") : "none")
       + " | GitHub sources: " + (githubSources.length ? githubSources.length : 0),
+    "provider trace: " + (providerTraceLines.length ? providerTraceLines[0] : "none"),
+    providerTraceLines.length > 1 ? "provider trace detail: " + providerTraceLines.slice(1).join(" | ") : "",
     "contract warnings: " + (contractWarnings.length ? contractWarnings.length + " | " + contractWarnings.join(" | ") : "none"),
     "raw output policy: " + (data?.policy?.reviewSurface || "review_only") + " | public thread: " + (data?.policy?.publicThread || "structured_only")
-  ];
+  ].filter(Boolean);
   return bits.join("\n");
 }
 
 function renderArtifactContent(data) {
   const content = data?.content || {};
+  const summary = data?.summary || {};
   const sections = [];
 
   if (Object.prototype.hasOwnProperty.call(content, "output")) {
     sections.push("Canonical Structured Output\n" + pretty(content.output));
   } else {
     sections.push("Artifact Content\n" + pretty(content));
+  }
+
+  const providerTraceLines = providerTraceSummaryLines(summary.providerTrace);
+  if (providerTraceLines.length) {
+    sections.push("Provider Trace\n" + providerTraceLines.join("\n"));
   }
 
   if (content.rawOutputText) {
@@ -1897,6 +2008,7 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.sessionContext || "",
         JSON.stringify(safeDraft.constraints || []),
         safeDraft.executionMode || "live",
+        safeDraft.frontMode || "full",
         safeDraft.contextMode || "weighted",
         safeDraft.directBaselineMode || "off",
         safeDraft.provider || "openai",
@@ -1906,6 +2018,7 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.directProvider || safeDraft.provider || "openai",
         safeDraft.directModel || safeDraft.model || "gpt-5-mini",
         safeDraft.ollamaBaseUrl || "http://127.0.0.1:11434",
+        JSON.stringify(normalizeTargetTimeouts(safeDraft.targetTimeouts || DEFAULT_TARGET_TIMEOUTS)),
         safeDraft.reasoningEffort || "low",
         safeDraft.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
         safeDraft.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
@@ -1937,6 +2050,7 @@ function buildCommanderFormSource(task, draft) {
         task.sessionContext || "",
         JSON.stringify(task.constraints || []),
         task.runtime?.executionMode || "live",
+        task.runtime?.frontMode || "full",
         task.runtime?.contextMode || "weighted",
         task.runtime?.directBaselineMode || "off",
         task.runtime?.provider || "openai",
@@ -1946,6 +2060,7 @@ function buildCommanderFormSource(task, draft) {
         task.runtime?.directProvider || task.runtime?.provider || "openai",
         task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
         task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
+        JSON.stringify(normalizeTargetTimeouts(task.runtime?.targetTimeouts || DEFAULT_TARGET_TIMEOUTS)),
         task.runtime?.reasoningEffort || "low",
         task.runtime?.budget?.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
         task.runtime?.budget?.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
@@ -1969,6 +2084,7 @@ function buildCommanderFormSource(task, draft) {
         constraints: task.constraints || [],
         sessionContext: task.sessionContext || "",
         executionMode: task.runtime?.executionMode || "live",
+        frontMode: task.runtime?.frontMode || "full",
         contextMode: task.runtime?.contextMode || "weighted",
         directBaselineMode: task.runtime?.directBaselineMode || "off",
         provider: task.runtime?.provider || "openai",
@@ -1978,6 +2094,7 @@ function buildCommanderFormSource(task, draft) {
         directProvider: task.runtime?.directProvider || task.runtime?.provider || "openai",
         directModel: task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
         ollamaBaseUrl: task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
+        targetTimeouts: normalizeTargetTimeouts(task.runtime?.targetTimeouts || DEFAULT_TARGET_TIMEOUTS),
         reasoningEffort: task.runtime?.reasoningEffort || "low",
         maxCostUsd: task.runtime?.budget?.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
         maxTotalTokens: task.runtime?.budget?.maxTotalTokens ?? DEFAULT_RUNTIME_BUDGET.maxTotalTokens,
@@ -2022,6 +2139,7 @@ function applyCommanderForm(values) {
   $("#objective").val(safe.objective || "");
   $("#constraints").val((safe.constraints || []).join("\n"));
   $("#executionMode").val(safe.executionMode || "live");
+  $("#frontMode").val(normalizeFrontMode(safe.frontMode));
   $("#contextMode").val(normalizeContextMode(safe.contextMode));
   $("#directBaselineMode").val(normalizeDirectBaselineMode(safe.directBaselineMode));
   $("#provider").val(workerProvider);
@@ -2077,6 +2195,7 @@ function collectCommanderPayload() {
     objective: $("#objective").val().trim(),
     constraints: $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean),
     executionMode: $("#executionMode").val(),
+    frontMode: normalizeFrontMode($("#frontMode").val()),
     contextMode: normalizeContextMode($("#contextMode").val()),
     directBaselineMode: normalizeDirectBaselineMode($("#directBaselineMode").val()),
     provider: $("#provider").val(),
@@ -2177,6 +2296,7 @@ function buildDraftSavePayload(options = {}) {
   payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
   payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "expansive"));
+  payload.targetTimeouts = JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null));
   return payload;
 }
 
@@ -2215,6 +2335,7 @@ function buildQualityProfileSnapshot() {
     : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null);
   const summarizerSource = collectVisibleSummarizerConfig();
   return {
+    frontMode: normalizeFrontMode(payload.frontMode),
     contextMode: normalizeContextMode(payload.contextMode),
     directBaselineMode: normalizeDirectBaselineMode(payload.directBaselineMode),
     provider: String(payload.provider || "openai"),
@@ -2268,6 +2389,7 @@ function buildTaskQualityProfileSnapshot(task) {
   if (!task) return null;
   const budget = task?.runtime?.budget || {};
   return {
+    frontMode: normalizeFrontMode(task?.runtime?.frontMode),
     contextMode: normalizeContextMode(task?.runtime?.contextMode),
     directBaselineMode: normalizeDirectBaselineMode(task?.runtime?.directBaselineMode),
     provider: String(task?.runtime?.provider || "openai"),
@@ -2300,6 +2422,7 @@ function formatTokenWall(value) {
 
 function runtimeSnapshotsMatch(left, right) {
   if (!left || !right) return false;
+  if (normalizeFrontMode(left.frontMode) !== normalizeFrontMode(right.frontMode)) return false;
   if (normalizeContextMode(left.contextMode) !== normalizeContextMode(right.contextMode)) return false;
   if (normalizeDirectBaselineMode(left.directBaselineMode) !== normalizeDirectBaselineMode(right.directBaselineMode)) return false;
   if (normalizeProviderId(left.provider) !== normalizeProviderId(right.provider)) return false;
@@ -2725,10 +2848,110 @@ function inferFrontActiveTarget(loop, state) {
   return "";
 }
 
+function activeFrontTargets(loop, state) {
+  const loopTargets = Array.isArray(loop?.activeTargets)
+    ? loop.activeTargets.map(function (target) { return String(target || "").trim(); }).filter(Boolean)
+    : [];
+  const dispatchTargets = activeDispatchEntries(state)
+    .map(function (entry) { return String(entry?.target || "").trim(); })
+    .filter(Boolean);
+  if (loopTargets.length) {
+    const combined = loopTargets.slice();
+    dispatchTargets.forEach(function (target) {
+      if (target && !combined.includes(target)) {
+        combined.push(target);
+      }
+    });
+    return combined;
+  }
+  if (dispatchTargets.length) return dispatchTargets;
+  const inferred = inferFrontActiveTarget(loop, state);
+  return inferred ? [inferred] : [];
+}
+
+function setTopologyNodeState(nodeId, metaId, stateKey, metaText) {
+  const $node = $("#" + nodeId);
+  if ($node.length) {
+    $node.removeClass("is-active is-waiting is-ready");
+    $node.addClass("is-" + String(stateKey || "ready"));
+  }
+  const $meta = $("#" + metaId);
+  if ($meta.length) {
+    $meta.text(metaText || "");
+  }
+}
+
+function updateTopologyPanel(task, loop, state) {
+  const activeTargets = activeFrontTargets(loop, state);
+  const workerRoster = activeWorkerSource(task, state?.draft || null);
+  const workerCount = Array.isArray(workerRoster) ? workerRoster.length : 0;
+  const summary = state?.summary || task?.summary || null;
+  const providerTrace = activeProviderTraceSource(state).trace;
+  const toolEnabled = !!(
+    task?.runtime?.research?.enabled ||
+    task?.runtime?.localFiles?.enabled ||
+    task?.runtime?.githubTools?.enabled
+  );
+
+  const commanderState = activeTargets.includes("commander") || activeTargets.includes("commander_review")
+    ? "active"
+    : ((task?.stateCommander?.round || task?.stateCommanderReview?.round) ? "ready" : "waiting");
+  const workersActive = activeTargets.some(function (target) { return /^[A-Z]$/.test(String(target || "")); });
+  const workersState = workersActive ? "active" : (workerCount ? (isWorkspaceBusy(loop, state) ? "waiting" : "ready") : "ready");
+  const summarizerState = activeTargets.includes("summarizer") || activeTargets.includes("answer_now")
+    ? "active"
+    : (summary ? "ready" : (isWorkspaceBusy(loop, state) ? "waiting" : "ready"));
+  const toolsState = providerTrace && (
+    Number(providerTrace?.localToolCallCount || 0) > 0
+    || Number(providerTrace?.githubToolCallCount || 0) > 0
+  )
+    ? "active"
+    : (toolEnabled ? "ready" : "waiting");
+
+  setTopologyNodeState(
+    "topologyNodeCommander",
+    "topologyMetaCommander",
+    commanderState,
+    commanderState === "active"
+      ? (providerTraceStatusText(providerTrace) || "Lead draft / review pass")
+      : "lead draft / review pass"
+  );
+  setTopologyNodeState(
+    "topologyNodeWorkers",
+    "topologyMetaWorkers",
+    workersState,
+    workersActive
+      ? ("active lanes " + activeTargets.filter(function (target) { return /^[A-Z]$/.test(String(target || "")); }).join(", "))
+      : (workerCount ? (String(workerCount) + " adversarial lane" + (workerCount === 1 ? "" : "s")) : "no workers configured")
+  );
+  setTopologyNodeState(
+    "topologyNodeSummarizer",
+    "topologyMetaSummarizer",
+    summarizerState,
+    activeTargets.includes("answer_now")
+      ? "partial answer updating live"
+      : (summary ? "single-voice answer ready" : "single-voice answer")
+  );
+  setTopologyNodeState(
+    "topologyNodeTools",
+    "topologyMetaTools",
+    toolsState,
+    toolEnabled ? "local + GitHub reads" : "tool plane idle"
+  );
+
+  $("#topologyNodeCount").text("4");
+  $("#topologyEdgeCount").text(toolEnabled ? "3" : "2");
+  $("#topologyActiveCount").text(
+    [commanderState, workersState, summarizerState, toolsState].filter(function (value) {
+      return value === "active";
+    }).length || 0
+  );
+}
+
 function workerFrontStatus(workerId, task, loop, state) {
-  const activeTarget = inferFrontActiveTarget(loop, state);
+  const activeTargets = activeFrontTargets(loop, state);
   const checkpoint = task?.stateWorkers?.[workerId] || null;
-  if (activeTarget === workerId) {
+  if (activeTargets.includes(workerId)) {
     return { key: "running", label: "Working" };
   }
   if (checkpoint) {
@@ -2741,17 +2964,17 @@ function workerFrontStatus(workerId, task, loop, state) {
 }
 
 function summarizerFrontStatus(task, loop, state) {
-  const activeTarget = inferFrontActiveTarget(loop, state);
-  if (activeTarget === "commander") {
+  const activeTargets = activeFrontTargets(loop, state);
+  if (activeTargets.includes("commander")) {
     return { key: "running", label: "Drafting" };
   }
-  if (activeTarget === "commander_review") {
+  if (activeTargets.includes("commander_review")) {
     return { key: "running", label: "Reviewing" };
   }
-  if (activeTarget === "summarizer") {
+  if (activeTargets.includes("summarizer")) {
     return { key: "running", label: "Summarizing" };
   }
-  if (activeTarget === "answer_now") {
+  if (activeTargets.includes("answer_now")) {
     return { key: "running", label: "Answering" };
   }
   if (task?.summary) {
@@ -3391,6 +3614,10 @@ function renderJobHistory(jobs, recoveryWarning, queueLimit, contractWarnings) {
     if (job.lastMessage) {
       metaLines.push("Note: " + job.lastMessage);
     }
+    const jobTraceSummary = providerTraceReviewLine(job?.metadata?.providerTrace);
+    if (jobTraceSummary) {
+      metaLines.push("Provider trace: " + jobTraceSummary);
+    }
     if (job.error) {
       metaLines.push("Error: " + job.error);
     }
@@ -3484,9 +3711,13 @@ function renderRoundHistory(rounds) {
             <div class="round-history-meta">${escapeHtml(truncateText(roundEntry.objective || "No objective recorded.", 180))}</div>
             <div class="round-history-meta">${escapeHtml("Captured " + (roundEntry.capturedAt || "n/a") + (summaryArtifact ? " | summary " + summaryArtifact.name + " | " + artifactOutputCapSummary(summaryArtifact) : ""))}</div>
             <div class="round-history-meta">${escapeHtml(formatExecutionHealthSummary(executionHealth))}</div>
+            ${summaryArtifact && providerTraceReviewLine(summaryArtifact.providerTrace) ? `<div class="round-history-meta">${escapeHtml("Summary trace " + providerTraceReviewLine(summaryArtifact.providerTrace))}</div>` : ""}
             ${directBaselineArtifact ? `<div class="round-history-meta">${escapeHtml("Single-thread baseline " + directBaselineArtifact.name + " | " + artifactOutputCapSummary(directBaselineArtifact))}</div>` : ""}
+            ${directBaselineArtifact && providerTraceReviewLine(directBaselineArtifact.providerTrace) ? `<div class="round-history-meta">${escapeHtml("Baseline trace " + providerTraceReviewLine(directBaselineArtifact.providerTrace))}</div>` : ""}
             ${commanderArtifact ? `<div class="round-history-meta">${escapeHtml("Commander draft " + commanderArtifact.name + " | " + artifactOutputCapSummary(commanderArtifact))}</div>` : ""}
+            ${commanderArtifact && providerTraceReviewLine(commanderArtifact.providerTrace) ? `<div class="round-history-meta">${escapeHtml("Commander trace " + providerTraceReviewLine(commanderArtifact.providerTrace))}</div>` : ""}
             ${commanderReviewArtifact ? `<div class="round-history-meta">${escapeHtml("Commander review " + commanderReviewArtifact.name + " | " + artifactOutputCapSummary(commanderReviewArtifact))}</div>` : ""}
+            ${commanderReviewArtifact && providerTraceReviewLine(commanderReviewArtifact.providerTrace) ? `<div class="round-history-meta">${escapeHtml("Review trace " + providerTraceReviewLine(commanderReviewArtifact.providerTrace))}</div>` : ""}
             ${topActions.length ? `<div class="round-history-actions">${topActions.join("")}</div>` : ""}
             <div class="round-history-workers">
               ${(roundEntry.workerArtifacts || []).map(function (artifact) {
@@ -3495,6 +3726,7 @@ function renderRoundHistory(rounds) {
                       <div>
                         <div class="history-title">${escapeHtml((artifact.worker || "worker") + " | " + (artifact.model || "model n/a"))} ${renderArtifactExecutionBadge(artifact)}</div>
                         <div class="round-worker-meta">${escapeHtml((artifact.name || "artifact") + " | " + artifactOutputCapSummary(artifact))}</div>
+                        ${providerTraceReviewLine(artifact.providerTrace) ? `<div class="round-worker-meta">${escapeHtml("Trace " + providerTraceReviewLine(artifact.providerTrace))}</div>` : ""}
                       </div>
                      ${summaryArtifact
                         ? `<button type="button" class="load-artifact-pair" data-left="${escapeHtml(summaryArtifact.name)}" data-right="${escapeHtml(artifact.name)}">Compare vs summary</button>`
@@ -4493,6 +4725,7 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   const $controls = $("#debugTargetControls");
   const currentCommander = task?.stateCommander || null;
   const currentCommanderReview = task?.stateCommanderReview || null;
+  const timeoutConfig = currentTargetTimeoutsSource(task || null, latestState?.draft || null);
   const signature = JSON.stringify({
     taskId: task?.taskId || "",
     commanderRound: currentCommander?.round || 0,
@@ -4500,7 +4733,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
     workers: task?.workers || [],
     loopStatus: loop?.status || "idle",
     dispatchStatus: latestState?.dispatch?.status || "idle",
-    summaryReady: summarizerReadyForCommanderRound(task, stateWorkers || {})
+    summaryReady: summarizerReadyForCommanderRound(task, stateWorkers || {}),
+    targetTimeouts: timeoutConfig
   });
   if (signature === debugControlsSignature || hasFocusWithin("#debugTargetControls")) return;
   debugControlsSignature = signature;
@@ -4518,6 +4752,40 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   const summaryReady = summarizerReadyForCommanderRound(task, stateWorkers || {});
   const commanderModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
   const partialAnswerActive = hasActiveDispatchTarget(latestState, "answer_now");
+  const directBaselineEnabled = normalizeDirectBaselineMode(task?.runtime?.directBaselineMode || "off") !== "off";
+
+  function buildTimeoutRow(target, currentValue, buttonLabel, disabled) {
+    return $("<div>").addClass("inlineform debug-target-actions").append(
+      $("<label>").addClass("debug-timeout-label").attr("for", "timeout-" + String(target)).text("Timeout"),
+      $("<input>")
+        .attr("id", "timeout-" + String(target))
+        .attr("type", "number")
+        .attr("min", "15")
+        .attr("max", "3600")
+        .attr("step", "5")
+        .addClass("target-timeout-input")
+        .attr("data-timeout-target", target)
+        .val(currentValue),
+      $("<span>").addClass("debug-timeout-suffix").text("s"),
+      $("<button>").addClass("run-target").attr("data-target", target).prop("disabled", !!disabled).text(buttonLabel)
+    );
+  }
+
+  if (directBaselineEnabled) {
+    const directProvider = task?.runtime?.directProvider || task?.runtime?.provider || "openai";
+    const directModel = task?.runtime?.directModel || task?.runtime?.model || "gpt-5-mini";
+    const $directCard = $("<div>").addClass("workercontrol");
+    $directCard.append($("<div>").addClass("workercontrol-title").text("Single-thread baseline"));
+    $directCard.append(
+      $("<div>").addClass("workercontrol-meta").text(
+        providerLabel(directProvider) + " | " + modelLabel(directModel, directProvider)
+      )
+    );
+    $directCard.append(
+      buildTimeoutRow("direct_baseline", targetTimeoutSeconds(timeoutConfig, "direct_baseline"), "Run baseline", isActive || !!latestState?.directBaseline)
+    );
+    $controls.append($directCard);
+  }
 
   const $commanderCard = $("<div>").addClass("workercontrol");
   $commanderCard.append($("<div>").addClass("workercontrol-title").text("Commander"));
@@ -4526,11 +4794,7 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
       (currentCommanderRound > 0 ? "round " + currentCommanderRound : "ready for round 1") + " | " + commanderModel
     )
   );
-  $commanderCard.append(
-    $("<div>").addClass("inlineform").append(
-      $("<button>").addClass("run-target").attr("data-target", "commander").prop("disabled", isActive).text("Run commander")
-    )
-  );
+  $commanderCard.append(buildTimeoutRow("commander", targetTimeoutSeconds(timeoutConfig, "commander"), "Run commander", isActive));
   $controls.append($commanderCard);
 
   task.workers.forEach(function (worker) {
@@ -4546,8 +4810,11 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
       )
     );
     $card.append(
-      $("<div>").addClass("inlineform").append(
-        $("<button>").addClass("run-target").attr("data-target", worker.id).prop("disabled", isActive || !workerReadyForCommanderRound(task, worker.id, stateWorkers || {})).text("Run " + worker.id)
+      buildTimeoutRow(
+        worker.id,
+        targetTimeoutSeconds(timeoutConfig, worker.id),
+        "Run " + worker.id,
+        isActive || !workerReadyForCommanderRound(task, worker.id, stateWorkers || {})
       )
     );
     $controls.append($card);
@@ -4563,11 +4830,7 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
       + " | " + commanderModel
     )
   );
-  $reviewCard.append(
-    $("<div>").addClass("inlineform").append(
-      $("<button>").addClass("run-target").attr("data-target", "commander_review").prop("disabled", isActive || !commanderReviewReady).text("Run review")
-    )
-  );
+  $reviewCard.append(buildTimeoutRow("commander_review", targetTimeoutSeconds(timeoutConfig, "commander_review"), "Run review", isActive || !commanderReviewReady));
   $controls.append($reviewCard);
 
   const $summaryCard = $("<div>").addClass("workercontrol");
@@ -4579,7 +4842,18 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
     )
   );
   $summaryCard.append(
-    $("<div>").addClass("inlineform").append(
+    $("<div>").addClass("inlineform debug-target-actions").append(
+      $("<label>").addClass("debug-timeout-label").attr("for", "timeout-summarizer").text("Timeout"),
+      $("<input>")
+        .attr("id", "timeout-summarizer")
+        .attr("type", "number")
+        .attr("min", "15")
+        .attr("max", "3600")
+        .attr("step", "5")
+        .addClass("target-timeout-input")
+        .attr("data-timeout-target", "summarizer")
+        .val(targetTimeoutSeconds(timeoutConfig, "summarizer")),
+      $("<span>").addClass("debug-timeout-suffix").text("s"),
       $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize"),
       $("<button>").addClass("run-target secondary").attr("data-target", "answer_now").prop("disabled", currentCommanderRound <= 0 || partialAnswerActive).text("Answer Now")
     )
@@ -5537,6 +5811,7 @@ function buildConversationRenderSignature(task, summary, directBaseline, workerS
     taskId: task.taskId || "",
     objective: task.objective || "",
     executionMode: task.runtime?.executionMode || "",
+    frontMode: normalizeFrontMode(task?.runtime?.frontMode),
     summary: summary ? {
       round: summary.round || 0,
       frontAnswer: summary.frontAnswer || null,
@@ -5563,10 +5838,269 @@ function buildConversationRenderSignature(task, summary, directBaseline, workerS
       totalTokens: state?.usage?.totalTokens || 0,
       estimatedCostUsd: state?.usage?.estimatedCostUsd || 0
     },
+    arbiter: state?.arbiter ? {
+      taskId: state.arbiter.taskId || "",
+      round: state.arbiter.round || 0,
+      scoredAt: state.arbiter.scoredAt || "",
+      verdict: state.arbiter.comparison?.verdict || "",
+      decisionRelation: state.arbiter.comparison?.decisionRelation || "",
+      pressurizedAnswer: state.arbiter.pressurized?.answer || "",
+      baselineAnswer: state.arbiter.baseline?.answer || ""
+    } : null,
     contractWarnings: Array.isArray(state?.contractWarnings) ? state.contractWarnings : [],
     commanderRound: (state?.commander || task?.stateCommander || {}).round || 0,
     commanderReviewRound: (state?.commanderReview || task?.stateCommanderReview || {}).round || 0
   });
+}
+
+function currentFrontEvalPairKey(task, summary, directBaseline) {
+  const pressurizedAnswer = String(buildAgentReplyText(summary) || "").trim();
+  const baselineAnswer = String(directBaseline?.answer?.answer || "").trim();
+  if (!task || !pressurizedAnswer || !baselineAnswer) return "";
+  return [
+    String(task?.taskId || ""),
+    String(summary?.round || 0),
+    String(summary?.mergedAt || ""),
+    String(directBaseline?.capturedAt || ""),
+    pressurizedAnswer,
+    baselineAnswer
+  ].join("||");
+}
+
+function arbiterMatchesCurrentPair(task, arbiter, summary, directBaseline) {
+  if (!task || !arbiter || typeof arbiter !== "object") return false;
+  const pressurizedAnswer = String(buildAgentReplyText(summary) || "").trim();
+  const baselineAnswer = String(directBaseline?.answer?.answer || "").trim();
+  if (!pressurizedAnswer || !baselineAnswer) return false;
+  return String(arbiter.taskId || "") === String(task.taskId || "")
+    && Number(arbiter.round || 0) === Number(summary?.round || 0)
+    && String(arbiter.pressurized?.answer || "").trim() === pressurizedAnswer
+    && String(arbiter.baseline?.answer || "").trim() === baselineAnswer;
+}
+
+function buildFrontEvalAnswerEntries(task, summary, directBaseline, state) {
+  const summaryProvider = task?.summarizer?.provider || task?.runtime?.provider || "";
+  const summaryModel = task?.summarizer?.model || task?.runtime?.model || "";
+  const pressurizedPayload = summary?.frontAnswer && typeof summary.frontAnswer === "object"
+    ? summary.frontAnswer
+    : {
+        answer: buildAgentReplyText(summary),
+        stance: summary?.frontAnswer?.stance || "",
+        confidenceNote: summary?.frontAnswer?.confidenceNote || ""
+      };
+  const baselinePayload = directBaseline?.answer && typeof directBaseline.answer === "object"
+    ? directBaseline.answer
+    : { answer: "" };
+  return {
+    pressurizedEntry: normalizeEvalAnswerEntry(
+      pressurizedPayload,
+      "Pressurized path",
+      summaryProvider,
+      summaryModel,
+      "pressurized",
+      evalUsageForTarget(state?.usage, "summarizer")
+    ),
+    baselineEntry: normalizeEvalAnswerEntry(
+      baselinePayload,
+      "Single-thread path",
+      directBaseline?.provider || task?.runtime?.directProvider || task?.runtime?.provider || "",
+      directBaseline?.model || task?.runtime?.directModel || "",
+      directBaseline?.mode || "single",
+      directBaseline?.responseMeta?.usageDelta || evalUsageForTarget(state?.usage, "direct_baseline")
+    )
+  };
+}
+
+function renderFrontEvalArbiterSummary(task, arbiter, comparison, similarity) {
+  const metrics = [
+    { label: "Pressurized quality", value: arbiter?.quality?.scores?.overallQuality != null ? Number(arbiter.quality.scores.overallQuality || 0).toFixed(1) : "" },
+    { label: "Single quality", value: arbiter?.baselineQuality?.scores?.overallQuality != null ? Number(arbiter.baselineQuality.scores.overallQuality || 0).toFixed(1) : "" },
+    { label: "Pressurized health", value: arbiter?.answerHealth?.scores?.overallHealth != null ? Number(arbiter.answerHealth.scores.overallHealth || 0).toFixed(1) : "" },
+    { label: "Single health", value: arbiter?.baselineAnswerHealth?.scores?.overallHealth != null ? Number(arbiter.baselineAnswerHealth.scores.overallHealth || 0).toFixed(1) : "" },
+    { label: "Differentiation", value: comparison?.scores?.overallDifferentiation != null ? Number(comparison.scores.overallDifferentiation || 0).toFixed(1) : "" },
+    { label: "Similarity", value: similarity?.sequenceSimilarity != null ? Number(similarity.sequenceSimilarity || 0).toFixed(2) : "" }
+  ];
+  const judgeBits = [
+    arbiter?.comparison?.verdict ? String(arbiter.comparison.verdict || "") : "",
+    arbiter?.comparison?.decisionRelation ? "Relation " + String(arbiter.comparison.decisionRelation || "") : "",
+    arbiter?.judge?.model ? modelLabel(arbiter.judge.model, arbiter.judge.provider || "openai") : "",
+    arbiter?.judge?.live ? "Live judge" : "Fallback judge"
+  ].filter(Boolean);
+  const sections = [
+    renderEvalMetricStrip(metrics),
+    renderTextSection("Judge verdict", comparison?.verdict || ""),
+    renderTextSection("Judge rationale", comparison?.rationale || ""),
+    renderTextSection("Pressurized edge", comparison?.primaryEdge || ""),
+    renderTextSection("Single-thread edge", comparison?.baselineEdge || "")
+  ].filter(Boolean);
+  if (!sections.length) return "";
+  return `
+    <section class="eval-visual-section">
+      <div class="eval-section-head">
+        <div class="eval-section-title">External arbiter</div>
+        ${judgeBits.length ? `<div class="eval-section-meta">${escapeHtml(judgeBits.join(" | "))}</div>` : ""}
+      </div>
+      ${sections.join("")}
+    </section>
+  `;
+}
+
+function renderFrontEvalPane(options) {
+  const metaBits = (options.metaBits || []).filter(Boolean);
+  const note = String(options.note || "").trim();
+  return `
+    <section class="front-eval-pane${options.tone ? " " + escapeHtml(options.tone) : ""}">
+      <div class="front-eval-pane-head">
+        <div class="front-eval-pane-title">${escapeHtml(options.title || "Path")}</div>
+        ${metaBits.length ? `<div class="front-eval-pane-meta">${escapeHtml(metaBits.join(" | "))}</div>` : ""}
+      </div>
+      <div class="front-eval-chat">
+        <article class="front-chat-message user">
+          <div class="front-chat-bubble">${escapeHtml(String(options.objective || "").trim() || "Waiting for the next prompt...")}</div>
+        </article>
+        <article class="front-chat-message assistant${options.pending ? " is-pending" : ""}">
+          <div class="front-chat-bubble">${escapeHtml(String(options.answer || "").trim() || "Waiting for response...")}</div>
+        </article>
+      </div>
+      ${note ? `<div class="front-eval-pane-note">${escapeHtml(note)}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderFrontEvalTechnical(task, summary, directBaseline, workerState, loop, state, checkpoints) {
+  const { pressurizedEntry, baselineEntry } = buildFrontEvalAnswerEntries(task, summary, directBaseline, state);
+  const arbiter = state?.arbiter && typeof state.arbiter === "object" ? state.arbiter : null;
+  const arbiterFresh = arbiterMatchesCurrentPair(task, arbiter, summary, directBaseline);
+  const comparison = arbiterFresh ? (arbiter?.comparison || null) : null;
+  const similarity = arbiterFresh ? (arbiter?.similarity || null) : null;
+  const summaryBits = [];
+  if (arbiterFresh && comparison?.verdict) {
+    summaryBits.push(String(comparison.verdict || ""));
+    if (comparison?.scoreDelta?.overallQuality != null) {
+      summaryBits.push("delta " + Number(comparison.scoreDelta.overallQuality || 0).toFixed(1));
+    }
+  } else if (summary && directBaseline) {
+    summaryBits.push(hasActiveDispatchTarget(state, "arbiter") ? "scoring latest answer pair" : "score pending");
+  } else if (isWorkspaceBusy(loop, state)) {
+    summaryBits.push("live log");
+  }
+  const sections = [
+    pressurizedEntry && baselineEntry ? renderEvalAnswerCompare(pressurizedEntry, baselineEntry, comparison) : "",
+    arbiterFresh ? renderFrontEvalArbiterSummary(task, arbiter, comparison, similarity) : "",
+    comparison ? renderEvalComparisonVisual(Object.assign({}, comparison || {}, { comparison: comparison, similarity: similarity || {} })) : "",
+    renderWaitingProgress(task, workerState, loop, state),
+    buildWorkerInspector(checkpoints)
+  ].filter(Boolean);
+  if (!sections.length) return "";
+  const defaultOpen = frontEvalTechnicalOpen || isWorkspaceBusy(loop, state) || (summary && directBaseline && !arbiterFresh);
+  return `
+    <details class="front-eval-technical"${defaultOpen ? " open" : ""}>
+      <summary class="front-eval-technical-summary">
+        <div>
+          <div class="eval-section-title">Verification and live log</div>
+          ${summaryBits.length ? `<div class="eval-section-meta">${escapeHtml(summaryBits.join(" | "))}</div>` : ""}
+        </div>
+        <span class="front-eval-technical-caret" aria-hidden="true">v</span>
+      </summary>
+      <div class="front-eval-technical-body">
+        ${sections.join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderFrontEvalConversation(task, summary, directBaseline, workerState, loop, state, checkpoints) {
+  const { pressurizedEntry, baselineEntry } = buildFrontEvalAnswerEntries(task, summary, directBaseline, state);
+  const arbiter = state?.arbiter && typeof state.arbiter === "object" ? state.arbiter : null;
+  const arbiterFresh = arbiterMatchesCurrentPair(task, arbiter, summary, directBaseline);
+  const summaryModel = task?.summarizer?.model || task?.runtime?.model || "";
+  const summaryProvider = task?.summarizer?.provider || task?.runtime?.provider || "";
+  const baselineProvider = directBaseline?.provider || task?.runtime?.directProvider || task?.runtime?.provider || "";
+  const baselineModel = directBaseline?.model || task?.runtime?.directModel || "";
+  const pressurizedAnswer = pressurizedEntry?.answer
+    || (
+      directBaseline?.answer?.answer
+        ? "The single-thread baseline is ready. The pressurized lanes are still shaping the final answer."
+        : "The pressurized lanes are still working through the current stage."
+    );
+  const baselineAnswer = baselineEntry?.answer || "The single-thread path is still preparing its answer.";
+  const pressurizedMeta = [
+    providerLabel(summaryProvider),
+    modelLabel(summaryModel, summaryProvider),
+    summary ? "Ready" : (inferFrontActiveTarget(loop, state) === "summarizer" ? "Summarizing" : "Working")
+  ].filter(Boolean);
+  const baselineMeta = [
+    providerLabel(baselineProvider),
+    modelLabel(baselineModel, baselineProvider),
+    baselineEntry ? "Ready" : (isWorkspaceBusy(loop, state) ? "Working" : "Queued")
+  ].filter(Boolean);
+  const pressurizedNote = arbiterFresh && arbiter?.comparison?.primaryEdge
+    ? "Judge edge: " + String(arbiter.comparison.primaryEdge || "")
+    : (
+      summary
+        ? String(summary?.frontAnswer?.confidenceNote || "").trim()
+        : ""
+    );
+  const baselineNote = arbiterFresh && arbiter?.comparison?.baselineEdge
+    ? "Judge edge: " + String(arbiter.comparison.baselineEdge || "")
+    : String(directBaseline?.answer?.confidenceNote || "").trim();
+
+  return `
+    <div class="front-eval-thread">
+      <div class="front-eval-compare-grid">
+        ${renderFrontEvalPane({
+          title: "Pressurized path",
+          tone: "primary",
+          objective: task?.objective || "",
+          answer: pressurizedAnswer,
+          pending: !pressurizedEntry,
+          metaBits: pressurizedMeta,
+          note: pressurizedNote
+        })}
+        ${renderFrontEvalPane({
+          title: "Single-thread path",
+          tone: "secondary",
+          objective: task?.objective || "",
+          answer: baselineAnswer,
+          pending: !baselineEntry,
+          metaBits: baselineMeta,
+          note: baselineNote
+        })}
+      </div>
+      ${renderFrontEvalTechnical(task, summary, directBaseline, workerState, loop, state, checkpoints)}
+    </div>
+  `;
+}
+
+function maybeQueueFrontEvalArbiter(task, summary, directBaseline, loop, state) {
+  if (!task || normalizeFrontMode(task?.runtime?.frontMode) !== "eval") {
+    frontEvalArbiterRequestKey = "";
+    return;
+  }
+  const pairKey = currentFrontEvalPairKey(task, summary, directBaseline);
+  if (!pairKey) {
+    frontEvalArbiterRequestKey = "";
+    return;
+  }
+  if (arbiterMatchesCurrentPair(task, state?.arbiter || null, summary, directBaseline)) {
+    frontEvalArbiterRequestKey = "";
+    return;
+  }
+  if (frontEvalArbiterRequestKey === pairKey || hasActiveDispatchTarget(state, "arbiter") || isWorkspaceBusy(loop, state)) {
+    return;
+  }
+  frontEvalArbiterRequestKey = pairKey;
+  $.post(apiRoute(API.targetsBackground), { target: "arbiter" })
+    .done(function () {
+      setTimeout(refreshState, 250);
+    })
+    .fail(function (xhr) {
+      frontEvalArbiterRequestKey = "";
+      if (xhr?.status && Number(xhr.status) === 409) {
+        return;
+      }
+      showMessage("Front eval scoring failed: " + (xhr?.responseText || "Unknown error"), true);
+    });
 }
 
 function buildThreadMessage(options) {
@@ -5688,10 +6222,14 @@ function legacyApplyLoopUiUnused(state) {
   const research = task?.runtime?.research || {};
   const vetting = task?.runtime?.vetting || {};
   const summaryReady = allWorkerCheckpointsReady(task, state.workers || {});
+  const providerTrace = activeProviderTraceSource(state).trace;
 
   syncWorkspaceStatus(task, state, workers, loop, usage, budget);
+  updateTopologyPanel(task, loop, state);
   $("#loopNote").text(
-    dispatchActive
+    providerTrace
+      ? providerTraceStatusText(providerTrace)
+      : dispatchActive
       ? (state?.dispatch?.lastMessage || "Background target dispatch is in flight.")
       :
     loop?.lastMessage ||
@@ -5725,17 +6263,23 @@ function renderConversationThread(task, summary, directBaseline, workerState, lo
     threadRenderSignature = "empty";
     threadRenderTaskId = "";
     threadInspectorOpen = false;
+    frontEvalTechnicalOpen = false;
+    frontEvalArbiterRequestKey = "";
+    $thread.removeClass("is-eval is-full");
     $thread.empty().addClass("is-empty");
     return;
   }
 
-  $thread.removeClass("is-empty");
+  const frontMode = normalizeFrontMode(task?.runtime?.frontMode);
+  $thread.removeClass("is-empty").toggleClass("is-eval", frontMode === "eval").toggleClass("is-full", frontMode !== "eval");
 
   const nextTaskId = String(task.taskId || "");
   if (threadRenderTaskId !== nextTaskId) {
     threadRenderTaskId = nextTaskId;
     threadRenderSignature = "";
     threadInspectorOpen = false;
+    frontEvalTechnicalOpen = false;
+    frontEvalArbiterRequestKey = "";
   }
 
   const signature = buildConversationRenderSignature(task, summary, directBaseline, workerState, loop, state);
@@ -5767,6 +6311,16 @@ function renderConversationThread(task, summary, directBaseline, workerState, lo
       if (stepA !== stepB) return stepA - stepB;
       return a.worker.id.localeCompare(b.worker.id);
     });
+  if (frontMode === "eval") {
+    $thread.html(renderFrontEvalConversation(task, summary, directBaseline, workerState, loop, state, checkpoints));
+    threadRenderSignature = signature;
+    if (!threadNode || wasNearBottom) {
+      $thread.scrollTop($thread[0].scrollHeight);
+    } else {
+      $thread.scrollTop(previousScrollTop);
+    }
+    return;
+  }
   const directMode = normalizeDirectBaselineMode(task?.runtime?.directBaselineMode);
   const compareStillRunning = directMode === "both" && isWorkspaceBusy(loop, state) && !summary;
 
@@ -5838,11 +6392,15 @@ function applyLoopUi(state) {
   const stagedProfileName = profileDisplayName(detectQualityProfileId(stagedSnapshot));
   const activeProfileName = profileDisplayName(detectQualityProfileId(activeSnapshot));
   const headerProfileName = hasTask ? activeProfileName : stagedProfileName;
+  const providerTrace = activeProviderTraceSource(state).trace;
 
   syncWorkspaceStatus(task, state, workers, loop, usage, budget);
+  updateTopologyPanel(task, loop, state);
   $("#headerProfile").text(headerProfileName);
   $("#loopNote").text(
-    dispatchActive
+    providerTrace
+      ? providerTraceStatusText(providerTrace)
+      : dispatchActive
       ? (state?.dispatch?.lastMessage || "Background target dispatch is in flight.")
       :
     loop?.lastMessage ||
@@ -5873,7 +6431,6 @@ function applyLoopUi(state) {
 function refreshState() {
   renderDispatchActivity();
   refreshAuth();
-  refreshEvalHistory();
 
   $.getJSON(apiRoute(API.state))
     .done(function (data) {
@@ -5900,11 +6457,13 @@ function refreshState() {
       renderFooterCheckpoints(task);
       renderConversationThread(task, data.summary || null, data.directBaseline || null, data.workers || {}, data.loop || null, data);
       renderSummaryReview(data.summary || null, data.directBaseline || null, task, data.workers || {});
+      maybeQueueFrontEvalArbiter(task, data.summary || null, data.directBaseline || null, data.loop || null, data);
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,
         draft: data.draft,
         directBaseline: data.directBaseline,
+        arbiter: data.arbiter,
         usage: data.usage,
         loop: data.loop,
         memoryVersion: data.memoryVersion,
@@ -5959,20 +6518,170 @@ function extractErrorMessage(xhr) {
   return xhr.responseText || "Request failed.";
 }
 
+function activeProviderTraceSource(state) {
+  const loop = state?.loop || null;
+  const loopBusy = !!state && isWorkspaceBusy(loop, state);
+  if (loopBusy && loop?.providerTrace && typeof loop.providerTrace === "object") {
+    return { trace: loop.providerTrace, source: "loop", entry: null };
+  }
+  const dispatchEntries = activeDispatchEntries(state);
+  for (const entry of dispatchEntries) {
+    if (entry?.providerTrace && typeof entry.providerTrace === "object") {
+      return { trace: entry.providerTrace, source: "dispatch", entry: entry };
+    }
+  }
+  if (loop?.providerTrace && typeof loop.providerTrace === "object") {
+    return { trace: loop.providerTrace, source: "loop", entry: null };
+  }
+  return { trace: null, source: "", entry: null };
+}
+
+function renderDispatchCompanionNote(entries) {
+  const labels = (Array.isArray(entries) ? entries : [])
+    .map(function (entry) {
+      return String(entry?.targetLabel || entry?.target || "").trim();
+    })
+    .filter(Boolean);
+  if (!labels.length) return "";
+  const visible = labels.slice(0, 3);
+  const extra = labels.length > visible.length ? " +" + (labels.length - visible.length) + " more" : "";
+  return `<div class="dispatch-activity-trace-note">Sidecars: ${escapeHtml(visible.join(", ") + extra)}</div>`;
+}
+
+function formatProviderTraceBits(trace) {
+  const bits = [];
+  if (trace?.model) {
+    bits.push("model " + String(trace.model));
+  }
+  if (trace?.requestCount != null) {
+    bits.push("request " + String(trace.requestCount));
+  }
+  const elapsed = formatElapsedDuration(trace?.startedAt || trace?.sentAt || trace?.updatedAt || 0);
+  if (elapsed) {
+    bits.push("elapsed " + elapsed);
+  }
+  if (trace?.providerProcessingMs != null) {
+    bits.push("provider " + String(trace.providerProcessingMs) + "ms");
+  }
+  if (trace?.httpStatus != null) {
+    bits.push("http " + String(trace.httpStatus));
+  }
+  if (trace?.rateLimitRequestsRemaining != null || trace?.rateLimitTokensRemaining != null) {
+    const requests = trace?.rateLimitRequestsRemaining != null ? String(trace.rateLimitRequestsRemaining) + " req" : "";
+    const tokens = trace?.rateLimitTokensRemaining != null ? String(trace.rateLimitTokensRemaining) + " tok" : "";
+    bits.push("remaining " + [requests, tokens].filter(Boolean).join(" / "));
+  }
+  if (trace?.retryAfterSeconds != null) {
+    bits.push("retry after " + String(trace.retryAfterSeconds) + "s");
+  }
+  if (trace?.ollamaLoadDurationMs != null) {
+    bits.push("load " + String(trace.ollamaLoadDurationMs) + "ms");
+  }
+  if (trace?.ollamaEvalCount != null && trace?.ollamaEvalDurationMs != null) {
+    bits.push("eval " + String(trace.ollamaEvalCount) + " tok / " + String(trace.ollamaEvalDurationMs) + "ms");
+  }
+  return bits;
+}
+
+function providerTraceSummaryLines(trace) {
+  if (!trace || typeof trace !== "object") return [];
+  const lines = [];
+  const headline = [
+    trace?.provider ? providerLabel(trace.provider) : "",
+    String(trace?.targetLabel || trace?.target || "").trim(),
+    String(trace?.stageLabel || trace?.stage || "").trim()
+  ].filter(Boolean).join(" | ");
+  if (headline) {
+    lines.push(headline);
+  }
+  const timingBits = formatProviderTraceBits(trace);
+  if (timingBits.length) {
+    lines.push(timingBits.join(" | "));
+  }
+  const identityBits = [
+    trace?.providerRequestId ? "request " + String(trace.providerRequestId) : "",
+    trace?.providerResponseId ? "response " + String(trace.providerResponseId) : "",
+    trace?.responseStatus ? "status " + String(trace.responseStatus) : "",
+    trace?.error ? "error " + String(trace.error) : ""
+  ].filter(Boolean);
+  if (identityBits.length) {
+    lines.push(identityBits.join(" | "));
+  }
+  return lines;
+}
+
+function providerTraceReviewLine(trace) {
+  const lines = providerTraceSummaryLines(trace);
+  return lines.length ? lines.join(" | ") : "";
+}
+
+function renderProviderTraceBanner(trace, sourceMeta) {
+  const providerLabelText = String(trace?.providerLabel || trace?.provider || "Provider").trim();
+  const targetLabelText = String(trace?.targetLabel || trace?.target || sourceMeta?.entry?.targetLabel || "Target").trim();
+  const stageLabelText = String(trace?.stageLabel || trace?.stage || "In flight").trim();
+  const requestId = String(trace?.providerRequestId || "").trim();
+  const responseId = String(trace?.providerResponseId || "").trim();
+  const responseStatus = String(trace?.responseStatus || "").trim();
+  const error = String(trace?.error || "").trim();
+  const stageTone = String(trace?.stage || "sending").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "sending";
+  const bits = formatProviderTraceBits(trace);
+  const noteBits = [
+    requestId ? "request " + requestId : "",
+    responseId ? "response " + responseId : "",
+    responseStatus ? "status " + responseStatus : "",
+    error || ""
+  ].filter(Boolean);
+  return `
+    <div class="dispatch-activity-trace is-${escapeHtml(stageTone)}">
+      <div class="dispatch-activity-trace-head">
+        <strong>${escapeHtml(providerLabelText)}</strong>
+        <span class="dispatch-activity-trace-target">${escapeHtml(targetLabelText)}</span>
+        <span class="dispatch-activity-trace-stage">${escapeHtml(stageLabelText)}</span>
+      </div>
+      ${bits.length ? `<div class="dispatch-activity-trace-pills">${bits.map(function (bit) {
+        return `<span class="dispatch-trace-pill">${escapeHtml(bit)}</span>`;
+      }).join("")}</div>` : ""}
+      ${noteBits.length ? `<div class="dispatch-activity-trace-note">${escapeHtml(noteBits.join(" | "))}</div>` : ""}
+    </div>
+  `;
+}
+
+function providerTraceStatusText(trace) {
+  if (!trace || typeof trace !== "object") return "";
+  const providerLabelText = String(trace?.providerLabel || trace?.provider || "Provider").trim();
+  const targetLabelText = String(trace?.targetLabel || trace?.target || "Target").trim();
+  const stageLabelText = String(trace?.stageLabel || trace?.stage || "In flight").trim();
+  const bits = formatProviderTraceBits(trace);
+  const summary = [providerLabelText, targetLabelText, stageLabelText].filter(Boolean).join(" | ");
+  return [summary].concat(bits.slice(0, 3)).filter(Boolean).join(" | ");
+}
+
 function renderDispatchActivity() {
   const $banner = $("#dispatchActivity");
   if (!$banner.length) return;
   const entries = activeDispatchEntries(latestState);
-  if (!entries.length) {
+  const loop = latestState?.loop || null;
+  const busy = !!latestState && isWorkspaceBusy(loop, latestState);
+  const providerTrace = activeProviderTraceSource(latestState);
+  if (providerTrace.trace) {
+    const companion = providerTrace.source === "loop" && entries.length
+      ? renderDispatchCompanionNote(entries)
+      : "";
+    $banner.prop("hidden", false).html(renderProviderTraceBanner(providerTrace.trace, providerTrace) + companion);
+    return;
+  }
+  if (!entries.length && !busy) {
     $banner.prop("hidden", true).empty();
     return;
   }
-  const entry = entries[0];
-  const label = String(entry?.targetLabel || entry?.label || "Manual dispatch");
+  const entry = entries[0] || null;
+  const label = entry
+    ? String(entry?.targetLabel || entry?.label || "Manual dispatch")
+    : String(inferFrontActiveTarget(loop, latestState) || "Loop");
   const count = entries.length;
   const extra = count > 1 ? " + " + (count - 1) + " more" : "";
-  const elapsed = formatElapsedDuration(entry?.startedAt || entry?.queuedAt || 0);
-  const note = String(entry?.lastMessage || "");
+  const elapsed = formatElapsedDuration(entry?.startedAt || entry?.queuedAt || loop?.startedAt || loop?.queuedAt || 0);
+  const note = String(entry?.lastMessage || loop?.lastMessage || "");
   $banner
     .prop("hidden", false)
     .html("<strong>Processing</strong> " + escapeHtml(label + extra) + " | waiting " + escapeHtml(elapsed) + " | " + escapeHtml(note || "long ultra-reasoning calls can take minutes."));
@@ -6039,11 +6748,13 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     model: $("#model").val(),
     summarizerProvider: $("#summarizerProvider").val(),
     summarizerModel: $("#summarizerModel").val(),
+    frontMode: normalizeFrontMode($("#frontMode").val()),
     contextMode: normalizeContextMode($("#contextMode").val()),
     directBaselineMode: normalizeDirectBaselineMode($("#directBaselineMode").val()),
     directProvider: $("#directProvider").val(),
     directModel: $("#directModel").val(),
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
+    targetTimeouts: JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: $("#maxCostUsd").val(),
     maxTotalTokens: $("#maxTotalTokens").val(),
@@ -6067,11 +6778,57 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
   });
 }
 
+function saveDebugTargetTimeout(target, rawValue) {
+  if (!latestState?.activeTask) {
+    showMessage("No active task.", true);
+    return;
+  }
+  const nextConfig = currentTargetTimeoutsSource(latestState.activeTask, latestState?.draft || null);
+  const normalizedTarget = String(target || "").trim();
+  const nextSeconds = clampTimeoutSeconds(rawValue, targetTimeoutSeconds(nextConfig, normalizedTarget));
+  if (/^[A-Za-z]$/.test(normalizedTarget)) {
+    nextConfig.workers[normalizedTarget.toUpperCase()] = nextSeconds;
+  } else {
+    switch (normalizedTarget.toLowerCase()) {
+      case "direct_baseline":
+        nextConfig.directBaseline = nextSeconds;
+        break;
+      case "commander":
+        nextConfig.commander = nextSeconds;
+        break;
+      case "commander_review":
+        nextConfig.commanderReview = nextSeconds;
+        break;
+      case "summarizer":
+        nextConfig.summarizer = nextSeconds;
+        break;
+      case "answer_now":
+        nextConfig.answerNow = nextSeconds;
+        break;
+      case "arbiter":
+        nextConfig.arbiter = nextSeconds;
+        break;
+      default:
+        nextConfig.workerDefault = nextSeconds;
+        break;
+    }
+  }
+  postForm(API.runtimeApply, { targetTimeouts: JSON.stringify(nextConfig) }, "Timeout updated", {
+    onSuccess: function () {
+      workerControlsSignature = "";
+      debugControlsSignature = "";
+    }
+  });
+}
+
 function setActiveView(viewName) {
-  activeView = viewName;
-  localStorage.setItem("loopActiveView", viewName);
-  $(".nav-btn").removeClass("active").filter(`[data-view="${viewName}"]`).addClass("active");
-  $(".workspace-view").removeClass("active").filter(`[data-view="${viewName}"]`).addClass("active");
+  const normalized = $(`.nav-btn[data-view="${viewName}"]`).length && $(`.workspace-view[data-view="${viewName}"]`).length
+    ? String(viewName || "").trim()
+    : "home";
+  activeView = normalized;
+  localStorage.setItem("loopActiveView", normalized);
+  $(".nav-btn").removeClass("active").filter(`[data-view="${normalized}"]`).addClass("active");
+  $(".workspace-view").removeClass("active").filter(`[data-view="${normalized}"]`).addClass("active");
 }
 
 $(function () {
@@ -6205,7 +6962,7 @@ $(function () {
     queueDraftSave();
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #reasoningEffort, #maxCostUsd, #maxTotalTokens, #maxOutputTokens, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
     syncDirectBaselineFields();
     syncOllamaBaseUrlField();
     formDirty = true;
@@ -6227,13 +6984,17 @@ $(function () {
       return;
     }
 
+    const effectiveDirectBaselineMode = payload.frontMode === "eval"
+      ? "both"
+      : payload.directBaselineMode;
     const startPayload = {
       sessionContext: buildSendSessionContext(payload.sessionContext),
       objective: payload.objective,
       constraints: JSON.stringify(payload.constraints),
       executionMode: payload.executionMode,
+      frontMode: payload.frontMode,
       contextMode: payload.contextMode,
-      directBaselineMode: payload.directBaselineMode,
+      directBaselineMode: effectiveDirectBaselineMode,
       provider: payload.provider,
       model: payload.model,
       summarizerProvider: summarizerConfig.provider || payload.summarizerProvider || payload.provider,
@@ -6241,6 +7002,7 @@ $(function () {
       directProvider: payload.directProvider || payload.provider,
       directModel: payload.directModel || payload.model,
       ollamaBaseUrl: payload.ollamaBaseUrl,
+      targetTimeouts: JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
       summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "expansive")),
       reasoningEffort: payload.reasoningEffort,
       maxCostUsd: payload.maxCostUsd,
@@ -6592,41 +7354,6 @@ $(function () {
     }
   });
 
-  $("#startEvalRun").on("click", function () {
-    const suiteId = String($("#evalSuiteSelect").val() || "").trim();
-    const armIds = currentSelectedEvalArmIds();
-    const replicates = parseInt($("#evalReplicates").val(), 10) || 1;
-    const loopSweep = String($("#evalLoopSweep").val() || "1").trim();
-    if (!suiteId) {
-      showMessage("Choose an eval suite first.", true);
-      return;
-    }
-    if (!armIds.length) {
-      showMessage("Choose at least one eval arm.", true);
-      return;
-    }
-    $.post(apiRoute(API.evalRuns), {
-      suiteId: suiteId,
-      armIds: JSON.stringify(armIds),
-      replicates: replicates,
-      loopSweep: loopSweep
-    })
-      .done(function (resp) {
-        let out = resp;
-        try { out = JSON.parse(resp); } catch (_) {}
-        selectedEvalRunId = String(out.runId || "");
-        if (selectedEvalRunId) {
-          localStorage.setItem("loopSelectedEvalRunId", selectedEvalRunId);
-        }
-        showMessage("Eval run queued" + (out.message ? " | " + out.message : ""));
-        setActiveView("eval");
-        refreshEvalHistory();
-      })
-      .fail(function (xhr) {
-        showMessage("Eval launch failed: " + extractErrorMessage(xhr), true);
-      });
-  });
-
   $("#resetSession").on("click", function () {
     if (!confirm("Archive the current session and load a fresh draft with short carry-forward context?")) return;
     postForm(API.sessionReset, {}, "Session reset", {
@@ -6724,6 +7451,14 @@ $(function () {
     postForm(API.targetsBackground, { target }, target === "answer_now" ? "Partial answer queued" : "Target queued");
   });
 
+  $(document).on("change", ".target-timeout-input", function () {
+    const target = String($(this).data("timeoutTarget") || "").trim();
+    if (!target) return;
+    const normalized = clampTimeoutSeconds($(this).val(), targetTimeoutSeconds(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null), target));
+    $(this).val(normalized);
+    saveDebugTargetTimeout(target, normalized);
+  });
+
   $(document).on("change", ".worker-type, .worker-temperature, .worker-model, .worker-harness-profile, .worker-harness-instruction, .summarizer-model-draft, .summarizer-harness-profile, .summarizer-harness-instruction", function () {
     renderHomeRuntimeControls(latestState?.activeTask || null, latestState?.draft || null, latestState?.loop || null);
     renderQualityProfileCards();
@@ -6749,6 +7484,10 @@ $(function () {
 
   $(document).on("toggle", ".lane-inspector", function () {
     threadInspectorOpen = $(this).prop("open");
+  });
+
+  $(document).on("toggle", ".front-eval-technical", function () {
+    frontEvalTechnicalOpen = $(this).prop("open");
   });
 
   $("#exportCurrentSession").on("click", function () {
@@ -6794,19 +7533,6 @@ $(function () {
     });
   });
 
-  $(document).on("click", ".select-eval-run", function () {
-    selectedEvalRunId = String($(this).data("runId") || "").trim();
-    localStorage.setItem("loopSelectedEvalRunId", selectedEvalRunId);
-    refreshEvalHistory();
-  });
-
-  $(document).on("click", ".load-eval-artifact-pair", function () {
-    applyEvalArtifactSelectionPair(
-      String($(this).data("left") || ""),
-      String($(this).data("right") || "")
-    );
-  });
-
   $("#artifactLeftSelect").on("change", function () {
     artifactSelections.left = $(this).val();
     loadArtifactPane("Left", artifactSelections.left);
@@ -6817,13 +7543,4 @@ $(function () {
     loadArtifactPane("Right", artifactSelections.right);
   });
 
-  $("#evalArtifactLeftSelect").on("change", function () {
-    evalArtifactSelections.left = $(this).val();
-    loadEvalArtifactPane("Left", evalArtifactSelections.left);
-  });
-
-  $("#evalArtifactRightSelect").on("change", function () {
-    evalArtifactSelections.right = $(this).val();
-    loadEvalArtifactPane("Right", evalArtifactSelections.right);
-  });
 });

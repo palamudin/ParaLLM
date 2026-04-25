@@ -162,6 +162,7 @@ Current skill layers:
 
 ### Eval / QA
 
+- Front eval now runs through Home via `Front mode = Eval`; the Eval tab is a legacy archive, not the live launcher
 - Blind direct-vs-steered benchmark harness
 - Control-quality grading for lead-thread discipline
 - Isolated eval runner with per-replicate workspaces

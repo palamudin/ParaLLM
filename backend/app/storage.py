@@ -188,6 +188,8 @@ def default_loop_state() -> Dict[str, Any]:
         "finishedAt": None,
         "lastHeartbeatAt": None,
         "lastMessage": "Ready.",
+        "activeTargets": [],
+        "providerTrace": None,
     }
 
 
@@ -226,11 +228,42 @@ def default_state() -> Dict[str, Any]:
         "workers": {},
         "directBaseline": None,
         "summary": None,
+        "arbiter": None,
         "memoryVersion": 0,
         "usage": default_usage_state(),
         "loop": default_loop_state(),
         "lastUpdated": utc_now(),
     }
+
+
+def normalize_provider_trace(trace: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(trace, dict):
+        return None
+    normalized: Dict[str, Any] = {}
+    for key, value in trace.items():
+        field = str(key or "").strip()
+        if not field:
+            continue
+        if value is None or isinstance(value, (str, int, float, bool)):
+            normalized[field] = value
+            continue
+        if isinstance(value, list):
+            normalized[field] = [
+                item
+                for item in value
+                if item is None or isinstance(item, (str, int, float, bool))
+            ][:20]
+            continue
+        if isinstance(value, dict):
+            child: Dict[str, Any] = {}
+            for child_key, child_value in value.items():
+                child_field = str(child_key or "").strip()
+                if not child_field:
+                    continue
+                if child_value is None or isinstance(child_value, (str, int, float, bool)):
+                    child[child_field] = child_value
+            normalized[field] = child
+    return normalized or None
 
 
 def normalize_usage_bucket(bucket: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -285,6 +318,12 @@ def normalize_loop_snapshot(loop: Optional[Dict[str, Any]], warnings: Optional[L
     merged["finishedAt"] = current.get("finishedAt")
     merged["lastHeartbeatAt"] = current.get("lastHeartbeatAt")
     merged["lastMessage"] = str(current.get("lastMessage") or merged["lastMessage"])
+    merged["activeTargets"] = [
+        str(value).strip()
+        for value in (current.get("activeTargets") or [])
+        if str(value).strip()
+    ][:12] if isinstance(current.get("activeTargets"), list) else []
+    merged["providerTrace"] = normalize_provider_trace(current.get("providerTrace"))
     return merged
 
 
@@ -301,7 +340,7 @@ def normalize_state_contract(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         append_contract_warning(warnings, "draft was not an object; resetting staged draft state.")
     normalized["draft"] = current.get("draft") if isinstance(current.get("draft"), dict) else {}
 
-    for field in ("commander", "commanderReview", "directBaseline", "summary"):
+    for field in ("commander", "commanderReview", "directBaseline", "summary", "arbiter"):
         value = current.get(field)
         if value is not None and not isinstance(value, dict):
             append_contract_warning(warnings, f"{field} was not an object; dropping malformed state.")
@@ -526,6 +565,7 @@ def current_dispatch_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) ->
             "queuedCount": 0,
             "partialCount": 0,
             "lastMessage": "Ready.",
+            "providerTrace": None,
         }
     jobs = recover_dispatch_jobs_view(jobs)
     active_jobs = [
@@ -543,6 +583,7 @@ def current_dispatch_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) ->
             "queuedCount": 0,
             "partialCount": 0,
             "lastMessage": "Ready.",
+            "providerTrace": None,
         }
     active_jobs.sort(key=lambda job: (0 if str(job.get("status")) == "running" else 1, parse_ts(job.get("queuedAt")) or 0))
     running_count = sum(1 for job in active_jobs if str(job.get("status")) == "running")
@@ -562,6 +603,7 @@ def current_dispatch_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) ->
                 "startedAt": job.get("startedAt"),
                 "lastHeartbeatAt": job.get("lastHeartbeatAt"),
                 "lastMessage": job.get("lastMessage"),
+                "providerTrace": normalize_provider_trace(((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {}).get("providerTrace")),
             }
             for job in active_jobs
         ],
@@ -569,6 +611,7 @@ def current_dispatch_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) ->
         "queuedCount": queued_count,
         "partialCount": partial_count,
         "lastMessage": active_jobs[0].get("lastMessage") or "Dispatch in progress.",
+        "providerTrace": normalize_provider_trace((((active_jobs[0].get("metadata") or {}) if isinstance(active_jobs[0].get("metadata"), dict) else {})).get("providerTrace")),
     }
 
 
@@ -754,6 +797,7 @@ def coerce_loop_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) -> Dict
                 "finishedAt": utc_now(),
                 "lastHeartbeatAt": utc_now(),
                 "lastMessage": message,
+                "providerTrace": normalize_provider_trace((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("providerTrace")),
             }
         )
     elif job_status_is_terminal(job.get("status")) or status != str(job.get("status") or status):
@@ -772,8 +816,13 @@ def coerce_loop_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) -> Dict
                 "finishedAt": job.get("finishedAt") or loop.get("finishedAt"),
                 "lastHeartbeatAt": job.get("lastHeartbeatAt") or loop.get("lastHeartbeatAt"),
                 "lastMessage": job.get("lastMessage") or loop.get("lastMessage") or "Ready.",
+                "providerTrace": normalize_provider_trace((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("providerTrace"))
+                or normalize_provider_trace(loop.get("providerTrace")),
             }
         )
+    job_provider_trace = normalize_provider_trace((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("providerTrace"))
+    if job_provider_trace and not normalize_provider_trace(loop.get("providerTrace")):
+        loop["providerTrace"] = job_provider_trace
     current["loop"] = loop
     return current
 
@@ -801,6 +850,7 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
         enriched_task["stateCommanderReview"] = copy.deepcopy(state.get("commanderReview"))
         enriched_task["directBaseline"] = copy.deepcopy(state.get("directBaseline"))
         enriched_task["summary"] = copy.deepcopy(state.get("summary"))
+        enriched_task["arbiter"] = copy.deepcopy(state.get("arbiter"))
         enriched_task["executionHealth"] = copy.deepcopy(state.get("executionHealth") or {})
         enriched_task["contractWarnings"] = copy.deepcopy(state.get("contractWarnings") or [])
         state["activeTask"] = enriched_task
@@ -855,6 +905,7 @@ def build_artifact_history_entry(name: str, modified_at: str, size: int, content
         "model": None,
         "mode": None,
         "responseId": None,
+        "providerTrace": None,
         "requestedMaxOutputTokens": None,
         "effectiveMaxOutputTokens": None,
         "maxOutputTokenAttempts": [],
@@ -872,11 +923,13 @@ def build_artifact_history_entry(name: str, modified_at: str, size: int, content
             break
     if isinstance(content, dict):
         response_meta = content.get("responseMeta") if isinstance(content.get("responseMeta"), dict) else {}
+        provider_trace = normalize_provider_trace(response_meta.get("providerTrace"))
         entry["provider"] = content.get("provider")
         entry["providerCapabilities"] = content.get("providerCapabilities") if isinstance(content.get("providerCapabilities"), dict) else {}
         entry["model"] = content.get("model") or content.get("modelUsed")
         entry["mode"] = content.get("mode")
-        entry["responseId"] = content.get("responseId")
+        entry["responseId"] = content.get("responseId") or (provider_trace.get("providerResponseId") if isinstance(provider_trace, dict) else None)
+        entry["providerTrace"] = provider_trace
         entry["requestedMaxOutputTokens"] = coerce_int(
             response_meta.get("requestedMaxOutputTokens"),
             allow_none=True,
@@ -1322,6 +1375,7 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
         raise FileNotFoundError("Artifact not found.")
     warnings: List[str] = []
     response_meta = content.get("responseMeta") if isinstance(content.get("responseMeta"), dict) else {}
+    provider_trace = normalize_provider_trace(response_meta.get("providerTrace"))
     kind = str(content.get("artifactType") or "").strip() or "artifact"
     if kind == "artifact":
         if re.search(r"_summary_round\d+\.json$", safe_name, re.I):
@@ -1344,7 +1398,8 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
             "model": content.get("model") or content.get("modelUsed"),
             "step": coerce_int(content.get("step"), allow_none=True, warnings=warnings, label=f"{safe_name}.step"),
             "round": coerce_int(content.get("round"), allow_none=True, warnings=warnings, label=f"{safe_name}.round"),
-            "responseId": content.get("responseId"),
+            "responseId": content.get("responseId") or (provider_trace.get("providerResponseId") if isinstance(provider_trace, dict) else None),
+            "providerTrace": provider_trace,
             "requestedMaxOutputTokens": coerce_int(
                 response_meta.get("requestedMaxOutputTokens"),
                 allow_none=True,

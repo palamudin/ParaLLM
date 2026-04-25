@@ -72,6 +72,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 - Worker context routing is now an explicit runtime choice: `weighted` means `Light Workers`, where the main thread keeps full context while adversarial lanes receive the curated pressure-test packet; `full` means `Full Workers`, where workers also receive the broader packet
 - Answer-path selection is now explicit too: `off` keeps the standard pressurized loop, `single` runs only the direct baseline pipe, and `both` runs the baseline in parallel with the pressurized loop so Review can compare them side by side
 - The isolated eval runner now treats answer path and worker-routing as first-class variant dimensions, so runs can capture and score `single` vs `pressurized` vs `both compare` alongside `light workers` vs `full workers` differences without contaminating live task state
+- Front eval now lives on Home through the real runtime path; the separate Eval view is legacy archive only, and new compare runs should be launched from `Front mode = Eval`
 - API keys can now be managed through provider-grouped UI pools, with per-slot inputs, masked previews, deterministic per-position assignment inside each vendor group, and a per-provider `Local` / `Safe` switch
 - Ollama location is now operator-settable per task/runtime, so remote or dockerized Ollama hosts do not require the whole app to be relaunched just to change where local inference lives
 - Form draft state is persisted locally so edits, roster changes, and loop settings do not get stomped by polling refreshes
@@ -665,10 +666,12 @@ The design goal is sparse, structured sharing. The workers should not stream eve
     - commander-review vs final-summary comparison
     - dynamic lane spawn reason and activation round
     - tool usage, evidence, and cost overlays
+    - a later `A / B / C` comparison surface where operators can place multiple answer paths side by side in one chat-like view, including pressurized, baseline, and external/reference responses
   - start shaping the UI for a hosted/operator audience, not only a local tinkering surface
 - Acceptance criteria:
   - the review surface explains why the final answer changed across rounds
   - dynamic spin-up, tool use, and control audit are visually inspectable without reading raw JSON
+  - multi-answer review can score and visually compare at least three responses in one operator surface without dropping into raw artifacts first
   - the frontend codebase is split enough that new product work does not require editing one giant file
   - the shell can support both end-user and operator/review workflows cleanly
 

@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from runtime.engine import LoopRuntime, RuntimeErrorWithCode, normalize_direct_baseline_mode, task_workers
+from runtime.engine import (
+    LoopRuntime,
+    RuntimeErrorWithCode,
+    normalize_direct_baseline_mode,
+    target_timeout_seconds,
+    task_workers,
+)
 
 from . import control, faults, metadata, queueing, runtime_execution, storage
 from .config import deployment_topology
@@ -168,6 +174,99 @@ def _new_loop_job_id() -> str:
     return f"job-{stamp}-{entropy}"
 
 
+def _find_active_target_dispatch(runtime: LoopRuntime, task_id: str, target: str) -> Optional[Dict[str, Any]]:
+    from . import dispatch
+
+    normalized_target = str(target or "").strip().lower()
+    for job in dispatch.active_target_jobs(storage.project_paths(runtime.root), task_id, include_partial=True):
+        if str(job.get("target") or "").strip().lower() == normalized_target:
+            return job
+    return None
+
+
+def _launch_loop_sidecar(
+    runtime: LoopRuntime,
+    task: Dict[str, Any],
+    target: str,
+    *,
+    round_number: int,
+    loop_job_id: str,
+    timeout_target: Optional[str] = None,
+    last_message: str,
+    launched_message: str,
+    partial_summary: bool = False,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    from . import dispatch
+
+    task_id = str(task.get("taskId") or "").strip()
+    existing = _find_active_target_dispatch(runtime, task_id, target)
+    if isinstance(existing, dict):
+        runtime.append_step(
+            "dispatch",
+            "Reused active loop sidecar dispatch.",
+            {
+                "taskId": task_id,
+                "jobId": existing.get("jobId"),
+                "target": target,
+                "round": round_number,
+                "loopJobId": loop_job_id,
+            },
+        )
+        return existing
+
+    task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    timeout_seconds = target_timeout_seconds(task_runtime.get("targetTimeouts"), timeout_target or target)
+    job = dispatch.create_target_job(
+        runtime,
+        task,
+        target,
+        {
+            "partialSummary": partial_summary,
+            "timeoutSeconds": timeout_seconds,
+            "lastMessage": last_message,
+            "metadata": {
+                "trigger": "loop-sidecar",
+                "round": round_number,
+                "loopJobId": loop_job_id,
+                "sidecar": True,
+                **(extra_metadata or {}),
+            },
+        },
+    )
+    try:
+        dispatch.launch_dispatch_job_runner(job, runtime.root)
+    except Exception as exc:  # noqa: BLE001
+        runtime.mutate_job(
+            str(job.get("jobId") or ""),
+            lambda existing: storage.default_job(
+                {
+                    **(existing or {}),
+                    "status": "error",
+                    "finishedAt": utc_now(),
+                    "lastHeartbeatAt": utc_now(),
+                    "lastMessage": "Loop-sidecar launch failed.",
+                    "error": str(exc),
+                }
+            ),
+        )
+        raise
+    runtime.append_step(
+        "dispatch",
+        launched_message,
+        {
+            "taskId": task_id,
+            "jobId": job.get("jobId"),
+            "target": target,
+            "round": round_number,
+            "loopJobId": loop_job_id,
+            "timeoutSeconds": timeout_seconds,
+            "partialSummary": partial_summary,
+        },
+    )
+    return job
+
+
 def create_loop_job(
     runtime: LoopRuntime,
     task: Dict[str, Any],
@@ -256,6 +355,43 @@ def create_loop_job(
     return job
 
 
+def _launch_answer_now_sidecar(
+    runtime: LoopRuntime,
+    task: Dict[str, Any],
+    round_number: int,
+    loop_job_id: str,
+) -> Optional[Dict[str, Any]]:
+    return _launch_loop_sidecar(
+        runtime,
+        task,
+        "answer_now",
+        round_number=round_number,
+        loop_job_id=loop_job_id,
+        timeout_target="answer_now",
+        last_message="Queued partial summary from current checkpoints.",
+        launched_message="Loop launched Answer Now as a non-blocking sidecar.",
+        partial_summary=True,
+    )
+
+
+def _launch_direct_baseline_sidecar(
+    runtime: LoopRuntime,
+    task: Dict[str, Any],
+    round_number: int,
+    loop_job_id: str,
+) -> Optional[Dict[str, Any]]:
+    return _launch_loop_sidecar(
+        runtime,
+        task,
+        "direct_baseline",
+        round_number=round_number,
+        loop_job_id=loop_job_id,
+        timeout_target="direct_baseline",
+        last_message="Queued single-thread baseline from the current prompt.",
+        launched_message="Loop launched the single-thread baseline as a non-blocking sidecar.",
+    )
+
+
 def _subprocess_kwargs(env_overrides: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     env = os.environ.copy()
     if env_overrides:
@@ -335,6 +471,8 @@ def _usage_snapshot(runtime: LoopRuntime) -> Dict[str, Any]:
 
 def loop_target_label(target: str) -> str:
     normalized = str(target or "").strip().lower()
+    if normalized == "workers":
+        return "Workers"
     if normalized == "commander":
         return "Commander"
     if normalized == "direct_baseline":
@@ -343,6 +481,10 @@ def loop_target_label(target: str) -> str:
         return "Commander Review"
     if normalized == "summarizer":
         return "Summarizer"
+    if normalized == "answer_now":
+        return "Partial summarizer"
+    if normalized == "arbiter":
+        return "External arbiter"
     if len(normalized) == 1 and normalized.isalpha():
         return f"Worker {normalized.upper()}"
     return normalized or "Target"
@@ -356,8 +498,14 @@ def update_loop_job_progress(
     rounds: int,
     target: str,
     waiting: bool = False,
+    active_targets: Optional[List[str]] = None,
 ) -> None:
     target_label = loop_target_label(target)
+    normalized_active_targets = [
+        str(value).strip()
+        for value in (active_targets or [target])
+        if str(value).strip()
+    ][:12]
     loop_message = (
         f"Waiting on {target_label} during round {round_number} of {rounds}."
         if waiting
@@ -382,10 +530,13 @@ def update_loop_job_progress(
                     "currentRound": round_number,
                     "lastHeartbeatAt": utc_now(),
                     "lastMessage": loop_message,
+                    "activeTargets": normalized_active_targets,
                 },
             )
             runtime.write_state_unlocked(state)
         existing_job = runtime.read_job_unlocked(job_id) or {"jobId": job_id, "taskId": task_id}
+        metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
+        metadata["activeTargets"] = normalized_active_targets
         runtime.write_job_unlocked(
             storage.default_job(
                 {
@@ -394,6 +545,7 @@ def update_loop_job_progress(
                     "currentRound": round_number,
                     "lastHeartbeatAt": utc_now(),
                     "lastMessage": job_message,
+                    "metadata": metadata,
                 }
             )
         )
@@ -407,13 +559,14 @@ def start_loop_target_heartbeat(
     rounds: int,
     target: str,
     interval_seconds: float = 10.0,
+    active_targets: Optional[List[str]] = None,
 ) -> tuple[threading.Event, threading.Thread]:
     stop_event = threading.Event()
 
     def keepalive() -> None:
         while not stop_event.wait(interval_seconds):
             try:
-                update_loop_job_progress(runtime, job_id, task_id, round_number, rounds, target, waiting=True)
+                update_loop_job_progress(runtime, job_id, task_id, round_number, rounds, target, waiting=True, active_targets=active_targets)
             except Exception:
                 return
 
@@ -534,8 +687,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
         (((active_task_snapshot or {}).get("runtime") or {}) if isinstance((active_task_snapshot or {}).get("runtime"), dict) else {}).get("directBaselineMode")
     )
     direct_baseline_existing = isinstance(snapshot.get("directBaseline"), dict)
-    direct_baseline_result: Dict[str, Any] = {"result": None, "error": None}
-    direct_baseline_thread: Optional[threading.Thread] = None
+    direct_baseline_sidecar_attempted = direct_baseline_existing
 
     if direct_baseline_mode == "single":
         rounds = 1
@@ -584,12 +736,163 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
         {"taskId": task_id, "jobId": job_id, "mode": "background", "rounds": rounds, "delayMs": delay_ms},
     )
 
-    def _run_parallel_direct_baseline() -> None:
+    def _execute_loop_target(
+        target: str,
+        round_number: int,
+        *,
+        isolated: bool = False,
+        options: Optional[Dict[str, Any]] = None,
+        active_targets: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        update_loop_job_progress(runtime, job_id, task_id, round_number, rounds, target, waiting=False, active_targets=active_targets)
+        heartbeat_stop, heartbeat_thread = start_loop_target_heartbeat(
+            runtime,
+            job_id,
+            task_id,
+            round_number,
+            rounds,
+            target,
+            active_targets=active_targets,
+        )
         try:
-            isolated_runtime = LoopRuntime(runtime.root, auth_path=runtime.auth_path)
-            direct_baseline_result["result"] = runtime_execution.run_target(isolated_runtime, "direct_baseline", task_id, {})
-        except Exception as exc:  # noqa: BLE001
-            direct_baseline_result["error"] = exc
+            faults.maybe_raise_fault(
+                "loop.execute.before_target",
+                f"loop.execute.before_target.{target.lower()}",
+            )
+            target_runtime = LoopRuntime(runtime.root, auth_path=runtime.auth_path) if isolated else runtime
+            target_result = runtime_execution.run_target(target_runtime, target, task_id, dict(options or {}))
+            faults.maybe_raise_fault(
+                "loop.execute.after_target",
+                f"loop.execute.after_target.{target.lower()}",
+            )
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1.0)
+        usage_snapshot = _usage_snapshot(runtime)
+        with runtime.with_lock():
+            state = runtime.read_state_unlocked()
+            state = set_loop_state(state, {"lastHeartbeatAt": utc_now()})
+            runtime.write_state_unlocked(state)
+            existing_job = runtime.read_job_unlocked(job_id) or job
+            runtime.write_job_unlocked(
+                storage.default_job(
+                    {
+                        **existing_job,
+                        "status": str(existing_job.get("status") or "running"),
+                        "currentRound": round_number,
+                        "lastHeartbeatAt": utc_now(),
+                        "usage": usage_snapshot,
+                    }
+                )
+            )
+        runtime.append_step(
+            "autoloop",
+            "Autonomous target completed.",
+            {
+                "taskId": task_id,
+                "jobId": job_id,
+                "round": round_number,
+                "target": target,
+                "exitCode": target_result.get("exitCode"),
+                "outputPreview": target_result.get("output"),
+            },
+        )
+        return target_result
+
+    def _execute_parallel_targets(
+        targets: List[str],
+        round_number: int,
+        *,
+        auxiliary_targets: Optional[List[str]] = None,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        auxiliary = {str(item).strip().lower() for item in (auxiliary_targets or []) if str(item).strip()}
+        slots: List[Dict[str, Any]] = [
+            {"target": str(target).strip(), "result": None, "error": None}
+            for target in targets
+            if str(target).strip()
+        ]
+        if not slots:
+            return [], []
+
+        runtime.append_step(
+            "autoloop",
+            "Starting parallel lane fan-out.",
+            {
+                "taskId": task_id,
+                "jobId": job_id,
+                "round": round_number,
+                "targets": [slot["target"] for slot in slots],
+                "auxiliaryTargets": sorted(auxiliary),
+            },
+        )
+        active_parallel_targets = [slot["target"] for slot in slots]
+        update_loop_job_progress(
+            runtime,
+            job_id,
+            task_id,
+            round_number,
+            rounds,
+            "workers",
+            waiting=False,
+            active_targets=active_parallel_targets,
+        )
+
+        def _run_slot(slot: Dict[str, Any]) -> None:
+            try:
+                slot["result"] = _execute_loop_target(
+                    slot["target"],
+                    round_number,
+                    isolated=True,
+                    active_targets=active_parallel_targets,
+                )
+            except Exception as exc:  # noqa: BLE001
+                slot["error"] = exc
+
+        threads: List[threading.Thread] = []
+        for slot in slots:
+            thread = threading.Thread(
+                target=_run_slot,
+                args=(slot,),
+                name=f"loop-target-{job_id}-{slot['target']}",
+                daemon=True,
+            )
+            threads.append(thread)
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        primary_results: List[Dict[str, Any]] = []
+        auxiliary_results: List[Dict[str, Any]] = []
+        primary_errors: List[Exception] = []
+        for slot in slots:
+            target_name = str(slot["target"] or "").strip()
+            normalized_target = target_name.lower()
+            error = slot.get("error")
+            if error is not None:
+                if normalized_target in auxiliary:
+                    runtime.append_step(
+                        "error",
+                        "Parallel auxiliary target failed while the main loop continued.",
+                        {
+                            "taskId": task_id,
+                            "jobId": job_id,
+                            "round": round_number,
+                            "target": target_name,
+                            "error": str(error),
+                        },
+                    )
+                    continue
+                primary_errors.append(error)
+                continue
+            result = slot.get("result")
+            if isinstance(result, dict):
+                if normalized_target in auxiliary:
+                    auxiliary_results.append(result)
+                else:
+                    primary_results.append(result)
+        if primary_errors:
+            raise primary_errors[0]
+        return primary_results, auxiliary_results
 
     try:
         for round_number in range(start_round, rounds + 1):
@@ -636,18 +939,22 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             )
 
             round_workers = [] if direct_baseline_mode == "single" else task_workers(active_task, round_number)
-            if direct_baseline_mode == "both" and not direct_baseline_existing and direct_baseline_thread is None:
-                direct_baseline_thread = threading.Thread(
-                    target=_run_parallel_direct_baseline,
-                    name=f"loop-direct-baseline-{job_id}",
-                    daemon=True,
-                )
-                direct_baseline_thread.start()
-                runtime.append_step(
-                    "direct_baseline",
-                    "Started the direct baseline in parallel with the pressurized loop.",
-                    {"taskId": task_id, "jobId": job_id, "round": round_number},
-                )
+            if direct_baseline_mode == "both" and not direct_baseline_sidecar_attempted:
+                direct_baseline_sidecar_attempted = True
+                try:
+                    _launch_direct_baseline_sidecar(runtime, active_task, round_number, job_id)
+                except Exception as exc:  # noqa: BLE001
+                    runtime.append_step(
+                        "error",
+                        "Failed to launch non-blocking direct baseline sidecar; the main loop continued.",
+                        {
+                            "taskId": task_id,
+                            "jobId": job_id,
+                            "round": round_number,
+                            "target": "direct_baseline",
+                            "error": str(exc),
+                        },
+                    )
             if direct_baseline_mode == "single":
                 if direct_baseline_existing:
                     sequence: List[str] = []
@@ -659,62 +966,35 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                 else:
                     sequence = ["direct_baseline"]
             else:
-                sequence = ["commander", *[str(worker["id"]) for worker in round_workers], "commander_review", "summarizer"]
+                sequence = ["commander", "commander_review", "summarizer"]
             round_result: Dict[str, Any] = {"round": round_number, "targets": []}
 
             for target in sequence:
-                update_loop_job_progress(runtime, job_id, task_id, round_number, rounds, target, waiting=False)
-                heartbeat_stop, heartbeat_thread = start_loop_target_heartbeat(
-                    runtime,
-                    job_id,
-                    task_id,
-                    round_number,
-                    rounds,
-                    target,
-                )
-                try:
-                    faults.maybe_raise_fault(
-                        "loop.execute.before_target",
-                        f"loop.execute.before_target.{target.lower()}",
-                    )
-                    target_result = runtime_execution.run_target(runtime, target, task_id, {})
-                    faults.maybe_raise_fault(
-                        "loop.execute.after_target",
-                        f"loop.execute.after_target.{target.lower()}",
-                    )
-                finally:
-                    heartbeat_stop.set()
-                    heartbeat_thread.join(timeout=1.0)
-                round_result["targets"].append(target_result)
-                usage_snapshot = _usage_snapshot(runtime)
-                with runtime.with_lock():
-                    state = runtime.read_state_unlocked()
-                    state = set_loop_state(state, {"lastHeartbeatAt": utc_now()})
-                    runtime.write_state_unlocked(state)
-                    existing_job = runtime.read_job_unlocked(job_id) or job
-                    runtime.write_job_unlocked(
-                        storage.default_job(
+                if target == "commander_review" and round_workers:
+                    try:
+                        _launch_answer_now_sidecar(runtime, active_task, round_number, job_id)
+                    except Exception as exc:  # noqa: BLE001
+                        runtime.append_step(
+                            "error",
+                            "Failed to launch non-blocking Answer Now sidecar; the main loop continued.",
                             {
-                                **existing_job,
-                                "status": str(existing_job.get("status") or "running"),
-                                "currentRound": round_number,
-                                "lastHeartbeatAt": utc_now(),
-                                "usage": usage_snapshot,
-                            }
+                                "taskId": task_id,
+                                "jobId": job_id,
+                                "round": round_number,
+                                "target": "answer_now",
+                                "error": str(exc),
+                            },
                         )
+                    parallel_results, auxiliary_results = _execute_parallel_targets(
+                        [*[str(worker["id"]) for worker in round_workers]],
+                        round_number,
                     )
-                runtime.append_step(
-                    "autoloop",
-                    "Autonomous target completed.",
-                    {
-                        "taskId": task_id,
-                        "jobId": job_id,
-                        "round": round_number,
-                        "target": target,
-                        "exitCode": target_result.get("exitCode"),
-                        "outputPreview": target_result.get("output"),
-                    },
-                )
+                    round_result["targets"].extend(parallel_results)
+                    if auxiliary_results:
+                        round_result.setdefault("parallelTargets", [])
+                        round_result["parallelTargets"].extend(auxiliary_results)
+                target_result = _execute_loop_target(target, round_number)
+                round_result["targets"].append(target_result)
 
             results.append(round_result)
             completed_rounds = round_number
@@ -729,6 +1009,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                         "currentRound": 0,
                         "lastHeartbeatAt": utc_now(),
                         "lastMessage": f"Completed round {round_number} of {rounds}.",
+                        "activeTargets": [],
                     },
                 )
                 runtime.write_state_unlocked(state)
@@ -773,22 +1054,6 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             if cancelled:
                 break
 
-        if direct_baseline_thread is not None:
-            direct_baseline_thread.join()
-            if isinstance(direct_baseline_result.get("result"), dict) and results:
-                results[0].setdefault("parallelTargets", [])
-                results[0]["parallelTargets"].append(direct_baseline_result["result"])
-            if direct_baseline_result.get("error") is not None:
-                runtime.append_step(
-                    "error",
-                    "Parallel direct baseline failed while the pressurized loop continued.",
-                    {
-                        "taskId": task_id,
-                        "jobId": job_id,
-                        "error": str(direct_baseline_result["error"]),
-                    },
-                )
-
         final_status = "cancelled" if cancelled else "completed"
         final_message = f"Cancelled after {completed_rounds} completed round(s)." if cancelled else f"Completed {completed_rounds} round(s)."
         usage_snapshot = _usage_snapshot(runtime)
@@ -809,10 +1074,13 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                         "finishedAt": utc_now(),
                         "lastHeartbeatAt": utc_now(),
                         "lastMessage": final_message,
+                        "activeTargets": [],
                     },
                 )
                 runtime.write_state_unlocked(state)
             existing_job = runtime.read_job_unlocked(job_id) or job
+            metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
+            metadata["activeTargets"] = []
             runtime.write_job_unlocked(
                 storage.default_job(
                     {
@@ -825,6 +1093,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                         "lastMessage": final_message,
                         "results": results,
                         "usage": usage_snapshot,
+                        "metadata": metadata,
                     }
                 )
             )
@@ -848,8 +1117,6 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             "results": results,
         }
     except Exception as exc:  # noqa: BLE001
-        if direct_baseline_thread is not None and direct_baseline_thread.is_alive():
-            direct_baseline_thread.join()
         message = str(exc)
         final_status = "budget_exhausted" if message.startswith("Budget limit reached:") else "error"
         final_message = message if final_status == "budget_exhausted" else f"Loop error: {message}"
@@ -871,10 +1138,13 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                         "finishedAt": utc_now(),
                         "lastHeartbeatAt": utc_now(),
                         "lastMessage": final_message,
+                        "activeTargets": [],
                     },
                 )
                 runtime.write_state_unlocked(state)
             existing_job = runtime.read_job_unlocked(job_id) or job
+            metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
+            metadata["activeTargets"] = []
             runtime.write_job_unlocked(
                 storage.default_job(
                     {
@@ -888,6 +1158,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                         "results": results,
                         "usage": usage_snapshot,
                         "error": message,
+                        "metadata": metadata,
                     }
                 )
             )
@@ -1188,6 +1459,7 @@ def manage_loop_job(payload: Dict[str, Any], root: Optional[Path] = None) -> Dic
             current["commanderReview"] = None
             current["workers"] = control._empty_worker_state_map(task_workers(task_snapshot))
             current["summary"] = None
+            current["arbiter"] = None
             current["memoryVersion"] = int(current.get("memoryVersion") or 0) + 1
             current["usage"] = storage.default_usage_state()
             current["loop"] = storage.default_loop_state()

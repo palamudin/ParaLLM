@@ -138,11 +138,13 @@ class ControlPlaneTests(unittest.TestCase):
                 "model": "qwen3-coder",
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
+                "frontMode": "eval",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
                 "ollamaBaseUrl": "http://192.168.0.26:11434",
+                "targetTimeouts": '{"commander":95,"workerDefault":110,"workers":{"A":75},"commanderReview":205,"summarizer":215}',
                 "researchEnabled": "1",
                 "localFilesEnabled": "1",
                 "localFileRoots": ".,runtime, api",
@@ -164,11 +166,16 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["constraints"], ["No downtime", "Keep backward compatibility"])
         self.assertEqual(draft["model"], "qwen3-coder")
         self.assertEqual(draft["summarizerProvider"], "openai")
+        self.assertEqual(draft["frontMode"], "eval")
         self.assertEqual(draft["contextMode"], "full")
         self.assertEqual(draft["directBaselineMode"], "both")
         self.assertEqual(draft["directProvider"], "anthropic")
         self.assertEqual(draft["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(draft["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(draft["targetTimeouts"]["commander"], 95)
+        self.assertEqual(draft["targetTimeouts"]["workerDefault"], 110)
+        self.assertEqual(draft["targetTimeouts"]["workers"]["A"], 75)
+        self.assertEqual(draft["targetTimeouts"]["commanderReview"], 205)
         self.assertFalse(draft["researchEnabled"])
         self.assertTrue(draft["localFilesEnabled"])
         self.assertTrue(draft["githubToolsEnabled"])
@@ -198,11 +205,13 @@ class ControlPlaneTests(unittest.TestCase):
                 "model": "qwen3",
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
+                "frontMode": "eval",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
                 "ollamaBaseUrl": "http://192.168.0.26:11434/api",
+                "targetTimeouts": '{"commander":105,"workerDefault":125,"workers":{"B":90},"commanderReview":225,"summarizer":245}',
                 "reasoningEffort": "medium",
                 "loopRounds": "2",
                 "loopDelayMs": "500",
@@ -220,13 +229,18 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["taskId"], task_id)
         self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
         self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
+        self.assertEqual(state["activeTask"]["runtime"]["frontMode"], "eval")
         self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
         self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
+        self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["commander"], 105)
+        self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workerDefault"], 125)
+        self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workers"]["B"], 90)
         self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
         self.assertEqual(state["draft"]["objective"], "Design the first hosted topology")
+        self.assertIsNone(state["arbiter"])
         self.assertIn("A", state["workers"])
         self.assertIn("B", state["workers"])
         self.assertTrue((paths.tasks / f"{task_id}.json").is_file())

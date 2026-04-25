@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,11 +96,13 @@ class SettingsTests(unittest.TestCase):
                 "model": "qwen3",
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
+                "frontMode": "eval",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
                 "ollamaBaseUrl": "http://192.168.0.26:11434",
+                "targetTimeouts": {"commander": 100, "workerDefault": 120, "workers": {"A": 80}, "commanderReview": 230, "summarizer": 245},
                 "reasoningEffort": "high",
                 "maxCostUsd": 19,
                 "maxTotalTokens": 456000,
@@ -121,38 +124,61 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["workerModel"], "qwen3")
         self.assertEqual(result["summarizerProvider"], "openai")
         self.assertEqual(result["summarizerModel"], "gpt-5.4-mini")
+        self.assertEqual(result["frontMode"], "eval")
         self.assertEqual(result["contextMode"], "full")
         self.assertEqual(result["directBaselineMode"], "both")
         self.assertEqual(result["directProvider"], "anthropic")
         self.assertEqual(result["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(result["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(result["targetTimeouts"]["commander"], 100)
+        self.assertEqual(result["targetTimeouts"]["workerDefault"], 120)
+        self.assertEqual(result["targetTimeouts"]["workers"]["A"], 80)
         self.assertEqual(result["preferredLoop"]["rounds"], 5)
 
         state = storage.read_state_payload(storage.project_paths(self.root))
         self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
         self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
+        self.assertEqual(state["activeTask"]["runtime"]["frontMode"], "eval")
         self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
         self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["commander"], 100)
+        self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workerDefault"], 120)
+        self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workers"]["A"], 80)
         self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
         self.assertEqual(state["activeTask"]["summarizer"]["model"], "gpt-5.4-mini")
         self.assertTrue(all(worker["model"] == "qwen3" for worker in state["activeTask"]["workers"]))
         self.assertEqual(state["draft"]["provider"], "ollama")
         self.assertEqual(state["draft"]["summarizerProvider"], "openai")
         self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4-mini")
+        self.assertEqual(state["draft"]["frontMode"], "eval")
         self.assertEqual(state["draft"]["contextMode"], "full")
         self.assertEqual(state["draft"]["directBaselineMode"], "both")
         self.assertEqual(state["draft"]["directProvider"], "anthropic")
         self.assertEqual(state["draft"]["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(state["draft"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(state["draft"]["targetTimeouts"]["commander"], 100)
+        self.assertEqual(state["draft"]["targetTimeouts"]["workerDefault"], 120)
+        self.assertEqual(state["draft"]["targetTimeouts"]["workers"]["A"], 80)
         self.assertFalse(state["activeTask"]["runtime"]["research"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["localFiles"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["githubTools"]["enabled"])
         self.assertFalse(state["draft"]["researchEnabled"])
         self.assertTrue(state["draft"]["localFilesEnabled"])
         self.assertTrue(state["draft"]["githubToolsEnabled"])
+
+    def test_apply_runtime_settings_clears_stale_arbiter_score(self) -> None:
+        paths = storage.project_paths(self.root)
+        state = storage.read_state_payload(paths)
+        state["arbiter"] = {"taskId": state["activeTask"]["taskId"], "comparison": {"verdict": "pressurized_advantage"}}
+        paths.state.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+        settings.apply_runtime_settings({"frontMode": "eval"}, self.root)
+
+        refreshed = storage.read_state_payload(paths)
+        self.assertIsNone(refreshed["arbiter"])
 
     def test_apply_runtime_settings_preserves_staged_draft_worker_roster(self) -> None:
         settings.add_adversarial_worker({"type": "reliability"}, self.root)

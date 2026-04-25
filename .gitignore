@@ -13,6 +13,7 @@ data/tasks/
 data/jobs/
 data/locks/
 data/logs/
+data/exports/
 data/*.json
 data/*.jsonl
 build/

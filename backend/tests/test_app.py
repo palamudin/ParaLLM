@@ -107,6 +107,16 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(payload["backends"]["metadata"]["backend"], "json_files")
         self.assertEqual(payload["backends"]["artifacts"]["backend"], "filesystem")
 
+    def test_eval_runs_endpoint_returns_gone_message(self) -> None:
+        client = TestClient(create_app())
+        response = client.post(
+            "/v1/evals/runs",
+            json={"suiteId": "legacy-suite", "armIds": ["legacy-arm"]},
+        )
+
+        self.assertEqual(response.status_code, 410)
+        self.assertIn("Front mode to Eval", str(response.json().get("detail") or ""))
+
     def test_state_route_enriches_active_task_runtime_mirrors(self) -> None:
         self.paths.state.write_text(
             json.dumps(

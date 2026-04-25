@@ -16,6 +16,7 @@ from runtime.engine import (
     default_budget_config,
     default_context_mode,
     default_direct_baseline_mode,
+    default_front_mode,
     default_model_for_provider,
     default_dynamic_spinup_config,
     default_github_tool_config,
@@ -23,12 +24,14 @@ from runtime.engine import (
     default_ollama_base_url,
     default_research_config,
     default_summarizer_harness,
+    default_target_timeout_config,
     default_vetting_config,
     normalize_allowed_domains,
     normalize_budget_config,
     normalize_context_mode,
     normalize_direct_baseline_mode,
     normalize_dynamic_spinup_config,
+    normalize_front_mode,
     normalize_github_repos,
     normalize_github_tool_config,
     normalize_harness_config,
@@ -39,6 +42,7 @@ from runtime.engine import (
     normalize_provider_id,
     normalize_research_config,
     normalize_string_list,
+    normalize_target_timeout_config,
     normalize_vetting_config,
     provider_capability_profile,
     task_workers,
@@ -114,12 +118,14 @@ def default_draft_state() -> Dict[str, Any]:
         "model": model,
         "summarizerProvider": provider,
         "summarizerModel": model,
+        "frontMode": default_front_mode(),
         "contextMode": default_context_mode(),
         "directBaselineMode": default_direct_baseline_mode(),
         "directProvider": provider,
         "directModel": model,
         "ollamaBaseUrl": default_ollama_base_url(),
         "reasoningEffort": "low",
+        "targetTimeouts": default_target_timeout_config(),
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
         "maxOutputTokens": budget["maxOutputTokens"],
@@ -152,6 +158,7 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "targets": current.get("budgetTargets", default["budgetTargets"]),
         }
     )
+    target_timeouts = normalize_target_timeout_config(current.get("targetTimeouts", default["targetTimeouts"]))
     loop = normalize_loop_preferences(
         {
             "rounds": current.get("loopRounds", default["loopRounds"]),
@@ -194,6 +201,7 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         default_model_for_provider(summarizer_provider),
         summarizer_provider,
     )
+    front_mode = normalize_front_mode(current.get("frontMode", default["frontMode"]), default["frontMode"])
     context_mode = normalize_context_mode(current.get("contextMode", default["contextMode"]), default["contextMode"])
     direct_baseline_mode = normalize_direct_baseline_mode(current.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"])
     direct_provider = normalize_provider_id(
@@ -225,12 +233,14 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "model": model,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
+        "frontMode": front_mode,
         "contextMode": context_mode,
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
         "directModel": direct_model,
         "ollamaBaseUrl": ollama_base_url,
         "reasoningEffort": reasoning_effort,
+        "targetTimeouts": target_timeouts,
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
         "maxOutputTokens": budget["maxOutputTokens"],
@@ -294,6 +304,7 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
             default_model_for_provider(summarizer_provider),
             summarizer_provider,
         ),
+        "frontMode": normalize_front_mode(runtime.get("frontMode", default["frontMode"]), default["frontMode"]),
         "contextMode": normalize_context_mode(runtime.get("contextMode", default["contextMode"]), default["contextMode"]),
         "directBaselineMode": normalize_direct_baseline_mode(runtime.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"]),
         "directProvider": normalize_provider_id(runtime.get("directProvider"), provider),
@@ -304,6 +315,9 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         ),
         "ollamaBaseUrl": normalize_ollama_base_url(runtime.get("ollamaBaseUrl", default["ollamaBaseUrl"])),
         "reasoningEffort": str(runtime.get("reasoningEffort", default["reasoningEffort"])).strip(),
+        "targetTimeouts": normalize_target_timeout_config(
+            runtime.get("targetTimeouts") if isinstance(runtime.get("targetTimeouts"), dict) else default["targetTimeouts"]
+        ),
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
         "maxOutputTokens": budget["maxOutputTokens"],
@@ -704,6 +718,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     workers = _parse_json_like(payload.get("workers"), existing_draft["workers"])
     summarizer_harness = _parse_json_like(payload.get("summarizerHarness"), existing_draft["summarizerHarness"])
     budget_targets = _parse_json_like(payload.get("budgetTargets"), existing_draft["budgetTargets"])
+    target_timeouts = _parse_json_like(payload.get("targetTimeouts"), existing_draft["targetTimeouts"])
     draft = normalize_draft_state(
         {
             **existing_draft,
@@ -715,12 +730,14 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "model": payload.get("model", existing_draft["model"]),
             "summarizerProvider": payload.get("summarizerProvider", existing_draft["summarizerProvider"]),
             "summarizerModel": payload.get("summarizerModel", existing_draft["summarizerModel"]),
+            "frontMode": payload.get("frontMode", existing_draft["frontMode"]),
             "contextMode": payload.get("contextMode", existing_draft["contextMode"]),
             "directBaselineMode": payload.get("directBaselineMode", existing_draft["directBaselineMode"]),
             "directProvider": payload.get("directProvider", existing_draft["directProvider"]),
             "directModel": payload.get("directModel", existing_draft["directModel"]),
             "ollamaBaseUrl": payload.get("ollamaBaseUrl", existing_draft["ollamaBaseUrl"]),
             "reasoningEffort": payload.get("reasoningEffort", existing_draft["reasoningEffort"]),
+            "targetTimeouts": target_timeouts if isinstance(target_timeouts, dict) else existing_draft["targetTimeouts"],
             "maxCostUsd": payload.get("maxCostUsd", existing_draft["maxCostUsd"]),
             "maxTotalTokens": payload.get("maxTotalTokens", existing_draft["maxTotalTokens"]),
             "maxOutputTokens": payload.get("maxOutputTokens", existing_draft["maxOutputTokens"]),
@@ -761,6 +778,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
     workers_input = _parse_json_like(payload.get("workers"), [])
     summarizer_harness_input = _parse_json_like(payload.get("summarizerHarness"), {})
     budget_targets_input = _parse_json_like(payload.get("budgetTargets"), {})
+    target_timeouts_input = _parse_json_like(payload.get("targetTimeouts"), {})
 
     execution_mode = str(payload.get("executionMode", "live")).strip()
     if execution_mode not in {"live", "mock"}:
@@ -773,6 +791,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         default_model_for_provider(summarizer_provider),
         summarizer_provider,
     )
+    front_mode = normalize_front_mode(payload.get("frontMode", default_front_mode()), default_front_mode())
     context_mode = normalize_context_mode(payload.get("contextMode", default_context_mode()), default_context_mode())
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     direct_provider = normalize_provider_id(str(payload.get("directProvider", provider)), provider)
@@ -794,6 +813,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
             "targets": budget_targets_input if isinstance(budget_targets_input, dict) else {},
         }
     )
+    target_timeouts = normalize_target_timeout_config(target_timeouts_input if isinstance(target_timeouts_input, dict) else {})
     research = normalize_research_config(
         {
             "enabled": payload.get("researchEnabled", default_research_config()["enabled"]),
@@ -846,12 +866,14 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
             "executionMode": execution_mode,
             "provider": provider,
             "model": model,
+            "frontMode": front_mode,
             "contextMode": context_mode,
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
             "directModel": direct_model,
             "ollamaBaseUrl": ollama_base_url,
             "reasoningEffort": reasoning_effort,
+            "targetTimeouts": target_timeouts,
             "budget": budget,
             "research": research,
             "localFiles": local_files,
@@ -892,6 +914,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         next_state["workers"] = _empty_worker_state_map(task_workers(task))
         next_state["directBaseline"] = None
         next_state["summary"] = None
+        next_state["arbiter"] = None
         next_state["memoryVersion"] = int(current.get("memoryVersion") or 0) + 1
         next_state["usage"] = storage.default_usage_state()
         next_state["loop"] = storage.default_loop_state()

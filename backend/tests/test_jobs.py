@@ -320,18 +320,23 @@ class LoopJobTests(unittest.TestCase):
             return {"target": target, "output": f"{target} complete", "exitCode": 0}
 
         with mock.patch("backend.app.jobs.runtime_execution.run_target", side_effect=fake_run_target):
-            result = jobs.execute_loop_job(job["jobId"], self.root)
+            with mock.patch("backend.app.jobs._launch_answer_now_sidecar") as launch_answer_now:
+                with mock.patch("backend.app.jobs._launch_direct_baseline_sidecar") as launch_direct_baseline:
+                    launch_answer_now.return_value = {"jobId": "dispatch-answer-now", "target": "answer_now"}
+                    launch_direct_baseline.return_value = {"jobId": "dispatch-direct-baseline", "target": "direct_baseline"}
+                    result = jobs.execute_loop_job(job["jobId"], self.root)
 
-        self.assertIn("direct_baseline", seen_targets)
+        self.assertNotIn("direct_baseline", seen_targets)
         self.assertIn("commander", seen_targets)
         self.assertIn("commander_review", seen_targets)
         self.assertIn("summarizer", seen_targets)
         self.assertIn("A", seen_targets)
         self.assertIn("B", seen_targets)
+        launch_answer_now.assert_called_once()
+        launch_direct_baseline.assert_called_once()
         self.assertEqual(result["requestedRounds"], 1)
         self.assertTrue(result["results"])
-        self.assertIn("parallelTargets", result["results"][0])
-        self.assertEqual(result["results"][0]["parallelTargets"][0]["target"], "direct_baseline")
+        self.assertNotIn("parallelTargets", result["results"][0])
 
 
 if __name__ == "__main__":

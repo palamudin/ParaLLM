@@ -350,8 +350,28 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             if not isinstance(replay_task, dict) or str(replay_task.get("taskId") or "") != task_id:
                 raise QAError("Python session replay did not restore the archived task.")
 
-            qa_print("Launching a mock eval through Python")
-            eval_run = request_json(
+            qa_print("Switching the active task into front-eval mode through Python")
+            runtime_eval = request_json(
+                backend_base + "/v1/runtime/apply",
+                method="POST",
+                form_data={
+                    "frontMode": "eval",
+                    "directBaselineMode": "both",
+                },
+                timeout=20,
+            )
+            active_task = runtime_eval.get("activeTask") if isinstance(runtime_eval.get("activeTask"), dict) else None
+            if not isinstance(active_task, dict):
+                runtime_eval = request_json(backend_base + "/v1/state", timeout=20)
+                active_task = runtime_eval.get("activeTask") if isinstance(runtime_eval.get("activeTask"), dict) else None
+            runtime_settings = active_task.get("runtime") if isinstance(active_task, dict) and isinstance(active_task.get("runtime"), dict) else {}
+            if str(runtime_settings.get("frontMode") or "") != "eval":
+                raise QAError("Python runtime apply did not switch the active task into front eval mode.")
+            if str(runtime_settings.get("directBaselineMode") or "") != "both":
+                raise QAError("Python runtime apply did not keep the compare baseline enabled in eval mode.")
+
+            qa_print("Checking that the retired isolated eval launcher now returns a migration message")
+            legacy_status, legacy_body = request(
                 backend_base + "/v1/evals/runs",
                 method="POST",
                 form_data={
@@ -363,10 +383,12 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
                 },
                 timeout=20,
             )
-            eval_run_id = require_text(eval_run.get("runId"), "eval runId")
-            selected_run = wait_for_eval_completion(backend_base, eval_run_id)
-            if str(selected_run.get("status") or "") != "completed":
-                raise QAError(f"Python eval run did not complete successfully: {json.dumps(selected_run, indent=2)}")
+            if legacy_status != 410 or "Front mode to Eval" not in legacy_body:
+                raise QAError(
+                    "Retired eval launcher did not return the expected migration response: "
+                    + f"HTTP {legacy_status} | {legacy_body}"
+                )
+            eval_run_id = "retired"
 
             history = request_json(backend_base + "/v1/history", timeout=20)
             dispatch_state = history.get("dispatch") if isinstance(history.get("dispatch"), dict) else {}
@@ -376,7 +398,7 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             preserved.cleanup_task_artifacts(task_id)
             if archive_file:
                 (root / "data" / "sessions" / archive_file).unlink(missing_ok=True)
-            if eval_run_id:
+            if eval_run_id and eval_run_id != "retired":
                 preserved.cleanup_eval_run(eval_run_id)
 
             return {

@@ -41,6 +41,13 @@ class RuntimeExecutionTests(unittest.TestCase):
         self.assertEqual(result["output"], "ok")
         run_target.assert_called_once_with("A", "task-1", {})
 
+    def test_arbiter_target_uses_local_arbiter_runner(self) -> None:
+        with mock.patch("backend.app.arbiter.run_current_task_arbiter", return_value={"output": "scored", "exitCode": 0}) as run_arbiter:
+            result = runtime_execution.run_target(self.runtime, "arbiter", "task-9", {"force": True})
+
+        self.assertEqual(result["output"], "scored")
+        run_arbiter.assert_called_once_with(self.runtime, "task-9", {"force": True})
+
     def test_runtime_service_backend_calls_http_service(self) -> None:
         env = {
             "LOOP_RUNTIME_EXECUTION_BACKEND": "runtime_service",

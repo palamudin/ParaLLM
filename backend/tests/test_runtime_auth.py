@@ -13,8 +13,10 @@ from runtime.engine import LoopRuntime, OpenAIResult, RuntimeErrorWithCode, read
 
 
 class _FakeHTTPResponse:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, headers: dict | None = None, status: int = 200) -> None:
         self.payload = payload
+        self.headers = headers or {}
+        self.status = status
 
     def __enter__(self) -> "_FakeHTTPResponse":
         return self
@@ -231,6 +233,65 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(result.auth_failover_history[0]["nextKeySlot"], 2)
         self.assertEqual(seen_auth_headers, ["Bearer sk-first", "Bearer sk-second"])
 
+    def test_invoke_openai_json_captures_provider_trace_headers(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        response_payload = {
+            "id": "resp-trace",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps({"answer": "ok"}),
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch(
+                "urllib.request.urlopen",
+                return_value=_FakeHTTPResponse(
+                    response_payload,
+                    headers={
+                        "x-request-id": "req_trace_123",
+                        "openai-processing-ms": "321",
+                        "x-ratelimit-remaining-requests": "4999",
+                        "x-ratelimit-remaining-tokens": "180000",
+                    },
+                ),
+            ):
+                result = runtime.invoke_openai_json(
+                    api_key="sk-trace",
+                    model="gpt-5-mini",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say ok.",
+                    schema_name="trace_test",
+                    schema=schema,
+                    target_kind="commander",
+                )
+
+        self.assertEqual(result.parsed, {"answer": "ok"})
+        self.assertIsNotNone(result.provider_trace)
+        self.assertEqual(result.provider_trace["providerRequestId"], "req_trace_123")
+        self.assertEqual(result.provider_trace["providerProcessingMs"], 321)
+        self.assertEqual(result.provider_trace["rateLimitRequestsRemaining"], 4999)
+        self.assertEqual(result.provider_trace["rateLimitTokensRemaining"], 180000)
+        self.assertEqual(result.provider_trace["stage"], "completed")
+        self.assertEqual(result.provider_trace["httpStatus"], 200)
+
     def test_invoke_openai_json_enables_server_input_autocompress(self) -> None:
         schema = {
             "type": "object",
@@ -276,6 +337,52 @@ class RuntimeAuthTests(unittest.TestCase):
 
         self.assertEqual(result.parsed, {"answer": "ok"})
         self.assertEqual(seen_bodies[0]["truncation"], "auto")
+
+    def test_invoke_openai_json_uses_configured_request_timeout(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        seen_timeouts: list[int] = []
+        response_payload = {
+            "id": "resp-timeout-check",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps({"answer": "ok"}),
+                        }
+                    ],
+                }
+            ],
+        }
+
+        def fake_urlopen(request, timeout=0):
+            seen_timeouts.append(int(timeout))
+            return _FakeHTTPResponse(response_payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                runtime.invoke_openai_json(
+                    api_key="sk-live",
+                    model="gpt-5-mini",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say ok.",
+                    schema_name="timeout_test",
+                    schema=schema,
+                    target_kind="worker",
+                    request_timeout_seconds=42,
+                )
+
+        self.assertEqual(seen_timeouts, [42])
 
     def test_prompt_text_locally_compacts_when_provider_lacks_server_autocompress(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -374,6 +481,7 @@ class RuntimeAuthTests(unittest.TestCase):
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
                 "ollamaBaseUrl": "http://192.168.0.26:11434/api",
+                "targetTimeouts": {"commander": 95, "workerDefault": 115, "workers": {"A": 70}, "commanderReview": 210, "summarizer": 230},
             },
         }
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -392,6 +500,11 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(direct_runtime["provider"], "anthropic")
         self.assertEqual(direct_runtime["model"], "claude-sonnet-4-20250514")
         self.assertEqual(runtime_config["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
+        self.assertEqual(runtime_config["targetTimeouts"]["commander"], 95)
+        self.assertEqual(runtime_config["targetTimeouts"]["workerDefault"], 115)
+        self.assertEqual(runtime_config["targetTimeouts"]["workers"]["A"], 70)
+        self.assertEqual(runtime_config["requestTimeoutSeconds"], 115)
+        self.assertEqual(direct_runtime["requestTimeoutSeconds"], 150)
         self.assertEqual(task_projection["runtime"]["contextMode"], "full")
         self.assertEqual(task_projection["runtime"]["directBaselineMode"], "both")
         self.assertEqual(task_projection["runtime"]["directProvider"], "anthropic")
@@ -488,6 +601,237 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertIn("Main-thread full context is active.", captured["instructions"])
         self.assertIn("Light Workers mode", captured["instructions"])
         self.assertIn("Task brief:", captured["input_text"])
+
+    def test_commander_review_packet_drops_worker_lineup(self) -> None:
+        captured: dict[str, str] = {}
+        task = {
+            "taskId": "task-1",
+            "objective": "Contain risk without overreacting.",
+            "constraints": ["Keep user impact low."],
+            "sessionContext": "The customer wants an answer before business hours.",
+            "workers": [
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5-mini"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5-mini"},
+            ],
+        }
+        runtime_config = {
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+            "contextMode": "weighted",
+            "localFiles": {"enabled": False},
+            "githubTools": {"enabled": False},
+        }
+        workers = task["workers"]
+        commander_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Use the smallest responsible containment step first.",
+            "whyThisDirection": "It keeps service alive while reducing blast radius.",
+            "questionsForWorkers": [],
+            "pressurePoints": [],
+            "keepCourseIf": [],
+            "changeCourseIf": [],
+            "uncertainty": [],
+            "suggestedLaneTypes": [],
+            "suggestedLaneReason": "",
+            "constraintsSeen": ["Keep user impact low."],
+        }
+        prior_summary = {"taskId": "task-1", "round": 1, "recommendedNextAction": "Start with reversible containment."}
+        worker_state = {
+            "A": {
+                "workerId": "A",
+                "label": "Proponent",
+                "role": "utility",
+                "focus": "execution",
+                "step": 1,
+                "observation": "A narrow containment step keeps service usable.",
+                "benefits": ["Low blast radius."],
+                "detriments": ["May not stop all spread."],
+                "invalidatingCircumstances": ["If lateral movement is already active."],
+                "uncertainty": ["Scope of compromise is still incomplete."],
+                "evidenceLedger": [{"claim": "Containment is reversible.", "supportLevel": "supported", "note": "Rollback path is known.", "sourceUrls": []}],
+                "evidenceGaps": ["Need host-level confirmation."],
+            },
+            "B": {
+                "workerId": "B",
+                "label": "Sceptic",
+                "role": "adversarial",
+                "focus": "failure modes",
+                "step": 1,
+                "observation": "Waiting risks wider spread.",
+                "benefits": ["Higher certainty if isolated now."],
+                "detriments": ["Short-term user impact increases."],
+                "invalidatingCircumstances": ["If containment takes too long to apply."],
+                "uncertainty": ["Unknown whether persistence is active."],
+                "evidenceLedger": [{"claim": "Delay increases exposure.", "supportLevel": "mixed", "note": "Depends on current foothold.", "sourceUrls": []}],
+                "evidenceGaps": ["Need EDR confirmation."],
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            line_catalog = runtime.build_summary_line_catalog(worker_state, workers, max_items_per_worker=8)
+
+            def fake_invoke_provider_json(**kwargs):
+                captured["instructions"] = kwargs["instructions"]
+                captured["input_text"] = kwargs["input_text"]
+                parsed = runtime.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
+                return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                runtime.new_live_commander_review(
+                    api_key="sk-test",
+                    auth_assignments=None,
+                    task=task,
+                    commander_checkpoint=commander_checkpoint,
+                    prior_summary=prior_summary,
+                    workers=workers,
+                    worker_state=worker_state,
+                    runtime=runtime_config,
+                    line_catalog=line_catalog,
+                )
+
+        self.assertIn("Task brief:", captured["input_text"])
+        self.assertNotIn("Worker lineup:", captured["input_text"])
+
+    def test_summarizer_packet_drops_worker_lineup_and_lane_catalog_list(self) -> None:
+        captured: dict[str, str] = {}
+        task = {
+            "taskId": "task-1",
+            "objective": "Contain risk without overreacting.",
+            "constraints": ["Keep user impact low."],
+            "sessionContext": "The customer wants an answer before business hours.",
+            "workers": [
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5-mini"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5-mini"},
+            ],
+        }
+        runtime_config = {
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+            "contextMode": "weighted",
+            "localFiles": {"enabled": False},
+            "githubTools": {"enabled": False},
+        }
+        workers = task["workers"]
+        commander_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Use the smallest responsible containment step first.",
+            "whyThisDirection": "It keeps service alive while reducing blast radius.",
+            "questionsForWorkers": [],
+            "pressurePoints": [],
+            "keepCourseIf": [],
+            "changeCourseIf": [],
+            "uncertainty": [],
+            "suggestedLaneTypes": [],
+            "suggestedLaneReason": "",
+            "constraintsSeen": ["Keep user impact low."],
+        }
+        commander_review_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first, but prepare isolation if spread is confirmed.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Start with the smallest reversible containment step, then escalate if telemetry confirms spread.",
+            "whyThisDirection": "It balances service continuity with containment speed.",
+            "controlAudit": {
+                "leadDraft": "Start with the smallest reversible containment step.",
+                "integrationQuestion": "Does the pressure materially change correctness or just sharpen guardrails?",
+                "courseDecision": "qualify",
+                "courseDecisionReason": "Pressure tightened the guardrails but did not reverse the direction.",
+                "contributionAssessments": [],
+                "acceptedAdversarialPoints": ["Escalate quickly if spread is confirmed."],
+                "rejectedAdversarialPoints": [],
+                "heldOutConcerns": [],
+                "selfCheck": "The revised draft still answers the user directly.",
+            },
+            "dynamicLaneDecision": {
+                "shouldSpawn": False,
+                "suggestedLaneTypes": [],
+                "reason": "",
+                "requiredPressure": "",
+                "temperature": "",
+                "instruction": "",
+            },
+            "remainingUncertainty": ["Need confirmation on host spread."],
+            "sourceWorkers": ["A", "B"],
+        }
+        worker_state = {
+            "A": {
+                "workerId": "A",
+                "label": "Proponent",
+                "role": "utility",
+                "focus": "execution",
+                "step": 1,
+                "observation": "A narrow containment step keeps service usable.",
+                "benefits": ["Low blast radius."],
+                "detriments": ["May not stop all spread."],
+                "invalidatingCircumstances": ["If lateral movement is already active."],
+                "uncertainty": ["Scope of compromise is still incomplete."],
+                "evidenceLedger": [{"claim": "Containment is reversible.", "supportLevel": "supported", "note": "Rollback path is known.", "sourceUrls": []}],
+                "evidenceGaps": ["Need host-level confirmation."],
+            },
+            "B": {
+                "workerId": "B",
+                "label": "Sceptic",
+                "role": "adversarial",
+                "focus": "failure modes",
+                "step": 1,
+                "observation": "Waiting risks wider spread.",
+                "benefits": ["Higher certainty if isolated now."],
+                "detriments": ["Short-term user impact increases."],
+                "invalidatingCircumstances": ["If containment takes too long to apply."],
+                "uncertainty": ["Unknown whether persistence is active."],
+                "evidenceLedger": [{"claim": "Delay increases exposure.", "supportLevel": "mixed", "note": "Depends on current foothold.", "sourceUrls": []}],
+                "evidenceGaps": ["Need EDR confirmation."],
+            },
+        }
+        vetting_config = {"enabled": True}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            line_catalog = runtime.build_summary_line_catalog(worker_state, workers, max_items_per_worker=10)
+
+            def fake_invoke_provider_json(**kwargs):
+                captured["instructions"] = kwargs["instructions"]
+                captured["input_text"] = kwargs["input_text"]
+                parsed = runtime.new_mock_summary(
+                    task,
+                    commander_checkpoint,
+                    commander_review_checkpoint,
+                    workers,
+                    worker_state,
+                    vetting_config,
+                    line_catalog,
+                )
+                return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                runtime.new_live_summary(
+                    api_key="sk-test",
+                    auth_assignments=None,
+                    task=task,
+                    commander_checkpoint=commander_checkpoint,
+                    commander_review_checkpoint=commander_review_checkpoint,
+                    workers=workers,
+                    worker_state=worker_state,
+                    runtime=runtime_config,
+                    vetting_config=vetting_config,
+                    line_catalog=line_catalog,
+                )
+
+        self.assertIn("Task brief:", captured["input_text"])
+        self.assertNotIn("Worker lineup:", captured["input_text"])
+        self.assertNotIn("Known adversarial lane types:", captured["input_text"])
 
     def test_full_workers_mode_controls_worker_packet_scope(self) -> None:
         task = {

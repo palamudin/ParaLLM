@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ParaLLM</title>
+  <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
   <link rel="stylesheet" href="assets/app.css?v=20260422-1417" />
   <script src="assets/vendor/jquery/jquery-3.7.1.min.js"></script>
@@ -40,12 +41,6 @@
             <button class="nav-btn sidebar-link active" data-view="home" data-short="H">
               <span class="nav-btn-mark">H</span>
               <span class="sidebar-label sidebar-copy collapse collapse-horizontal show"><span class="nav-btn-text">Home</span></span>
-            </button>
-          </li>
-          <li class="sidebar-item">
-            <button class="nav-btn sidebar-link" data-view="eval" data-short="E">
-              <span class="nav-btn-mark">E</span>
-              <span class="sidebar-label sidebar-copy collapse collapse-horizontal show"><span class="nav-btn-text">Eval</span></span>
             </button>
           </li>
           <li class="sidebar-item">
@@ -227,21 +222,21 @@
 
                 <div class="topology-canvas" aria-label="Agentic architecture map">
                   <div class="topology-grid"></div>
-                  <div class="topology-node topology-node-commander is-active">
+                  <div id="topologyNodeCommander" class="topology-node topology-node-commander is-active">
                     <span class="topology-node-label">Commander</span>
-                    <span class="topology-node-meta">lead draft / review pass</span>
+                    <span id="topologyMetaCommander" class="topology-node-meta">lead draft / review pass</span>
                   </div>
-                  <div class="topology-node topology-node-workers is-waiting">
+                  <div id="topologyNodeWorkers" class="topology-node topology-node-workers is-waiting">
                     <span class="topology-node-label">Workers</span>
-                    <span class="topology-node-meta">adversarial lanes</span>
+                    <span id="topologyMetaWorkers" class="topology-node-meta">adversarial lanes</span>
                   </div>
-                  <div class="topology-node topology-node-summarizer is-ready">
+                  <div id="topologyNodeSummarizer" class="topology-node topology-node-summarizer is-ready">
                     <span class="topology-node-label">Summarizer</span>
-                    <span class="topology-node-meta">single-voice answer</span>
+                    <span id="topologyMetaSummarizer" class="topology-node-meta">single-voice answer</span>
                   </div>
-                  <div class="topology-node topology-node-tools is-ready">
+                  <div id="topologyNodeTools" class="topology-node topology-node-tools is-ready">
                     <span class="topology-node-label">Tool plane</span>
-                    <span class="topology-node-meta">local + GitHub reads</span>
+                    <span id="topologyMetaTools" class="topology-node-meta">local + GitHub reads</span>
                   </div>
 
                   <span class="topology-edge edge-commander-workers" aria-hidden="true"></span>
@@ -408,6 +403,19 @@
                     <select id="executionMode">
                       <option value="live" selected>Live API</option>
                       <option value="mock">Mock</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div class="label-help-row">
+                      <label for="frontMode">Front mode</label>
+                      <div class="inline-help">
+                        <button type="button" class="inline-help-trigger" aria-label="Show front mode guidance">Info</button>
+                        <div class="inline-help-popup">`Full` keeps the standard single conversation view. `Eval` runs the pressurized answer and the single-thread baseline through the front together, then asks an external arbiter to score the finished pair.</div>
+                      </div>
+                    </div>
+                    <select id="frontMode">
+                      <option value="full" selected>Full</option>
+                      <option value="eval">Eval</option>
                     </select>
                   </div>
                   <div>
@@ -694,137 +702,6 @@
                   </div>
                 </div>
                 <pre id="events">No data.</pre>
-              </section>
-            </div>
-          </details>
-        </div>
-      </section>
-
-      <section class="workspace-view" data-view="eval">
-        <div class="eval-layout workspace-view-stack">
-          <details class="view-group-collapsible" open>
-            <summary class="view-group-summary">
-              <div class="view-group-summary-copy">
-                <div class="panel-kicker">Eval</div>
-                <h3>Run setup</h3>
-              </div>
-              <span class="view-group-summary-caret" aria-hidden="true">v</span>
-            </summary>
-            <div class="view-group-body eval-group-grid eval-group-grid-single">
-              <section class="panel">
-                <div class="panel-head compact">
-                  <div>
-                    <div class="panel-kicker">Eval</div>
-                    <h3>Run launcher</h3>
-                  </div>
-                  <button id="startEvalRun">Start Eval</button>
-                </div>
-                <div class="settings-grid eval-launch-grid">
-                  <div>
-                    <label for="evalSuiteSelect">Suite</label>
-                    <select id="evalSuiteSelect"></select>
-                  </div>
-                  <div>
-                    <label for="evalReplicates">Replicates</label>
-                    <input id="evalReplicates" type="number" min="1" max="5" value="1" />
-                  </div>
-                  <div>
-                    <label for="evalLoopSweep">Loop sweep</label>
-                    <input id="evalLoopSweep" type="text" value="1" placeholder="1,2,3" />
-                  </div>
-                </div>
-                <div class="form-section">
-                  <label>Arms</label>
-                  <div id="evalArmList" class="eval-arm-list">
-                    <div class="review-empty">Loading eval arms...</div>
-                  </div>
-                  <div class="section-help-row">
-                    <div class="inline-help">
-                      <button type="button" class="inline-help-trigger" aria-label="Show eval catalog guidance">Info</button>
-                      <div id="evalCatalogNote" class="inline-help-popup">Eval catalogs are loaded from isolated local manifests in <code>data/evals/</code>.</div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section class="panel">
-                <div class="panel-head compact">
-                  <div>
-                    <div class="panel-kicker">Eval</div>
-                    <h3>Recent runs</h3>
-                  </div>
-                </div>
-                <div id="evalRunHistory" class="review-empty">No eval runs yet.</div>
-              </section>
-            </div>
-          </details>
-
-          <details class="view-group-collapsible" open>
-            <summary class="view-group-summary">
-              <div class="view-group-summary-copy">
-                <div class="panel-kicker">Eval</div>
-                <h3>Results and artifact review</h3>
-              </div>
-              <span class="view-group-summary-caret" aria-hidden="true">v</span>
-            </summary>
-            <div class="view-group-body eval-group-grid eval-group-grid-single">
-              <section class="panel">
-                <div class="panel-head compact">
-                  <div>
-                    <div class="panel-kicker">Eval</div>
-                    <h3>Live checkpoints</h3>
-                  </div>
-                </div>
-                <div id="evalCheckpointList" class="footer-checkpoint-list">
-                  <div class="footer-checkpoint-empty">No checkpoints yet.</div>
-                </div>
-              </section>
-
-              <section class="panel">
-                <div class="panel-head compact">
-                  <div>
-                    <div class="panel-kicker">Eval</div>
-                    <h3>Case results</h3>
-                  </div>
-                </div>
-                <div id="evalRunDetail" class="review-empty">Pick a run to inspect case-by-case scoring and artifacts.</div>
-              </section>
-
-              <section class="panel">
-                <div class="panel-head">
-                  <div>
-                    <div class="panel-kicker">Eval</div>
-                    <div class="title-help-row">
-                      <h3>Artifact review</h3>
-                      <div class="inline-help">
-                        <button type="button" class="inline-help-trigger" aria-label="Show eval artifact review guidance">Info</button>
-                        <div class="inline-help-popup">Compare isolated eval artifacts and score files side by side without mixing them into Review.</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="artifact-review-grid">
-                  <div class="artifact-pane">
-                    <label for="evalArtifactLeftSelect">Left artifact</label>
-                    <select id="evalArtifactLeftSelect"></select>
-                    <div id="evalArtifactLeftMeta" class="artifact-meta">No artifact selected.</div>
-                    <div id="evalArtifactLeftVisual" class="eval-artifact-visual review-empty">No artifact selected.</div>
-                    <details class="artifact-raw-toggle">
-                      <summary>Raw JSON</summary>
-                      <pre id="evalArtifactLeftContent">No artifact selected.</pre>
-                    </details>
-                  </div>
-                  <div class="artifact-pane">
-                    <label for="evalArtifactRightSelect">Right artifact</label>
-                    <select id="evalArtifactRightSelect"></select>
-                    <div id="evalArtifactRightMeta" class="artifact-meta">No artifact selected.</div>
-                    <div id="evalArtifactRightVisual" class="eval-artifact-visual review-empty">No artifact selected.</div>
-                    <details class="artifact-raw-toggle">
-                      <summary>Raw JSON</summary>
-                      <pre id="evalArtifactRightContent">No artifact selected.</pre>
-                    </details>
-                  </div>
-                </div>
               </section>
             </div>
           </details>

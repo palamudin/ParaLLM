@@ -11,17 +11,21 @@ from runtime.engine import (
     coerce_bool,
     default_context_mode,
     default_direct_baseline_mode,
+    default_front_mode,
     default_model_for_provider,
     default_ollama_base_url,
+    default_target_timeout_config,
     normalize_budget_config,
     normalize_context_mode,
     normalize_direct_baseline_mode,
     normalize_dynamic_spinup_config,
+    normalize_front_mode,
     normalize_github_tool_config,
     normalize_model_id,
     normalize_ollama_base_url,
     normalize_provider_id,
     normalize_research_config,
+    normalize_target_timeout_config,
     normalize_vetting_config,
     normalize_worker_definition,
     summarizer_config,
@@ -186,10 +190,14 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         str((active_task.get("summarizer") or {}).get("provider") or current_provider),
         current_provider,
     )
+    current_front_mode = normalize_front_mode(runtime_config.get("frontMode", default_front_mode()), default_front_mode())
     current_context_mode = normalize_context_mode(runtime_config.get("contextMode", default_context_mode()), default_context_mode())
     current_direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     current_direct_provider = normalize_provider_id(str(runtime_config.get("directProvider") or current_provider), current_provider)
     current_ollama_base_url = normalize_ollama_base_url(runtime_config.get("ollamaBaseUrl", default_ollama_base_url()))
+    current_target_timeouts = normalize_target_timeout_config(
+        runtime_config.get("targetTimeouts") if isinstance(runtime_config.get("targetTimeouts"), dict) else default_target_timeout_config()
+    )
     provider = normalize_provider_id(str(payload.get("provider") or current_provider), current_provider)
     summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider") or current_summarizer_provider), provider)
     model = normalize_model_id(
@@ -202,6 +210,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         default_model_for_provider(summarizer_provider),
         summarizer_provider,
     )
+    front_mode = normalize_front_mode(payload.get("frontMode", current_front_mode), current_front_mode)
     context_mode = normalize_context_mode(payload.get("contextMode", current_context_mode), current_context_mode)
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", current_direct_baseline_mode), current_direct_baseline_mode)
     direct_provider = normalize_provider_id(str(payload.get("directProvider") or current_direct_provider), provider)
@@ -211,6 +220,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         direct_provider,
     )
     ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", current_ollama_base_url))
+    target_timeouts_input = control._parse_json_like(payload.get("targetTimeouts"), current_target_timeouts)
+    target_timeouts = normalize_target_timeout_config(
+        target_timeouts_input if isinstance(target_timeouts_input, dict) else current_target_timeouts
+    )
     reasoning_effort = str(payload.get("reasoningEffort", current_reasoning_effort)).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = current_reasoning_effort
@@ -271,11 +284,13 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime = dict(task.get("runtime") if isinstance(task.get("runtime"), dict) else {})
         task_runtime["provider"] = provider
         task_runtime["model"] = model
+        task_runtime["frontMode"] = front_mode
         task_runtime["contextMode"] = context_mode
         task_runtime["directBaselineMode"] = direct_baseline_mode
         task_runtime["directProvider"] = direct_provider
         task_runtime["directModel"] = direct_model
         task_runtime["ollamaBaseUrl"] = ollama_base_url
+        task_runtime["targetTimeouts"] = target_timeouts
         task_runtime["reasoningEffort"] = reasoning_effort
         task_runtime["budget"] = budget
         task_runtime["research"] = research
@@ -290,6 +305,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         summary["model"] = summarizer_model
         task["summarizer"] = summary
         state_next["activeTask"] = task
+        state_next["arbiter"] = None
         existing_draft = control.normalize_draft_state(
             current.get("draft") if isinstance(current.get("draft"), dict) else control.build_draft_from_task(task)
         )
@@ -300,11 +316,13 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "model": model,
                 "summarizerProvider": summarizer_provider,
                 "summarizerModel": summarizer_model,
+                "frontMode": front_mode,
                 "contextMode": context_mode,
                 "directBaselineMode": direct_baseline_mode,
                 "directProvider": direct_provider,
                 "directModel": direct_model,
                 "ollamaBaseUrl": ollama_base_url,
+                "targetTimeouts": target_timeouts,
                 "reasoningEffort": reasoning_effort,
                 "maxTotalTokens": budget["maxTotalTokens"],
                 "maxCostUsd": budget["maxCostUsd"],
@@ -335,11 +353,13 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "taskId": updated_state["activeTask"].get("taskId"),
             "workerModel": model,
             "summarizerModel": summarizer_model,
+            "frontMode": front_mode,
             "contextMode": context_mode,
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
             "directModel": direct_model,
             "ollamaBaseUrl": ollama_base_url,
+            "targetTimeouts": target_timeouts,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
             "research": research,
@@ -357,11 +377,13 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "workerModel": model,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
+        "frontMode": front_mode,
         "contextMode": context_mode,
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
         "directModel": direct_model,
         "ollamaBaseUrl": ollama_base_url,
+        "targetTimeouts": target_timeouts,
         "reasoningEffort": reasoning_effort,
         "budget": budget,
         "research": research,

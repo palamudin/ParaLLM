@@ -4,11 +4,10 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from runtime.engine import normalize_model_id
+from runtime.engine import RuntimeErrorWithCode
 
 from . import metadata, storage
 
@@ -68,80 +67,7 @@ def launch_eval_runner(run_id: str, root: Optional[Path] = None) -> None:
 
 
 def start_eval_run(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
-    paths = storage.project_paths(root)
-    ensure_eval_paths(paths)
-
-    suite_id = str(payload.get("suiteId") or "").strip()
-    suite = read_manifest_by_id(paths.eval_suites, suite_id, "suiteId")
-    if not suite:
-        raise ValueError("Choose a valid eval suite first.")
-
-    arm_ids_raw = payload.get("armIds", [])
-    if isinstance(arm_ids_raw, str):
-        try:
-            parsed = json.loads(arm_ids_raw)
-        except json.JSONDecodeError:
-            parsed = [part.strip() for part in arm_ids_raw.split(",")]
-        arm_ids = parsed if isinstance(parsed, list) else []
-    else:
-        arm_ids = arm_ids_raw if isinstance(arm_ids_raw, list) else []
-    arm_ids = [str(value).strip() for value in arm_ids if str(value).strip()]
-    arm_ids = list(dict.fromkeys(arm_ids))
-    if not arm_ids:
-        raise ValueError("Choose at least one eval arm.")
-    for arm_id in arm_ids:
-        if not read_manifest_by_id(paths.eval_arms, arm_id, "armId"):
-            raise ValueError("Unknown eval arm: " + arm_id)
-
-    replicates = max(1, min(5, int(payload.get("replicates") or 1)))
-    loop_sweep_raw = str(payload.get("loopSweep") or "1").strip()
-    loop_sweep: list[int] = []
-    for chunk in [piece.strip() for piece in loop_sweep_raw.replace(",", " ").split()]:
-        if not chunk:
-            continue
-        if not chunk.isdigit():
-            raise ValueError("Loop sweep must contain only integers such as 1,2,3.")
-        value = max(1, min(12, int(chunk)))
-        if value not in loop_sweep:
-            loop_sweep.append(value)
-    if not loop_sweep:
-        loop_sweep = [1]
-
-    judge_model = normalize_model_id(str(payload.get("judgeModel") or "gpt-5.4").strip(), "gpt-5.4")
-    run_id = "eval-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(8).hex()[:6]
-    run = {
-        "runId": run_id,
-        "status": "queued",
-        "createdAt": storage.utc_now(),
-        "updatedAt": storage.utc_now(),
-        "startedAt": None,
-        "completedAt": None,
-        "suiteId": suite_id,
-        "armIds": arm_ids,
-        "replicates": replicates,
-        "loopSweep": loop_sweep,
-        "judgeModel": judge_model,
-        "current": None,
-        "summary": None,
-        "artifactIndex": {},
-        "cases": [],
-        "error": None,
-    }
-    write_eval_run(paths, run)
-    try:
-        launch_eval_runner(run_id, paths.root)
-    except Exception as exc:  # noqa: BLE001
-        run["status"] = "error"
-        run["completedAt"] = storage.utc_now()
-        run["error"] = str(exc)
-        write_eval_run(paths, run)
-        raise
-    return {
-        "message": "Eval run queued.",
-        "runId": run_id,
-        "suiteId": suite_id,
-        "armIds": arm_ids,
-        "replicates": replicates,
-        "loopSweep": loop_sweep,
-        "judgeModel": judge_model,
-    }
+    raise RuntimeErrorWithCode(
+        "Legacy batch eval launch has moved to Home. Set Front mode to Eval and run from the main composer.",
+        410,
+    )
