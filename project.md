@@ -689,6 +689,40 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - evals make it obvious when extra disagreement earns its spend and when it does not
   - the product can explain high-burn modes honestly instead of pretending they are cheap
 
+### Milestone 9: Canvas-Native Scheduling and Provider-Neutral Async Execution
+
+- Goal:
+  - Separate `live`, `eval`, and `judge` into true independent run lanes and replace the current partly-local orchestration with a provider-neutral async scheduler
+- Why now:
+  - the front canvas split is now real enough to use, but the backend still treats `live` as one global `activeTask`
+  - eval and judge already run as isolated workspaces, while live still owns the special-case state path
+  - worker fan-out is parallel inside one loop, but there is still no shared scheduler that can safely launch multiple runnable jobs across canvases or across provider key pools
+- Scope:
+  - move `live` off the single-global `activeTask` model toward the same first-class run identity that `eval` and `judge` now use
+  - introduce a unified runnable work-item queue for:
+    - live runs
+    - eval compare runs
+    - judge suite runs
+    - sidecars such as baseline, partial answer, and arbiter
+  - add provider-neutral key leasing so concurrent vendor calls use as many keys as are available without pretending one slot can safely serve infinite in-flight requests
+  - make dispatch promotion dependency-aware and lease-aware, so ready work can launch concurrently when:
+    - prerequisites are satisfied
+    - provider/model capacity is available
+    - key leases are available
+  - surface queue state in the shell as operator-visible run status:
+    - waiting on dependency
+    - waiting on key
+    - running
+    - retrying
+    - degraded
+  - keep provider adapters below the scheduler boundary so ParaLLM does not become a per-provider orchestration product
+- Acceptance criteria:
+  - `live`, `eval`, and `judge` can run at the same time without sharing one mutable task slot
+  - the scheduler can launch multiple runnable jobs concurrently across canvases instead of only inside one loop round
+  - provider key pools are leased explicitly and released explicitly, with visible queueing when demand exceeds available keys
+  - provider-specific transport behavior stays behind adapters while the scheduler contract remains shared
+  - operator surfaces can explain why a job is idle instead of looking dead
+
 ## Notes
 
 - `Auth.txt` now acts as the canonical local fallback API key pool for testing and uses provider prefixes like `openai:`, `ant:`, `xai:`, and `min:`. Older `Auth.*.txt` files remain compatibility fallback only. None of them may be copied into logs, responses, or version control.

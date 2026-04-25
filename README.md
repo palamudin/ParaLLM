@@ -545,6 +545,9 @@ Next milestone track:
   - add Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
 - `Review Surface and Frontend Architecture`
   - improve review visualization and split the frontend into more maintainable modules
+- `Canvas-Native Scheduling and Provider-Neutral Async Execution`
+  - separate `live`, `eval`, and `judge` into first-class run lanes instead of one special live task plus isolated side systems
+  - add a provider-neutral async scheduler that can dispatch multiple runnable jobs concurrently while leasing keys safely from each provider pool
 - `Cost Governance Without Betraying the Thesis`
   - keep burn visible and enforceable without starving adversarial lanes of full user context
 
