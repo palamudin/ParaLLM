@@ -139,6 +139,7 @@ class ControlPlaneTests(unittest.TestCase):
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
                 "frontMode": "eval",
+                "engineVersion": "v2",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
@@ -167,6 +168,7 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["model"], "qwen3-coder")
         self.assertEqual(draft["summarizerProvider"], "openai")
         self.assertEqual(draft["frontMode"], "eval")
+        self.assertEqual(draft["engineVersion"], "v2")
         self.assertEqual(draft["contextMode"], "full")
         self.assertEqual(draft["directBaselineMode"], "both")
         self.assertEqual(draft["directProvider"], "anthropic")
@@ -207,6 +209,7 @@ class ControlPlaneTests(unittest.TestCase):
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
                 "frontMode": "eval",
+                "engineVersion": "v2",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
@@ -231,6 +234,7 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
         self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
         self.assertEqual(state["activeTask"]["runtime"]["frontMode"], "eval")
+        self.assertEqual(state["activeTask"]["runtime"]["engineVersion"], "v2")
         self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")

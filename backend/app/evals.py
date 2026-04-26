@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from runtime.engine import RuntimeErrorWithCode
 from runtime.eval_runner import validate_arm_manifest, validate_suite_manifest
 
-from . import metadata, storage
+from . import control, jobs, metadata, storage
 
 
 def ensure_eval_paths(paths: storage.Paths) -> None:
@@ -246,6 +246,8 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
         "type": "steered",
         "runtime": {
             "executionMode": execution_mode,
+            "engineVersion": str(payload.get("engineVersion") or "v1").strip() or "v1",
+            "engineGraph": payload.get("engineGraph") if isinstance(payload.get("engineGraph"), dict) else None,
             "contextMode": str(payload.get("contextMode") or "weighted").strip() or "weighted",
             "directBaselineMode": "both",
             "provider": provider,
@@ -267,6 +269,181 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
         },
         "workers": _front_worker_list(payload),
     }
+
+
+def _build_front_live_task_payload(payload: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    task_payload = dict(payload)
+    task_payload["frontMode"] = "live"
+    task_payload["liveRunId"] = run_id
+    return task_payload
+
+
+def _build_front_live_run(paths: storage.Paths, run_id: str, task: Dict[str, Any], loop_job_id: Optional[str]) -> Dict[str, Any]:
+    runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    workers = task.get("workers") if isinstance(task.get("workers"), list) else []
+    return {
+        "runId": run_id,
+        "suiteId": f"live-{task.get('taskId')}",
+        "armIds": [],
+        "replicates": 1,
+        "loopSweep": [max(1, int(((task.get("preferredLoop") or {}) if isinstance(task.get("preferredLoop"), dict) else {}).get("rounds") or 1))],
+        "judgeModel": None,
+        "status": "queued",
+        "createdAt": storage.utc_now(),
+        "updatedAt": storage.utc_now(),
+        "source": "front",
+        "canvas": "live",
+        "taskId": str(task.get("taskId") or ""),
+        "loopJobId": str(loop_job_id or "").strip() or None,
+        "launcher": {
+            "kind": "front-live",
+            "label": str(task.get("objective") or "Live run").strip()[:120] or "Live run",
+        },
+        "live": {
+            "objective": str(task.get("objective") or "").strip(),
+            "engineVersion": str(runtime.get("engineVersion") or "v1"),
+            "engineGraph": runtime.get("engineGraph") if isinstance(runtime.get("engineGraph"), dict) else None,
+            "provider": str(runtime.get("provider") or ""),
+            "model": str(runtime.get("model") or ""),
+            "summarizerProvider": str((task.get("summarizer") or {}).get("provider") or ""),
+            "summarizerModel": str((task.get("summarizer") or {}).get("model") or ""),
+            "workerCount": len(workers),
+            "workers": [
+                {
+                    "id": worker.get("id"),
+                    "type": worker.get("type"),
+                    "label": worker.get("label"),
+                    "model": worker.get("model"),
+                }
+                for worker in workers
+                if isinstance(worker, dict)
+            ],
+        },
+        "summary": {
+            "caseCount": 1,
+            "variantCount": 1,
+            "errorCount": 0,
+            "totalTokens": 0,
+            "estimatedCostUsd": 0.0,
+            "averageQuality": {},
+            "averageAnswerHealth": {},
+            "averageControl": {},
+            "variants": [],
+        },
+    }
+
+
+def sync_front_live_run(run_id: str, root: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    paths = storage.project_paths(root)
+    run = storage.read_eval_run(paths, run_id)
+    if not isinstance(run, dict):
+        return None
+    if str(run.get("canvas") or "").strip().lower() != "live":
+        return run
+
+    task_id = str(run.get("taskId") or "").strip()
+    task_state = storage.read_task_state_payload(task_id, paths)
+    state = task_state if isinstance(task_state, dict) else storage.read_state_payload(paths)
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    task = active_task if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id else storage.read_task_snapshot(task_id, paths)
+    jobs_payload = storage.read_jobs(paths)
+    loop_jobs = [
+        storage.default_job(job)
+        for job in jobs_payload
+        if str((job or {}).get("jobType") or "loop") == "loop"
+        and str((job or {}).get("taskId") or "") == task_id
+    ]
+    loop_jobs.sort(key=lambda item: (storage.parse_ts(item.get("queuedAt")) or 0, str(item.get("jobId") or "")), reverse=True)
+
+    loop_job_id = str(run.get("loopJobId") or "").strip()
+    loop_job = next((job for job in loop_jobs if str(job.get("jobId") or "") == loop_job_id), None)
+    if loop_job is None and loop_jobs:
+        loop_job = loop_jobs[0]
+        loop_job_id = str(loop_job.get("jobId") or "").strip()
+
+    active_loop = (state.get("loop") if isinstance(state.get("loop"), dict) else {}) if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id else {}
+    loop_status = str((active_loop.get("status") if isinstance(active_loop, dict) else None) or (loop_job or {}).get("status") or run.get("status") or "queued")
+    created_at = str(run.get("createdAt") or storage.utc_now())
+    state_usage = storage.normalize_usage_state((state.get("usage") if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id else {}) or {})
+    job_usage = storage.normalize_usage_state((((loop_job or {}).get("usage")) if isinstance((loop_job or {}).get("usage"), dict) else {}) or {})
+    usage = state_usage
+    if int(usage.get("totalTokens") or 0) <= 0 and float(usage.get("estimatedCostUsd") or 0.0) <= 0.0:
+        usage = job_usage
+    current = None
+    if loop_status in {"queued", "running"}:
+        current_round = 0
+        if isinstance(active_loop, dict):
+            current_round = max(0, int(active_loop.get("currentRound") or 0))
+        current = {
+            "taskId": task_id,
+            "loopJobId": loop_job_id or None,
+            "round": current_round or max(0, int((loop_job or {}).get("currentRound") or 0)),
+            "status": loop_status,
+            "message": str((active_loop.get("lastMessage") if isinstance(active_loop, dict) else None) or (loop_job or {}).get("lastMessage") or "").strip() or None,
+        }
+
+    live = run.get("live") if isinstance(run.get("live"), dict) else {}
+    if isinstance(task, dict):
+        runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        workers = task.get("workers") if isinstance(task.get("workers"), list) else []
+        live = {
+            **live,
+            "objective": str(task.get("objective") or live.get("objective") or "").strip(),
+            "engineVersion": str(runtime.get("engineVersion") or live.get("engineVersion") or "v1"),
+            "engineGraph": runtime.get("engineGraph") if isinstance(runtime.get("engineGraph"), dict) else live.get("engineGraph"),
+            "provider": str(runtime.get("provider") or live.get("provider") or ""),
+            "model": str(runtime.get("model") or live.get("model") or ""),
+            "summarizerProvider": str((task.get("summarizer") or {}).get("provider") or live.get("summarizerProvider") or ""),
+            "summarizerModel": str((task.get("summarizer") or {}).get("model") or live.get("summarizerModel") or ""),
+            "workerCount": len(workers),
+            "workers": [
+                {
+                    "id": worker.get("id"),
+                    "type": worker.get("type"),
+                    "label": worker.get("label"),
+                    "model": worker.get("model"),
+                }
+                for worker in workers
+                if isinstance(worker, dict)
+            ],
+        }
+
+    updated_run = {
+        **run,
+        "taskId": task_id or run.get("taskId"),
+        "loopJobId": loop_job_id or run.get("loopJobId"),
+        "status": loop_status,
+        "updatedAt": storage.utc_now(),
+        "startedAt": str((loop_job or {}).get("startedAt") or run.get("startedAt") or "").strip() or None,
+        "completedAt": str((loop_job or {}).get("finishedAt") or run.get("completedAt") or "").strip() or None,
+        "current": current,
+        "live": live,
+        "summary": {
+            "caseCount": 1,
+            "variantCount": 1,
+            "errorCount": 1 if loop_status in {"error", "budget_exhausted", "interrupted"} else 0,
+            "totalTokens": int(usage.get("totalTokens") or 0),
+            "estimatedCostUsd": float(usage.get("estimatedCostUsd") or 0.0),
+            "averageQuality": {},
+            "averageAnswerHealth": {},
+            "averageControl": {},
+            "variants": [],
+        },
+    }
+    if not str(updated_run.get("createdAt") or "").strip():
+        updated_run["createdAt"] = created_at
+    write_eval_run(paths, updated_run)
+    return updated_run
+
+
+def sync_front_live_runs(root: Optional[Path] = None) -> None:
+    paths = storage.project_paths(root)
+    for run in storage.list_eval_runs(paths):
+        if str(run.get("canvas") or "").strip().lower() != "live":
+            continue
+        run_id = str(run.get("runId") or "").strip()
+        if run_id:
+            sync_front_live_run(run_id, paths.root)
 
 
 def _base_run_payload(run_id: str, suite: Dict[str, Any], arm_ids: List[str], judge_model: str, canvas: str) -> Dict[str, Any]:
@@ -304,6 +481,43 @@ def start_front_eval_run(payload: Dict[str, Any], root: Optional[Path] = None) -
     write_eval_run(paths, run)
     launch_eval_runner(run_id, paths.root)
     return {"message": "Front eval queued.", "runId": run_id, "run": storage.build_eval_run_preview(run)}
+
+
+def start_front_live_run(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+    paths = storage.project_paths(root)
+    ensure_eval_paths(paths)
+    run_id = _new_run_id("live")
+    task_payload = _build_front_live_task_payload(payload, run_id)
+    current_state = storage.read_state_payload(paths)
+    loop_status = str((((current_state.get("loop") or {}) if isinstance(current_state.get("loop"), dict) else {})).get("status") or "idle")
+    activate = loop_status not in {"queued", "running"}
+    task_result = control.create_task(task_payload, paths.root, activate=activate)
+    task_id = str(task_result.get("taskId") or "").strip()
+    task = storage.read_task_snapshot(task_id, paths)
+    if not isinstance(task, dict):
+        active_task = current_state.get("activeTask") if isinstance(current_state.get("activeTask"), dict) else None
+        if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id:
+            task = active_task
+    if not isinstance(task, dict):
+        raise RuntimeErrorWithCode("Live task snapshot was not written.", 500)
+    loop_result = jobs.start_loop_for_task(
+        task_id,
+        {
+            "rounds": _parse_int(payload.get("loopRounds"), 1, 1),
+            "delayMs": _parse_int(payload.get("loopDelayMs"), 0, 0),
+        },
+        paths.root,
+    )
+    run = _build_front_live_run(paths, run_id, task, str(loop_result.get("jobId") or "").strip() or None)
+    write_eval_run(paths, run)
+    synced = sync_front_live_run(run_id, paths.root) or run
+    return {
+        "message": "Front live queued.",
+        "taskId": task_id,
+        "jobId": loop_result.get("jobId"),
+        "runId": run_id,
+        "run": storage.build_eval_run_preview(synced),
+    }
 
 
 def start_front_judge_run(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:

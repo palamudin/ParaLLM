@@ -10,6 +10,7 @@ data/evals/runs/
 data/outputs/
 data/sessions/
 data/tasks/
+data/task_states/
 data/jobs/
 data/locks/
 data/logs/

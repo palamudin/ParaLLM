@@ -24,6 +24,7 @@ class Paths:
     root: Path
     data: Path
     tasks: Path
+    task_states: Path
     checkpoints: Path
     outputs: Path
     sessions: Path
@@ -46,6 +47,7 @@ def project_paths(root: Optional[Path] = None) -> Paths:
         root=base,
         data=data,
         tasks=data / "tasks",
+        task_states=data / "task_states",
         checkpoints=data / "checkpoints",
         outputs=data / "outputs",
         sessions=data / "sessions",
@@ -474,12 +476,16 @@ def dispatch_target_label(job: Dict[str, Any]) -> str:
     target = str(job.get("target") or "target").lower()
     if target == "answer_now":
         return "Answer now"
+    if target == "direct_baseline":
+        return "Single-thread baseline"
     if target == "commander":
         return "Commander"
     if target == "commander_review":
         return "Commander review"
     if target == "summarizer":
         return "Summarizer (partial)" if job.get("partialSummary") else "Summarizer"
+    if target == "arbiter":
+        return "External arbiter"
     return f"Worker {target.upper()}"
 
 
@@ -622,6 +628,8 @@ def build_job_execution_health(job: Dict[str, Any]) -> Dict[str, Any]:
     error = str(job.get("error") or "").strip()
     partial = bool(job.get("partialSummary"))
     metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    scheduler_state = str(metadata.get("schedulerState") or "").strip().lower()
+    provider_label = str(metadata.get("provider") or "").strip().lower()
     failure_class = str(metadata.get("failureClass") or "").strip().lower()
     operator_note = str(metadata.get("operatorNote") or "").strip()
     dependency_failures = [
@@ -636,6 +644,14 @@ def build_job_execution_health(job: Dict[str, Any]) -> Dict[str, Any]:
     ] if isinstance(job.get("contractWarnings"), list) else []
 
     if status in {"queued", "running"}:
+        if scheduler_state == "waiting_on_key":
+            label_provider = provider_label.upper() if provider_label else "Provider"
+            return {
+                "tone": "active",
+                "label": "Key wait",
+                "summary": last_message or f"Queued while waiting for {label_provider} key capacity.",
+                "degraded": False,
+            }
         if partial and dependency_failures:
             return {
                 "tone": "active",
@@ -831,6 +847,19 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
     paths = paths or project_paths()
     jobs = read_jobs(paths)
     state = coerce_loop_state(read_state(paths), jobs)
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    active_task_id = str((active_task or {}).get("taskId") or "").strip()
+    if active_task_id:
+        task_state = read_task_state_payload(active_task_id, paths)
+        if isinstance(task_state, dict):
+            for field in ("activeTask", "commander", "commanderReview", "workers", "directBaseline", "summary", "arbiter", "usage", "memoryVersion"):
+                state[field] = copy.deepcopy(task_state.get(field))
+            scoped_loop = task_state.get("loop") if isinstance(task_state.get("loop"), dict) else None
+            if isinstance(scoped_loop, dict):
+                global_loop = state.get("loop") if isinstance(state.get("loop"), dict) else {}
+                if str(global_loop.get("status") or "idle") == "idle" or str(scoped_loop.get("jobId") or "").strip() == str(global_loop.get("jobId") or "").strip():
+                    state["loop"] = copy.deepcopy(scoped_loop)
+            state["lastUpdated"] = str(task_state.get("lastUpdated") or state.get("lastUpdated") or utc_now())
     step_report = read_recent_jsonl_report(paths.steps, 400)
     event_report = read_recent_jsonl_report(paths.events, 200)
     state["executionHealth"] = build_execution_health(state, paths, step_report=step_report)
@@ -855,6 +884,26 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
         enriched_task["contractWarnings"] = copy.deepcopy(state.get("contractWarnings") or [])
         state["activeTask"] = enriched_task
     state["dispatch"] = current_dispatch_state(state, jobs)
+    return state
+
+
+def read_task_state_payload(task_id: str, paths: Optional[Paths] = None) -> Optional[Dict[str, Any]]:
+    paths = paths or project_paths()
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return None
+    parsed = read_json_file(paths.task_states / f"{normalized_task_id}.json")
+    if not isinstance(parsed, dict):
+        return None
+    state = coerce_loop_state(
+        normalize_state_contract(parsed),
+        [
+            job
+            for job in read_jobs(paths)
+            if str((job or {}).get("taskId") or "").strip() == normalized_task_id
+        ],
+    )
+    state["dispatch"] = current_dispatch_state(state, read_jobs(paths))
     return state
 
 
@@ -1549,6 +1598,8 @@ def build_eval_run_preview(run: Dict[str, Any]) -> Dict[str, Any]:
         "suiteId": run.get("suiteId"),
         "canvas": str(run.get("canvas") or "").strip() or None,
         "source": str(run.get("source") or "").strip() or None,
+        "taskId": str(run.get("taskId") or "").strip() or None,
+        "loopJobId": str(run.get("loopJobId") or "").strip() or None,
         "status": run.get("status") or "unknown",
         "createdAt": run.get("createdAt"),
         "updatedAt": run.get("updatedAt"),

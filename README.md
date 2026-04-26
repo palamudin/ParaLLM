@@ -25,6 +25,8 @@ The current prototype is built to make that test inspectable:
 
 ## What It Does
 
+- `V1` is now the confirmed production-like pipeline: `commander -> workers -> commander review -> summarizer`
+- `V2` is the modular engine track: a configurable topology scaffold that will inherit packet, role, and gating choices without destabilizing V1
 - Chat-first workflow where `Send` creates a task and starts the configured loop
 - Commander-first runtime evolving toward: `commander -> workers -> commander review -> summarizer`
 - Dynamic adversarial worker roster starting from `Proponent` and `Sceptic`
@@ -42,6 +44,8 @@ The current prototype is built to make that test inspectable:
 - Reversible QA scripts for mock, live, and eval smoke tests
 
 ## Architecture
+
+Current confirmed `V1` data path:
 
 ```mermaid
 flowchart LR
@@ -403,18 +407,19 @@ The secret backend is now hosted-aware too:
 ParaLLM still supports local key pools through the UI, but only when you explicitly run with `LOOP_SECRET_BACKEND=local_file`.
 
 - One provider card per vendor group
-- Each provider group can switch between `Local` and `Safe`
+- Each provider group can switch between `Local`, `Env`, and `DB`
 - One key slot per input row inside that provider group
 - `+ Key` adds another slot
 - Pasting into a stored slot replaces it immediately
 - Pasting into a new slot appends it into shared `Auth.txt` using provider prefixes like `openai:`, `ant:`, `xai:`, and `min:`
 - `Clear` wipes the local pool
 
-`Local` versus `Safe`:
+Credential store modes:
 
 - `Local` is the testing path and is browser-editable
-- `Safe` routes that provider group to the managed backend path for the current deployment (`env`, `docker_secret`, or `external`)
-- mixed mode is allowed, so one vendor can stay local while another stays on the safer path
+- `Env` routes that provider group to the managed environment path for the current deployment (`env` locally, or mounted `docker_secret` on hosted/self-hosted profiles)
+- `DB` routes that provider group to the external/provider-backed secret path (`external`)
+- mixed mode is allowed, so one vendor can stay local while another stays on env or db-backed credentials
 
 Assignment behavior:
 
@@ -504,6 +509,8 @@ python scripts/quality_benchmark.py --case core --repeats 3 --loop-sweep 1,2,3
 python scripts/run_vetting_matrix.py --input scripts/vetting_manifest.example.json
 ```
 
+`V2` is now a parallel engine track in the UI, starting as an interactive modular topology surface while the proven V1 runner remains the execution fallback.
+
 Internal hardening:
 - `LOOP_FAULT_POINTS` can inject targeted dispatch/loop failures for repeatable recovery tests, for example `dispatch.execute.before_runtime.commander` or `loop.execute.before_target.commander`.
 
@@ -548,6 +555,9 @@ Next milestone track:
 - `Canvas-Native Scheduling and Provider-Neutral Async Execution`
   - separate `live`, `eval`, and `judge` into first-class run lanes instead of one special live task plus isolated side systems
   - add a provider-neutral async scheduler that can dispatch multiple runnable jobs concurrently while leasing keys safely from each provider pool
+- `Authoritative Domain Knowledge Tools`
+  - build retrieval-first specialist knowledge blocks with citations, provenance, and abstain behavior before considering any weight-training path
+  - only escalate to fine-tuning or specialist pretraining if retrieval plus evals still cannot clear the quality bar honestly
 - `Cost Governance Without Betraying the Thesis`
   - keep burn visible and enforceable without starving adversarial lanes of full user context
 

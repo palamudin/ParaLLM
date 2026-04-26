@@ -160,3 +160,20 @@ def drain_dispatch_launches(root: Optional[Path], limit: Optional[int] = None) -
             break
         results.append(item)
     return results
+
+
+def clear_scheduler_queues(root: Optional[Path], task_ids: Iterable[str]) -> Dict[str, int]:
+    ordered_tasks = _ordered_unique(task_ids)
+    if not redis_enabled(root):
+        return {"loopKeysCleared": 0, "dispatchKeysCleared": 0}
+    topology = deployment_topology(root)
+    client = _redis_client(topology)
+    loop_keys: List[str] = []
+    for task_id in ordered_tasks:
+        loop_keys.append(_loop_queue_key(topology, task_id))
+        loop_keys.append(_loop_active_key(topology, task_id))
+    deleted_loop_keys = 0
+    if loop_keys:
+        deleted_loop_keys = int(client.delete(*loop_keys) or 0)
+    deleted_dispatch_keys = int(client.delete(_dispatch_ready_key(topology)) or 0)
+    return {"loopKeysCleared": deleted_loop_keys, "dispatchKeysCleared": deleted_dispatch_keys}

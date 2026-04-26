@@ -7,7 +7,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from runtime.engine import LoopRuntime, RuntimeErrorWithCode, task_workers
+from runtime.engine import (
+    DEFAULT_PROVIDER_ID,
+    EXECUTION_CANCELLED_MESSAGE,
+    LoopRuntime,
+    RuntimeErrorWithCode,
+    commander_config,
+    commander_review_config,
+    default_model_for_provider,
+    normalize_model_id,
+    normalize_provider_id,
+    summarizer_config,
+    task_workers,
+)
 
 from . import arbiter, control, faults, jobs, queueing, runtime_execution, storage
 
@@ -200,6 +212,14 @@ def active_target_job_count(paths: storage.Paths, task_id: Optional[str] = None,
     return len(active_target_jobs(paths, task_id, include_partial))
 
 
+def dispatch_job_cancelled_unlocked(runtime: LoopRuntime, job_id: str) -> bool:
+    job = runtime.read_job_unlocked(str(job_id or "").strip())
+    if not isinstance(job, dict):
+        return False
+    status = str(job.get("status") or "").strip().lower()
+    return bool(job.get("cancelRequested")) or status == "cancelled"
+
+
 def dispatch_target_label(job: Dict[str, Any]) -> str:
     target = str(job.get("target") or "target").lower()
     if target == "answer_now":
@@ -215,6 +235,110 @@ def dispatch_target_label(job: Dict[str, Any]) -> str:
     if target == "arbiter":
         return "External arbiter"
     return f"Worker {target.upper()}"
+
+
+def dispatch_target_runtime_profile(runtime: LoopRuntime, task: Dict[str, Any], target: str) -> Dict[str, str]:
+    normalized_target = str(target or "").strip().lower()
+    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+
+    if normalized_target == "direct_baseline":
+        direct_runtime = runtime.get_direct_baseline_runtime(task)
+        provider = normalize_provider_id(direct_runtime.get("provider"), DEFAULT_PROVIDER_ID)
+        return {
+            "provider": provider,
+            "model": normalize_model_id(direct_runtime.get("model"), default_model_for_provider(provider), provider),
+        }
+
+    if normalized_target == "arbiter":
+        provider = "openai"
+        return {"provider": provider, "model": "gpt-5.4"}
+
+    if normalized_target == "commander":
+        config = commander_config(task)
+        provider = normalize_provider_id(config.get("provider"), DEFAULT_PROVIDER_ID)
+        return {
+            "provider": provider,
+            "model": normalize_model_id(config.get("model"), default_model_for_provider(provider), provider),
+        }
+
+    if normalized_target == "commander_review":
+        config = commander_review_config(task)
+        provider = normalize_provider_id(config.get("provider"), DEFAULT_PROVIDER_ID)
+        return {
+            "provider": provider,
+            "model": normalize_model_id(config.get("model"), default_model_for_provider(provider), provider),
+        }
+
+    if normalized_target in {"summarizer", "answer_now"}:
+        config = summarizer_config(task)
+        provider = normalize_provider_id(config.get("provider"), DEFAULT_PROVIDER_ID)
+        return {
+            "provider": provider,
+            "model": normalize_model_id(config.get("model"), default_model_for_provider(provider), provider),
+        }
+
+    if len(normalized_target) == 1 and normalized_target.isalpha():
+        worker = find_task_worker(task, normalized_target.upper())
+        provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
+        return {
+            "provider": provider,
+            "model": normalize_model_id(
+                (worker or {}).get("model"),
+                default_model_for_provider(provider),
+                provider,
+            ),
+        }
+
+    provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
+    return {
+        "provider": provider,
+        "model": normalize_model_id(runtime_config.get("model"), default_model_for_provider(provider), provider),
+    }
+
+
+def dispatch_job_runtime_profile_unlocked(runtime: LoopRuntime, job: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    provider = str(metadata.get("provider") or "").strip()
+    model = str(metadata.get("model") or "").strip()
+    if provider or model:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        return {
+            "provider": normalized_provider,
+            "model": normalize_model_id(model, default_model_for_provider(normalized_provider), normalized_provider),
+        }
+    task_id = str(job.get("taskId") or "").strip()
+    if not task_id:
+        return {"provider": None, "model": None}
+    task = storage.read_task_snapshot(task_id, storage.project_paths(runtime.root))
+    if not isinstance(task, dict):
+        return {"provider": None, "model": None}
+    profile = dispatch_target_runtime_profile(runtime, task, str(job.get("target") or ""))
+    return {"provider": profile.get("provider"), "model": profile.get("model")}
+
+
+def dispatch_provider_capacity(runtime: LoopRuntime, provider: Optional[str]) -> int:
+    normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    if not runtime.provider_uses_api_key_pool(normalized_provider):
+        return 0
+    auth_state = runtime.load_api_key_pool_state(normalized_provider)
+    keys = auth_state.get("keys") if isinstance(auth_state, dict) else []
+    return len(keys) if isinstance(keys, list) else 0
+
+
+def active_provider_dispatch_counts_unlocked(runtime: LoopRuntime) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for job in storage.read_jobs(storage.project_paths(runtime.root)):
+        current = storage.default_job(job)
+        if str(current.get("jobType") or "loop") != "target":
+            continue
+        if str(current.get("status") or "") != "running":
+            continue
+        profile = dispatch_job_runtime_profile_unlocked(runtime, current)
+        provider = str(profile.get("provider") or "").strip()
+        if not provider:
+            continue
+        counts[provider] = counts.get(provider, 0) + 1
+    return counts
 
 
 def classify_dispatch_failure(message: str) -> Dict[str, str]:
@@ -380,6 +504,8 @@ def create_target_job(runtime: LoopRuntime, task: Dict[str, Any], target: str, o
     overrides = overrides or {}
     job_id = "dispatch-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(8).hex()[:6]
     dependency_ids = [str(value).strip() for value in (overrides.get("dependencyJobIds") or []) if str(value).strip()]
+    runtime_profile = dispatch_target_runtime_profile(runtime, task, target)
+    metadata = overrides.get("metadata") if isinstance(overrides.get("metadata"), dict) else {}
     job = storage.default_job(
         {
             "jobId": job_id,
@@ -399,7 +525,12 @@ def create_target_job(runtime: LoopRuntime, task: Dict[str, Any], target: str, o
             "timeoutSeconds": max(30, int(overrides.get("timeoutSeconds") or 1800)),
             "queuedAt": utc_now(),
             "lastMessage": str(overrides.get("lastMessage") or ("Waiting for dependencies." if dependency_ids else "Queued target dispatch.")),
-            "metadata": overrides.get("metadata") if isinstance(overrides.get("metadata"), dict) else {},
+            "metadata": {
+                **metadata,
+                "provider": runtime_profile["provider"],
+                "model": runtime_profile["model"],
+                "schedulerState": "queued",
+            },
         }
     )
     with runtime.with_lock():
@@ -491,7 +622,9 @@ def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overr
 def promote_ready_dispatch_jobs(runtime: LoopRuntime, task_id: Optional[str] = None, batch_id: Optional[str] = None) -> List[Dict[str, Any]]:
     with runtime.with_lock():
         interrupt_unrunnable_dispatch_jobs_unlocked(runtime, task_id, batch_id)
+        running_counts = active_provider_dispatch_counts_unlocked(runtime)
         launchable: List[Dict[str, Any]] = []
+        candidates: List[Dict[str, Any]] = []
         for job in storage.read_jobs(storage.project_paths(runtime.root)):
             job = storage.default_job(job)
             if str(job.get("jobType") or "loop") != "target":
@@ -502,6 +635,36 @@ def promote_ready_dispatch_jobs(runtime: LoopRuntime, task_id: Optional[str] = N
                 continue
             if not dispatch_job_is_launchable_unlocked(runtime, job):
                 continue
+            candidates.append(job)
+
+        candidates.sort(key=lambda entry: (storage.parse_ts(entry.get("queuedAt")) or 0, str(entry.get("jobId") or "")))
+        for job in candidates:
+            profile = dispatch_job_runtime_profile_unlocked(runtime, job)
+            provider = str(profile.get("provider") or "").strip()
+            provider_capacity = dispatch_provider_capacity(runtime, provider)
+            in_use = running_counts.get(provider, 0) if provider else 0
+            if provider and provider_capacity > 0 and in_use >= provider_capacity:
+                metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+                provider_label = control.auth_key_provider_label(provider)
+                runtime.write_job_unlocked(
+                    storage.default_job(
+                        {
+                            **job,
+                            "lastHeartbeatAt": utc_now(),
+                            "lastMessage": f"Waiting for {provider_label} key capacity ({in_use}/{provider_capacity} in use).",
+                            "metadata": {
+                                **metadata,
+                                "provider": provider,
+                                "model": profile.get("model"),
+                                "schedulerState": "waiting_on_key",
+                                "providerCapacity": provider_capacity,
+                                "providerRunning": in_use,
+                            },
+                        }
+                    )
+                )
+                continue
+            metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
             launchable.append(
                 runtime.write_job_unlocked(
                     storage.default_job(
@@ -511,10 +674,20 @@ def promote_ready_dispatch_jobs(runtime: LoopRuntime, task_id: Optional[str] = N
                             "startedAt": job.get("startedAt") or utc_now(),
                             "lastHeartbeatAt": utc_now(),
                             "lastMessage": "Launching target dispatch.",
+                            "metadata": {
+                                **metadata,
+                                "provider": provider,
+                                "model": profile.get("model"),
+                                "schedulerState": "launching",
+                                "providerCapacity": provider_capacity,
+                                "providerRunning": in_use + (1 if provider else 0),
+                            },
                         }
                     )
                 )
             )
+            if provider and provider_capacity > 0:
+                running_counts[provider] = in_use + 1
     jobs_to_launch = list(launchable)
     if queueing.redis_enabled(runtime.root):
         queueing.enqueue_dispatch_launches(runtime.root, [str(job.get("jobId") or "") for job in launchable])
@@ -594,6 +767,13 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
     options["dispatchHeartbeatMessage"] = f"Waiting on {dispatch_label} response..."
     if not job_id or not target or not task_id:
         raise RuntimeErrorWithCode("Target job metadata is incomplete.", 500)
+    if dispatch_job_cancelled_unlocked(runtime, job_id):
+        runtime.append_step(
+            "dispatch",
+            "Background dispatch runner exited because the job was cancelled during startup.",
+            {"taskId": task_id, "jobId": job_id, "target": target},
+        )
+        return {"message": "Target dispatch was cancelled during startup.", "target": target, "cancelled": True}
 
     runtime.mutate_job(
         job_id,
@@ -606,6 +786,10 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
                 "lastHeartbeatAt": utc_now(),
                 "lastMessage": f"Running {dispatch_label}.",
                 "error": None,
+                "metadata": {
+                    **((existing or {}).get("metadata") if isinstance((existing or {}).get("metadata"), dict) else {}),
+                    "schedulerState": "running",
+                },
             }
         ),
     )
@@ -624,6 +808,31 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
             "dispatch.execute.after_runtime",
             f"dispatch.execute.after_runtime.{target.lower()}",
         )
+        if dispatch_job_cancelled_unlocked(runtime, job_id):
+            runtime.mutate_job(
+                job_id,
+                lambda existing: storage.default_job(
+                    {
+                        **(existing or {}),
+                        "status": "cancelled",
+                        "cancelRequested": True,
+                        "finishedAt": utc_now(),
+                        "lastHeartbeatAt": utc_now(),
+                        "lastMessage": "Cancelled after the provider call returned; dropped the late result.",
+                        "metadata": {
+                            **((existing or {}).get("metadata") if isinstance((existing or {}).get("metadata"), dict) else {}),
+                            "schedulerState": "cancelled",
+                        },
+                    }
+                ),
+            )
+            runtime.append_step(
+                "dispatch",
+                "Background target dispatch acknowledged a scheduler reset and dropped a late completion.",
+                {"taskId": task_id, "jobId": job_id, "target": target},
+            )
+            promote_ready_dispatch_jobs(runtime, task_id, str((job or {}).get("batchId") or ""))
+            return {"message": "Target dispatch cancelled.", "target": target, "cancelled": True}
         usage_snapshot = storage.normalize_usage_state((runtime.read_state().get("usage") or {}))
         updated_job = runtime.mutate_job(
             job_id,
@@ -637,6 +846,10 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
                     "usage": usage_snapshot,
                     "results": [result],
                     "error": None,
+                    "metadata": {
+                        **((existing or {}).get("metadata") if isinstance((existing or {}).get("metadata"), dict) else {}),
+                        "schedulerState": "completed",
+                    },
                 }
             ),
         )
@@ -649,6 +862,32 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
         return result
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
+        if message == EXECUTION_CANCELLED_MESSAGE or dispatch_job_cancelled_unlocked(runtime, job_id):
+            runtime.mutate_job(
+                job_id,
+                lambda existing: storage.default_job(
+                    {
+                        **(existing or {}),
+                        "status": "cancelled",
+                        "cancelRequested": True,
+                        "finishedAt": utc_now(),
+                        "lastHeartbeatAt": utc_now(),
+                        "lastMessage": "Cancelled by scheduler reset.",
+                        "error": None,
+                        "metadata": {
+                            **((existing or {}).get("metadata") if isinstance((existing or {}).get("metadata"), dict) else {}),
+                            "schedulerState": "cancelled",
+                        },
+                    }
+                ),
+            )
+            runtime.append_step(
+                "dispatch",
+                "Background target dispatch stopped because the scheduler was reset.",
+                {"taskId": task_id, "jobId": job_id, "target": target},
+            )
+            promote_ready_dispatch_jobs(runtime, task_id, str((job or {}).get("batchId") or ""))
+            return {"message": "Target dispatch cancelled.", "target": target, "cancelled": True}
         final_status = "budget_exhausted" if message.startswith("Budget limit reached:") else "error"
         failure = classify_dispatch_failure(message)
         updated_job = runtime.mutate_job(
@@ -665,6 +904,7 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
                         **((existing or {}).get("metadata") if isinstance((existing or {}).get("metadata"), dict) else {}),
                         "failureClass": failure["failureClass"],
                         "operatorNote": failure["operatorNote"],
+                        "schedulerState": "error" if final_status == "error" else final_status,
                     },
                 }
             ),

@@ -133,6 +133,8 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     @app.get("/v1/evals/history")
     def get_eval_history(runId: str = "", canvas: str = "") -> JSONResponse:
+        if str(canvas or "").strip().lower() == "live":
+            evals.sync_front_live_runs(paths.root)
         return JSONResponse(storage.build_eval_history_payload(paths, selected_run_id=runId.strip(), canvas=canvas.strip()))
 
     @app.get("/v1/evals/artifacts/{run_id}/{artifact_id}")
@@ -328,6 +330,17 @@ def create_app(root: Path | None = None) -> FastAPI:
         payload = await request_payload(request)
         try:
             result = evals.start_front_eval_run(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/front/live/runs")
+    async def post_front_live_run(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = evals.start_front_live_run(payload, paths.root)
         except RuntimeErrorWithCode as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         except ValueError as exc:

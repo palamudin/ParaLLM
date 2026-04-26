@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from backend.app import control, jobs, queueing, storage
+from backend.app import control, dispatch, jobs, queueing, storage
 from backend.app.config import DeploymentTopology
 from runtime.engine import RuntimeErrorWithCode
 
@@ -48,6 +48,7 @@ class LoopJobTests(unittest.TestCase):
         task["runtime"]["directBaselineMode"] = "single"
         paths.state.write_text(json.dumps(state, indent=2), encoding="utf-8")
         (paths.tasks / f"{task['taskId']}.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+        (paths.task_states / f"{task['taskId']}.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 
         with mock.patch("backend.app.jobs.launch_loop_job_runner") as launcher:
             result = jobs.start_loop({"rounds": "4", "delayMs": "25"}, self.root)
@@ -64,11 +65,12 @@ class LoopJobTests(unittest.TestCase):
             queued = jobs.start_loop({"rounds": "2", "delayMs": "0"}, self.root)
 
         result = jobs.cancel_loop(self.root)
-        self.assertEqual(result["message"], "Queued loop cancelled before start.")
+        self.assertEqual(result["message"], "Scheduler reset. Ready to go.")
+        self.assertEqual(result["loopsCancelled"], 1)
 
         paths = storage.project_paths(self.root)
         state = storage.read_state_payload(paths)
-        self.assertEqual(state["loop"]["status"], "cancelled")
+        self.assertEqual(state["loop"]["status"], "idle")
 
         job = storage.read_json_file(paths.jobs / f"{queued['jobId']}.json")
         self.assertIsInstance(job, dict)
@@ -242,7 +244,7 @@ class LoopJobTests(unittest.TestCase):
             queued = jobs.start_loop({"rounds": "2", "delayMs": "0"}, self.root)
             result = jobs.cancel_loop(self.root)
 
-        self.assertEqual(result["message"], "Queued loop cancelled before start.")
+        self.assertEqual(result["message"], "Scheduler reset. Ready to go.")
         paths = storage.project_paths(self.root)
         task_id = storage.read_state_payload(paths)["activeTask"]["taskId"]
         topology = queueing.deployment_topology(self.root)
@@ -252,6 +254,120 @@ class LoopJobTests(unittest.TestCase):
         job = storage.read_json_file(paths.jobs / f"{queued['jobId']}.json")
         self.assertIsInstance(job, dict)
         self.assertEqual(job["status"], "cancelled")
+
+    def test_cancel_loop_resets_scheduler_globally(self) -> None:
+        paths = storage.project_paths(self.root)
+        runtime = jobs._runtime(self.root)
+        primary_state = storage.read_state_payload(paths)
+        primary_task = primary_state["activeTask"]
+        with runtime.with_lock():
+            runtime.initialize_task_state_unlocked(primary_task, primary_state)
+
+        secondary_result = control.create_task({"objective": "Secondary scheduler lane."}, self.root, activate=False)
+        secondary_task_id = str(secondary_result["taskId"])
+        secondary_task = storage.read_task_snapshot(secondary_task_id, paths)
+        self.assertIsInstance(secondary_task, dict)
+        with runtime.with_lock():
+            runtime.initialize_task_state_unlocked(secondary_task, {"activeTask": secondary_task})
+
+        primary_loop_job = jobs.create_loop_job(runtime, primary_task, 2, 0, "background")
+        secondary_loop_job = jobs.create_loop_job(
+            runtime,
+            secondary_task,
+            1,
+            0,
+            "background",
+            {"updateLoopState": False, "lastMessage": "Queued secondary loop."},
+        )
+        runtime.mutate_job(
+            str(secondary_loop_job["jobId"]),
+            lambda existing: storage.default_job(
+                {
+                    **(existing or {}),
+                    "status": "running",
+                    "startedAt": jobs.utc_now(),
+                    "lastHeartbeatAt": jobs.utc_now(),
+                    "lastMessage": "Running secondary loop.",
+                }
+            ),
+        )
+        with runtime.with_lock():
+            with jobs._task_state_context(runtime, secondary_task_id):
+                secondary_state = runtime.read_state_unlocked()
+                secondary_state["loop"] = {
+                    **storage.default_loop_state(),
+                    "status": "running",
+                    "jobId": secondary_loop_job["jobId"],
+                    "mode": "background",
+                    "totalRounds": 1,
+                    "startedAt": jobs.utc_now(),
+                    "lastHeartbeatAt": jobs.utc_now(),
+                    "lastMessage": "Running secondary loop.",
+                }
+                runtime.write_state_unlocked(secondary_state)
+
+        primary_target_job = dispatch.create_target_job(runtime, primary_task, "A", {"lastMessage": "Queued worker A."})
+        secondary_target_job = dispatch.create_target_job(runtime, secondary_task, "B", {"lastMessage": "Queued worker B."})
+        runtime.mutate_job(
+            str(secondary_target_job["jobId"]),
+            lambda existing: storage.default_job(
+                {
+                    **(existing or {}),
+                    "status": "running",
+                    "startedAt": jobs.utc_now(),
+                    "lastHeartbeatAt": jobs.utc_now(),
+                    "lastMessage": "Running worker B.",
+                }
+            ),
+        )
+
+        result = jobs.cancel_loop(self.root)
+
+        self.assertEqual(result["message"], "Scheduler reset. Ready to go.")
+        self.assertEqual(result["loopsCancelled"], 2)
+        self.assertEqual(result["targetsCancelled"], 2)
+        self.assertGreaterEqual(result["taskStatesReset"], 2)
+
+        updated_global = storage.read_state_payload(paths)
+        self.assertEqual(updated_global["loop"]["status"], "idle")
+
+        updated_secondary = storage.read_task_state_payload(secondary_task_id, paths)
+        self.assertIsInstance(updated_secondary, dict)
+        self.assertEqual(updated_secondary["loop"]["status"], "idle")
+
+        primary_loop = storage.read_json_file(paths.jobs / f"{primary_loop_job['jobId']}.json")
+        secondary_loop = storage.read_json_file(paths.jobs / f"{secondary_loop_job['jobId']}.json")
+        primary_target = storage.read_json_file(paths.jobs / f"{primary_target_job['jobId']}.json")
+        secondary_target = storage.read_json_file(paths.jobs / f"{secondary_target_job['jobId']}.json")
+        for job in (primary_loop, secondary_loop, primary_target, secondary_target):
+            self.assertIsInstance(job, dict)
+            self.assertEqual(job["status"], "cancelled")
+            self.assertTrue(job["cancelRequested"])
+
+    def test_cancel_loop_with_redis_clears_dispatch_ready_queue(self) -> None:
+        fake = FakeRedis()
+        env = {
+            "LOOP_QUEUE_BACKEND": "redis",
+            "LOOP_REDIS_URL": "redis://example/0",
+        }
+        runtime = jobs._runtime(self.root)
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        task = state["activeTask"]
+        loop_job = jobs.create_loop_job(runtime, task, 1, 0, "background")
+        dispatch_job = dispatch.create_target_job(runtime, task, "A", {"lastMessage": "Queued worker A."})
+        topology = queueing.deployment_topology(self.root)
+        fake.set(queueing._loop_active_key(topology, str(task["taskId"])), str(loop_job["jobId"]))
+        fake.rpush(queueing._dispatch_ready_key(topology), str(dispatch_job["jobId"]))
+
+        with (
+            mock.patch.dict("os.environ", env, clear=False),
+            mock.patch("backend.app.queueing._redis_client", return_value=fake),
+        ):
+            result = jobs.cancel_loop(self.root)
+
+        self.assertEqual(result["dispatchKeysCleared"], 1)
+        self.assertIsNone(fake.get(queueing._loop_active_key(topology, str(task["taskId"]))))
+        self.assertEqual(fake.lrange(queueing._dispatch_ready_key(topology), 0, -1), [])
 
     def test_execute_loop_job_fault_sets_explicit_error_state(self) -> None:
         runtime = jobs._runtime(self.root)
@@ -285,6 +401,8 @@ class LoopJobTests(unittest.TestCase):
         (paths.tasks / f"{task['taskId']}.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
 
         runtime = jobs._runtime(self.root)
+        with runtime.with_lock():
+            runtime.initialize_task_state_unlocked(task, state)
         job = jobs.create_loop_job(runtime, task, 4, 0, "background")
         seen_targets: list[str] = []
 
@@ -312,6 +430,8 @@ class LoopJobTests(unittest.TestCase):
         (paths.tasks / f"{task['taskId']}.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
 
         runtime = jobs._runtime(self.root)
+        with runtime.with_lock():
+            runtime.initialize_task_state_unlocked(task, state)
         job = jobs.create_loop_job(runtime, task, 1, 0, "background")
         seen_targets: list[str] = []
 

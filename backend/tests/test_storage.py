@@ -172,6 +172,44 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["activeTask"]["arbiter"]["comparison"]["verdict"], "pressurized_advantage")
         self.assertNotIn("stateWorkers", self.read_json(self.paths.state)["activeTask"])
 
+    def test_read_state_payload_prefers_task_scoped_active_task_state(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-scoped-1",
+                    "objective": "Global shell copy.",
+                },
+                "workers": {"A": None},
+                "summary": None,
+            },
+        )
+        self.write_json(
+            self.paths.task_states / "t-scoped-1.json",
+            {
+                "activeTask": {
+                    "taskId": "t-scoped-1",
+                    "objective": "Scoped runtime copy.",
+                },
+                "workers": {
+                    "A": {"label": "Proponent", "step": 1},
+                },
+                "commander": {"round": 1, "leadDraft": {"position": "Ship it."}},
+                "summary": {"round": 1, "frontAnswer": {"answer": "Scoped answer."}},
+                "loop": {
+                    "status": "idle",
+                    "lastMessage": "Ready.",
+                },
+            },
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertEqual(payload["activeTask"]["objective"], "Scoped runtime copy.")
+        self.assertEqual(payload["workers"]["A"]["label"], "Proponent")
+        self.assertEqual(payload["summary"]["frontAnswer"]["answer"], "Scoped answer.")
+        self.assertEqual(payload["activeTask"]["stateCommander"]["round"], 1)
+
     def test_read_state_payload_surfaces_execution_health_from_recent_steps(self) -> None:
         self.write_json(
             self.paths.state,

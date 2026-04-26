@@ -15,6 +15,8 @@ from runtime.engine import (
     coerce_bool,
     default_budget_config,
     default_context_mode,
+    default_engine_graph,
+    default_engine_version,
     default_direct_baseline_mode,
     default_front_mode,
     default_model_for_provider,
@@ -29,6 +31,8 @@ from runtime.engine import (
     normalize_allowed_domains,
     normalize_budget_config,
     normalize_context_mode,
+    normalize_engine_graph,
+    normalize_engine_version,
     normalize_direct_baseline_mode,
     normalize_dynamic_spinup_config,
     normalize_front_mode,
@@ -119,6 +123,8 @@ def default_draft_state() -> Dict[str, Any]:
         "summarizerProvider": provider,
         "summarizerModel": model,
         "frontMode": default_front_mode(),
+        "engineVersion": default_engine_version(),
+        "engineGraph": default_engine_graph(),
         "contextMode": default_context_mode(),
         "directBaselineMode": default_direct_baseline_mode(),
         "directProvider": provider,
@@ -202,6 +208,8 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         summarizer_provider,
     )
     front_mode = normalize_front_mode(current.get("frontMode", default["frontMode"]), default["frontMode"])
+    engine_version = normalize_engine_version(current.get("engineVersion", default["engineVersion"]), default["engineVersion"])
+    engine_graph = normalize_engine_graph(current.get("engineGraph", default["engineGraph"]))
     context_mode = normalize_context_mode(current.get("contextMode", default["contextMode"]), default["contextMode"])
     direct_baseline_mode = normalize_direct_baseline_mode(current.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"])
     direct_provider = normalize_provider_id(
@@ -234,6 +242,8 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
         "frontMode": front_mode,
+        "engineVersion": engine_version,
+        "engineGraph": engine_graph,
         "contextMode": context_mode,
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
@@ -305,6 +315,8 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
             summarizer_provider,
         ),
         "frontMode": normalize_front_mode(runtime.get("frontMode", default["frontMode"]), default["frontMode"]),
+        "engineVersion": normalize_engine_version(runtime.get("engineVersion", default["engineVersion"]), default["engineVersion"]),
+        "engineGraph": normalize_engine_graph(runtime.get("engineGraph", default["engineGraph"])),
         "contextMode": normalize_context_mode(runtime.get("contextMode", default["contextMode"]), default["contextMode"]),
         "directBaselineMode": normalize_direct_baseline_mode(runtime.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"]),
         "directProvider": normalize_provider_id(runtime.get("directProvider"), provider),
@@ -631,7 +643,7 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
         "recommendedBackend": recommended_secret_backend(topology),
         "defaultMode": default_auth_backend_mode(root),
         "deprecated": topology.secret_backend == "local_file",
-        "statusNote": secret_backend_status_note(topology) + " Provider groups can now run either Local or Safe mode independently.",
+        "statusNote": secret_backend_status_note(topology) + " Provider groups can now independently use Local, Env, or DB-backed credentials.",
         "rotationPolicy": rotation_policy,
         "isolationNote": "Provider pools stay isolated. OpenAI lanes never reuse Anthropic, xAI, or MiniMax keys.",
         "termsWarning": "Cross-vendor orchestration can implicate provider ToS or acceptable-use rules. Review each vendor's terms before mixing providers in one workflow.",
@@ -719,6 +731,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     summarizer_harness = _parse_json_like(payload.get("summarizerHarness"), existing_draft["summarizerHarness"])
     budget_targets = _parse_json_like(payload.get("budgetTargets"), existing_draft["budgetTargets"])
     target_timeouts = _parse_json_like(payload.get("targetTimeouts"), existing_draft["targetTimeouts"])
+    engine_graph = _parse_json_like(payload.get("engineGraph"), existing_draft["engineGraph"])
     draft = normalize_draft_state(
         {
             **existing_draft,
@@ -731,6 +744,8 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "summarizerProvider": payload.get("summarizerProvider", existing_draft["summarizerProvider"]),
             "summarizerModel": payload.get("summarizerModel", existing_draft["summarizerModel"]),
             "frontMode": payload.get("frontMode", existing_draft["frontMode"]),
+            "engineVersion": payload.get("engineVersion", existing_draft["engineVersion"]),
+            "engineGraph": engine_graph if isinstance(engine_graph, dict) else existing_draft["engineGraph"],
             "contextMode": payload.get("contextMode", existing_draft["contextMode"]),
             "directBaselineMode": payload.get("directBaselineMode", existing_draft["directBaselineMode"]),
             "directProvider": payload.get("directProvider", existing_draft["directProvider"]),
@@ -762,11 +777,11 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     return {"message": "Draft saved.", "draft": updated_state["draft"]}
 
 
-def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activate: bool = True) -> Dict[str, Any]:
     runtime = _runtime(root)
     current_state = storage.read_state_payload(storage.project_paths(runtime.root))
     loop_status = str(((current_state.get("loop") or {}) if isinstance(current_state.get("loop"), dict) else {}).get("status") or "idle")
-    if loop_status in {"queued", "running"}:
+    if activate and loop_status in {"queued", "running"}:
         raise RuntimeErrorWithCode("An autonomous loop is active. Cancel it before starting a new task.", 409)
 
     objective = str(payload.get("objective") or "").strip()
@@ -792,6 +807,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         summarizer_provider,
     )
     front_mode = normalize_front_mode(payload.get("frontMode", default_front_mode()), default_front_mode())
+    engine_version = normalize_engine_version(payload.get("engineVersion", default_engine_version()), default_engine_version())
     context_mode = normalize_context_mode(payload.get("contextMode", default_context_mode()), default_context_mode())
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     direct_provider = normalize_provider_id(str(payload.get("directProvider", provider)), provider)
@@ -800,6 +816,8 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
         default_model_for_provider(direct_provider),
         direct_provider,
     )
+    live_run_id = str(payload.get("liveRunId") or "").strip() or None
+    engine_graph = normalize_engine_graph(_parse_json_like(payload.get("engineGraph"), default_engine_graph()))
     ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", default_ollama_base_url()))
     reasoning_effort = str(payload.get("reasoningEffort", "low")).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
@@ -867,10 +885,13 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
             "provider": provider,
             "model": model,
             "frontMode": front_mode,
+            "engineVersion": engine_version,
+            "engineGraph": engine_graph,
             "contextMode": context_mode,
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "liveRunId": live_run_id,
             "ollamaBaseUrl": ollama_base_url,
             "reasoningEffort": reasoning_effort,
             "targetTimeouts": target_timeouts,
@@ -923,15 +944,18 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[st
     with runtime.with_lock():
         state = runtime.read_state_unlocked()
         next_state = mutate(state)
-        runtime.write_state_unlocked(next_state)
+        if activate:
+            runtime.write_state_unlocked(next_state)
         _write_task_snapshot_unlocked(runtime, task)
+        runtime.initialize_task_state_unlocked(task, next_state)
 
     runtime.append_event("task_started", {"taskId": task_id, "objective": objective})
     runtime.append_step(
         "task",
-        "Created a new task and reset worker memory.",
+        "Created a new task and reset worker memory." if activate else "Created an isolated task snapshot and task-scoped live state.",
         {
             "taskId": task_id,
+            "activate": bool(activate),
             "constraintCount": len(task["constraints"]),
             "hasSessionContext": session_context != "",
             "runtime": task["runtime"],

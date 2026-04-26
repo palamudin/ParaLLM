@@ -77,14 +77,25 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(result["providerGroups"]["openai"]["selectedMode"], "local")
         self.assertEqual(result["providerGroups"]["openai"]["effectiveBackend"], "local_file")
-        self.assertEqual(result["providerGroups"]["anthropic"]["selectedMode"], "safe")
+        self.assertEqual(result["providerGroups"]["anthropic"]["selectedMode"], "env")
+
+    def test_set_auth_backend_mode_supports_db_backed_provider_group(self) -> None:
+        env = {
+            "LOOP_SECRET_BACKEND": "env",
+            "LOOP_SECRET_PROVIDER_URL": "https://secrets.example.invalid/provider",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            result = settings.set_auth_backend_mode({"provider": "openai", "mode": "db"}, self.root)
+
+        self.assertEqual(result["providerGroups"]["openai"]["selectedMode"], "db")
+        self.assertEqual(result["providerGroups"]["openai"]["effectiveBackend"], "external")
 
     def test_set_auth_keys_refuses_mutation_for_safe_provider_group(self) -> None:
         env = {
             "LOOP_SECRET_BACKEND": "env",
             "LOOP_OPENAI_API_KEYS": "sk-env-openai\n",
         }
-        write_auth_backend_mode_override(self.root, "anthropic", "safe")
+        write_auth_backend_mode_override(self.root, "anthropic", "env")
         with mock.patch.dict("os.environ", env, clear=False):
             with self.assertRaises(RuntimeErrorWithCode):
                 settings.set_auth_keys({"provider": "anthropic", "appendKey": "sk-anthropic-2222"}, self.root)
@@ -97,6 +108,7 @@ class SettingsTests(unittest.TestCase):
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
                 "frontMode": "eval",
+                "engineVersion": "v2",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
@@ -125,6 +137,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["summarizerProvider"], "openai")
         self.assertEqual(result["summarizerModel"], "gpt-5.4-mini")
         self.assertEqual(result["frontMode"], "eval")
+        self.assertEqual(result["engineVersion"], "v2")
         self.assertEqual(result["contextMode"], "full")
         self.assertEqual(result["directBaselineMode"], "both")
         self.assertEqual(result["directProvider"], "anthropic")
@@ -139,6 +152,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
         self.assertEqual(state["activeTask"]["runtime"]["model"], "qwen3")
         self.assertEqual(state["activeTask"]["runtime"]["frontMode"], "eval")
+        self.assertEqual(state["activeTask"]["runtime"]["engineVersion"], "v2")
         self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
@@ -154,6 +168,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["draft"]["summarizerProvider"], "openai")
         self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4-mini")
         self.assertEqual(state["draft"]["frontMode"], "eval")
+        self.assertEqual(state["draft"]["engineVersion"], "v2")
         self.assertEqual(state["draft"]["contextMode"], "full")
         self.assertEqual(state["draft"]["directBaselineMode"], "both")
         self.assertEqual(state["draft"]["directProvider"], "anthropic")
@@ -168,6 +183,15 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(state["draft"]["researchEnabled"])
         self.assertTrue(state["draft"]["localFilesEnabled"])
         self.assertTrue(state["draft"]["githubToolsEnabled"])
+
+        scoped = storage.read_task_state_payload(state["activeTask"]["taskId"], storage.project_paths(self.root))
+        self.assertIsNotNone(scoped)
+        self.assertEqual(scoped["activeTask"]["runtime"]["frontMode"], "eval")
+        self.assertEqual(scoped["activeTask"]["runtime"]["engineVersion"], "v2")
+        self.assertEqual(scoped["activeTask"]["runtime"]["directBaselineMode"], "both")
+        self.assertEqual(scoped["activeTask"]["runtime"]["targetTimeouts"]["workers"]["A"], 80)
+        self.assertEqual(scoped["draft"]["provider"], "ollama")
+        self.assertEqual(scoped["draft"]["summarizerProvider"], "openai")
 
     def test_apply_runtime_settings_clears_stale_arbiter_score(self) -> None:
         paths = storage.project_paths(self.root)
@@ -225,6 +249,13 @@ class SettingsTests(unittest.TestCase):
         active_worker = next(item for item in state["activeTask"]["workers"] if item["id"] == "B")
         self.assertEqual(draft_worker["type"], "security")
         self.assertNotEqual(active_worker["type"], "security")
+
+        scoped = storage.read_task_state_payload(state["activeTask"]["taskId"], storage.project_paths(self.root))
+        self.assertIsNotNone(scoped)
+        scoped_draft_worker = next(item for item in scoped["draft"]["workers"] if item["id"] == "B")
+        self.assertEqual(scoped_draft_worker["type"], "security")
+        scoped_active_worker = next(item for item in scoped["activeTask"]["workers"] if item["id"] == "B")
+        self.assertNotEqual(scoped_active_worker["type"], "security")
 
     def test_add_adversarial_worker_appends_next_slot_to_draft(self) -> None:
         result = settings.add_adversarial_worker({"type": "reliability"}, self.root)

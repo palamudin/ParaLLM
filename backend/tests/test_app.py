@@ -18,6 +18,7 @@ class AppRouteTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.paths = storage.project_paths(self.root)
         for directory in (
+            self.root / "assets",
             self.paths.data,
             self.paths.tasks,
             self.paths.checkpoints,
@@ -53,6 +54,7 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("/v1/artifact", paths)
         self.assertIn("/v1/evals/history", paths)
         self.assertIn("/v1/evals/runs", paths)
+        self.assertIn("/v1/front/live/runs", paths)
         self.assertIn("/v1/front/eval/runs", paths)
         self.assertIn("/v1/front/judge/runs", paths)
         self.assertIn("/v1/evals/artifact", paths)
@@ -119,6 +121,35 @@ class AppRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 410)
         self.assertIn("Front mode to Eval", str(response.json().get("detail") or ""))
+
+    def test_front_live_run_route_creates_live_run(self) -> None:
+        previous = os.environ.get("LOOP_DATA_ROOT")
+        os.environ["LOOP_DATA_ROOT"] = str(self.paths.data)
+        try:
+            client = TestClient(create_app(self.root))
+            with unittest.mock.patch("backend.app.jobs.launch_loop_job_runner"):
+                response = client.post(
+                    "/v1/front/live/runs",
+                    json={
+                        "objective": "Route-level live run smoke.",
+                        "provider": "openai",
+                        "model": "gpt-5-mini",
+                        "summarizerProvider": "openai",
+                        "summarizerModel": "gpt-5-mini",
+                        "loopRounds": 1,
+                        "loopDelayMs": 0,
+                    },
+                )
+        finally:
+            if previous is None:
+                os.environ.pop("LOOP_DATA_ROOT", None)
+            else:
+                os.environ["LOOP_DATA_ROOT"] = previous
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(str(payload.get("runId") or "").startswith("live-"))
+        self.assertEqual(((payload.get("run") or {}) if isinstance(payload.get("run"), dict) else {}).get("canvas"), "live")
 
     def test_state_route_enriches_active_task_runtime_mirrors(self) -> None:
         self.paths.state.write_text(

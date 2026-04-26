@@ -29,6 +29,23 @@ The design goal is sparse, structured sharing. The workers should not stream eve
 
 ## Current Architecture
 
+### V1 Classification
+
+The currently confirmed pipeline is now treated as `V1`:
+
+- `User -> Commander -> Workers -> Commander Review -> Summarizer`
+- `Direct baseline`, `Answer Now`, and `Arbiter` remain sidecars or post-answer verification paths
+- V1 stays protected as the known-good execution contract while V2 is built in parallel
+
+### V2 Direction
+
+V2 starts as a modular engine track rather than an immediate runtime replacement:
+
+- expose an explicit `V1 / V2` engine switch in the shell
+- keep V1 execution intact
+- grow an interactive modular topology surface for packet, role, and gate tuning
+- make future spawned runs inherit those controls once the scheduler and packet recipe work is ready
+
 - `index.html`: local control panel and live state display
 - `assets/app.js`: frontend polling and command dispatch
 - `assets/app.css`: local styling
@@ -577,7 +594,7 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - hosted profiles default to `docker_secret`
   - `local_file` remains explicit fallback only
 - Provider key groups are now isolated for `openai`, `anthropic`, `xai`, and `minimax` across env, mounted-secret, external-provider, and local-file backends, so one vendor path never reuses another vendor's keys.
-- Provider groups can now resolve credentials independently through `Local` or `Safe` mode, which lets one vendor stay on shared local `Auth.txt` for testing while another vendor stays on the managed path.
+- Provider groups can now resolve credentials independently through `Local`, `Env`, or `DB` mode, which lets one vendor stay on shared local `Auth.txt` for testing while another vendor stays on environment-backed or external secret paths.
 - Live model calls now rotate to the next non-empty key on auth-style failures instead of binding one lane to one dead key for the rest of the run.
 - Managed secret backends now fail loudly when empty or unreachable, so live execution no longer drifts into file/env fallthrough or quiet mock fallback when the selected backend is degraded.
 
@@ -722,6 +739,40 @@ The design goal is sparse, structured sharing. The workers should not stream eve
   - provider key pools are leased explicitly and released explicitly, with visible queueing when demand exceeds available keys
   - provider-specific transport behavior stays behind adapters while the scheduler contract remains shared
   - operator surfaces can explain why a job is idle instead of looking dead
+
+### Milestone 10: Authoritative Domain Knowledge Tools and Specialist Adaptation
+
+- Goal:
+  - Build authoritative source-of-truth tooling for specialized domains without turning ParaLLM into a brittle per-provider or per-model science project
+- Why now:
+  - once the scheduler and modular graph are stable, the next leverage point is better evidence quality and better grounded specialist answers
+  - the fastest path to trustworthy specialist behavior is not weight-training first, but retrieval-first with provenance, abstention, and measurable factual lift
+- Scope:
+  - add a retrieval-first specialist knowledge path built around:
+    - versioned corpora
+    - source metadata
+    - citation-bearing retrieval
+    - explicit abstain / needs-review behavior when evidence is weak or conflicting
+  - let specialist knowledge blocks become first-class modules in the future V2 topology so operators can attach them only where they are needed
+  - build evals for specialist-tool quality:
+    - factuality
+    - citation accuracy
+    - omission rate
+    - contradiction handling
+    - operator usability
+  - add optional task-level tuning layers after retrieval is proven:
+    - prompt / harness tuning
+    - supervised fine-tuning for response format and behavior
+    - reinforcement-style tuning where expert grading is available
+  - treat true domain-adaptive pretraining or specialist-weight training as a later step only if:
+    - retrieval quality is already strong
+    - the economics are justified
+    - expert evals show retrieval plus tuning is still materially insufficient
+- Acceptance criteria:
+  - ParaLLM can answer against a specialist corpus with citations and explicit uncertainty instead of pretending the weights are authoritative
+  - specialist knowledge modules can be routed selectively instead of flooding every lane with niche literature
+  - evals can show whether specialist retrieval actually improves decisions enough to justify its cost and maintenance burden
+  - the roadmap remains retrieval-first, with specialist weight adaptation framed as an earned escalation rather than the default path
 
 ## Notes
 

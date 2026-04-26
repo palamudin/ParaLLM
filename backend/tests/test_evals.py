@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from backend.app import evals
+from backend.app import evals, jobs, storage
 from runtime.engine import RuntimeErrorWithCode
 
 
@@ -109,6 +109,7 @@ class EvalTests(unittest.TestCase):
             "model": "gpt-5-mini",
             "summarizerProvider": "openai",
             "summarizerModel": "gpt-5-mini",
+            "engineVersion": "v2",
             "directProvider": "openai",
             "directModel": "gpt-5-mini",
             "contextMode": "full",
@@ -143,6 +144,180 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(result["run"]["judgeModel"], "gpt-5.4")
         self.assertTrue((self.root / "data" / "evals" / "runs" / result["runId"] / "run.json").is_file())
         launch_runner.assert_called_once()
+
+    def test_start_front_live_run_creates_live_run_record(self) -> None:
+        payload = {
+            "objective": "Run the live scheduler through the main lane.",
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "summarizerProvider": "openai",
+            "summarizerModel": "gpt-5-mini",
+            "engineVersion": "v2",
+            "loopRounds": 2,
+            "loopDelayMs": 0,
+            "workers": [
+                {"id": "A", "type": "proponent", "label": "Proponent", "role": "utility", "focus": "benefits", "temperature": "balanced", "model": "gpt-5-mini"}
+            ],
+        }
+        with mock.patch("backend.app.jobs.launch_loop_job_runner") as launcher:
+            result = evals.start_front_live_run(payload, self.root)
+
+        self.assertEqual(result["run"]["canvas"], "live")
+        self.assertTrue(str(result["runId"]).startswith("live-"))
+        self.assertTrue((self.root / "data" / "evals" / "runs" / result["runId"] / "run.json").is_file())
+        self.assertEqual(result["run"]["status"], "queued")
+        self.assertEqual(result["run"]["summary"]["caseCount"], 1)
+        stored_run = storage.read_eval_run(storage.project_paths(self.root), str(result["runId"]))
+        self.assertEqual(stored_run["live"]["engineVersion"], "v2")
+        launcher.assert_called_once()
+
+    def test_sync_front_live_run_tracks_loop_completion(self) -> None:
+        payload = {
+            "objective": "Complete one live lane run.",
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "summarizerProvider": "openai",
+            "summarizerModel": "gpt-5-mini",
+            "loopRounds": 1,
+            "loopDelayMs": 0,
+        }
+        with mock.patch("backend.app.jobs.launch_loop_job_runner"):
+            result = evals.start_front_live_run(payload, self.root)
+
+        run_id = str(result["runId"])
+        task_id = str(result["taskId"])
+        loop_job_id = str(result["jobId"])
+        runtime = jobs._runtime(self.root)
+
+        with runtime.with_lock():
+            state = runtime.read_state_unlocked()
+            state["usage"] = {
+                **storage.default_usage_state(),
+                "totalTokens": 4321,
+                "estimatedCostUsd": 0.123,
+            }
+            state["loop"] = {
+                **storage.default_loop_state(),
+                "status": "completed",
+                "jobId": loop_job_id,
+                "completedRounds": 1,
+                "currentRound": 0,
+                "lastMessage": "Completed 1 round(s).",
+                "finishedAt": storage.utc_now(),
+            }
+            runtime.write_state_unlocked(state)
+            job = runtime.read_job_unlocked(loop_job_id)
+            runtime.write_job_unlocked(
+                storage.default_job(
+                    {
+                        **(job or {}),
+                        "jobId": loop_job_id,
+                        "taskId": task_id,
+                        "status": "completed",
+                        "startedAt": storage.utc_now(),
+                        "finishedAt": storage.utc_now(),
+                        "usage": state["usage"],
+                        "lastMessage": "Completed 1 round(s).",
+                    }
+                )
+            )
+
+        synced = evals.sync_front_live_run(run_id, self.root)
+        self.assertIsInstance(synced, dict)
+        self.assertEqual(synced["status"], "completed")
+        self.assertEqual(int((synced.get("summary") or {}).get("totalTokens") or 0), 4321)
+        self.assertAlmostEqual(float((synced.get("summary") or {}).get("estimatedCostUsd") or 0.0), 0.123, places=6)
+
+    def test_sync_front_live_run_prefers_task_scoped_state(self) -> None:
+        payload = {
+            "objective": "Use task-scoped live state.",
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "summarizerProvider": "openai",
+            "summarizerModel": "gpt-5-mini",
+            "loopRounds": 1,
+            "loopDelayMs": 0,
+        }
+        with mock.patch("backend.app.jobs.launch_loop_job_runner"):
+            result = evals.start_front_live_run(payload, self.root)
+
+        run_id = str(result["runId"])
+        task_id = str(result["taskId"])
+        loop_job_id = str(result["jobId"])
+        runtime = jobs._runtime(self.root)
+        task = storage.read_task_snapshot(task_id, storage.project_paths(self.root))
+        self.assertIsInstance(task, dict)
+
+        with runtime.with_lock():
+            runtime.initialize_task_state_unlocked(
+                task,
+                {
+                    **storage.default_state(),
+                    "activeTask": task,
+                    "usage": {
+                        **storage.default_usage_state(),
+                        "totalTokens": 9876,
+                        "estimatedCostUsd": 0.456,
+                    },
+                    "loop": {
+                        **storage.default_loop_state(),
+                        "status": "completed",
+                        "jobId": loop_job_id,
+                        "completedRounds": 1,
+                        "lastMessage": "Scoped loop completed.",
+                        "finishedAt": storage.utc_now(),
+                    },
+                },
+            )
+            global_state = runtime.read_state_unlocked()
+            global_state["activeTask"] = None
+            global_state["usage"] = {
+                **storage.default_usage_state(),
+                "totalTokens": 12,
+                "estimatedCostUsd": 0.001,
+            }
+            global_state["loop"] = storage.default_loop_state()
+            runtime.write_state_unlocked(global_state)
+            job = runtime.read_job_unlocked(loop_job_id)
+            runtime.write_job_unlocked(
+                storage.default_job(
+                    {
+                        **(job or {}),
+                        "jobId": loop_job_id,
+                        "taskId": task_id,
+                        "status": "completed",
+                        "finishedAt": storage.utc_now(),
+                        "usage": {
+                            **storage.default_usage_state(),
+                            "totalTokens": 111,
+                            "estimatedCostUsd": 0.222,
+                        },
+                    }
+                )
+            )
+
+        synced = evals.sync_front_live_run(run_id, self.root)
+        self.assertIsInstance(synced, dict)
+        self.assertEqual(synced["status"], "completed")
+        self.assertEqual(int((synced.get("summary") or {}).get("totalTokens") or 0), 9876)
+        self.assertAlmostEqual(float((synced.get("summary") or {}).get("estimatedCostUsd") or 0.0), 0.456, places=6)
+
+    def test_start_front_live_run_can_queue_while_another_live_run_exists(self) -> None:
+        payload = {
+            "objective": "Queue a live run.",
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "summarizerProvider": "openai",
+            "summarizerModel": "gpt-5-mini",
+            "loopRounds": 1,
+            "loopDelayMs": 0,
+        }
+        with mock.patch("backend.app.jobs.launch_loop_job_runner"):
+            first = evals.start_front_live_run(payload, self.root)
+            second = evals.start_front_live_run({**payload, "objective": "Queue a second live run."}, self.root)
+
+        self.assertNotEqual(str(first["taskId"]), str(second["taskId"]))
+        self.assertNotEqual(str(first["runId"]), str(second["runId"]))
 
 
 if __name__ == "__main__":

@@ -135,6 +135,146 @@ const DEFAULT_TARGET_TIMEOUTS = {
   answerNow: 180,
   arbiter: 180
 };
+const ENGINE_V2_NODE_LIBRARY = {
+  prompt: {
+    moduleType: "prompt",
+    label: "Prompt ingress",
+    kicker: "Input",
+    meta: "objective + constraints",
+    enabled: true,
+    protected: true,
+    blockingMode: "blocking",
+    packetMode: "full",
+    x: 28,
+    y: 32,
+    width: 208,
+    spawnCount: 1
+  },
+  activator: {
+    moduleType: "activator",
+    label: "Main activator",
+    kicker: "Lead thread",
+    meta: "sets direction and asks for pressure",
+    enabled: true,
+    protected: true,
+    blockingMode: "blocking",
+    packetMode: "full",
+    x: 290,
+    y: 32,
+    width: 236,
+    spawnCount: 1
+  },
+  workers: {
+    moduleType: "workers",
+    label: "Adversarial lanes",
+    kicker: "Pressure mesh",
+    meta: "spawnable packet-driven workers",
+    enabled: true,
+    protected: true,
+    blockingMode: "blocking",
+    packetMode: "weighted",
+    x: 116,
+    y: 196,
+    width: 230,
+    spawnCount: 3
+  },
+  review: {
+    moduleType: "review",
+    label: "Review / redirect",
+    kicker: "Control gate",
+    meta: "accept or redirect pressure",
+    enabled: true,
+    protected: true,
+    blockingMode: "blocking",
+    packetMode: "full",
+    x: 432,
+    y: 196,
+    width: 236,
+    spawnCount: 1
+  },
+  tools: {
+    moduleType: "tools",
+    label: "Capability plane",
+    kicker: "Tools",
+    meta: "research, local, GitHub",
+    enabled: true,
+    protected: true,
+    blockingMode: "optional",
+    packetMode: "on-demand",
+    x: 824,
+    y: 32,
+    width: 212,
+    spawnCount: 1
+  },
+  answerNow: {
+    moduleType: "answerNow",
+    label: "Answer now",
+    kicker: "Sidecar",
+    meta: "non-blocking partial answer",
+    enabled: true,
+    protected: true,
+    blockingMode: "sidecar",
+    packetMode: "compact",
+    x: 676,
+    y: 382,
+    width: 200,
+    spawnCount: 1
+  },
+  final: {
+    moduleType: "final",
+    label: "Final answer",
+    kicker: "Output",
+    meta: "single accountable voice",
+    enabled: true,
+    protected: true,
+    blockingMode: "blocking",
+    packetMode: "merge",
+    x: 840,
+    y: 196,
+    width: 204,
+    spawnCount: 1
+  },
+  judge: {
+    moduleType: "judge",
+    label: "Judge tap",
+    kicker: "Verify",
+    meta: "blind vetting and scoring",
+    enabled: true,
+    protected: true,
+    blockingMode: "post",
+    packetMode: "blind",
+    x: 904,
+    y: 382,
+    width: 184,
+    spawnCount: 1
+  }
+};
+const ENGINE_V2_DEFAULT_EDGES = [
+  { from: "prompt", to: "activator", label: "prompt" },
+  { from: "activator", to: "workers", label: "pressure" },
+  { from: "tools", to: "workers", label: "tools" },
+  { from: "workers", to: "review", label: "checkpoints" },
+  { from: "activator", to: "review", label: "course" },
+  { from: "review", to: "answerNow", label: "sidecar" },
+  { from: "review", to: "final", label: "merge" },
+  { from: "answerNow", to: "final", label: "early view" },
+  { from: "final", to: "judge", label: "verify" }
+];
+const ENGINE_V2_BLOCKING_MODES = [
+  { value: "blocking", label: "Blocking" },
+  { value: "sidecar", label: "Sidecar" },
+  { value: "optional", label: "Optional" },
+  { value: "post", label: "Post" }
+];
+const ENGINE_V2_PACKET_MODES = [
+  { value: "full", label: "Full" },
+  { value: "weighted", label: "Weighted" },
+  { value: "compact", label: "Compact" },
+  { value: "merge", label: "Merge" },
+  { value: "on-demand", label: "On-demand" },
+  { value: "blind", label: "Blind" },
+  { value: "none", label: "None" }
+];
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
 const WORKER_SLOT_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WORKER_TYPE_CATALOG = {
@@ -257,7 +397,7 @@ let latestAuthStatus = {
   deprecated: false,
   preferredBackends: ["env", "external"],
   recommendedBackend: "env",
-  defaultMode: "safe",
+  defaultMode: "env",
   statusNote: "",
   rotationPolicy: null,
   providerOrder: ["openai", "anthropic", "xai", "minimax"],
@@ -278,6 +418,11 @@ let formDirty = false;
 let lastSyncedFormSourceKey = "";
 let activeView = localStorage.getItem("loopActiveView") || "home";
 let activeFrontCanvas = localStorage.getItem("loopActiveFrontCanvas") || "live";
+let activeTopologyV2Node = localStorage.getItem("loopActiveTopologyV2Node") || "activator";
+let activeEngineGraph = null;
+let topologyV2PendingSource = "";
+let topologyV2DragState = null;
+let topologyNodeModalState = { nodeId: "" };
 let sidebarCollapsed = localStorage.getItem("loopSidebarCollapsed") === "1";
 let activeTheme = localStorage.getItem("loopTheme") || "dark";
 let mobileSidebarOpen = false;
@@ -330,6 +475,7 @@ const API = {
   authMode: "/v1/auth/mode",
   evalArtifact: "/v1/evals/artifact",
   evalHistory: "/v1/evals/history",
+  frontLiveRuns: "/v1/front/live/runs",
   frontEvalRuns: "/v1/front/eval/runs",
   frontJudgeRuns: "/v1/front/judge/runs",
   exportSession: "/v1/session/export",
@@ -773,6 +919,8 @@ function defaultDraftState() {
     sessionContext: "",
     executionMode: "live",
     frontMode: "full",
+    engineVersion: "v1",
+    engineGraph: defaultEngineGraph(),
     contextMode: "weighted",
     directBaselineMode: "off",
     provider: "openai",
@@ -819,6 +967,228 @@ function shouldShowOllamaBaseUrl(workerProvider, summarizerProvider) {
 function normalizeContextMode(value) {
   const raw = String(value || "").trim().toLowerCase();
   return raw === "full" ? "full" : "weighted";
+}
+
+function normalizeEngineVersion(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "v2" ? "v2" : "v1";
+}
+
+function engineVersionLabel(value) {
+  return normalizeEngineVersion(value) === "v2" ? "V2 modular" : "V1 proven";
+}
+
+function defaultEngineGraph() {
+  const nodes = {};
+  Object.keys(ENGINE_V2_NODE_LIBRARY).forEach(function (nodeId) {
+    nodes[nodeId] = Object.assign({ id: nodeId }, ENGINE_V2_NODE_LIBRARY[nodeId]);
+  });
+  return {
+    version: "v2",
+    nodes: nodes,
+    edges: ENGINE_V2_DEFAULT_EDGES.map(function (edge) { return Object.assign({}, edge); })
+  };
+}
+
+function cloneEngineGraph(graph) {
+  return safeJsonParse(JSON.stringify(graph || defaultEngineGraph()), defaultEngineGraph());
+}
+
+function normalizeEngineNodeId(value) {
+  return String(value || "").trim().replace(/[^a-zA-Z0-9_-]+/g, "");
+}
+
+function engineNodeTemplate(moduleType, fallbackId = "") {
+  const normalized = normalizeEngineNodeId(moduleType) || "workers";
+  const base = ENGINE_V2_NODE_LIBRARY[normalized] || ENGINE_V2_NODE_LIBRARY.workers;
+  return Object.assign({ id: normalizeEngineNodeId(fallbackId) || normalized }, base, { moduleType: normalized });
+}
+
+function normalizeEngineGraphNode(nodeId, rawNode, fallbackNode = null) {
+  const normalizedId = normalizeEngineNodeId(nodeId);
+  if (!normalizedId) return null;
+  const base = Object.assign({}, fallbackNode || engineNodeTemplate((rawNode && rawNode.moduleType) || normalizedId, normalizedId));
+  const source = rawNode && typeof rawNode === "object" ? rawNode : {};
+  return {
+    id: normalizedId,
+    moduleType: normalizeEngineNodeId(source.moduleType || base.moduleType || normalizedId) || normalizedId,
+    label: String(source.label || base.label || normalizedId).trim() || normalizedId,
+    kicker: String(source.kicker || base.kicker || "Module").trim() || "Module",
+    meta: String(source.meta || base.meta || "").trim(),
+    enabled: source.enabled !== false,
+    protected: source.protected !== undefined ? !!source.protected : !!base.protected,
+    blockingMode: String(source.blockingMode || base.blockingMode || "blocking").trim() || "blocking",
+    packetMode: String(source.packetMode || base.packetMode || "full").trim() || "full",
+    x: Math.max(0, Math.min(1800, parseInt(source.x ?? base.x ?? 0, 10) || 0)),
+    y: Math.max(0, Math.min(1200, parseInt(source.y ?? base.y ?? 0, 10) || 0)),
+    width: Math.max(168, Math.min(360, parseInt(source.width ?? base.width ?? 208, 10) || 208)),
+    spawnCount: Math.max(1, Math.min(12, parseInt(source.spawnCount ?? base.spawnCount ?? 1, 10) || 1))
+  };
+}
+
+function normalizeEngineGraph(graph) {
+  const source = graph && typeof graph === "object" ? graph : {};
+  const defaultGraph = defaultEngineGraph();
+  const sourceNodes = source.nodes && typeof source.nodes === "object" ? source.nodes : {};
+  const sourceEdges = Array.isArray(source.edges) ? source.edges : [];
+  const nodes = {};
+
+  Object.keys(defaultGraph.nodes).forEach(function (nodeId) {
+    const normalized = normalizeEngineGraphNode(nodeId, sourceNodes[nodeId], defaultGraph.nodes[nodeId]);
+    if (normalized) nodes[nodeId] = normalized;
+  });
+
+  Object.keys(sourceNodes).forEach(function (nodeId) {
+    if (nodes[nodeId]) return;
+    const normalized = normalizeEngineGraphNode(nodeId, sourceNodes[nodeId], null);
+    if (normalized) nodes[nodeId] = normalized;
+  });
+
+  const edges = [];
+  const seen = new Set();
+  (sourceEdges.length ? sourceEdges : defaultGraph.edges).forEach(function (edge) {
+    if (!edge || typeof edge !== "object") return;
+    const from = normalizeEngineNodeId(edge.from);
+    const to = normalizeEngineNodeId(edge.to);
+    if (!from || !to || from === to || !nodes[from] || !nodes[to]) return;
+    const label = String(edge.label || "").trim();
+    const edgeKey = [from, to, label].join("|");
+    if (seen.has(edgeKey)) return;
+    seen.add(edgeKey);
+    edges.push({ from: from, to: to, label: label });
+  });
+
+  return {
+    version: "v2",
+    nodes: nodes,
+    edges: edges.length ? edges : defaultGraph.edges.map(function (edge) { return Object.assign({}, edge); })
+  };
+}
+
+function selectedEngineGraph(task = null, draft = null) {
+  if (activeEngineGraph && typeof activeEngineGraph === "object") {
+    return normalizeEngineGraph(activeEngineGraph);
+  }
+  return normalizeEngineGraph(
+    draft?.engineGraph
+    || task?.runtime?.engineGraph
+    || defaultEngineGraph()
+  );
+}
+
+function setActiveEngineGraph(graph, options = {}) {
+  activeEngineGraph = normalizeEngineGraph(graph);
+  if (options.markDirty !== false) {
+    formDirty = true;
+  }
+  if (options.rerender !== false && latestState) {
+    updateTopologyPanel(latestState.activeTask || null, latestState.loop || null, latestState);
+    renderHomeRuntimeControls(latestState.activeTask || null, latestState.draft || null, latestState.loop || null);
+  }
+}
+
+function nextEngineGraphNodeId(moduleType, graph) {
+  const normalizedType = normalizeEngineNodeId(moduleType) || "workers";
+  const current = normalizeEngineGraph(graph);
+  let index = 2;
+  let candidate = normalizedType;
+  while (current.nodes[candidate]) {
+    candidate = normalizedType + "_" + index;
+    index += 1;
+  }
+  return candidate;
+}
+
+function defaultEngineEdgeLabel(fromNode, toNode) {
+  const fromType = normalizeEngineNodeId(fromNode?.moduleType || fromNode?.id);
+  const toType = normalizeEngineNodeId(toNode?.moduleType || toNode?.id);
+  if (fromType === "tools") return "tools";
+  if (toType === "judge") return "verify";
+  if (toType === "answerNow") return "sidecar";
+  if (toType === "final") return "merge";
+  if (toType === "review") return "checkpoints";
+  if (fromType === "prompt") return "prompt";
+  if (fromType === "activator") return "course";
+  return "link";
+}
+
+function addEngineGraphEdge(graph, fromNodeId, toNodeId, label = "") {
+  const nextGraph = normalizeEngineGraph(graph);
+  const from = normalizeEngineNodeId(fromNodeId);
+  const to = normalizeEngineNodeId(toNodeId);
+  if (!from || !to || from === to || !nextGraph.nodes[from] || !nextGraph.nodes[to]) return nextGraph;
+  const finalLabel = String(label || defaultEngineEdgeLabel(nextGraph.nodes[from], nextGraph.nodes[to])).trim();
+  const exists = nextGraph.edges.some(function (edge) {
+    return edge.from === from && edge.to === to && String(edge.label || "") === finalLabel;
+  });
+  if (!exists) {
+    nextGraph.edges.push({ from: from, to: to, label: finalLabel });
+  }
+  return nextGraph;
+}
+
+function removeEngineGraphEdge(graph, edgeIndex) {
+  const nextGraph = normalizeEngineGraph(graph);
+  nextGraph.edges = nextGraph.edges.filter(function (_edge, index) {
+    return index !== edgeIndex;
+  });
+  return nextGraph;
+}
+
+function duplicateEngineGraphNode(graph, nodeId) {
+  const current = normalizeEngineGraph(graph);
+  const sourceNode = current.nodes[normalizeEngineNodeId(nodeId)];
+  if (!sourceNode) return current;
+  const nextId = nextEngineGraphNodeId(sourceNode.moduleType, current);
+  const duplicated = normalizeEngineGraphNode(nextId, {
+    moduleType: sourceNode.moduleType,
+    label: sourceNode.label + " copy",
+    kicker: sourceNode.kicker,
+    meta: sourceNode.meta,
+    enabled: sourceNode.enabled,
+    protected: false,
+    blockingMode: sourceNode.blockingMode,
+    packetMode: sourceNode.packetMode,
+    x: sourceNode.x + 36,
+    y: sourceNode.y + 36,
+    width: sourceNode.width,
+    spawnCount: sourceNode.spawnCount
+  });
+  current.nodes[nextId] = duplicated;
+  return current;
+}
+
+function appendEngineGraphNode(graph, moduleType = "workers") {
+  const current = normalizeEngineGraph(graph);
+  const normalizedType = normalizeEngineNodeId(moduleType) || "workers";
+  const template = engineNodeTemplate(normalizedType);
+  const nextId = nextEngineGraphNodeId(normalizedType, current);
+  const sameTypeCount = Object.values(current.nodes).filter(function (node) {
+    return normalizeEngineNodeId(node?.moduleType) === normalizedType;
+  }).length;
+  current.nodes[nextId] = normalizeEngineGraphNode(nextId, Object.assign({}, template, {
+    protected: false,
+    label: template.label + " " + (sameTypeCount + 1),
+    x: template.x + (sameTypeCount * 34),
+    y: template.y + (sameTypeCount * 26)
+  }));
+  return current;
+}
+
+function removeEngineGraphNode(graph, nodeId) {
+  const current = normalizeEngineGraph(graph);
+  const normalizedId = normalizeEngineNodeId(nodeId);
+  const node = current.nodes[normalizedId];
+  if (!node || node.protected) return current;
+  delete current.nodes[normalizedId];
+  current.edges = current.edges.filter(function (edge) {
+    return edge.from !== normalizedId && edge.to !== normalizedId;
+  });
+  if (activeTopologyV2Node === normalizedId) {
+    activeTopologyV2Node = "activator";
+    localStorage.setItem("loopActiveTopologyV2Node", activeTopologyV2Node);
+  }
+  return current;
 }
 
 function clampTimeoutSeconds(value, fallback) {
@@ -2120,6 +2490,8 @@ function buildCommanderFormSource(task, draft) {
         JSON.stringify(safeDraft.constraints || []),
         safeDraft.executionMode || "live",
         safeDraft.frontMode || "full",
+        safeDraft.engineVersion || "v1",
+        JSON.stringify(normalizeEngineGraph(safeDraft.engineGraph || defaultEngineGraph())),
         safeDraft.contextMode || "weighted",
         safeDraft.directBaselineMode || "off",
         safeDraft.provider || "openai",
@@ -2162,6 +2534,8 @@ function buildCommanderFormSource(task, draft) {
         JSON.stringify(task.constraints || []),
         task.runtime?.executionMode || "live",
         task.runtime?.frontMode || "full",
+        task.runtime?.engineVersion || "v1",
+        JSON.stringify(normalizeEngineGraph(task.runtime?.engineGraph || defaultEngineGraph())),
         task.runtime?.contextMode || "weighted",
         task.runtime?.directBaselineMode || "off",
         task.runtime?.provider || "openai",
@@ -2196,6 +2570,8 @@ function buildCommanderFormSource(task, draft) {
         sessionContext: task.sessionContext || "",
         executionMode: task.runtime?.executionMode || "live",
         frontMode: task.runtime?.frontMode || "full",
+        engineVersion: task.runtime?.engineVersion || "v1",
+        engineGraph: normalizeEngineGraph(task.runtime?.engineGraph || defaultEngineGraph()),
         contextMode: task.runtime?.contextMode || "weighted",
         directBaselineMode: task.runtime?.directBaselineMode || "off",
         provider: task.runtime?.provider || "openai",
@@ -2251,6 +2627,8 @@ function applyCommanderForm(values) {
   $("#constraints").val((safe.constraints || []).join("\n"));
   $("#executionMode").val(safe.executionMode || "live");
   $("#frontMode").val(normalizeFrontMode(safe.frontMode));
+  syncEngineVersionSwitch(normalizeEngineVersion(safe.engineVersion));
+  activeEngineGraph = normalizeEngineGraph(safe.engineGraph || defaultEngineGraph());
   $("#contextMode").val(normalizeContextMode(safe.contextMode));
   $("#directBaselineMode").val(normalizeDirectBaselineMode(safe.directBaselineMode));
   $("#provider").val(workerProvider);
@@ -2305,6 +2683,8 @@ function collectCommanderPayload() {
     constraints: $("#constraints").val().split(/\r?\n/).map(function (x) { return x.trim(); }).filter(Boolean),
     executionMode: $("#executionMode").val(),
     frontMode: normalizeFrontMode($("#frontMode").val()),
+    engineVersion: selectedEngineVersion(latestState?.activeTask || null, latestState?.draft || null),
+    engineGraph: JSON.stringify(selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null)),
     contextMode: normalizeContextMode($("#contextMode").val()),
     directBaselineMode: normalizeDirectBaselineMode($("#directBaselineMode").val()),
     provider: $("#provider").val(),
@@ -2414,6 +2794,8 @@ function buildFrontCanvasRuntimePayload() {
   const summarizerConfig = collectVisibleSummarizerConfig();
   return {
     executionMode: String(base.executionMode || "live"),
+    engineVersion: normalizeEngineVersion(base.engineVersion || selectedEngineVersion(latestState?.activeTask || null, latestState?.draft || null)),
+    engineGraph: selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null),
     contextMode: normalizeContextMode(base.contextMode),
     provider: String(base.provider || "openai"),
     model: String(base.model || ""),
@@ -2472,6 +2854,8 @@ function buildQualityProfileSnapshot() {
   const summarizerSource = collectVisibleSummarizerConfig();
   return {
     frontMode: normalizeFrontMode(payload.frontMode),
+    engineVersion: normalizeEngineVersion(payload.engineVersion),
+    engineGraphSignature: JSON.stringify(selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null)),
     contextMode: normalizeContextMode(payload.contextMode),
     directBaselineMode: normalizeDirectBaselineMode(payload.directBaselineMode),
     provider: String(payload.provider || "openai"),
@@ -2526,6 +2910,8 @@ function buildTaskQualityProfileSnapshot(task) {
   const budget = task?.runtime?.budget || {};
   return {
     frontMode: normalizeFrontMode(task?.runtime?.frontMode),
+    engineVersion: normalizeEngineVersion(task?.runtime?.engineVersion),
+    engineGraphSignature: JSON.stringify(normalizeEngineGraph(task?.runtime?.engineGraph || defaultEngineGraph())),
     contextMode: normalizeContextMode(task?.runtime?.contextMode),
     directBaselineMode: normalizeDirectBaselineMode(task?.runtime?.directBaselineMode),
     provider: String(task?.runtime?.provider || "openai"),
@@ -2559,6 +2945,8 @@ function formatTokenWall(value) {
 function runtimeSnapshotsMatch(left, right) {
   if (!left || !right) return false;
   if (normalizeFrontMode(left.frontMode) !== normalizeFrontMode(right.frontMode)) return false;
+  if (normalizeEngineVersion(left.engineVersion) !== normalizeEngineVersion(right.engineVersion)) return false;
+  if (String(left.engineGraphSignature || "") !== String(right.engineGraphSignature || "")) return false;
   if (normalizeContextMode(left.contextMode) !== normalizeContextMode(right.contextMode)) return false;
   if (normalizeDirectBaselineMode(left.directBaselineMode) !== normalizeDirectBaselineMode(right.directBaselineMode)) return false;
   if (normalizeProviderId(left.provider) !== normalizeProviderId(right.provider)) return false;
@@ -3010,16 +3398,350 @@ function setTopologyNodeState(nodeId, metaId, stateKey, metaText) {
   }
 }
 
-function updateTopologyPanel(task, loop, state) {
+function topologyV2CanvasMetrics() {
+  const canvas = document.querySelector(".topology-canvas-v2");
+  if (!canvas) return { width: 1080, height: 540 };
+  const rect = canvas.getBoundingClientRect();
+  return {
+    width: Math.max(820, Math.round(rect.width || 1080)),
+    height: Math.max(520, Math.round(rect.height || 540))
+  };
+}
+
+function clampTopologyNodePosition(node, metrics) {
+  const width = Math.max(168, Math.min(360, parseInt(node?.width ?? 208, 10) || 208));
+  const height = 124;
+  return {
+    x: Math.max(6, Math.min((metrics?.width || 1080) - width - 10, parseInt(node?.x ?? 0, 10) || 0)),
+    y: Math.max(48, Math.min((metrics?.height || 540) - height - 12, parseInt(node?.y ?? 0, 10) || 0)),
+    width: width
+  };
+}
+
+function topologyV2NodeRuntime(node, context) {
+  const moduleType = normalizeEngineNodeId(node?.moduleType || node?.id);
+  const activeTargets = context.activeTargets || [];
+  const workerIds = context.workerIds || [];
+  const providerTraceText = context.providerTraceText || "provider-neutral orchestration";
+  const busy = !!context.busy;
+  const nodeEnabled = node?.enabled !== false;
+  const base = {
+    state: nodeEnabled ? "ready" : "idle",
+    title: String(node?.label || moduleType || "Block"),
+    kicker: String(node?.kicker || "Module"),
+    meta: String(node?.meta || ""),
+    stat: String(node?.packetMode || "full").toUpperCase(),
+    details: []
+  };
+
+  switch (moduleType) {
+    case "prompt":
+      base.state = context.objectiveReady ? (nodeEnabled ? "ready" : "idle") : "idle";
+      base.meta = context.objectiveReady ? "objective + constraints staged" : "waiting on operator prompt";
+      base.stat = context.objectiveReady ? "READY" : "IDLE";
+      base.details = [
+        "Ingress for the user objective, constraints, and session context.",
+        "V2 keeps this separate so future runs can tune what the first activation packet contains."
+      ];
+      break;
+    case "activator":
+      base.state = activeTargets.includes("commander") || activeTargets.includes("commander_review")
+        ? "active"
+        : ((context.commanderStarted || context.reviewStarted) ? "ready" : "waiting");
+      base.meta = base.state === "active" ? providerTraceText : "sets direction and asks for pressure";
+      base.stat = base.state === "active" ? "LIVE" : "V1 CORE";
+      base.details = [
+        "Current V1 chain: User -> Commander -> Workers -> Commander Review -> Summarizer.",
+        "V2 is where activators will be able to feed child adversarial chains instead of only a flat worker fan-out."
+      ];
+      break;
+    case "workers":
+      base.state = workerIds.length ? "active" : (context.workerCount ? (busy ? "waiting" : "ready") : "idle");
+      base.meta = workerIds.length
+        ? ("active " + workerIds.join(", "))
+        : ((node?.spawnCount || context.workerCount || 1) + " linked lane" + ((node?.spawnCount || context.workerCount || 1) === 1 ? "" : "s"));
+      base.stat = String(node?.spawnCount || context.workerCount || 1) + " LANE" + ((node?.spawnCount || context.workerCount || 1) === 1 ? "" : "S");
+      base.details = [
+        "Worker blocks are the first V2 module family that should split and chain visually.",
+        "Today these links are editable and persisted, while execution still falls back to the V1 worker mesh."
+      ];
+      break;
+    case "review":
+      base.state = activeTargets.includes("commander_review")
+        ? "active"
+        : ((context.reviewStarted || context.commanderStarted) ? "ready" : "waiting");
+      base.meta = base.state === "active" ? providerTraceText : "accept, reject, or redirect pressure";
+      base.stat = context.reviewStarted ? "AUDITED" : "PENDING";
+      base.details = [
+        "Commander review remains the main course-correction gate in V1.",
+        "It is still a major payload and latency target for V2 decomposition."
+      ];
+      break;
+    case "tools":
+      base.state = context.toolActive ? "active" : (context.toolEnabled ? "ready" : "idle");
+      base.meta = context.toolEnabled ? "local, GitHub, and research gates" : "disabled for this staged mix";
+      base.stat = context.toolEnabled ? "ON" : "OFF";
+      base.details = [
+        "Tool links can be rewired manually so only specific modules inherit capability access.",
+        "Current execution still respects the proven V1 provider capability gates."
+      ];
+      break;
+    case "answerNow":
+      base.state = activeTargets.includes("answer_now") ? "active" : ((context.directEnabled || nodeEnabled) ? "ready" : "idle");
+      base.meta = activeTargets.includes("answer_now") ? "non-blocking partial answer is running" : "feature sidecar, not a loop barrier";
+      base.stat = context.directEnabled ? "COMPARE READY" : "OPTIONAL";
+      base.details = [
+        "Answer Now is now a feature sidecar rather than a round blocker.",
+        "This makes it a good candidate for more modular auxiliary outputs later."
+      ];
+      break;
+    case "final":
+      base.state = activeTargets.includes("summarizer") ? "active" : (context.summaryReady ? "ready" : (busy ? "waiting" : "idle"));
+      base.meta = activeTargets.includes("summarizer") ? providerTraceText : (context.summaryReady ? "summary artifact available" : "single accountable voice");
+      base.stat = context.summaryReady ? "READY" : "MERGE";
+      base.details = [
+        "This block is the public answer delivery layer.",
+        "A future V2 split will likely separate final answer delivery from appendix and audit expansion."
+      ];
+      break;
+    case "judge":
+      base.state = context.judgeReady ? "ready" : "idle";
+      base.meta = context.judgeReady ? "blind vetting and score matrix available" : "judge disabled";
+      base.stat = context.judgeReady ? "READY" : "OFF";
+      base.details = [
+        "Judge stays external and impartial so scoring remains detached from answer synthesis.",
+        "This path is where broader A/B/C comparative vetting belongs."
+      ];
+      break;
+    default:
+      base.details = [
+        "Custom V2 block.",
+        "This module is stored with the task so spawned future runs can inherit the graph recipe."
+      ];
+      break;
+  }
+  if (!nodeEnabled) {
+    base.state = "idle";
+    base.stat = "OFF";
+  }
+  return base;
+}
+
+function renderTopologyV2NodeLayer(graph, nodeStates) {
+  const metrics = topologyV2CanvasMetrics();
+  const nodes = graph?.nodes || {};
+  const keys = Object.keys(nodes);
+  const selectedKey = nodes[activeTopologyV2Node] ? activeTopologyV2Node : keys[0] || "activator";
+  selectTopologyV2Node(selectedKey);
+  const html = keys.map(function (nodeId) {
+    const node = nodes[nodeId];
+    const state = nodeStates[nodeId] || {};
+    const position = clampTopologyNodePosition(node, metrics);
+    const classes = [
+      "topology-v2-node",
+      "is-" + String(state.state || "ready"),
+      node.enabled === false ? "is-disabled" : "",
+      nodeId === activeTopologyV2Node ? "selected" : "",
+      topologyV2PendingSource === nodeId ? "is-connecting" : ""
+    ].filter(Boolean).join(" ");
+    return `
+      <div class="${classes}" data-topology-node="${escapeHtml(nodeId)}" data-node-type="${escapeHtml(node.moduleType || nodeId)}" style="left:${position.x}px; top:${position.y}px; width:${position.width}px;">
+        <button type="button" class="topology-v2-handle topology-v2-handle-in" data-handle-kind="in" data-node-id="${escapeHtml(nodeId)}" title="Link into ${escapeHtml(node.label)}" aria-label="Link into ${escapeHtml(node.label)}">IN</button>
+        <button type="button" class="topology-v2-handle topology-v2-handle-out" data-handle-kind="out" data-node-id="${escapeHtml(nodeId)}" title="Link out from ${escapeHtml(node.label)}" aria-label="Link out from ${escapeHtml(node.label)}">OUT</button>
+        <button type="button" class="topology-v2-node-config" data-node-config="${escapeHtml(nodeId)}" aria-label="Configure ${escapeHtml(node.label)}">Edit</button>
+        <div class="topology-v2-node-surface">
+          <span class="topology-v2-node-kicker">${escapeHtml(state.kicker || node.kicker || "Module")}</span>
+          <span class="topology-v2-node-title">${escapeHtml(state.title || node.label || nodeId)}</span>
+          <span class="topology-v2-node-meta">${escapeHtml(state.meta || node.meta || "")}</span>
+          <span class="topology-v2-node-stat">${escapeHtml(state.stat || String(node.packetMode || "FULL").toUpperCase())}</span>
+          <span class="topology-v2-node-type">${escapeHtml(String(node.moduleType || nodeId))} | ${escapeHtml(String(node.blockingMode || "blocking"))}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+  $("#topologyV2NodeLayer").html(html);
+}
+
+function renderTopologyV2Edges(graph) {
+  const svg = document.getElementById("topologyV2Links");
+  const layer = document.getElementById("topologyV2NodeLayer");
+  if (!svg || !layer) return;
+  const metrics = topologyV2CanvasMetrics();
+  svg.setAttribute("viewBox", `0 0 ${metrics.width} ${metrics.height}`);
+  svg.setAttribute("width", String(metrics.width));
+  svg.setAttribute("height", String(metrics.height));
+  const svgRect = svg.getBoundingClientRect();
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  svg.innerHTML = edges.map(function (edge, index) {
+    const fromHandle = layer.querySelector(`[data-topology-node="${edge.from}"] .topology-v2-handle-out`);
+    const toHandle = layer.querySelector(`[data-topology-node="${edge.to}"] .topology-v2-handle-in`);
+    if (!fromHandle || !toHandle) return "";
+    const fromRect = fromHandle.getBoundingClientRect();
+    const toRect = toHandle.getBoundingClientRect();
+    const x1 = fromRect.left - svgRect.left + (fromRect.width / 2);
+    const y1 = fromRect.top - svgRect.top + (fromRect.height / 2);
+    const x2 = toRect.left - svgRect.left + (toRect.width / 2);
+    const y2 = toRect.top - svgRect.top + (toRect.height / 2);
+    const distance = Math.max(52, Math.abs(x2 - x1) * 0.48);
+    const d = `M ${x1} ${y1} C ${x1 + distance} ${y1}, ${x2 - distance} ${y2}, ${x2} ${y2}`;
+    const labelX = ((x1 + x2) / 2);
+    const labelY = ((y1 + y2) / 2) - 10;
+    return `
+      <g class="topology-v2-edge-route" data-edge-index="${index}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}">
+        <path class="topology-v2-edge-hit" d="${d}"></path>
+        <path class="topology-v2-edge-path" d="${d}"></path>
+        <text class="topology-v2-edge-label" x="${labelX}" y="${labelY}">${escapeHtml(String(edge.label || ""))}</text>
+      </g>
+    `;
+  }).join("");
+}
+
+function updateTopologyV2PendingLinkBanner(graph) {
+  const $banner = $("#topologyV2PendingLink");
+  if (!$banner.length) return;
+  if (!topologyV2PendingSource) {
+    $banner.prop("hidden", true);
+    return;
+  }
+  const node = normalizeEngineGraph(graph).nodes[topologyV2PendingSource];
+  const label = node?.label || topologyV2PendingSource;
+  $banner.text("Linking from " + label + ". Choose an IN connector to complete or click the same OUT connector to cancel.");
+  $banner.prop("hidden", false);
+}
+
+function renderTopologyV2Inspector(graph, nodeStates) {
+  const normalizedGraph = normalizeEngineGraph(graph);
+  const catalog = normalizedGraph.nodes || {};
+  const keys = Object.keys(catalog);
+  if (!keys.length) return;
+  const selectedKey = catalog[activeTopologyV2Node] ? activeTopologyV2Node : keys[0];
+  const selectedNode = catalog[selectedKey];
+  const selected = nodeStates[selectedKey] || {};
+  selectTopologyV2Node(selectedKey);
+  $("#topologyV2InspectorTitle").text(selected.title || selectedNode.label || "Node");
+  $("#topologyV2InspectorMeta").text(selected.meta || selectedNode.meta || "");
+  $("#topologyV2InspectorState").text(String(selected.state || "ready").toUpperCase());
+  const incoming = normalizedGraph.edges.filter(function (edge) { return edge.to === selectedKey; }).length;
+  const outgoing = normalizedGraph.edges.filter(function (edge) { return edge.from === selectedKey; }).length;
+  const details = []
+    .concat(selected.details || [])
+    .concat([
+      "Packet mode: " + String(selectedNode.packetMode || "full"),
+      "Blocking mode: " + String(selectedNode.blockingMode || "blocking"),
+      "Links in/out: " + incoming + " / " + outgoing,
+      "Execution fallback: graph edits persist now, but execution still resolves through V1."
+    ]);
+  const $list = $("#topologyV2InspectorList");
+  if ($list.length) {
+    $list.empty();
+    details.forEach(function (detail) {
+      $list.append($("<li>").text(detail));
+    });
+  }
+}
+
+function renderTopologyNodeModal() {
+  const graph = selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null);
+  const node = graph.nodes[topologyNodeModalState.nodeId];
+  const $body = $("#topologyNodeBody");
+  if (!node || !$body.length) return;
+  $("#topologyNodeTitle").text(node.label || "Module");
+  $("#topologyNodeMeta").text((node.kicker || "Module") + " | " + (node.moduleType || "block"));
+  const blockingOptions = ENGINE_V2_BLOCKING_MODES.map(function (option) {
+    const selected = option.value === String(node.blockingMode || "blocking") ? " selected" : "";
+    return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+  }).join("");
+  const packetOptions = ENGINE_V2_PACKET_MODES.map(function (option) {
+    const selected = option.value === String(node.packetMode || "full") ? " selected" : "";
+    return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+  }).join("");
+  $body.html(`
+    <div class="topology-node-form">
+      <div class="topology-node-grid">
+        <label>
+          Label
+          <input id="topologyNodeLabel" type="text" value="${escapeHtml(node.label || "")}" />
+        </label>
+        <label>
+          Kicker
+          <input id="topologyNodeKicker" type="text" value="${escapeHtml(node.kicker || "")}" />
+        </label>
+        <label>
+          Blocking mode
+          <select id="topologyNodeBlockingMode">${blockingOptions}</select>
+        </label>
+        <label>
+          Packet mode
+          <select id="topologyNodePacketMode">${packetOptions}</select>
+        </label>
+        <label>
+          Width
+          <input id="topologyNodeWidth" type="number" min="168" max="360" step="4" value="${Number(node.width || 208)}" />
+        </label>
+        <label>
+          Enabled
+          <select id="topologyNodeEnabled">
+            <option value="1"${node.enabled !== false ? " selected" : ""}>On</option>
+            <option value="0"${node.enabled === false ? " selected" : ""}>Off</option>
+          </select>
+        </label>
+        <label>
+          Spawn count
+          <input id="topologyNodeSpawnCount" type="number" min="1" max="12" step="1" value="${Number(node.spawnCount || 1)}" />
+        </label>
+        <label>
+          Module type
+          <input type="text" value="${escapeHtml(String(node.moduleType || ""))}" disabled />
+        </label>
+      </div>
+      <label>
+        Meta / runtime note
+        <textarea id="topologyNodeMetaInput" rows="3">${escapeHtml(node.meta || "")}</textarea>
+      </label>
+      <p class="topology-node-note">Use the visual graph to experiment with packet flow and dependency shape. V1 execution stays intact until the modular runner is ready.</p>
+      <div class="topology-node-actions">
+        <div class="topology-v2-toolbar-actions">
+          <button type="button" id="topologyNodeDuplicate">Duplicate block</button>
+          <button type="button" id="topologyNodeDelete"${node.protected ? " disabled" : ""} class="danger">Delete block</button>
+        </div>
+        <div class="topology-v2-toolbar-actions">
+          <button type="button" id="topologyNodeCloseSecondary">Done</button>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+function openTopologyNodeModal(nodeId) {
+  const graph = selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null);
+  const normalizedId = normalizeEngineNodeId(nodeId);
+  if (!graph.nodes[normalizedId]) return;
+  topologyNodeModalState = { nodeId: normalizedId };
+  renderTopologyNodeModal();
+  $("#topologyNodeModal").prop("hidden", false).attr("aria-hidden", "false");
+  $("body").addClass("worker-editor-open");
+}
+
+function closeTopologyNodeModal() {
+  topologyNodeModalState = { nodeId: "" };
+  $("#topologyNodeModal").prop("hidden", true).attr("aria-hidden", "true");
+  $("body").removeClass("worker-editor-open");
+}
+
+function updateTopologyPanelV1(task, loop, state) {
   const activeTargets = activeFrontTargets(loop, state);
   const workerRoster = activeWorkerSource(task, state?.draft || null);
   const workerCount = Array.isArray(workerRoster) ? workerRoster.length : 0;
   const summary = state?.summary || task?.summary || null;
   const providerTrace = activeProviderTraceSource(state).trace;
+  const stagedPayload = collectCommanderPayload();
   const toolEnabled = !!(
     task?.runtime?.research?.enabled ||
     task?.runtime?.localFiles?.enabled ||
-    task?.runtime?.githubTools?.enabled
+    task?.runtime?.githubTools?.enabled ||
+    stagedPayload.researchEnabled === "1" ||
+    stagedPayload.localFilesEnabled === "1" ||
+    stagedPayload.githubToolsEnabled === "1"
   );
 
   const commanderState = activeTargets.includes("commander") || activeTargets.includes("commander_review")
@@ -3075,6 +3797,140 @@ function updateTopologyPanel(task, loop, state) {
       return value === "active";
     }).length || 0
   );
+}
+
+function updateTopologyPanelV2(task, loop, state) {
+  const activeTargets = activeFrontTargets(loop, state);
+  const workerRoster = activeWorkerSource(task, state?.draft || null);
+  const summary = state?.summary || task?.summary || null;
+  const providerTrace = activeProviderTraceSource(state).trace;
+  const stagedSnapshot = buildQualityProfileSnapshot();
+  const stagedPayload = collectCommanderPayload();
+  const runtime = task?.runtime || {};
+  const graph = selectedEngineGraph(task, state?.draft || null);
+  const toolEnabled = !!(
+    runtime?.research?.enabled ||
+    runtime?.localFiles?.enabled ||
+    runtime?.githubTools?.enabled ||
+    stagedPayload.researchEnabled === "1" ||
+    stagedPayload.localFilesEnabled === "1" ||
+    stagedPayload.githubToolsEnabled === "1"
+  );
+  const context = {
+    activeTargets: activeTargets,
+    workerIds: activeTargets.filter(function (target) { return /^[A-Z]$/.test(String(target || "")); }),
+    workerCount: Array.isArray(workerRoster) ? workerRoster.length : 0,
+    summaryReady: !!summary,
+    providerTraceText: providerTraceStatusText(providerTrace) || "provider-neutral orchestration",
+    toolEnabled: toolEnabled,
+    toolActive: !!(providerTrace && (Number(providerTrace?.localToolCallCount || 0) > 0 || Number(providerTrace?.githubToolCallCount || 0) > 0)),
+    directEnabled: normalizeDirectBaselineMode(runtime.directBaselineMode || stagedSnapshot.directBaselineMode) !== "off",
+    judgeReady: runtime?.vetting?.enabled !== false || stagedPayload.vettingEnabled !== "0",
+    objectiveReady: !!String(task?.objective || state?.draft?.objective || "").trim(),
+    commanderStarted: !!task?.stateCommander?.round,
+    reviewStarted: !!task?.stateCommanderReview?.round,
+    busy: isWorkspaceBusy(loop, state)
+  };
+  const nodeStates = {};
+  Object.keys(graph.nodes || {}).forEach(function (nodeId) {
+    nodeStates[nodeId] = topologyV2NodeRuntime(graph.nodes[nodeId], context);
+  });
+  renderTopologyV2NodeLayer(graph, nodeStates);
+  renderTopologyV2Edges(graph);
+  renderTopologyV2Inspector(graph, nodeStates);
+  updateTopologyV2PendingLinkBanner(graph);
+  $("#topologyNodeCount").text(String(Object.keys(graph.nodes || {}).length));
+  $("#topologyEdgeCount").text(String((graph.edges || []).length));
+  $("#topologyActiveCount").text(
+    Object.keys(nodeStates).filter(function (nodeKey) {
+      return nodeStates[nodeKey].state === "active";
+    }).length
+  );
+}
+
+function updateTopologyPanel(task, loop, state) {
+  const engineVersion = formDirty
+    ? selectedEngineVersion(task, state?.draft || null)
+    : normalizeEngineVersion(
+      task?.runtime?.engineVersion
+      || state?.draft?.engineVersion
+      || selectedEngineVersion(task, state?.draft || null)
+    );
+  syncEngineVersionSwitch(engineVersion);
+  if (engineVersion === "v2") {
+    updateTopologyPanelV2(task, loop, state);
+    return;
+  }
+  updateTopologyPanelV1(task, loop, state);
+}
+
+function selectedEngineVersion(task = null, draft = null) {
+  const domValue = $("#engineVersion").val();
+  if (domValue) {
+    return normalizeEngineVersion(domValue);
+  }
+  return normalizeEngineVersion(
+    draft?.engineVersion
+    || task?.runtime?.engineVersion
+    || "v1"
+  );
+}
+
+function syncEngineVersionSwitch(version) {
+  const normalized = normalizeEngineVersion(version);
+  $("#engineVersion").val(normalized);
+  $(".engine-switch-btn")
+    .attr("aria-selected", "false")
+    .removeClass("active")
+    .filter(`[data-engine-version="${normalized}"]`)
+    .attr("aria-selected", "true")
+    .addClass("active");
+  $("#topologyPanel").attr("data-engine-version", normalized);
+  $("[data-topology-canvas]").each(function () {
+    const match = String($(this).data("topologyCanvas") || "") === normalized;
+    $(this).prop("hidden", !match).toggleClass("active", match);
+  });
+  $("#topologyV2Inspector").prop("hidden", normalized !== "v2");
+  $("#topologyBadge").text(normalized === "v2" ? "Modular draft" : "Pressure map");
+  $("#topologyTitle").text(normalized === "v2" ? "Engine topology" : "Live topology");
+  $("#topologySummary").text(
+    normalized === "v2"
+      ? "V2 breaks the pipeline into configurable blocks so future runs can inherit packet, role, and gating choices without rewriting the stable V1 tree."
+      : "Commander shapes the debate, workers push from narrow lanes, and the summarizer returns one accountable voice with the tool plane feeding evidence where needed."
+  );
+}
+
+function setActiveEngineVersion(version, options = {}) {
+  const normalized = normalizeEngineVersion(version);
+  syncEngineVersionSwitch(normalized);
+  if (options.markDirty !== false) {
+    formDirty = true;
+  }
+  if (latestState) {
+    renderHomeRuntimeControls(latestState.activeTask || null, latestState.draft || null, latestState.loop || null);
+    updateTopologyPanel(latestState.activeTask || null, latestState.loop || null, latestState);
+  }
+}
+
+function selectTopologyV2Node(nodeId) {
+  activeTopologyV2Node = String(nodeId || "activator").trim().toLowerCase() || "activator";
+  localStorage.setItem("loopActiveTopologyV2Node", activeTopologyV2Node);
+  $(".topology-v2-node").removeClass("selected");
+  $(`.topology-v2-node[data-topology-node="${activeTopologyV2Node}"]`).addClass("selected");
+}
+
+function mutateEngineGraph(mutator, options = {}) {
+  const nextGraph = normalizeEngineGraph(selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null));
+  if (typeof mutator === "function") {
+    mutator(nextGraph);
+  }
+  setActiveEngineGraph(nextGraph, { markDirty: options.markDirty !== false, rerender: options.rerender !== false });
+  if (options.queueSave !== false) {
+    queueDraftSave();
+  }
+  if (!$("#topologyNodeModal").prop("hidden") && options.refreshModal !== false) {
+    renderTopologyNodeModal();
+  }
 }
 
 function workerFrontStatus(workerId, task, loop, state) {
@@ -3178,6 +4034,13 @@ function compactMaskedKey(masked) {
   return "\u2022\u2022\u2022\u2022" + last4;
 }
 
+function authModeLabel(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "local") return "Local";
+  if (normalized === "db") return "DB";
+  return "Env";
+}
+
 function authProviderGroup(provider) {
   const normalized = String(provider || "openai").trim().toLowerCase();
   const group = latestAuthStatus.providerGroups?.[normalized];
@@ -3188,8 +4051,8 @@ function authProviderGroup(provider) {
     hasKey: false,
     keyCount: 0,
     masks: [],
-    selectedMode: latestAuthStatus.defaultMode || "safe",
-    selectedModeLabel: (latestAuthStatus.defaultMode || "safe") === "local" ? "Local" : "Safe",
+    selectedMode: latestAuthStatus.defaultMode || "env",
+    selectedModeLabel: authModeLabel(latestAuthStatus.defaultMode || "env"),
     effectiveBackend: latestAuthStatus.recommendedBackend || "env",
     safeBackend: latestAuthStatus.recommendedBackend || "env",
     writable: !!latestAuthStatus.writable,
@@ -3311,11 +4174,13 @@ function renderAuthProviderCards(force = false) {
   const cards = (latestAuthStatus.providerOrder || []).map(function (providerId) {
     const group = authProviderGroup(providerId);
     const groupWritable = !!group.writable;
-    const selectedMode = String(group.selectedMode || latestAuthStatus.defaultMode || "safe");
+    const selectedMode = String(group.selectedMode || latestAuthStatus.defaultMode || "env");
     const localActive = selectedMode === "local";
+    const envActive = selectedMode === "env";
+    const dbActive = selectedMode === "db";
     const modeSummary = localActive
       ? "Local -> shared Auth.txt using provider prefixes."
-      : ("Safe -> " + String(group.effectiveBackend || group.safeBackend || recommended));
+      : (authModeLabel(selectedMode) + " -> " + String(group.effectiveBackend || group.safeBackend || recommended));
     const rows = [];
 
     if (!groupWritable) {
@@ -3323,12 +4188,12 @@ function renderAuthProviderCards(force = false) {
         <div class="auth-key-row auth-key-row-readonly">
           <div class="auth-key-row-head">
             <div>
-              <div class="auth-key-row-label">Read-only safe backend</div>
+              <div class="auth-key-row-label">Read-only managed backend</div>
               <div class="auth-key-row-meta">${escapeHtml(group.failureDetail || latestAuthStatus.statusNote || "This backend is not editable from the browser.")}</div>
             </div>
           </div>
           <div class="auth-key-row-inputs">
-            <input class="auth-key-input" type="text" value="${escapeHtml("Mode: Safe | Backend: " + (group.effectiveBackend || recommended))}" disabled />
+            <input class="auth-key-input" type="text" value="${escapeHtml("Mode: " + authModeLabel(selectedMode) + " | Backend: " + (group.effectiveBackend || recommended))}" disabled />
           </div>
         </div>
       `);
@@ -3396,7 +4261,8 @@ function renderAuthProviderCards(force = false) {
         <div class="auth-provider-card-meta">${escapeHtml(group.failureDetail || (group.hasKey ? (group.label + " keys available.") : ("No " + group.label + " keys configured.")))}</div>
         <div class="auth-mode-switch" role="group" aria-label="${escapeHtml(group.label + " credential mode")}">
           <button type="button" class="auth-mode-toggle${localActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="local" ${inputsLocked ? "disabled" : ""}>Local</button>
-          <button type="button" class="auth-mode-toggle${!localActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="safe" ${inputsLocked ? "disabled" : ""}>Safe</button>
+          <button type="button" class="auth-mode-toggle${envActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="env" ${inputsLocked ? "disabled" : ""}>Env</button>
+          <button type="button" class="auth-mode-toggle${dbActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="db" ${inputsLocked ? "disabled" : ""}>DB</button>
         </div>
         <div class="key-pool-preview">${previewBits.join("")}</div>
         <div class="key-assignment-list">${assignmentBits.join("")}</div>
@@ -3434,8 +4300,8 @@ function renderAuthStatus(data) {
       hasKey: !!group.hasKey,
       keyCount: Number(group.keyCount || 0),
       masks: Array.isArray(group.masks) ? group.masks.filter(Boolean) : [],
-      selectedMode: String(group.selectedMode || data?.defaultMode || "safe"),
-      selectedModeLabel: String(group.selectedModeLabel || (String(group.selectedMode || data?.defaultMode || "safe") === "local" ? "Local" : "Safe")),
+      selectedMode: String(group.selectedMode || data?.defaultMode || "env"),
+      selectedModeLabel: String(group.selectedModeLabel || authModeLabel(String(group.selectedMode || data?.defaultMode || "env"))),
       effectiveBackend: String(group.effectiveBackend || data?.backend || "env"),
       safeBackend: String(group.safeBackend || data?.recommendedBackend || "env"),
       writable: !!group.writable,
@@ -3453,7 +4319,7 @@ function renderAuthStatus(data) {
     deprecated: !!data?.deprecated,
     preferredBackends: Array.isArray(data?.preferredBackends) ? data.preferredBackends : [],
     recommendedBackend: String(data?.recommendedBackend || "env"),
-    defaultMode: String(data?.defaultMode || "safe"),
+    defaultMode: String(data?.defaultMode || "env"),
     statusNote: String(data?.statusNote || ""),
     rotationPolicy: data?.rotationPolicy || null,
     providerOrder: providerOrder,
@@ -3490,7 +4356,7 @@ function refreshAuth() {
         deprecated: false,
         preferredBackends: ["env", "external"],
         recommendedBackend: "env",
-        defaultMode: "safe",
+        defaultMode: "env",
         statusNote: "",
         rotationPolicy: null,
         providerOrder: ["openai", "anthropic", "xai", "minimax"],
@@ -5387,6 +6253,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
     "Next send",
     stagedProfileName,
     [
+      "Engine: " + engineVersionLabel(stagedSnapshot.engineVersion),
       "Workers: " + providerLabel(stagedSnapshot.provider) + " / " + modelLabel(stagedSnapshot.model, stagedSnapshot.provider) + " | Summarizer: " + providerLabel(stagedSnapshot.summarizerProvider) + " / " + modelLabel(stagedSnapshot.summarizerModel, stagedSnapshot.summarizerProvider) + " | Reasoning: " + (stagedSnapshot.reasoningEffort || "low"),
       "Worker context: " + contextModeLabel(stagedSnapshot.contextMode),
       "Answer path: " + directBaselineModeLabel(stagedSnapshot.directBaselineMode) + (
@@ -5403,7 +6270,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
       providerNoteSummary(stagedSnapshot.provider)
     ],
     false,
-    providerLabel(stagedSnapshot.provider) + " -> " + providerLabel(stagedSnapshot.summarizerProvider) + " | " + (stagedPayload.executionMode || "live") + " mode"
+    engineVersionLabel(stagedSnapshot.engineVersion) + " | " + providerLabel(stagedSnapshot.provider) + " -> " + providerLabel(stagedSnapshot.summarizerProvider) + " | " + (stagedPayload.executionMode || "live") + " mode"
   );
 
   if (hasTask && activeSnapshot) {
@@ -5412,6 +6279,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
       "Active task",
       activeProfileName,
       [
+        "Engine: " + engineVersionLabel(activeSnapshot.engineVersion),
         "Workers: " + providerLabel(activeSnapshot.provider) + " / " + modelLabel(activeSnapshot.model, activeSnapshot.provider) + " | Summarizer: " + providerLabel(activeSnapshot.summarizerProvider) + " / " + modelLabel(activeSnapshot.summarizerModel, activeSnapshot.summarizerProvider) + " | Reasoning: " + (activeSnapshot.reasoningEffort || "low"),
         "Worker context: " + contextModeLabel(activeSnapshot.contextMode),
         "Answer path: " + directBaselineModeLabel(activeSnapshot.directBaselineMode) + (
@@ -5428,7 +6296,7 @@ function renderHomeRuntimeControls(task, draft, loop) {
         providerNoteSummary(activeSnapshot.provider)
       ],
       false,
-      providerLabel(activeSnapshot.provider) + " -> " + providerLabel(activeSnapshot.summarizerProvider) + " | " + (task?.runtime?.executionMode || "live") + " mode"
+      engineVersionLabel(activeSnapshot.engineVersion) + " | " + providerLabel(activeSnapshot.provider) + " -> " + providerLabel(activeSnapshot.summarizerProvider) + " | " + (task?.runtime?.executionMode || "live") + " mode"
     );
 
     appendHomeRuntimeBlock(
@@ -5439,6 +6307,9 @@ function renderHomeRuntimeControls(task, draft, loop) {
         runtimeMatches
           ? "Active task already matches the staged template."
           : "Next send and active task are different.",
+        runtimeMatches
+          ? "Both are on " + engineVersionLabel(activeSnapshot.engineVersion) + "."
+          : "Engine selection differs whenever staged and active runtime do not agree.",
         runtimeMatches
           ? "You can keep prompting without touching settings."
           : "Use Sync Active if you want the current task to adopt the staged profile, loop depth, and budget."
@@ -7086,6 +7957,8 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     summarizerProvider: $("#summarizerProvider").val(),
     summarizerModel: $("#summarizerModel").val(),
     frontMode: normalizeFrontMode($("#frontMode").val()),
+    engineVersion: selectedEngineVersion(latestState?.activeTask || null, latestState?.draft || null),
+    engineGraph: JSON.stringify(selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null)),
     contextMode: normalizeContextMode($("#contextMode").val()),
     directBaselineMode: normalizeDirectBaselineMode($("#directBaselineMode").val()),
     directProvider: $("#directProvider").val(),
@@ -7270,6 +8143,180 @@ $(function () {
     setActiveFrontCanvas($(this).data("canvas"));
   });
 
+  $(".engine-switch-btn").on("click", function () {
+    setActiveEngineVersion($(this).data("engineVersion"));
+  });
+
+  $("#topologyV2AddWorker").on("click", function () {
+    const before = selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null);
+    mutateEngineGraph(function (graph) {
+      const nextGraph = appendEngineGraphNode(graph, "workers");
+      graph.nodes = nextGraph.nodes;
+      graph.edges = nextGraph.edges;
+      const createdId = Object.keys(nextGraph.nodes).find(function (nodeId) {
+        return !before.nodes[nodeId];
+      }) || "";
+      activeTopologyV2Node = createdId;
+      localStorage.setItem("loopActiveTopologyV2Node", activeTopologyV2Node);
+    });
+  });
+
+  $("#topologyV2Reset").on("click", function () {
+    topologyV2PendingSource = "";
+    setActiveEngineGraph(defaultEngineGraph(), { markDirty: true });
+    queueDraftSave();
+  });
+
+  $(document).on("click", ".topology-v2-node", function (event) {
+    if ($(event.target).closest(".topology-v2-handle, .topology-v2-node-config").length) {
+      return;
+    }
+    selectTopologyV2Node($(this).data("topologyNode"));
+    if (latestState) {
+      updateTopologyPanel(latestState.activeTask || null, latestState.loop || null, latestState);
+    }
+  });
+
+  $(document).on("click", ".topology-v2-node-config", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    openTopologyNodeModal($(this).data("nodeConfig"));
+  });
+
+  $(document).on("click", ".topology-v2-handle-out", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const nodeId = normalizeEngineNodeId($(this).data("nodeId"));
+    topologyV2PendingSource = topologyV2PendingSource === nodeId ? "" : nodeId;
+    if (latestState) {
+      updateTopologyPanel(latestState.activeTask || null, latestState.loop || null, latestState);
+    }
+  });
+
+  $(document).on("click", ".topology-v2-handle-in", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const targetId = normalizeEngineNodeId($(this).data("nodeId"));
+    if (!topologyV2PendingSource || !targetId || topologyV2PendingSource === targetId) {
+      topologyV2PendingSource = "";
+      if (latestState) {
+        updateTopologyPanel(latestState.activeTask || null, latestState.loop || null, latestState);
+      }
+      return;
+    }
+    mutateEngineGraph(function (graph) {
+      const nextGraph = addEngineGraphEdge(graph, topologyV2PendingSource, targetId);
+      graph.nodes = nextGraph.nodes;
+      graph.edges = nextGraph.edges;
+      topologyV2PendingSource = "";
+    });
+  });
+
+  $(document).on("click", ".topology-v2-edge-route", function (event) {
+    event.preventDefault();
+    const edgeIndex = parseInt($(this).data("edgeIndex"), 10);
+    if (!Number.isFinite(edgeIndex)) return;
+    mutateEngineGraph(function (graph) {
+      const nextGraph = removeEngineGraphEdge(graph, edgeIndex);
+      graph.nodes = nextGraph.nodes;
+      graph.edges = nextGraph.edges;
+    });
+  });
+
+  $(document).on("mousedown", ".topology-v2-node", function (event) {
+    if (event.button !== 0) return;
+    if ($(event.target).closest(".topology-v2-handle, .topology-v2-node-config").length) return;
+    const nodeId = normalizeEngineNodeId($(this).data("topologyNode"));
+    const graph = selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null);
+    const node = graph.nodes[nodeId];
+    if (!node) return;
+    const canvasOffset = $(".topology-canvas-v2").offset() || { left: 0, top: 0 };
+    topologyV2DragState = {
+      nodeId: nodeId,
+      offsetX: event.pageX - canvasOffset.left - Number(node.x || 0),
+      offsetY: event.pageY - canvasOffset.top - Number(node.y || 0),
+      moved: false
+    };
+    $(this).addClass("dragging");
+  });
+
+  $(document).on("mousemove", function (event) {
+    if (!topologyV2DragState) return;
+    const canvas = $(".topology-canvas-v2");
+    if (!canvas.length) return;
+    const canvasOffset = canvas.offset() || { left: 0, top: 0 };
+    const metrics = topologyV2CanvasMetrics();
+    mutateEngineGraph(function (graph) {
+      const node = graph.nodes[topologyV2DragState.nodeId];
+      if (!node) return;
+      node.x = Math.max(6, Math.min(metrics.width - Number(node.width || 208) - 10, Math.round(event.pageX - canvasOffset.left - topologyV2DragState.offsetX)));
+      node.y = Math.max(48, Math.min(metrics.height - 136, Math.round(event.pageY - canvasOffset.top - topologyV2DragState.offsetY)));
+      topologyV2DragState.moved = true;
+    }, { queueSave: false, refreshModal: false });
+  });
+
+  $(document).on("mouseup", function () {
+    if (!topologyV2DragState) return;
+    $(".topology-v2-node.dragging").removeClass("dragging");
+    const moved = !!topologyV2DragState.moved;
+    topologyV2DragState = null;
+    if (moved) {
+      queueDraftSave();
+    }
+  });
+
+  $(document).on("click", "#topologyNodeClose, #topologyNodeCloseSecondary, [data-topology-node-close='true']", function () {
+    closeTopologyNodeModal();
+  });
+
+  $(document).on("input change", "#topologyNodeLabel, #topologyNodeKicker, #topologyNodeBlockingMode, #topologyNodePacketMode, #topologyNodeWidth, #topologyNodeEnabled, #topologyNodeSpawnCount, #topologyNodeMetaInput", function () {
+    const nodeId = topologyNodeModalState.nodeId;
+    if (!nodeId) return;
+    mutateEngineGraph(function (graph) {
+      const node = graph.nodes[nodeId];
+      if (!node) return;
+      node.label = $("#topologyNodeLabel").val().trim() || node.label;
+      node.kicker = $("#topologyNodeKicker").val().trim() || node.kicker;
+      node.blockingMode = $("#topologyNodeBlockingMode").val();
+      node.packetMode = $("#topologyNodePacketMode").val();
+      node.width = Math.max(168, Math.min(360, parseInt($("#topologyNodeWidth").val(), 10) || node.width || 208));
+      node.enabled = $("#topologyNodeEnabled").val() !== "0";
+      node.spawnCount = Math.max(1, Math.min(12, parseInt($("#topologyNodeSpawnCount").val(), 10) || node.spawnCount || 1));
+      node.meta = $("#topologyNodeMetaInput").val().trim();
+    });
+  });
+
+  $(document).on("click", "#topologyNodeDuplicate", function () {
+    const sourceId = topologyNodeModalState.nodeId;
+    if (!sourceId) return;
+    const before = selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null);
+    let createdId = "";
+    mutateEngineGraph(function (graph) {
+      const nextGraph = duplicateEngineGraphNode(graph, sourceId);
+      graph.nodes = nextGraph.nodes;
+      graph.edges = nextGraph.edges;
+      createdId = Object.keys(nextGraph.nodes).find(function (nodeId) {
+        return !before.nodes[nodeId];
+      }) || "";
+    });
+    if (createdId) {
+      activeTopologyV2Node = createdId;
+      localStorage.setItem("loopActiveTopologyV2Node", activeTopologyV2Node);
+      openTopologyNodeModal(createdId);
+    }
+  });
+
+  $(document).on("click", "#topologyNodeDelete", function () {
+    const nodeId = topologyNodeModalState.nodeId;
+    if (!nodeId) return;
+    mutateEngineGraph(function (graph) {
+      const nextGraph = removeEngineGraphNode(graph, nodeId);
+      graph.nodes = nextGraph.nodes;
+      graph.edges = nextGraph.edges;
+    });
+    closeTopologyNodeModal();
+  });
+
   $("#sidebarToggle").on("click", function () {
     if (isMobileShell()) {
       setMobileSidebarOpen(false);
@@ -7411,6 +8458,10 @@ $(function () {
   $(document).on("keydown", function (event) {
     if (event.key === "Escape" && !$("#workerEditorModal").prop("hidden")) {
       closeWorkerEditorModal();
+      return;
+    }
+    if (event.key === "Escape" && !$("#topologyNodeModal").prop("hidden")) {
+      closeTopologyNodeModal();
     }
   });
 
@@ -7464,6 +8515,8 @@ $(function () {
       constraints: JSON.stringify(payload.constraints),
       executionMode: payload.executionMode,
       frontMode: payload.frontMode,
+      engineVersion: payload.engineVersion,
+      engineGraph: payload.engineGraph,
       contextMode: payload.contextMode,
       directBaselineMode: effectiveDirectBaselineMode,
       provider: payload.provider,
@@ -7491,31 +8544,17 @@ $(function () {
       workers: JSON.stringify(workers)
     };
 
-    $.post(apiRoute(API.tasks), startPayload)
-      .done(function (resp) {
-        let out = resp;
-        try { out = JSON.parse(resp); } catch (_) {}
+    postJson(API.frontLiveRuns, startPayload, "Front live queued", {
+      manualDispatch: "Front live",
+      onSuccess: function () {
         resetComposerSurface(true);
-        $.post(apiRoute(API.loops), { rounds: payload.loopRounds, delayMs: payload.loopDelayMs })
-          .done(function (loopResp) {
-            let loopOut = loopResp;
-            try { loopOut = JSON.parse(loopResp); } catch (_) {}
-            formDirty = false;
-            workerControlsSignature = "";
-            debugControlsSignature = "";
-            showMessage("Agent loop queued" + (loopOut.message ? " | " + loopOut.message : ""));
-            setActiveView("home");
-            refreshState();
-          })
-          .fail(function (xhr) {
-            formDirty = false;
-            showMessage("Task started but loop failed to queue: " + extractErrorMessage(xhr), true);
-            refreshState();
-          });
-      })
-      .fail(function (xhr) {
-        showMessage(extractErrorMessage(xhr), true);
-      });
+        formDirty = false;
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+        setActiveFrontCanvas("live");
+        setActiveView("home");
+      }
+    });
   });
 
   $("#objective").on("keydown", function (event) {
@@ -7855,7 +8894,7 @@ $(function () {
 
   $(document).on("click", ".auth-mode-toggle", function () {
     const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
-    const mode = String($(this).data("authMode") || "safe").trim().toLowerCase();
+    const mode = String($(this).data("authMode") || "env").trim().toLowerCase();
     const group = authProviderGroup(provider);
     if (mode === String(group.selectedMode || "")) return;
     $.post(apiRoute(API.authMode), { provider: provider, mode: mode })

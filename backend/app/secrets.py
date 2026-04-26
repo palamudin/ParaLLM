@@ -39,7 +39,7 @@ AUTH_KEY_PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
 AUTH_KEY_PROVIDER_ORDER = list(AUTH_KEY_PROVIDER_CATALOG.keys())
 DEFAULT_AUTH_KEY_PROVIDER = "openai"
 SAFE_SECRET_BACKENDS = {"env", "docker_secret", "external"}
-AUTH_BACKEND_MODES = {"local", "safe"}
+AUTH_BACKEND_MODES = {"local", "env", "db"}
 AUTH_LOCAL_FILE_PREFIXES: dict[str, str] = {
     "openai": "openai",
     "anthropic": "ant",
@@ -91,7 +91,11 @@ def auth_key_provider_label(provider: Any) -> str:
 
 def auth_backend_mode_label(mode: Any) -> str:
     normalized = normalize_auth_backend_mode(mode)
-    return "Local" if normalized == "local" else "Safe"
+    if normalized == "local":
+        return "Local"
+    if normalized == "db":
+        return "DB"
+    return "Env"
 
 
 def auth_key_env_vars(provider: Any) -> list[str]:
@@ -100,12 +104,28 @@ def auth_key_env_vars(provider: Any) -> list[str]:
     return [str(name) for name in catalog.get("envVars", []) if str(name).strip()]
 
 
-def normalize_auth_backend_mode(value: Any, fallback: str = "safe") -> str:
+def normalize_auth_backend_mode(value: Any, fallback: str = "env") -> str:
     candidate = str(value or "").strip().lower()
     if candidate in AUTH_BACKEND_MODES:
         return candidate
-    normalized_fallback = str(fallback or "safe").strip().lower()
-    return normalized_fallback if normalized_fallback in AUTH_BACKEND_MODES else "safe"
+    if candidate == "safe":
+        candidate = str(fallback or "env").strip().lower()
+        return candidate if candidate in AUTH_BACKEND_MODES else "env"
+    normalized_fallback = str(fallback or "env").strip().lower()
+    if normalized_fallback == "safe":
+        normalized_fallback = "env"
+    return normalized_fallback if normalized_fallback in AUTH_BACKEND_MODES else "env"
+
+
+def auth_backend_category_from_backend(backend: Any) -> str:
+    normalized = str(backend or "").strip().lower()
+    if normalized == "local_file":
+        return "local"
+    if normalized == "external":
+        return "db"
+    if normalized in {"env", "docker_secret"}:
+        return "env"
+    return "env"
 
 
 def auth_backend_override_path(root: Optional[Path] = None) -> Path:
@@ -115,7 +135,12 @@ def auth_backend_override_path(root: Optional[Path] = None) -> Path:
 
 def default_auth_backend_mode(root: Optional[Path] = None) -> str:
     topology = deployment_topology(root)
-    return "local" if str(topology.secret_backend or "").strip().lower() == "local_file" else "safe"
+    current_backend = str(topology.secret_backend or "").strip().lower()
+    if current_backend == "local_file":
+        return "local"
+    if current_backend in {"env", "docker_secret", "external"}:
+        return auth_backend_category_from_backend(current_backend)
+    return auth_backend_category_from_backend(preferred_safe_secret_backend(root))
 
 
 def read_auth_backend_mode_overrides(root: Optional[Path] = None) -> dict[str, str]:
@@ -174,9 +199,24 @@ def preferred_safe_secret_backend(root: Optional[Path] = None) -> str:
     return "env"
 
 
+def preferred_env_secret_backend(root: Optional[Path] = None) -> str:
+    topology = deployment_topology(root)
+    current_backend = str(topology.secret_backend or "").strip().lower()
+    if current_backend in {"env", "docker_secret"}:
+        return current_backend
+    if topology.profile in {"hosted-single-node", "hosted-distributed"}:
+        return "docker_secret"
+    return "env"
+
+
 def resolve_provider_secret_backend(root: Optional[Path], provider: Any) -> dict[str, str]:
     mode = auth_backend_mode_for_provider(root, provider)
-    backend = "local_file" if mode == "local" else preferred_safe_secret_backend(root)
+    if mode == "local":
+        backend = "local_file"
+    elif mode == "db":
+        backend = "external"
+    else:
+        backend = preferred_env_secret_backend(root)
     return {
         "provider": normalize_auth_key_provider(provider),
         "mode": mode,

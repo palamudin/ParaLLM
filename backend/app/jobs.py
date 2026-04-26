@@ -6,11 +6,13 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from runtime.engine import (
+    EXECUTION_CANCELLED_MESSAGE,
     LoopRuntime,
     RuntimeErrorWithCode,
     normalize_direct_baseline_mode,
@@ -38,6 +40,47 @@ def clamp_loop_delay_ms(value: Any) -> int:
 
 def _runtime(root: Optional[Path] = None) -> LoopRuntime:
     return LoopRuntime(Path(root).resolve() if root else Path(__file__).resolve().parents[2])
+
+
+@contextmanager
+def _task_state_context(runtime: LoopRuntime, task_id: Optional[str], extra: Optional[Dict[str, Any]] = None):
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        yield
+        return
+    previous_context = runtime.current_execution_context()
+    next_context = dict(previous_context)
+    next_context.update({"taskId": normalized_task_id, "stateScopeTaskId": normalized_task_id})
+    if isinstance(extra, dict):
+        next_context.update(extra)
+    runtime.set_execution_context(next_context)
+    try:
+        yield
+    finally:
+        runtime.set_execution_context(previous_context)
+
+
+def _live_run_id(task: Optional[Dict[str, Any]]) -> Optional[str]:
+    runtime_config = (task or {}).get("runtime") if isinstance((task or {}).get("runtime"), dict) else {}
+    run_id = str(runtime_config.get("liveRunId") or "").strip()
+    return run_id or None
+
+
+def _sync_live_run_record(runtime: LoopRuntime, task: Optional[Dict[str, Any]] = None, task_id: Optional[str] = None) -> None:
+    run_id = _live_run_id(task)
+    resolved_task_id = str(task_id or ((task or {}).get("taskId") if isinstance(task, dict) else "") or "").strip()
+    if not run_id and resolved_task_id:
+        snapshot = storage.read_task_snapshot(resolved_task_id, storage.project_paths(runtime.root))
+        if isinstance(snapshot, dict):
+            run_id = _live_run_id(snapshot)
+    if not run_id:
+        return
+    try:
+        from . import evals
+
+        evals.sync_front_live_run(run_id, runtime.root)
+    except Exception:
+        return
 
 
 def current_loop_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -352,6 +395,7 @@ def create_loop_job(
             "resumeFromRound": job.get("resumeFromRound"),
         },
     )
+    _sync_live_run_record(runtime, task)
     return job
 
 
@@ -390,6 +434,89 @@ def _launch_direct_baseline_sidecar(
         last_message="Queued single-thread baseline from the current prompt.",
         launched_message="Loop launched the single-thread baseline as a non-blocking sidecar.",
     )
+
+
+def _start_loop_for_task_payload(
+    runtime: LoopRuntime,
+    task: Dict[str, Any],
+    payload: Dict[str, Any],
+    *,
+    task_scoped: bool,
+) -> Dict[str, Any]:
+    paths = storage.project_paths(runtime.root)
+    task_id = str(task.get("taskId") or "")
+    if _active_job_count(paths, task_id, "target", include_partial=True) > 0:
+        raise RuntimeErrorWithCode("Target dispatch jobs are still running. Wait for them to finish before starting the autonomous loop.", 409)
+    if _active_job_count(paths, task_id, "loop") >= storage.LOOP_QUEUE_LIMIT:
+        raise RuntimeErrorWithCode("Background loop queue is full. Cancel or finish an existing queued job first.", 409)
+
+    rounds = clamp_loop_rounds(payload.get("rounds", 3))
+    delay_ms = clamp_loop_delay_ms(payload.get("delayMs", 1000))
+    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode"))
+    effective_rounds = 1 if direct_baseline_mode == "single" else rounds
+    effective_worker_count = 0 if direct_baseline_mode == "single" else len(task_workers(task))
+
+    with (_task_state_context(runtime, task_id) if task_scoped else nullcontext()):
+        task_state = runtime.read_state()
+        had_active_loop = loop_is_active(task_state)
+        queue_position = _next_background_queue_position(paths, task_id, "loop") if had_active_loop else 0
+        job = create_loop_job(
+            runtime,
+            task,
+            effective_rounds,
+            delay_ms,
+            "background",
+            {
+                "queuePosition": queue_position,
+                "updateLoopState": not had_active_loop,
+                "lastMessage": "Queued behind another background loop." if queue_position > 0 else "Queued background loop.",
+                "workerCount": effective_worker_count,
+            },
+        )
+
+    try:
+        started = False
+        if queueing.redis_enabled(runtime.root):
+            active_job_id = queueing.current_loop_claim(runtime.root, task_id)
+            _sync_loop_queue(runtime.root, task_id, active_job_id=active_job_id)
+            if not had_active_loop:
+                promoted = _promote_next_queued_loop_job(runtime, task_id, None)
+                started = bool(promoted and str(promoted.get("jobId") or "") == str(job.get("jobId") or ""))
+        elif queue_position == 0 and not had_active_loop:
+            launch_loop_job_runner(job, runtime.root)
+            started = True
+        _sync_live_run_record(runtime, task)
+        return {
+            "message": "Background loop queued." if queue_position > 0 or not started else "Background loop started.",
+            "jobId": job["jobId"],
+            "rounds": effective_rounds,
+            "delayMs": delay_ms,
+            "queuePosition": queue_position,
+        }
+    except Exception as exc:  # noqa: BLE001
+        with (_task_state_context(runtime, task_id) if task_scoped else nullcontext()):
+            with runtime.with_lock():
+                state = runtime.read_state_unlocked()
+                state = set_loop_state(state, {"status": "error", "lastMessage": "Background launch failed."})
+                runtime.write_state_unlocked(state)
+                runtime.write_job_unlocked(
+                    storage.default_job(
+                        {
+                            **job,
+                            "status": "error",
+                            "finishedAt": utc_now(),
+                            "lastHeartbeatAt": utc_now(),
+                            "lastMessage": "Background launch failed.",
+                            "error": str(exc),
+                        }
+                    )
+                )
+        queueing.release_loop_claim(runtime.root, task_id, str(job.get("jobId") or ""))
+        _sync_loop_queue(runtime.root, task_id)
+        runtime.append_step("error", "Failed to launch background loop.", {"taskId": task_id, "jobId": job["jobId"], "error": str(exc)})
+        _sync_live_run_record(runtime, task)
+        raise RuntimeErrorWithCode(str(exc), 500) from exc
 
 
 def _subprocess_kwargs(env_overrides: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -677,6 +804,15 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
     rounds = clamp_loop_rounds(job.get("rounds"))
     delay_ms = clamp_loop_delay_ms(job.get("delayMs"))
     task_id = str(job.get("taskId") or "").strip()
+    runtime.set_execution_context({"taskId": task_id, "stateScopeTaskId": task_id, "loopJobId": job_id})
+    if _loop_job_cancelled_unlocked(runtime, job_id):
+        runtime.append_step(
+            "autoloop",
+            "Background runner exited because the job was cancelled during startup.",
+            {"taskId": task_id, "jobId": job_id},
+        )
+        runtime.clear_execution_context()
+        return {"message": "Loop was cancelled during startup.", "completedRounds": int(job.get("completedRounds") or 0), "results": job.get("results") or []}
     start_round = max(1, min(rounds, int(job.get("resumeFromRound") or 1)))
     results = list(job.get("results") or [])
     completed_rounds = max(0, int(job.get("completedRounds") or 0))
@@ -735,6 +871,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
         "Background loop runner claimed job.",
         {"taskId": task_id, "jobId": job_id, "mode": "background", "rounds": rounds, "delayMs": delay_ms},
     )
+    _sync_live_run_record(runtime, task_id=task_id)
 
     def _execute_loop_target(
         target: str,
@@ -900,7 +1037,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             active_task = snapshot.get("activeTask") if isinstance(snapshot.get("activeTask"), dict) else None
             if not isinstance(active_task, dict) or str(active_task.get("taskId") or "") != task_id:
                 raise RuntimeErrorWithCode("No active task.", 400)
-            if bool(current_loop_state(snapshot).get("cancelRequested")):
+            if bool(current_loop_state(snapshot).get("cancelRequested")) or _loop_job_cancelled_unlocked(runtime, job_id):
                 cancelled = True
                 break
 
@@ -937,6 +1074,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                 "Starting autonomous round.",
                 {"taskId": task_id, "jobId": job_id, "round": round_number, "totalRounds": rounds},
             )
+            _sync_live_run_record(runtime, task_id=task_id)
 
             round_workers = [] if direct_baseline_mode == "single" else task_workers(active_task, round_number)
             if direct_baseline_mode == "both" and not direct_baseline_sidecar_attempted:
@@ -1036,6 +1174,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                 "Autonomous round completed.",
                 {"taskId": task_id, "jobId": job_id, "round": round_number, "totalRounds": rounds},
             )
+            _sync_live_run_record(runtime, task_id=task_id)
 
             if round_number >= rounds or delay_ms <= 0:
                 continue
@@ -1048,7 +1187,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                 active_task = snapshot.get("activeTask") if isinstance(snapshot.get("activeTask"), dict) else None
                 if not isinstance(active_task, dict) or str(active_task.get("taskId") or "") != task_id:
                     raise RuntimeErrorWithCode("No active task.", 400)
-                if bool(current_loop_state(snapshot).get("cancelRequested")):
+                if bool(current_loop_state(snapshot).get("cancelRequested")) or _loop_job_cancelled_unlocked(runtime, job_id):
                     cancelled = True
                     break
             if cancelled:
@@ -1060,7 +1199,12 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
         with runtime.with_lock():
             state = runtime.read_state_unlocked()
             active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
-            if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id:
+            current_loop = current_loop_state(state)
+            if (
+                isinstance(active_task, dict)
+                and str(active_task.get("taskId") or "") == task_id
+                and str(current_loop.get("jobId") or "").strip() == job_id
+            ):
                 state = set_loop_state(
                     state,
                     {
@@ -1109,6 +1253,8 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             },
         )
         _promote_next_queued_loop_job(runtime, task_id, job_id)
+        _sync_live_run_record(runtime, task_id=task_id)
+        runtime.clear_execution_context()
         return {
             "message": "Loop cancelled." if cancelled else "Loop completed.",
             "completedRounds": completed_rounds,
@@ -1118,14 +1264,24 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
         }
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
-        final_status = "budget_exhausted" if message.startswith("Budget limit reached:") else "error"
-        final_message = message if final_status == "budget_exhausted" else f"Loop error: {message}"
+        cancellation_error = message == EXECUTION_CANCELLED_MESSAGE or _loop_job_cancelled_unlocked(runtime, job_id)
+        if cancellation_error:
+            final_status = "cancelled"
+            final_message = "Cancelled by scheduler reset."
+        else:
+            final_status = "budget_exhausted" if message.startswith("Budget limit reached:") else "error"
+            final_message = message if final_status == "budget_exhausted" else f"Loop error: {message}"
         usage_snapshot = _usage_snapshot(runtime)
         with runtime.with_lock():
             state = runtime.read_state_unlocked()
             active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
-            if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id:
-                state = set_loop_state(
+            current_loop = current_loop_state(state)
+            if (
+                isinstance(active_task, dict)
+                and str(active_task.get("taskId") or "") == task_id
+                and str(current_loop.get("jobId") or "").strip() == job_id
+            ):
+                next_loop_state = storage.default_loop_state() if cancellation_error else set_loop_state(
                     state,
                     {
                         "status": final_status,
@@ -1140,7 +1296,8 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                         "lastMessage": final_message,
                         "activeTargets": [],
                     },
-                )
+                )["loop"]
+                state["loop"] = next_loop_state
                 runtime.write_state_unlocked(state)
             existing_job = runtime.read_job_unlocked(job_id) or job
             metadata = dict(existing_job.get("metadata") or {}) if isinstance(existing_job.get("metadata"), dict) else {}
@@ -1150,6 +1307,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                     {
                         **existing_job,
                         "status": final_status,
+                        "cancelRequested": cancellation_error or bool(existing_job.get("cancelRequested")),
                         "completedRounds": completed_rounds,
                         "currentRound": 0,
                         "finishedAt": utc_now(),
@@ -1157,23 +1315,40 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                         "lastMessage": final_message,
                         "results": results,
                         "usage": usage_snapshot,
-                        "error": message,
+                        "error": None if cancellation_error else message,
                         "metadata": metadata,
                     }
                 )
             )
-        runtime.append_step(
-            "budget" if final_status == "budget_exhausted" else "error",
-            "Autonomous loop stopped at the configured budget limit." if final_status == "budget_exhausted" else "Autonomous loop failed.",
-            {
-                "taskId": task_id,
-                "jobId": job_id,
-                "completedRounds": completed_rounds,
-                "status": final_status,
-                "error": message,
-            },
-        )
+        if cancellation_error:
+            runtime.append_step(
+                "autoloop",
+                "Autonomous loop stopped because the scheduler was reset.",
+                {"taskId": task_id, "jobId": job_id, "completedRounds": completed_rounds, "status": final_status},
+            )
+        else:
+            runtime.append_step(
+                "budget" if final_status == "budget_exhausted" else "error",
+                "Autonomous loop stopped at the configured budget limit." if final_status == "budget_exhausted" else "Autonomous loop failed.",
+                {
+                    "taskId": task_id,
+                    "jobId": job_id,
+                    "completedRounds": completed_rounds,
+                    "status": final_status,
+                    "error": message,
+                },
+            )
         _promote_next_queued_loop_job(runtime, task_id, job_id)
+        _sync_live_run_record(runtime, task_id=task_id)
+        runtime.clear_execution_context()
+        if cancellation_error:
+            return {
+                "message": "Loop cancelled.",
+                "completedRounds": completed_rounds,
+                "requestedRounds": rounds,
+                "cancelled": True,
+                "results": results,
+            }
         raise
 
 
@@ -1183,162 +1358,141 @@ def start_loop(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     state = storage.read_state_payload(paths)
     if not isinstance(state.get("activeTask"), dict):
         raise RuntimeErrorWithCode("No active task. Start one first.", 400)
-    if _active_job_count(paths, str(state["activeTask"].get("taskId") or ""), "target", include_partial=True) > 0:
-        raise RuntimeErrorWithCode("Target dispatch jobs are still running. Wait for them to finish before starting the autonomous loop.", 409)
+    return _start_loop_for_task_payload(runtime, state["activeTask"], payload, task_scoped=False)
 
-    task = state["activeTask"]
-    task_id = str(task.get("taskId") or "")
-    if _active_job_count(paths, task_id, "loop") >= storage.LOOP_QUEUE_LIMIT:
-        raise RuntimeErrorWithCode("Background loop queue is full. Cancel or finish an existing queued job first.", 409)
 
-    rounds = clamp_loop_rounds(payload.get("rounds", 3))
-    delay_ms = clamp_loop_delay_ms(payload.get("delayMs", 1000))
-    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
-    direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode"))
-    effective_rounds = 1 if direct_baseline_mode == "single" else rounds
-    effective_worker_count = 0 if direct_baseline_mode == "single" else len(task_workers(task))
-    had_active_loop = loop_is_active(state)
-    queue_position = _next_background_queue_position(paths, task_id, "loop") if had_active_loop else 0
-    job = create_loop_job(
-        runtime,
-        task,
-        effective_rounds,
-        delay_ms,
-        "background",
-        {
-            "queuePosition": queue_position,
-            "updateLoopState": not had_active_loop,
-            "lastMessage": "Queued behind another background loop." if queue_position > 0 else "Queued background loop.",
-            "workerCount": effective_worker_count,
-        },
-    )
-    try:
-        started = False
-        if queueing.redis_enabled(runtime.root):
-            active_job_id = queueing.current_loop_claim(runtime.root, task_id)
-            _sync_loop_queue(runtime.root, task_id, active_job_id=active_job_id)
-            if not had_active_loop:
-                promoted = _promote_next_queued_loop_job(runtime, task_id, None)
-                started = bool(promoted and str(promoted.get("jobId") or "") == str(job.get("jobId") or ""))
-        elif queue_position == 0 and not had_active_loop:
-            launch_loop_job_runner(job, runtime.root)
-            started = True
-        return {
-            "message": "Background loop queued." if queue_position > 0 or not started else "Background loop started.",
-            "jobId": job["jobId"],
-            "rounds": effective_rounds,
-            "delayMs": delay_ms,
-            "queuePosition": queue_position,
-        }
-    except Exception as exc:  # noqa: BLE001
-        with runtime.with_lock():
-            state = runtime.read_state_unlocked()
-            state = set_loop_state(state, {"status": "error", "lastMessage": "Background launch failed."})
-            runtime.write_state_unlocked(state)
-            runtime.write_job_unlocked(
-                storage.default_job(
-                    {
-                        **job,
-                        "status": "error",
-                        "finishedAt": utc_now(),
-                        "lastHeartbeatAt": utc_now(),
-                        "lastMessage": "Background launch failed.",
-                        "error": str(exc),
-                    }
-                )
+def start_loop_for_task(task_id: str, payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    paths = storage.project_paths(runtime.root)
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        raise RuntimeErrorWithCode("Task id is required.", 400)
+    task = storage.read_task_snapshot(normalized_task_id, paths)
+    if not isinstance(task, dict):
+        raise RuntimeErrorWithCode("Task snapshot is missing.", 404)
+    return _start_loop_for_task_payload(runtime, task, payload, task_scoped=True)
+
+
+def _loop_job_cancelled_unlocked(runtime: LoopRuntime, job_id: str) -> bool:
+    job = runtime.read_job_unlocked(str(job_id or "").strip())
+    if not isinstance(job, dict):
+        return False
+    status = str(job.get("status") or "").strip().lower()
+    return bool(job.get("cancelRequested")) or status == "cancelled"
+
+
+def _scheduler_task_ids(paths: storage.Paths, state: Optional[Dict[str, Any]] = None) -> List[str]:
+    ordered: List[str] = []
+    seen: set[str] = set()
+
+    def _add(task_id: Any) -> None:
+        normalized = str(task_id or "").strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        ordered.append(normalized)
+
+    current_state = state if isinstance(state, dict) else storage.read_state_payload(paths)
+    active_task = current_state.get("activeTask") if isinstance(current_state.get("activeTask"), dict) else None
+    _add((active_task or {}).get("taskId"))
+    for job in storage.read_jobs(paths):
+        _add(job.get("taskId"))
+    if paths.task_states.exists():
+        for task_state_path in sorted(paths.task_states.glob("*.json")):
+            _add(task_state_path.stem)
+    return ordered
+
+
+def _reset_global_loop_state_unlocked(runtime: LoopRuntime) -> None:
+    state = runtime.read_state_unlocked()
+    state["loop"] = storage.default_loop_state()
+    runtime.write_state_unlocked(state)
+
+
+def _reset_task_loop_state_unlocked(runtime: LoopRuntime, task_id: str) -> bool:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return False
+    with _task_state_context(runtime, normalized_task_id):
+        task_state = runtime.read_state_unlocked()
+        active_task = task_state.get("activeTask") if isinstance(task_state.get("activeTask"), dict) else None
+        if not isinstance(active_task, dict):
+            return False
+        task_state["loop"] = storage.default_loop_state()
+        runtime.write_state_unlocked(task_state)
+        return True
+
+
+def _cancel_scheduler_jobs_unlocked(runtime: LoopRuntime) -> Dict[str, int]:
+    counts = {"loopsCancelled": 0, "targetsCancelled": 0}
+    for job in storage.read_jobs(storage.project_paths(runtime.root)):
+        current = storage.default_job(job)
+        status = str(current.get("status") or "").strip().lower()
+        if status not in {"queued", "running"}:
+            continue
+        job_type = str(current.get("jobType") or "loop").strip().lower()
+        target = str(current.get("target") or "").strip()
+        if job_type == "target":
+            label = target or "dispatch"
+            last_message = f"Cancelled by scheduler reset while {label} was {'running' if status == 'running' else 'queued'}."
+            counts["targetsCancelled"] += 1
+        else:
+            last_message = f"Cancelled by scheduler reset while loop job was {'running' if status == 'running' else 'queued'}."
+            counts["loopsCancelled"] += 1
+        metadata = dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {}
+        metadata["schedulerState"] = "cancelled"
+        metadata["activeTargets"] = []
+        runtime.write_job_unlocked(
+            storage.default_job(
+                {
+                    **current,
+                    "status": "cancelled",
+                    "cancelRequested": True,
+                    "finishedAt": utc_now(),
+                    "lastHeartbeatAt": utc_now(),
+                    "lastMessage": last_message,
+                    "error": None,
+                    "metadata": metadata,
+                }
             )
-        queueing.release_loop_claim(runtime.root, task_id, str(job.get("jobId") or ""))
-        _sync_loop_queue(runtime.root, task_id)
-        runtime.append_step("error", "Failed to launch background loop.", {"taskId": task_id, "jobId": job["jobId"], "error": str(exc)})
-        raise RuntimeErrorWithCode(str(exc), 500) from exc
+        )
+    return counts
 
 
 def cancel_loop(root: Optional[Path] = None) -> Dict[str, Any]:
     runtime = _runtime(root)
     paths = storage.project_paths(runtime.root)
     state = storage.read_state_payload(paths)
-    if not loop_is_active(state):
-        raise RuntimeErrorWithCode("No autonomous loop is currently running.", 400)
-
-    loop = current_loop_state(state)
-    task_id = str(((state.get("activeTask") or {}) if isinstance(state.get("activeTask"), dict) else {}).get("taskId") or "")
-    job_id = str(loop.get("jobId") or "").strip() or None
-
-    queued_cancel_result: Optional[Dict[str, Any]] = None
+    task_ids = _scheduler_task_ids(paths, state)
     with runtime.with_lock():
-        state_unlocked = runtime.read_state_unlocked()
-        if str(loop.get("status") or "idle") == "queued":
-            cancelled_queued_jobs = _cancel_queued_background_jobs_unlocked(runtime, task_id, job_id, "Cancelled before the queued loop could start.")
-            state_unlocked = set_loop_state(
-                state_unlocked,
-                {
-                    "status": "cancelled",
-                    "cancelRequested": True,
-                    "finishedAt": utc_now(),
-                    "lastHeartbeatAt": utc_now(),
-                    "lastMessage": "Cancelled before the background loop started.",
-                },
-            )
-            runtime.write_state_unlocked(state_unlocked)
-            if job_id:
-                existing = runtime.read_job_unlocked(job_id) or {"jobId": job_id, "taskId": task_id}
-                runtime.write_job_unlocked(
-                    storage.default_job(
-                        {
-                            **existing,
-                            "status": "cancelled",
-                            "cancelRequested": True,
-                            "finishedAt": utc_now(),
-                            "lastHeartbeatAt": utc_now(),
-                            "lastMessage": "Cancelled before start.",
-                        }
-                    )
-                )
-                queueing.release_loop_claim(runtime.root, task_id, job_id)
-                _sync_loop_queue(runtime.root, task_id)
-            queued_cancel_result = {"message": "Queued loop cancelled before start.", "queuedJobsCancelled": cancelled_queued_jobs}
-        else:
-            cancelled_queued_jobs = _cancel_queued_background_jobs_unlocked(runtime, task_id, job_id, "Cancelled because the active loop was stopped.")
-            state_unlocked = set_loop_state(
-                state_unlocked,
-                {
-                    "cancelRequested": True,
-                    "lastHeartbeatAt": utc_now(),
-                    "lastMessage": "Cancellation requested. The loop will stop after the current round.",
-                },
-            )
-            runtime.write_state_unlocked(state_unlocked)
-            if job_id:
-                existing = runtime.read_job_unlocked(job_id) or {"jobId": job_id, "taskId": task_id}
-                runtime.write_job_unlocked(
-                    storage.default_job(
-                        {
-                            **existing,
-                            "cancelRequested": True,
-                            "lastHeartbeatAt": utc_now(),
-                            "lastMessage": "Cancellation requested.",
-                        }
-                    )
-                )
-    if queued_cancel_result is not None:
-        runtime.append_step(
-            "autoloop",
-            "Queued background loop cancelled before start.",
-            {"taskId": task_id, "jobId": job_id, "queuedJobsCancelled": queued_cancel_result["queuedJobsCancelled"]},
-        )
-        return queued_cancel_result
-
+        cancelled = _cancel_scheduler_jobs_unlocked(runtime)
+        _reset_global_loop_state_unlocked(runtime)
+        task_states_reset = 0
+        for task_id in task_ids:
+            if _reset_task_loop_state_unlocked(runtime, task_id):
+                task_states_reset += 1
+    queue_reset = queueing.clear_scheduler_queues(runtime.root, task_ids)
     runtime.append_step(
         "autoloop",
-        "Cancellation requested for the autonomous loop.",
+        "Scheduler reset cancelled queued and running work and restored ready state.",
         {
-            "taskId": task_id,
-            "jobId": job_id,
-            "completedRounds": current_loop_state(storage.read_state_payload(paths)).get("completedRounds"),
-            "queuedJobsCancelled": cancelled_queued_jobs,
+            "loopsCancelled": cancelled["loopsCancelled"],
+            "targetsCancelled": cancelled["targetsCancelled"],
+            "taskStatesReset": task_states_reset,
+            "loopKeysCleared": queue_reset["loopKeysCleared"],
+            "dispatchKeysCleared": queue_reset["dispatchKeysCleared"],
         },
     )
-    return {"message": "Cancellation requested.", "queuedJobsCancelled": cancelled_queued_jobs}
+    for task_id in task_ids:
+        _sync_live_run_record(runtime, task_id=task_id)
+    return {
+        "message": "Scheduler reset. Ready to go.",
+        "loopsCancelled": cancelled["loopsCancelled"],
+        "targetsCancelled": cancelled["targetsCancelled"],
+        "taskStatesReset": task_states_reset,
+        "loopKeysCleared": queue_reset["loopKeysCleared"],
+        "dispatchKeysCleared": queue_reset["dispatchKeysCleared"],
+    }
 
 
 def manage_loop_job(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
@@ -1446,52 +1600,55 @@ def manage_loop_job(payload: Dict[str, Any], root: Optional[Path] = None) -> Dic
     task_snapshot = storage.read_task_snapshot(task_id, paths)
     if not isinstance(task_snapshot, dict):
         raise RuntimeErrorWithCode("Task snapshot is missing, so this job cannot be restored.", 404)
+    task_runtime = task_snapshot.get("runtime") if isinstance(task_snapshot.get("runtime"), dict) else {}
+    task_scoped = bool(str(task_runtime.get("liveRunId") or "").strip())
 
     active_task_id = str(((state.get("activeTask") or {}) if isinstance(state.get("activeTask"), dict) else {}).get("taskId") or "")
-    should_restore_snapshot = action == "retry" or seed_completed_rounds == 0 or active_task_id != task_id
+    should_restore_snapshot = action == "retry" or seed_completed_rounds == 0 or (not task_scoped and active_task_id != task_id)
 
-    with runtime.with_lock():
-        current = runtime.read_state_unlocked()
-        if should_restore_snapshot:
-            current["activeTask"] = task_snapshot
-            current["draft"] = control.build_draft_from_task(task_snapshot)
-            current["commander"] = None
-            current["commanderReview"] = None
-            current["workers"] = control._empty_worker_state_map(task_workers(task_snapshot))
-            current["summary"] = None
-            current["arbiter"] = None
-            current["memoryVersion"] = int(current.get("memoryVersion") or 0) + 1
-            current["usage"] = storage.default_usage_state()
-            current["loop"] = storage.default_loop_state()
-            runtime.write_state_unlocked(current)
-            seed_completed_rounds = 0
-            seed_results = []
-            resume_from_round = 1
-            if action == "resume":
-                retry_source_job_id = job_id
-                resume_source_job_id = None
+    with (_task_state_context(runtime, task_id) if task_scoped else nullcontext()):
+        with runtime.with_lock():
+            current = runtime.read_state_unlocked()
+            if should_restore_snapshot:
+                current["activeTask"] = task_snapshot
+                current["draft"] = control.build_draft_from_task(task_snapshot)
+                current["commander"] = None
+                current["commanderReview"] = None
+                current["workers"] = control._empty_worker_state_map(task_workers(task_snapshot))
+                current["summary"] = None
+                current["arbiter"] = None
+                current["memoryVersion"] = int(current.get("memoryVersion") or 0) + 1
+                current["usage"] = storage.default_usage_state()
+                current["loop"] = storage.default_loop_state()
+                runtime.write_state_unlocked(current)
+                seed_completed_rounds = 0
+                seed_results = []
+                resume_from_round = 1
+                if action == "resume":
+                    retry_source_job_id = job_id
+                    resume_source_job_id = None
+                else:
+                    retry_source_job_id = job_id
             else:
-                retry_source_job_id = job_id
-        else:
-            current["loop"] = storage.default_loop_state()
-            runtime.write_state_unlocked(current)
+                current["loop"] = storage.default_loop_state()
+                runtime.write_state_unlocked(current)
 
-    new_job = create_loop_job(
-        runtime,
-        task_snapshot,
-        clamp_loop_rounds(job.get("rounds") or 1),
-        clamp_loop_delay_ms(job.get("delayMs") or 0),
-        "background",
-        {
-            "attempt": max(1, int(job.get("attempt") or 1)) + 1,
-            "resumeOfJobId": resume_source_job_id,
-            "retryOfJobId": retry_source_job_id,
-            "resumeFromRound": resume_from_round,
-            "results": seed_results,
-            "completedRounds": seed_completed_rounds,
-            "lastMessage": "Queued resumed background loop." if action == "resume" else "Queued retried background loop.",
-        },
-    )
+        new_job = create_loop_job(
+            runtime,
+            task_snapshot,
+            clamp_loop_rounds(job.get("rounds") or 1),
+            clamp_loop_delay_ms(job.get("delayMs") or 0),
+            "background",
+            {
+                "attempt": max(1, int(job.get("attempt") or 1)) + 1,
+                "resumeOfJobId": resume_source_job_id,
+                "retryOfJobId": retry_source_job_id,
+                "resumeFromRound": resume_from_round,
+                "results": seed_results,
+                "completedRounds": seed_completed_rounds,
+                "lastMessage": "Queued resumed background loop." if action == "resume" else "Queued retried background loop.",
+            },
+        )
     try:
         if queueing.redis_enabled(runtime.root):
             _sync_loop_queue(runtime.root, task_id)
@@ -1501,23 +1658,24 @@ def manage_loop_job(payload: Dict[str, Any], root: Optional[Path] = None) -> Dic
         else:
             launch_loop_job_runner(new_job, runtime.root)
     except Exception as exc:  # noqa: BLE001
-        with runtime.with_lock():
-            current = runtime.read_state_unlocked()
-            current["loop"] = storage.default_loop_state()
-            current["loop"]["lastMessage"] = "Background launch failed."
-            runtime.write_state_unlocked(current)
-            runtime.write_job_unlocked(
-                storage.default_job(
-                    {
-                        **new_job,
-                        "status": "error",
-                        "finishedAt": utc_now(),
-                        "lastHeartbeatAt": utc_now(),
-                        "lastMessage": "Background launch failed.",
-                        "error": str(exc),
-                    }
+        with (_task_state_context(runtime, task_id) if task_scoped else nullcontext()):
+            with runtime.with_lock():
+                current = runtime.read_state_unlocked()
+                current["loop"] = storage.default_loop_state()
+                current["loop"]["lastMessage"] = "Background launch failed."
+                runtime.write_state_unlocked(current)
+                runtime.write_job_unlocked(
+                    storage.default_job(
+                        {
+                            **new_job,
+                            "status": "error",
+                            "finishedAt": utc_now(),
+                            "lastHeartbeatAt": utc_now(),
+                            "lastMessage": "Background launch failed.",
+                            "error": str(exc),
+                        }
+                    )
                 )
-            )
         queueing.release_loop_claim(runtime.root, task_id, str(new_job.get("jobId") or ""))
         _sync_loop_queue(runtime.root, task_id)
         raise RuntimeErrorWithCode(str(exc), 500) from exc

@@ -254,10 +254,34 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             request_json(backend_base + "/v1/state/reset", method="POST", timeout=20)
 
             qa_print("Checking auth mutation parity against the Python API")
-            request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"clear": "1"}, timeout=20)
-            auth = request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"appendKey": "sk-test-1111"}, timeout=20)
-            if int(auth.get("keyCount") or 0) != 1:
-                raise QAError("Python auth append did not produce exactly one stored key.")
+            auth_status = request_json(backend_base + "/v1/auth/status", timeout=20)
+            provider_groups = auth_status.get("providerGroups") if isinstance(auth_status.get("providerGroups"), dict) else {}
+            openai_group = provider_groups.get("openai") if isinstance(provider_groups.get("openai"), dict) else {}
+            openai_selected_mode = str(openai_group.get("selectedMode") or "").strip().lower()
+            openai_writable = bool(openai_group.get("writable"))
+            if openai_writable:
+                request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"clear": "1"}, timeout=20)
+                auth = request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"appendKey": "sk-test-1111"}, timeout=20)
+                if int(auth.get("keyCount") or 0) != 1:
+                    raise QAError("Python auth append did not produce exactly one stored key.")
+            else:
+                status_code, body = request(
+                    backend_base + "/v1/auth/keys",
+                    method="POST",
+                    form_data={"appendKey": "sk-test-1111"},
+                    timeout=20,
+                )
+                if openai_selected_mode != "local":
+                    if status_code != 409 or "mode" not in body.lower():
+                        raise QAError(
+                            "Python auth mutation did not reject writes in managed credential mode as expected: "
+                            + f"HTTP {status_code} | {body}"
+                        )
+                else:
+                    raise QAError(
+                        "OpenAI auth group was non-writable outside managed mode during crossover smoke: "
+                        + json.dumps(openai_group, indent=2)
+                    )
 
             qa_print("Adding a staged adversarial lane through the Python API")
             added = request_json(backend_base + "/v1/workers/add", method="POST", form_data={"type": "security"}, timeout=20)

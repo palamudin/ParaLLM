@@ -10,6 +10,8 @@ from runtime.engine import (
     RuntimeErrorWithCode,
     coerce_bool,
     default_context_mode,
+    default_engine_graph,
+    default_engine_version,
     default_direct_baseline_mode,
     default_front_mode,
     default_model_for_provider,
@@ -17,6 +19,8 @@ from runtime.engine import (
     default_target_timeout_config,
     normalize_budget_config,
     normalize_context_mode,
+    normalize_engine_graph,
+    normalize_engine_version,
     normalize_direct_baseline_mode,
     normalize_dynamic_spinup_config,
     normalize_front_mode,
@@ -49,6 +53,14 @@ def utc_now() -> str:
 
 def _runtime(root: Optional[Path] = None) -> LoopRuntime:
     return LoopRuntime(Path(root).resolve() if root else Path(__file__).resolve().parents[2])
+
+
+def _sync_active_task_state(runtime: LoopRuntime, state: Dict[str, Any]) -> None:
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    if not isinstance(active_task, dict):
+        return
+    with runtime.with_lock():
+        runtime.initialize_task_state_unlocked(active_task, state)
 
 
 def write_auth_key_pool(keys: list[str], root: Optional[Path] = None, provider: Any = "openai") -> None:
@@ -191,6 +203,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         current_provider,
     )
     current_front_mode = normalize_front_mode(runtime_config.get("frontMode", default_front_mode()), default_front_mode())
+    current_engine_version = normalize_engine_version(runtime_config.get("engineVersion", default_engine_version()), default_engine_version())
+    current_engine_graph = normalize_engine_graph(runtime_config.get("engineGraph", default_engine_graph()))
     current_context_mode = normalize_context_mode(runtime_config.get("contextMode", default_context_mode()), default_context_mode())
     current_direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     current_direct_provider = normalize_provider_id(str(runtime_config.get("directProvider") or current_provider), current_provider)
@@ -211,6 +225,9 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         summarizer_provider,
     )
     front_mode = normalize_front_mode(payload.get("frontMode", current_front_mode), current_front_mode)
+    engine_version = normalize_engine_version(payload.get("engineVersion", current_engine_version), current_engine_version)
+    engine_graph_input = control._parse_json_like(payload.get("engineGraph"), current_engine_graph)
+    engine_graph = normalize_engine_graph(engine_graph_input if isinstance(engine_graph_input, dict) else current_engine_graph)
     context_mode = normalize_context_mode(payload.get("contextMode", current_context_mode), current_context_mode)
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", current_direct_baseline_mode), current_direct_baseline_mode)
     direct_provider = normalize_provider_id(str(payload.get("directProvider") or current_direct_provider), provider)
@@ -285,6 +302,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["provider"] = provider
         task_runtime["model"] = model
         task_runtime["frontMode"] = front_mode
+        task_runtime["engineVersion"] = engine_version
+        task_runtime["engineGraph"] = engine_graph
         task_runtime["contextMode"] = context_mode
         task_runtime["directBaselineMode"] = direct_baseline_mode
         task_runtime["directProvider"] = direct_provider
@@ -317,6 +336,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "summarizerProvider": summarizer_provider,
                 "summarizerModel": summarizer_model,
                 "frontMode": front_mode,
+                "engineVersion": engine_version,
+                "engineGraph": engine_graph,
                 "contextMode": context_mode,
                 "directBaselineMode": direct_baseline_mode,
                 "directProvider": direct_provider,
@@ -346,6 +367,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
 
     updated_state = runtime.mutate_state(mutate)
     control._write_task_snapshot_unlocked(runtime, updated_state["activeTask"])
+    _sync_active_task_state(runtime, updated_state)
     runtime.append_step(
         "model",
         "Applied settings runtime and loop selection to the active task.",
@@ -354,6 +376,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "workerModel": model,
             "summarizerModel": summarizer_model,
             "frontMode": front_mode,
+            "engineVersion": engine_version,
+            "engineGraph": engine_graph,
             "contextMode": context_mode,
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
@@ -378,6 +402,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
         "frontMode": front_mode,
+        "engineVersion": engine_version,
+        "engineGraph": engine_graph,
         "contextMode": context_mode,
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
@@ -435,6 +461,7 @@ def update_worker_config(payload: Dict[str, Any], root: Optional[Path] = None) -
         return next_state
 
     updated_state = runtime.mutate_state(mutate)
+    _sync_active_task_state(runtime, updated_state)
     worker = next((candidate for candidate in updated_state["draft"]["workers"] if candidate.get("id") == worker_id), None)
     runtime.append_step(
         "worker_roster",
@@ -498,6 +525,7 @@ def add_adversarial_worker(payload: Dict[str, Any], root: Optional[Path] = None)
         return next_state
 
     updated_state = runtime.mutate_state(mutate)
+    _sync_active_task_state(runtime, updated_state)
     runtime.append_step(
         "worker_roster",
         "Added a new adversarial worker slot.",
@@ -548,6 +576,7 @@ def remove_adversarial_worker(payload: Dict[str, Any], root: Optional[Path] = No
     updated_state = runtime.mutate_state(mutate)
     if isinstance(updated_state.get("activeTask"), dict):
         control._write_task_snapshot_unlocked(runtime, updated_state["activeTask"])
+    _sync_active_task_state(runtime, updated_state)
     runtime.append_step(
         "worker_roster",
         "Removed the last adversarial worker slot.",
@@ -612,6 +641,7 @@ def set_position_model(payload: Dict[str, Any], root: Optional[Path] = None) -> 
 
     updated_state = runtime.mutate_state(mutate)
     control._write_task_snapshot_unlocked(runtime, updated_state["activeTask"])
+    _sync_active_task_state(runtime, updated_state)
     runtime.append_step(
         "model",
         "Updated the model selection for a task position.",

@@ -277,6 +277,7 @@ DEFAULT_WORKER_TYPE_SEQUENCE: List[str] = [
 DEFAULT_MODEL_ID = "gpt-5-mini"
 DEFAULT_PROVIDER_ID = "openai"
 DEFAULT_OLLAMA_MODEL_ID = "qwen3"
+EXECUTION_CANCELLED_MESSAGE = "Execution cancelled by operator."
 WEB_SEARCH_TOOL_CALL_PRICE_USD = 0.01
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AGENT_CONTEXT_PATH = REPO_ROOT / "AGENTS.md"
@@ -478,6 +479,219 @@ def normalize_front_mode(value: Any, fallback: str = "full") -> str:
     if candidate in {"full", "eval"}:
         return candidate
     return fallback if fallback in {"full", "eval"} else default_front_mode()
+
+
+def default_engine_version() -> str:
+    return "v1"
+
+
+def normalize_engine_version(value: Any, fallback: str = "v1") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"v1", "v2"}:
+        return candidate
+    return fallback if fallback in {"v1", "v2"} else default_engine_version()
+
+
+def default_engine_graph() -> Dict[str, Any]:
+    return {
+        "version": "v2",
+        "nodes": {
+            "prompt": {
+                "id": "prompt",
+                "moduleType": "prompt",
+                "label": "Prompt ingress",
+                "kicker": "Input",
+                "meta": "objective + constraints",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "blocking",
+                "packetMode": "full",
+                "x": 28,
+                "y": 32,
+                "width": 208,
+                "spawnCount": 1,
+            },
+            "activator": {
+                "id": "activator",
+                "moduleType": "activator",
+                "label": "Main activator",
+                "kicker": "Lead thread",
+                "meta": "sets direction and asks for pressure",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "blocking",
+                "packetMode": "full",
+                "x": 290,
+                "y": 32,
+                "width": 236,
+                "spawnCount": 1,
+            },
+            "workers": {
+                "id": "workers",
+                "moduleType": "workers",
+                "label": "Adversarial lanes",
+                "kicker": "Pressure mesh",
+                "meta": "spawnable packet-driven workers",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "blocking",
+                "packetMode": "weighted",
+                "x": 116,
+                "y": 196,
+                "width": 230,
+                "spawnCount": 3,
+            },
+            "review": {
+                "id": "review",
+                "moduleType": "review",
+                "label": "Review / redirect",
+                "kicker": "Control gate",
+                "meta": "accept or redirect pressure",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "blocking",
+                "packetMode": "full",
+                "x": 432,
+                "y": 196,
+                "width": 236,
+                "spawnCount": 1,
+            },
+            "tools": {
+                "id": "tools",
+                "moduleType": "tools",
+                "label": "Capability plane",
+                "kicker": "Tools",
+                "meta": "research, local, GitHub",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "optional",
+                "packetMode": "on-demand",
+                "x": 824,
+                "y": 32,
+                "width": 212,
+                "spawnCount": 1,
+            },
+            "answerNow": {
+                "id": "answerNow",
+                "moduleType": "answerNow",
+                "label": "Answer now",
+                "kicker": "Sidecar",
+                "meta": "non-blocking partial answer",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "sidecar",
+                "packetMode": "compact",
+                "x": 676,
+                "y": 382,
+                "width": 200,
+                "spawnCount": 1,
+            },
+            "final": {
+                "id": "final",
+                "moduleType": "final",
+                "label": "Final answer",
+                "kicker": "Output",
+                "meta": "single accountable voice",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "blocking",
+                "packetMode": "merge",
+                "x": 840,
+                "y": 196,
+                "width": 204,
+                "spawnCount": 1,
+            },
+            "judge": {
+                "id": "judge",
+                "moduleType": "judge",
+                "label": "Judge tap",
+                "kicker": "Verify",
+                "meta": "blind vetting and scoring",
+                "enabled": True,
+                "protected": True,
+                "blockingMode": "post",
+                "packetMode": "blind",
+                "x": 904,
+                "y": 382,
+                "width": 184,
+                "spawnCount": 1,
+            },
+        },
+        "edges": [
+            {"from": "prompt", "to": "activator", "label": "prompt"},
+            {"from": "activator", "to": "workers", "label": "pressure"},
+            {"from": "tools", "to": "workers", "label": "tools"},
+            {"from": "workers", "to": "review", "label": "checkpoints"},
+            {"from": "activator", "to": "review", "label": "course"},
+            {"from": "review", "to": "answerNow", "label": "sidecar"},
+            {"from": "review", "to": "final", "label": "merge"},
+            {"from": "answerNow", "to": "final", "label": "early view"},
+            {"from": "final", "to": "judge", "label": "verify"},
+        ],
+    }
+
+
+def normalize_engine_graph(value: Any) -> Dict[str, Any]:
+    default_graph = default_engine_graph()
+    source = value if isinstance(value, dict) else {}
+    source_nodes = source.get("nodes") if isinstance(source.get("nodes"), dict) else {}
+    source_edges = source.get("edges") if isinstance(source.get("edges"), list) else []
+    nodes: Dict[str, Dict[str, Any]] = {}
+
+    def _normalize_node(node_id: str, raw: Any, fallback: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        if not re.match(r"^[a-zA-Z0-9_-]+$", str(node_id or "")):
+            return None
+        base = dict(fallback or {})
+        if isinstance(raw, dict):
+            base.update(raw)
+        module_type = str(base.get("moduleType") or node_id).strip() or node_id
+        return {
+            "id": str(node_id),
+            "moduleType": module_type,
+            "label": str(base.get("label") or module_type).strip() or module_type,
+            "kicker": str(base.get("kicker") or "Module").strip() or "Module",
+            "meta": str(base.get("meta") or "").strip(),
+            "enabled": coerce_bool(base.get("enabled"), True),
+            "protected": coerce_bool(base.get("protected"), False),
+            "blockingMode": str(base.get("blockingMode") or "blocking").strip() or "blocking",
+            "packetMode": str(base.get("packetMode") or "full").strip() or "full",
+            "x": max(0, min(1800, int(base.get("x") or 0))),
+            "y": max(0, min(1200, int(base.get("y") or 0))),
+            "width": max(168, min(360, int(base.get("width") or 208))),
+            "spawnCount": max(1, min(12, int(base.get("spawnCount") or 1))),
+        }
+
+    for node_id, default_node in default_graph["nodes"].items():
+        normalized = _normalize_node(node_id, source_nodes.get(node_id), default_node)
+        if normalized is not None:
+            nodes[node_id] = normalized
+
+    for node_id, raw_node in source_nodes.items():
+        if node_id in nodes:
+            continue
+        normalized = _normalize_node(node_id, raw_node)
+        if normalized is not None:
+            nodes[node_id] = normalized
+
+    seen_edges: set[tuple[str, str, str]] = set()
+    edges: List[Dict[str, str]] = []
+    for raw_edge in source_edges or default_graph["edges"]:
+        if not isinstance(raw_edge, dict):
+            continue
+        source_id = str(raw_edge.get("from") or "").strip()
+        target_id = str(raw_edge.get("to") or "").strip()
+        if source_id not in nodes or target_id not in nodes or source_id == target_id:
+            continue
+        label = str(raw_edge.get("label") or "").strip()
+        edge_key = (source_id, target_id, label)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        edges.append({"from": source_id, "to": target_id, "label": label})
+
+    if not edges:
+        return default_graph
+    return {"version": "v2", "nodes": nodes, "edges": edges}
 
 
 def default_direct_baseline_mode() -> str:
@@ -2215,6 +2429,7 @@ class LoopRuntime:
         self.root = Path(root).resolve()
         self.data_path = self.root / "data"
         self.tasks_path = self.data_path / "tasks"
+        self.task_states_path = self.data_path / "task_states"
         self.checkpoints_path = self.data_path / "checkpoints"
         self.outputs_path = self.data_path / "outputs"
         self.sessions_path = self.data_path / "sessions"
@@ -2231,6 +2446,7 @@ class LoopRuntime:
         for path in (
             self.data_path,
             self.tasks_path,
+            self.task_states_path,
             self.checkpoints_path,
             self.outputs_path,
             self.sessions_path,
@@ -2265,6 +2481,47 @@ class LoopRuntime:
 
     def _job_path(self, job_id: str) -> Path:
         return self.jobs_path / f"{job_id}.json"
+
+    def _scoped_task_state_id(self) -> Optional[str]:
+        task_id = str(self._current_execution_context.get("stateScopeTaskId") or "").strip()
+        return task_id or None
+
+    def _task_state_path(self, task_id: str) -> Path:
+        return self.task_states_path / f"{str(task_id or '').strip()}.json"
+
+    def read_task_snapshot_unlocked(self, task_id: str) -> Optional[Dict[str, Any]]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return None
+        if metadata_store.postgres_enabled(self.root):
+            data = metadata_store.read_task_payload(self.root, normalized_task_id)
+            return data if isinstance(data, dict) else None
+        data = self._read_json_file(self.tasks_path / f"{normalized_task_id}.json", None)
+        return data if isinstance(data, dict) else None
+
+    def initialize_task_state_unlocked(self, task: Dict[str, Any], seed_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        task_id = str(task.get("taskId") or "").strip()
+        if not task_id:
+            raise RuntimeErrorWithCode("Task payload is missing taskId.", 500)
+        base = self.normalize_state(seed_state if isinstance(seed_state, dict) else default_state())
+        base["activeTask"] = task
+        normalized = self.normalize_state(base)
+        self._write_json_file(self._task_state_path(task_id), normalized)
+        return normalized
+
+    def read_task_state_unlocked(self, task_id: str, bootstrap: bool = True) -> Dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return self.normalize_state(default_state())
+        path = self._task_state_path(normalized_task_id)
+        data = self._read_json_file(path, None)
+        if isinstance(data, dict):
+            return self.normalize_state(data)
+        if bootstrap:
+            task = self.read_task_snapshot_unlocked(normalized_task_id)
+            if isinstance(task, dict):
+                return self.initialize_task_state_unlocked(task)
+        return self.normalize_state(default_state())
 
     def _remove_tree(self, path: Path) -> None:
         if not path.exists():
@@ -2306,6 +2563,9 @@ class LoopRuntime:
 
     def read_state_unlocked(self) -> Dict[str, Any]:
         self.ensure_data_paths()
+        scoped_task_id = self._scoped_task_state_id()
+        if scoped_task_id:
+            return self.read_task_state_unlocked(scoped_task_id)
         if metadata_store.postgres_enabled(self.root):
             data = metadata_store.read_state_payload(self.root, default_state())
         else:
@@ -2321,6 +2581,13 @@ class LoopRuntime:
     def write_state_unlocked(self, state: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self.normalize_state(state)
         normalized["lastUpdated"] = utc_now()
+        scoped_task_id = self._scoped_task_state_id()
+        if scoped_task_id:
+            self._write_json_file(self._task_state_path(scoped_task_id), normalized)
+            active_task = normalized.get("activeTask")
+            if isinstance(active_task, dict) and str(active_task.get("taskId") or "").strip() == scoped_task_id:
+                self.write_task_snapshot_unlocked(active_task)
+            return normalized
         if metadata_store.postgres_enabled(self.root):
             metadata_store.write_state_payload(self.root, normalized)
         else:
@@ -2421,6 +2688,33 @@ class LoopRuntime:
 
     def current_execution_context(self) -> Dict[str, Any]:
         return dict(self._current_execution_context)
+
+    def execution_cancelled_reason(self) -> Optional[str]:
+        context = self.current_execution_context()
+        dispatch_job_id = str(context.get("dispatchJobId") or "").strip()
+        loop_job_id = str(context.get("loopJobId") or "").strip()
+        with self.with_lock():
+            if dispatch_job_id:
+                dispatch_job = self.read_job_unlocked(dispatch_job_id)
+                if isinstance(dispatch_job, dict):
+                    dispatch_status = str(dispatch_job.get("status") or "").strip().lower()
+                    if bool(dispatch_job.get("cancelRequested")) or dispatch_status == "cancelled":
+                        return EXECUTION_CANCELLED_MESSAGE
+            if loop_job_id:
+                loop_job = self.read_job_unlocked(loop_job_id)
+                if isinstance(loop_job, dict):
+                    loop_status = str(loop_job.get("status") or "").strip().lower()
+                    if bool(loop_job.get("cancelRequested")) or loop_status == "cancelled":
+                        return EXECUTION_CANCELLED_MESSAGE
+        return None
+
+    def execution_cancelled(self) -> bool:
+        return bool(self.execution_cancelled_reason())
+
+    def assert_execution_not_cancelled(self) -> None:
+        reason = self.execution_cancelled_reason()
+        if reason:
+            raise RuntimeErrorWithCode(reason, 409)
 
     def current_trace_target(self, fallback: str = "generic") -> str:
         context = self.current_execution_context()
@@ -2587,6 +2881,8 @@ class LoopRuntime:
         normalized = self.normalize_provider_trace(trace)
         if normalized is None:
             return None
+        if self.execution_cancelled():
+            return normalized
         normalized["updatedAt"] = utc_now()
         message = self.provider_trace_message(normalized)
         context = self.current_execution_context()
@@ -2965,6 +3261,8 @@ class LoopRuntime:
             "provider": DEFAULT_PROVIDER_ID,
             "model": DEFAULT_MODEL_ID,
             "frontMode": default_front_mode(),
+            "engineVersion": default_engine_version(),
+            "engineGraph": default_engine_graph(),
             "contextMode": default_context_mode(),
             "directBaselineMode": default_direct_baseline_mode(),
             "directProvider": DEFAULT_PROVIDER_ID,
@@ -2995,6 +3293,8 @@ class LoopRuntime:
                 runtime["provider"],
             )
             runtime["frontMode"] = normalize_front_mode(task_runtime.get("frontMode"), runtime["frontMode"])
+            runtime["engineVersion"] = normalize_engine_version(task_runtime.get("engineVersion"), runtime["engineVersion"])
+            runtime["engineGraph"] = normalize_engine_graph(task_runtime.get("engineGraph", runtime["engineGraph"]))
             runtime["contextMode"] = normalize_context_mode(task_runtime.get("contextMode"), runtime["contextMode"])
             runtime["directBaselineMode"] = normalize_direct_baseline_mode(task_runtime.get("directBaselineMode"), runtime["directBaselineMode"])
             runtime["directProvider"] = normalize_provider_id(task_runtime.get("directProvider"), runtime["provider"])
@@ -6516,6 +6816,7 @@ class LoopRuntime:
             "syncPolicy": task.get("syncPolicy") if isinstance(task.get("syncPolicy"), dict) else {},
             "runtime": {
                 "executionMode": str(runtime["executionMode"]),
+                "engineVersion": str(runtime.get("engineVersion", default_engine_version())),
                 "contextMode": str(runtime.get("contextMode", default_context_mode())),
                 "directBaselineMode": str(runtime.get("directBaselineMode", default_direct_baseline_mode())),
                 "directProvider": str(runtime.get("directProvider", runtime["provider"])),
@@ -6540,6 +6841,7 @@ class LoopRuntime:
             "objectivePreview": truncate_text(task.get("objective", ""), 280),
             "sessionContextPreview": truncate_text(task.get("sessionContext", ""), 240),
             "constraints": limit_string_list(task.get("constraints", []), 10, 200),
+            "engineVersion": normalize_engine_version(runtime.get("engineVersion")),
             "contextMode": normalize_context_mode(runtime.get("contextMode")),
             "dynamicSpinupEnabled": bool(self.get_dynamic_spinup_config(task).get("enabled")),
             "vettingEnabled": bool(self.get_vetting_config(task).get("enabled")),
@@ -7793,6 +8095,7 @@ class LoopRuntime:
                 self.append_step("direct_baseline", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
         if baseline_answer is None:
             baseline_answer = self.new_mock_direct_baseline_answer(task)
+        self.assert_execution_not_cancelled()
 
         baseline = {
             "taskId": str(task["taskId"]),
@@ -7969,6 +8272,7 @@ class LoopRuntime:
         checkpoint["localFileSources"] = normalize_string_array_preserve_items(call_meta.get("localFileSources", []))
         checkpoint["githubToolCalls"] = normalize_local_tool_calls(call_meta.get("githubToolCalls", []))
         checkpoint["githubSources"] = normalize_url_array_values(call_meta.get("githubSources", []))
+        self.assert_execution_not_cancelled()
 
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             current["commander"] = checkpoint
@@ -8193,6 +8497,7 @@ class LoopRuntime:
             selected_dynamic_worker, dynamic_lane_resolution = self.build_dynamic_worker(task, dynamic_lane_decision, commander_round + 1)
         checkpoint["dynamicLaneResolution"] = dynamic_lane_resolution
         spawned_worker: Optional[Dict[str, str]] = None
+        self.assert_execution_not_cancelled()
 
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             nonlocal spawned_worker
@@ -8444,6 +8749,7 @@ class LoopRuntime:
         if checkpoint is None:
             checkpoint = self.new_mock_checkpoint(task, worker, runtime, research_config, step_number, constraints, prior_summary, prior_memory_version, peer_messages)
         checkpoint = self.normalize_checkpoint(task, worker_id, worker, runtime, checkpoint, step_number)
+        self.assert_execution_not_cancelled()
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             workers_state = current.get("workers") if isinstance(current.get("workers"), dict) else {}
             workers_state[worker_id] = checkpoint
@@ -8675,6 +8981,7 @@ class LoopRuntime:
         summary["partialSummary"] = False
         summary["round"] = commander_round
         dynamic_lane_decision = summary.get("dynamicLaneDecision") if isinstance(summary.get("dynamicLaneDecision"), dict) else {}
+        self.assert_execution_not_cancelled()
 
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             current["summary"] = summary
@@ -8865,6 +9172,7 @@ class LoopRuntime:
         summary = self.normalize_summary(summary, line_catalog)
         summary["round"] = commander_round
         summary = self.annotate_partial_summary(summary, list(worker_state.keys()), pending_workers)
+        self.assert_execution_not_cancelled()
         summary_write_applied = {"value": False}
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
             current_summary = current.get("summary") if isinstance(current.get("summary"), dict) else None
@@ -8950,18 +9258,24 @@ class LoopRuntime:
         return {"target": "answer_now", "output": "Partial summary written.", "exitCode": 0}
 
     def run_target(self, target: str, task_id: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        current_state = self.read_state()
-        task = current_state.get("activeTask")
-        if not isinstance(task, dict):
-            raise RuntimeErrorWithCode("No active task.", 400)
-        if task_id and str(task.get("taskId", "")) != str(task_id):
-            raise RuntimeErrorWithCode("Requested task does not match the active task.", 409)
         execution_context = dict(options or {})
-        execution_context["taskId"] = str(task.get("taskId") or "")
+        if task_id:
+            execution_context["taskId"] = str(task_id or "")
+            execution_context["stateScopeTaskId"] = str(task_id or "")
         execution_context["traceTarget"] = str(target or "").strip()
         self.set_execution_context(execution_context)
         self.clear_provider_trace()
         try:
+            self.assert_execution_not_cancelled()
+            current_state = self.read_state()
+            task = current_state.get("activeTask")
+            if not isinstance(task, dict):
+                raise RuntimeErrorWithCode("No active task.", 400)
+            if task_id and str(task.get("taskId", "")) != str(task_id):
+                raise RuntimeErrorWithCode("Requested task does not match the active task.", 409)
+            execution_context["taskId"] = str(task.get("taskId") or "")
+            self.set_execution_context(execution_context)
+            self.assert_execution_not_cancelled()
             if target == "commander":
                 return self.run_commander()
             if target == "direct_baseline":

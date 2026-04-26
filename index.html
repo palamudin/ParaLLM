@@ -106,10 +106,16 @@
               <span id="headerMemoryVersion" class="workspace-pill-value">0</span>
             </div>
           </div>
-          <div class="front-canvas-switch" role="tablist" aria-label="Front canvas mode">
-            <button type="button" class="front-canvas-switch-btn" data-canvas="live" aria-selected="true">Live</button>
-            <button type="button" class="front-canvas-switch-btn" data-canvas="eval" aria-selected="false">Eval</button>
-            <button type="button" class="front-canvas-switch-btn" data-canvas="judge" aria-selected="false">Judge</button>
+          <div class="workspace-header-switches">
+            <div class="engine-switch" role="tablist" aria-label="Engine version">
+              <button type="button" class="engine-switch-btn" data-engine-version="v1" aria-selected="true">V1 engine</button>
+              <button type="button" class="engine-switch-btn" data-engine-version="v2" aria-selected="false">V2 engine</button>
+            </div>
+            <div class="front-canvas-switch" role="tablist" aria-label="Front canvas mode">
+              <button type="button" class="front-canvas-switch-btn" data-canvas="live" aria-selected="true">Live</button>
+              <button type="button" class="front-canvas-switch-btn" data-canvas="eval" aria-selected="false">Eval</button>
+              <button type="button" class="front-canvas-switch-btn" data-canvas="judge" aria-selected="false">Judge</button>
+            </div>
           </div>
         </div>
       </header>
@@ -152,8 +158,23 @@
           <div id="workerEditorBody" class="worker-editor-body"></div>
         </div>
       </div>
+      <div id="topologyNodeModal" class="worker-editor-modal topology-node-modal" hidden aria-hidden="true">
+        <div class="worker-editor-backdrop" data-topology-node-close="true"></div>
+        <div class="worker-editor-dialog topology-node-dialog" role="dialog" aria-modal="true" aria-labelledby="topologyNodeTitle">
+          <div class="worker-editor-head">
+            <div class="worker-editor-head-copy">
+              <div class="worker-editor-kicker">Engine block</div>
+              <h3 id="topologyNodeTitle">Module</h3>
+              <p id="topologyNodeMeta"></p>
+            </div>
+            <button type="button" id="topologyNodeClose" class="worker-editor-close" aria-label="Close block editor">×</button>
+          </div>
+          <div id="topologyNodeBody" class="worker-editor-body"></div>
+        </div>
+      </div>
 
       <section class="workspace-view active" data-view="home">
+        <input type="hidden" id="engineVersion" value="v1" />
         <div class="home-layout home-layout-chat-focused">
           <details class="home-controls-collapsible">
             <summary class="home-controls-summary">
@@ -208,24 +229,24 @@
                 </div>
               </section>
 
-              <section class="panel rail-panel topology-panel">
+              <section id="topologyPanel" class="panel rail-panel topology-panel" data-engine-version="v1">
                 <div class="panel-head compact">
                   <div>
                     <div class="panel-kicker">Architecture</div>
                     <div class="title-help-row">
-                      <h3>Live topology</h3>
+                      <h3 id="topologyTitle">Live topology</h3>
                       <div class="inline-help">
                         <button type="button" class="inline-help-trigger" aria-label="Show topology guidance">Info</button>
                         <div class="inline-help-popup">Commander, workers, and summarizer flow in one glance. Runtime wiring can be expanded without changing this shell contract.</div>
                       </div>
                     </div>
                   </div>
-                  <span class="topology-badge">Pressure map</span>
+                  <span id="topologyBadge" class="topology-badge">Pressure map</span>
                 </div>
 
-                <p class="topology-summary">Commander shapes the debate, workers push from narrow lanes, and the summarizer returns one accountable voice with the tool plane feeding evidence where needed.</p>
+                <p id="topologySummary" class="topology-summary">Commander shapes the debate, workers push from narrow lanes, and the summarizer returns one accountable voice with the tool plane feeding evidence where needed.</p>
 
-                <div class="topology-canvas" aria-label="Agentic architecture map">
+                <div class="topology-canvas" data-topology-canvas="v1" aria-label="Agentic architecture map">
                   <div class="topology-grid"></div>
                   <div id="topologyNodeCommander" class="topology-node topology-node-commander is-active">
                     <span class="topology-node-label">Commander</span>
@@ -247,6 +268,30 @@
                   <span class="topology-edge edge-commander-workers" aria-hidden="true"></span>
                   <span class="topology-edge edge-workers-summarizer" aria-hidden="true"></span>
                   <span class="topology-edge edge-tools-workers" aria-hidden="true"></span>
+                </div>
+
+                <div class="topology-canvas topology-canvas-v2" data-topology-canvas="v2" aria-label="Modular engine topology map" hidden>
+                  <div class="topology-grid"></div>
+                  <div class="topology-v2-toolbar">
+                    <div id="topologyV2ModeHint" class="topology-v2-mode-hint">V2 graph is editable. Execution still falls back to the proven V1 runner.</div>
+                    <div class="topology-v2-toolbar-actions">
+                      <button type="button" id="topologyV2AddWorker">+ Adversarial</button>
+                      <button type="button" id="topologyV2Reset">Reset graph</button>
+                    </div>
+                  </div>
+                  <div id="topologyV2PendingLink" class="topology-v2-pending-link" hidden>Select an IN connector to complete the link.</div>
+                  <svg id="topologyV2Links" class="topology-v2-links" aria-hidden="true"></svg>
+                  <div id="topologyV2NodeLayer" class="topology-v2-node-layer"></div>
+                </div>
+
+                <div id="topologyV2Inspector" class="topology-v2-inspector" hidden>
+                  <div class="topology-v2-inspector-head">
+                    <div class="topology-v2-inspector-kicker">Selected block</div>
+                    <div id="topologyV2InspectorState" class="topology-v2-inspector-state">READY</div>
+                  </div>
+                  <h4 id="topologyV2InspectorTitle">Main activator</h4>
+                  <p id="topologyV2InspectorMeta" class="topology-v2-inspector-meta">Sets direction and asks the first hard question.</p>
+                  <ul id="topologyV2InspectorList" class="topology-v2-inspector-list"></ul>
                 </div>
 
                 <div class="topology-metrics">
@@ -449,7 +494,7 @@
                       <h3>API key management</h3>
                       <div class="inline-help">
                         <button type="button" class="inline-help-trigger" aria-label="Show API key guidance">Info</button>
-                        <div class="inline-help-popup">Each provider group can run in Local or Safe mode. Prefer env, Docker secrets, or an external provider for Safe. The browser only edits Local mode, which writes prefixed entries into shared Auth.txt.</div>
+                        <div class="inline-help-popup">Each provider group can choose Local, Env, or DB-backed credentials. Local writes prefixed entries into shared Auth.txt. Env uses environment or mounted platform secrets. DB uses the external/provider-backed secret path.</div>
                       </div>
                     </div>
                   </div>
