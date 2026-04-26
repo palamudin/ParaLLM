@@ -3247,6 +3247,16 @@ textarea {
   border-color: color-mix(in srgb, var(--warn) 42%, transparent);
 }
 
+.topology-v2-node.is-completed {
+  border-color: color-mix(in srgb, var(--accent-2) 38%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-2) 18%, transparent) inset, 0 16px 30px rgba(34, 211, 238, 0.14);
+}
+
+.topology-v2-node.is-error {
+  border-color: color-mix(in srgb, var(--danger) 42%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 18%, transparent) inset, 0 16px 30px rgba(239, 68, 68, 0.14);
+}
+
 .topology-v2-node.is-idle {
   opacity: 0.72;
 }
@@ -3295,10 +3305,58 @@ textarea {
   color: var(--muted-strong);
 }
 
+.topology-v2-node-event-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .topology-v2-node-stat {
   font-size: 11px;
   font-weight: 700;
   color: color-mix(in srgb, var(--accent-2) 80%, white 20%);
+}
+
+.topology-v2-node-event {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  background: color-mix(in srgb, var(--surface-alt) 82%, transparent);
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.topology-v2-node-event.is-running,
+.topology-v2-node-event.is-launching {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: color-mix(in srgb, var(--accent) 70%, white 30%);
+}
+
+.topology-v2-node-event.is-queued,
+.topology-v2-node-event.is-waiting_on_key {
+  border-color: color-mix(in srgb, var(--warn) 38%, transparent);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: color-mix(in srgb, var(--warn) 72%, white 28%);
+}
+
+.topology-v2-node-event.is-completed {
+  border-color: color-mix(in srgb, var(--accent-2) 34%, transparent);
+  background: color-mix(in srgb, var(--accent-2) 14%, transparent);
+  color: color-mix(in srgb, var(--accent-2) 76%, white 24%);
+}
+
+.topology-v2-node-event.is-error,
+.topology-v2-node-event.is-cancelled {
+  border-color: color-mix(in srgb, var(--danger) 36%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: color-mix(in srgb, var(--danger) 76%, white 24%);
 }
 
 .topology-v2-handle {
@@ -3384,6 +3442,22 @@ textarea {
   stroke: color-mix(in srgb, var(--warn) 78%, white 22%);
 }
 
+.topology-v2-edge-route.is-live .topology-v2-edge-path {
+  stroke: color-mix(in srgb, var(--accent) 78%, white 22%);
+}
+
+.topology-v2-edge-route.is-waiting .topology-v2-edge-path {
+  stroke: color-mix(in srgb, var(--warn) 74%, white 26%);
+}
+
+.topology-v2-edge-route.is-completed .topology-v2-edge-path {
+  stroke: color-mix(in srgb, var(--accent-2) 72%, white 28%);
+}
+
+.topology-v2-edge-route.is-error .topology-v2-edge-path {
+  stroke: color-mix(in srgb, var(--danger) 72%, white 28%);
+}
+
 .topology-v2-edge-label {
   fill: color-mix(in srgb, var(--accent-2) 72%, white 28%);
   text-anchor: middle;
@@ -3459,8 +3533,152 @@ textarea {
   gap: 6px;
 }
 
+.scheduler-event-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.scheduler-event-card {
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  background: color-mix(in srgb, var(--surface-alt) 76%, transparent);
+  display: grid;
+  gap: 8px;
+}
+
+.scheduler-event-card.compact {
+  gap: 6px;
+}
+
+.scheduler-event-card.is-running,
+.scheduler-event-card.is-launching {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.scheduler-event-card.is-queued,
+.scheduler-event-card.is-waiting_on_key {
+  border-color: color-mix(in srgb, var(--warn) 34%, transparent);
+}
+
+.scheduler-event-card.is-completed {
+  border-color: color-mix(in srgb, var(--accent-2) 30%, transparent);
+}
+
+.scheduler-event-card.is-error,
+.scheduler-event-card.is-cancelled {
+  border-color: color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.scheduler-event-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.scheduler-event-title {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.scheduler-event-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.scheduler-event-badge.is-running,
+.scheduler-event-badge.is-launching {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: color-mix(in srgb, var(--accent) 70%, white 30%);
+}
+
+.scheduler-event-badge.is-queued,
+.scheduler-event-badge.is-waiting_on_key {
+  border-color: color-mix(in srgb, var(--warn) 34%, transparent);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: color-mix(in srgb, var(--warn) 72%, white 28%);
+}
+
+.scheduler-event-badge.is-completed {
+  border-color: color-mix(in srgb, var(--accent-2) 34%, transparent);
+  background: color-mix(in srgb, var(--accent-2) 14%, transparent);
+  color: color-mix(in srgb, var(--accent-2) 76%, white 24%);
+}
+
+.scheduler-event-badge.is-error,
+.scheduler-event-badge.is-cancelled {
+  border-color: color-mix(in srgb, var(--danger) 34%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: color-mix(in srgb, var(--danger) 76%, white 24%);
+}
+
+.scheduler-event-meta,
+.scheduler-event-note {
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.scheduler-event-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scheduler-event-stat {
+  padding: 8px 10px;
+  border-radius: var(--bs-border-radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.scheduler-event-stat-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.scheduler-event-stat strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+}
+
+.topology-node-runtime-shell {
+  display: grid;
+  gap: 10px;
+}
+
+.topology-node-runtime {
+  display: grid;
+  gap: 10px;
+}
+
+.topology-node-runtime-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .topology-node-dialog {
-  max-width: 680px;
+  max-width: 860px;
 }
 
 .topology-node-form {

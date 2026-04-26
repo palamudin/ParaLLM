@@ -243,6 +243,11 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["commander"], 105)
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workerDefault"], 125)
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workers"]["B"], 90)
+        self.assertTrue(state["activeTask"]["runtime"]["enginePlan"]["valid"])
+        self.assertTrue(state["activeTask"]["runtime"]["enginePlan"]["runner"]["liveExecution"]["supported"])
+        self.assertIn("workers", state["activeTask"]["runtime"]["enginePlan"]["nodesById"])
+        self.assertTrue(state["activeTask"]["runtime"]["enginePlan"]["nodesById"]["workers"]["execution"]["fanout"])
+        self.assertGreaterEqual(state["activeTask"]["runtime"]["enginePlan"]["summary"]["workItemCount"], 4)
         self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
         self.assertEqual(state["draft"]["objective"], "Design the first hosted topology")
         self.assertIsNone(state["arbiter"])
@@ -251,6 +256,54 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertTrue((paths.tasks / f"{task_id}.json").is_file())
         self.assertIn("task_started", paths.events.read_text(encoding="utf-8"))
         self.assertIn("Created a new task and reset worker memory.", paths.steps.read_text(encoding="utf-8"))
+
+    def test_create_task_compiles_nested_worker_graph_plan(self) -> None:
+        engine_graph = {
+            "version": "v2",
+            "nodes": {
+                "prompt": {"moduleType": "prompt"},
+                "activator": {"moduleType": "activator"},
+                "workers": {"moduleType": "workers", "spawnCount": 1},
+                "workers_2": {"moduleType": "workers", "label": "Nested adversarial", "spawnCount": 2, "x": 420, "y": 320},
+                "review": {"moduleType": "review"},
+                "final": {"moduleType": "final"},
+            },
+            "edges": [
+                {"from": "prompt", "to": "activator", "label": "prompt"},
+                {"from": "activator", "to": "workers", "label": "pressure"},
+                {"from": "workers", "to": "workers_2", "label": "nested-pressure"},
+                {"from": "workers_2", "to": "review", "label": "checkpoints"},
+                {"from": "activator", "to": "review", "label": "course"},
+                {"from": "review", "to": "final", "label": "merge"},
+            ],
+        }
+
+        result = control.create_task(
+            {
+                "objective": "Compile nested worker topology.",
+                "engineVersion": "v2",
+                "engineGraph": json.dumps(engine_graph),
+            },
+            self.root,
+        )
+
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        plan = state["activeTask"]["runtime"]["enginePlan"]
+        nested_node = plan["nodesById"]["workers_2"]
+
+        self.assertEqual(result["message"], "Task created.")
+        self.assertTrue(plan["valid"])
+        self.assertFalse(plan["runner"]["liveExecution"]["supported"])
+        self.assertTrue(
+            any(
+                "Nested worker-to-worker chains" in reason
+                for reason in plan["runner"]["liveExecution"]["reasons"]
+            )
+        )
+        self.assertEqual(nested_node["execution"]["target"], "workers")
+        self.assertEqual(nested_node["workerParents"], ["workers"])
+        self.assertEqual(nested_node["execution"]["laneCount"], 2)
+        self.assertTrue(nested_node["execution"]["workItemId"].startswith("work-"))
 
     def test_create_task_defaults_worker_models_to_provider_family(self) -> None:
         result = control.create_task(

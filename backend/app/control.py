@@ -13,6 +13,7 @@ from runtime.engine import (
     LoopRuntime,
     RuntimeErrorWithCode,
     coerce_bool,
+    compile_engine_graph,
     default_budget_config,
     default_context_mode,
     default_engine_graph,
@@ -925,6 +926,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
         "preferredLoop": preferred_loop,
         "workers": workers,
     }
+    task["runtime"]["enginePlan"] = compile_engine_graph(task["runtime"]["engineGraph"], task=task, runtime_config=task["runtime"])
 
     def mutate(current: Dict[str, Any]) -> Dict[str, Any]:
         next_state = dict(current)

@@ -15,7 +15,9 @@ from runtime.engine import (
     EXECUTION_CANCELLED_MESSAGE,
     LoopRuntime,
     RuntimeErrorWithCode,
+    coerce_bool,
     normalize_direct_baseline_mode,
+    normalize_engine_version,
     target_timeout_seconds,
     task_workers,
 )
@@ -64,6 +66,105 @@ def _live_run_id(task: Optional[Dict[str, Any]]) -> Optional[str]:
     runtime_config = (task or {}).get("runtime") if isinstance((task or {}).get("runtime"), dict) else {}
     run_id = str(runtime_config.get("liveRunId") or "").strip()
     return run_id or None
+
+
+def _loop_execution_blueprint(
+    task: Optional[Dict[str, Any]],
+    *,
+    direct_baseline_mode: str,
+    direct_baseline_existing: bool,
+) -> Dict[str, Any]:
+    if direct_baseline_mode == "single":
+        if direct_baseline_existing:
+            return {
+                "source": "direct-baseline-single",
+                "sequence": [],
+                "sidecarTargets": [],
+                "postTargets": [],
+                "targetOptionsByTarget": {},
+                "sidecarOptionsByTarget": {},
+                "postOptionsByTarget": {},
+            }
+        return {
+            "source": "direct-baseline-single",
+            "sequence": ["direct_baseline"],
+            "sidecarTargets": [],
+            "postTargets": [],
+            "targetOptionsByTarget": {},
+            "sidecarOptionsByTarget": {},
+            "postOptionsByTarget": {},
+        }
+
+    fallback = {
+        "source": "v1-fallback",
+        "sequence": ["commander", "workers", "commander_review", "summarizer"],
+        "sidecarTargets": ["answer_now"],
+        "postTargets": [],
+        "targetOptionsByTarget": {},
+        "sidecarOptionsByTarget": {},
+        "postOptionsByTarget": {},
+    }
+    runtime_config = (task or {}).get("runtime") if isinstance((task or {}).get("runtime"), dict) else {}
+    if normalize_engine_version(runtime_config.get("engineVersion"), "v1") != "v2":
+        return fallback
+
+    engine_plan = runtime_config.get("enginePlan") if isinstance(runtime_config.get("enginePlan"), dict) else {}
+    runner = engine_plan.get("runner") if isinstance(engine_plan.get("runner"), dict) else {}
+    live_execution = runner.get("liveExecution") if isinstance(runner.get("liveExecution"), dict) else {}
+    if not coerce_bool(live_execution.get("supported"), False):
+        return {
+            **fallback,
+            "source": "v2-fallback",
+            "fallbackReason": str(live_execution.get("reason") or ""),
+        }
+
+    work_items = runner.get("workItems") if isinstance(runner.get("workItems"), list) else []
+    sequence: List[str] = []
+    sidecar_targets: List[str] = []
+    post_targets: List[str] = []
+    target_options_by_target: Dict[str, Dict[str, Any]] = {}
+    sidecar_options_by_target: Dict[str, Dict[str, Any]] = {}
+    post_options_by_target: Dict[str, Dict[str, Any]] = {}
+    for work_item in work_items:
+        if not isinstance(work_item, dict):
+            continue
+        target = str(work_item.get("target") or "").strip()
+        if not target:
+            continue
+        schedule_class = str(work_item.get("scheduleClass") or "").strip().lower()
+        options: Dict[str, Any] = {}
+        timeout_seconds = max(0, int(work_item.get("timeoutSeconds") or 0))
+        if timeout_seconds > 0:
+            options["timeoutSeconds"] = timeout_seconds
+            options["timeoutTarget"] = target
+        if schedule_class in {"blocking", "fanout"} and target not in sequence:
+            sequence.append(target)
+        if schedule_class in {"blocking", "fanout"} and options:
+            target_options_by_target[target] = dict(options)
+        if bool(work_item.get("sidecar")) and target not in sidecar_targets:
+            sidecar_targets.append(target)
+        if bool(work_item.get("sidecar")) and options:
+            sidecar_options_by_target[target] = dict(options)
+        if bool(work_item.get("post")) and target not in post_targets:
+            post_targets.append(target)
+        if bool(work_item.get("post")) and options:
+            post_options_by_target[target] = dict(options)
+
+    if not sequence:
+        return {
+            **fallback,
+            "source": "v2-empty-main-path",
+        }
+    return {
+        "source": "v2-plan",
+        "sequence": sequence,
+        "sidecars": sidecar_targets,
+        "sidecarTargets": sidecar_targets,
+        "postTargets": post_targets,
+        "targetOptionsByTarget": target_options_by_target,
+        "sidecarOptionsByTarget": sidecar_options_by_target,
+        "postOptionsByTarget": post_options_by_target,
+    }
 
 
 def _sync_live_run_record(runtime: LoopRuntime, task: Optional[Dict[str, Any]] = None, task_id: Optional[str] = None) -> None:
@@ -235,9 +336,11 @@ def _launch_loop_sidecar(
     round_number: int,
     loop_job_id: str,
     timeout_target: Optional[str] = None,
+    timeout_seconds_override: Optional[int] = None,
     last_message: str,
     launched_message: str,
     partial_summary: bool = False,
+    sidecar: bool = True,
     extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     from . import dispatch
@@ -259,7 +362,9 @@ def _launch_loop_sidecar(
         return existing
 
     task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
-    timeout_seconds = target_timeout_seconds(task_runtime.get("targetTimeouts"), timeout_target or target)
+    timeout_seconds = max(0, int(timeout_seconds_override or 0))
+    if timeout_seconds <= 0:
+        timeout_seconds = target_timeout_seconds(task_runtime.get("targetTimeouts"), timeout_target or target)
     job = dispatch.create_target_job(
         runtime,
         task,
@@ -272,7 +377,7 @@ def _launch_loop_sidecar(
                 "trigger": "loop-sidecar",
                 "round": round_number,
                 "loopJobId": loop_job_id,
-                "sidecar": True,
+                "sidecar": sidecar,
                 **(extra_metadata or {}),
             },
         },
@@ -404,6 +509,7 @@ def _launch_answer_now_sidecar(
     task: Dict[str, Any],
     round_number: int,
     loop_job_id: str,
+    timeout_seconds_override: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     return _launch_loop_sidecar(
         runtime,
@@ -412,6 +518,7 @@ def _launch_answer_now_sidecar(
         round_number=round_number,
         loop_job_id=loop_job_id,
         timeout_target="answer_now",
+        timeout_seconds_override=timeout_seconds_override,
         last_message="Queued partial summary from current checkpoints.",
         launched_message="Loop launched Answer Now as a non-blocking sidecar.",
         partial_summary=True,
@@ -423,6 +530,7 @@ def _launch_direct_baseline_sidecar(
     task: Dict[str, Any],
     round_number: int,
     loop_job_id: str,
+    timeout_seconds_override: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     return _launch_loop_sidecar(
         runtime,
@@ -431,9 +539,160 @@ def _launch_direct_baseline_sidecar(
         round_number=round_number,
         loop_job_id=loop_job_id,
         timeout_target="direct_baseline",
+        timeout_seconds_override=timeout_seconds_override,
         last_message="Queued single-thread baseline from the current prompt.",
         launched_message="Loop launched the single-thread baseline as a non-blocking sidecar.",
     )
+
+
+def _launch_loop_post_target(
+    runtime: LoopRuntime,
+    task: Dict[str, Any],
+    target: str,
+    *,
+    round_number: int,
+    loop_job_id: str,
+    timeout_seconds_override: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    from . import dispatch
+
+    task_id = str(task.get("taskId") or "").strip()
+    preflight = dispatch.target_dispatch_preflight(str(target or "").strip(), runtime.read_state())
+    if isinstance(preflight, dict):
+        runtime.append_step(
+            "dispatch",
+            "Planned post target was not ready yet; the loop left it queued for a later pass.",
+            {
+                "taskId": task_id,
+                "target": target,
+                "round": round_number,
+                "loopJobId": loop_job_id,
+                "reason": str(preflight.get("message") or ""),
+            },
+        )
+        return None
+
+    normalized_target = str(target or "").strip().lower()
+    if normalized_target == "arbiter":
+        last_message = "Queued external arbiter for the current answer pair."
+        launched_message = "Loop launched the external arbiter as a non-blocking post target."
+    else:
+        last_message = f"Queued planned post target {target}."
+        launched_message = f"Loop launched planned post target {target}."
+
+    return _launch_loop_sidecar(
+        runtime,
+        task,
+        target,
+        round_number=round_number,
+        loop_job_id=loop_job_id,
+        timeout_target=target,
+        timeout_seconds_override=timeout_seconds_override,
+        last_message=last_message,
+        launched_message=launched_message,
+        sidecar=False,
+        extra_metadata={"trigger": "loop-post", "postTarget": True},
+    )
+
+
+def _dispatch_batch_jobs(runtime: LoopRuntime, task_id: str, batch_id: str) -> Dict[str, Dict[str, Any]]:
+    paths = storage.project_paths(runtime.root)
+    jobs_by_id: Dict[str, Dict[str, Any]] = {}
+    for job in storage.read_jobs(paths):
+        normalized = storage.default_job(job)
+        if str(normalized.get("jobType") or "loop") != "target":
+            continue
+        if str(normalized.get("taskId") or "") != task_id:
+            continue
+        if str(normalized.get("batchId") or "") != batch_id:
+            continue
+        jobs_by_id[str(normalized.get("jobId") or "")] = normalized
+    return jobs_by_id
+
+
+def _wait_for_dispatch_batch(
+    runtime: LoopRuntime,
+    task_id: str,
+    loop_job_id: str,
+    round_number: int,
+    rounds: int,
+    batch: Dict[str, Any],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    from . import dispatch
+
+    required_jobs: List[Dict[str, Any]] = []
+    commander_job = batch.get("commander")
+    if isinstance(commander_job, dict):
+        required_jobs.append(commander_job)
+    required_jobs.extend([job for job in (batch.get("workers") or []) if isinstance(job, dict)])
+    commander_review_job = batch.get("commanderReview")
+    if isinstance(commander_review_job, dict):
+        required_jobs.append(commander_review_job)
+    summarizer_job = batch.get("summarizer")
+    if isinstance(summarizer_job, dict):
+        required_jobs.append(summarizer_job)
+    required_job_ids = [str(job.get("jobId") or "") for job in required_jobs if str(job.get("jobId") or "").strip()]
+    sidecar_job_ids = [
+        str(job.get("jobId") or "")
+        for job in (batch.get("sidecars") or [])
+        if isinstance(job, dict) and str(job.get("jobId") or "").strip()
+    ]
+    batch_id = str(batch.get("batchId") or "").strip()
+
+    def _ordered_results(job_ids: List[str], jobs_by_id: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for candidate_id in job_ids:
+            job = jobs_by_id.get(candidate_id)
+            if not isinstance(job, dict):
+                continue
+            job_results = job.get("results") if isinstance(job.get("results"), list) else []
+            if job_results and isinstance(job_results[0], dict):
+                results.append(job_results[0])
+        return results
+
+    while True:
+        jobs_by_id = _dispatch_batch_jobs(runtime, task_id, batch_id)
+        blocking_jobs = [jobs_by_id.get(job_id) for job_id in required_job_ids if isinstance(jobs_by_id.get(job_id), dict)]
+        sidecar_jobs = [jobs_by_id.get(job_id) for job_id in sidecar_job_ids if isinstance(jobs_by_id.get(job_id), dict)]
+
+        active_jobs = [
+            job
+            for job in [*blocking_jobs, *sidecar_jobs]
+            if isinstance(job, dict) and str(job.get("status") or "") in {"queued", "running"}
+        ]
+        active_targets: List[str] = []
+        for active_job in active_jobs:
+            target_name = str(active_job.get("target") or "").strip()
+            if target_name and target_name not in active_targets:
+                active_targets.append(target_name)
+        if active_targets:
+            update_loop_job_progress(
+                runtime,
+                loop_job_id,
+                task_id,
+                round_number,
+                rounds,
+                "scheduler",
+                waiting=True,
+                active_targets=active_targets,
+            )
+
+        for job in blocking_jobs:
+            status = str((job or {}).get("status") or "")
+            if status not in {"error", "budget_exhausted", "cancelled", "interrupted"}:
+                continue
+            message = str((job or {}).get("error") or (job or {}).get("lastMessage") or "Dispatch batch failed.")
+            if status == "budget_exhausted":
+                raise RuntimeErrorWithCode(message, 409)
+            if status == "cancelled":
+                raise RuntimeErrorWithCode(message or "Dispatch batch cancelled.", 409)
+            raise RuntimeErrorWithCode(message, 500)
+
+        if required_job_ids and all(str((jobs_by_id.get(job_id) or {}).get("status") or "") == "completed" for job_id in required_job_ids):
+            return _ordered_results(required_job_ids, jobs_by_id), _ordered_results(sidecar_job_ids, jobs_by_id)
+
+        dispatch.promote_ready_dispatch_jobs(runtime, task_id, batch_id)
+        time.sleep(0.25)
 
 
 def _start_loop_for_task_payload(
@@ -941,6 +1200,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
         round_number: int,
         *,
         auxiliary_targets: Optional[List[str]] = None,
+        target_options_by_target: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         auxiliary = {str(item).strip().lower() for item in (auxiliary_targets or []) if str(item).strip()}
         slots: List[Dict[str, Any]] = [
@@ -976,10 +1236,16 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
 
         def _run_slot(slot: Dict[str, Any]) -> None:
             try:
+                target_options = dict(
+                    (target_options_by_target or {}).get(str(slot["target"]).strip(), {})
+                    or (target_options_by_target or {}).get("workers", {})
+                    or {}
+                )
                 slot["result"] = _execute_loop_target(
                     slot["target"],
                     round_number,
                     isolated=True,
+                    options=target_options,
                     active_targets=active_parallel_targets,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1077,10 +1343,39 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
             _sync_live_run_record(runtime, task_id=task_id)
 
             round_workers = [] if direct_baseline_mode == "single" else task_workers(active_task, round_number)
+            loop_blueprint = _loop_execution_blueprint(
+                active_task,
+                direct_baseline_mode=direct_baseline_mode,
+                direct_baseline_existing=direct_baseline_existing,
+            )
+            target_options_by_target = {
+                str(target): dict(options)
+                for target, options in (loop_blueprint.get("targetOptionsByTarget") or {}).items()
+                if str(target).strip() and isinstance(options, dict)
+            }
+            sidecar_options_by_target = {
+                str(target): dict(options)
+                for target, options in (loop_blueprint.get("sidecarOptionsByTarget") or {}).items()
+                if str(target).strip() and isinstance(options, dict)
+            }
+            post_options_by_target = {
+                str(target): dict(options)
+                for target, options in (loop_blueprint.get("postOptionsByTarget") or {}).items()
+                if str(target).strip() and isinstance(options, dict)
+            }
             if direct_baseline_mode == "both" and not direct_baseline_sidecar_attempted:
                 direct_baseline_sidecar_attempted = True
                 try:
-                    _launch_direct_baseline_sidecar(runtime, active_task, round_number, job_id)
+                    _launch_direct_baseline_sidecar(
+                        runtime,
+                        active_task,
+                        round_number,
+                        job_id,
+                        timeout_seconds_override=int(
+                            (sidecar_options_by_target.get("direct_baseline") or {}).get("timeoutSeconds") or 0
+                        )
+                        or None,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     runtime.append_step(
                         "error",
@@ -1093,46 +1388,149 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                             "error": str(exc),
                         },
                     )
-            if direct_baseline_mode == "single":
-                if direct_baseline_existing:
-                    sequence: List[str] = []
-                    runtime.append_step(
-                        "direct_baseline",
-                        "Reused the existing direct baseline for single-answer mode.",
-                        {"taskId": task_id, "jobId": job_id, "round": round_number},
-                    )
-                else:
-                    sequence = ["direct_baseline"]
-            else:
-                sequence = ["commander", "commander_review", "summarizer"]
-            round_result: Dict[str, Any] = {"round": round_number, "targets": []}
+            sequence = list(loop_blueprint["sequence"])
+            if direct_baseline_mode == "single" and direct_baseline_existing:
+                runtime.append_step(
+                    "direct_baseline",
+                    "Reused the existing direct baseline for single-answer mode.",
+                    {"taskId": task_id, "jobId": job_id, "round": round_number},
+                )
+            if str(loop_blueprint.get("source") or "").startswith("v2"):
+                runtime.append_step(
+                    "autoloop",
+                    "Resolved round execution from the compiled V2 plan.",
+                    {
+                        "taskId": task_id,
+                        "jobId": job_id,
+                        "round": round_number,
+                        "source": loop_blueprint.get("source"),
+                        "sequence": sequence,
+                        "fallbackReason": loop_blueprint.get("fallbackReason"),
+                    },
+                )
+            round_result: Dict[str, Any] = {"round": round_number, "targets": [], "planSource": loop_blueprint.get("source")}
 
-            for target in sequence:
-                if target == "commander_review" and round_workers:
-                    try:
-                        _launch_answer_now_sidecar(runtime, active_task, round_number, job_id)
-                    except Exception as exc:  # noqa: BLE001
-                        runtime.append_step(
-                            "error",
-                            "Failed to launch non-blocking Answer Now sidecar; the main loop continued.",
-                            {
-                                "taskId": task_id,
-                                "jobId": job_id,
-                                "round": round_number,
-                                "target": "answer_now",
-                                "error": str(exc),
-                            },
+            if str(loop_blueprint.get("source") or "") == "v2-plan":
+                from . import dispatch
+
+                batch = dispatch.create_round_dispatch_jobs(
+                    runtime,
+                    active_task,
+                    {"timeoutSeconds": 1800, "roundNumber": round_number},
+                )
+                dispatch.promote_ready_dispatch_jobs(runtime, task_id, str(batch.get("batchId") or ""))
+                runtime.append_step(
+                    "dispatch",
+                    "Loop launched a V2 dispatch batch for the current round.",
+                    {
+                        "taskId": task_id,
+                        "jobId": job_id,
+                        "round": round_number,
+                        "batchId": batch.get("batchId"),
+                        "jobCount": len(batch.get("jobs") or []),
+                    },
+                )
+                primary_results, auxiliary_results = _wait_for_dispatch_batch(
+                    runtime,
+                    task_id,
+                    job_id,
+                    round_number,
+                    rounds,
+                    batch,
+                )
+                round_result["batchId"] = batch.get("batchId")
+                round_result["targets"].extend(primary_results)
+                if auxiliary_results:
+                    round_result.setdefault("parallelTargets", [])
+                    round_result["parallelTargets"].extend(auxiliary_results)
+            else:
+                for target in sequence:
+                    if target == "workers":
+                        for sidecar_target in list(loop_blueprint.get("sidecarTargets") or []):
+                            try:
+                                if str(sidecar_target).strip().lower() == "answer_now":
+                                    _launch_answer_now_sidecar(
+                                        runtime,
+                                        active_task,
+                                        round_number,
+                                        job_id,
+                                        timeout_seconds_override=int(
+                                            (sidecar_options_by_target.get(str(sidecar_target)) or {}).get("timeoutSeconds") or 0
+                                        )
+                                        or None,
+                                    )
+                                else:
+                                    sidecar_options = dict(sidecar_options_by_target.get(str(sidecar_target)) or {})
+                                    _launch_loop_sidecar(
+                                        runtime,
+                                        active_task,
+                                        str(sidecar_target),
+                                        round_number=round_number,
+                                        loop_job_id=job_id,
+                                        timeout_target=str(sidecar_target),
+                                        timeout_seconds_override=int(sidecar_options.get("timeoutSeconds") or 0) or None,
+                                        last_message=f"Queued planned sidecar {sidecar_target}.",
+                                        launched_message=f"Loop launched planned sidecar {sidecar_target}.",
+                                        extra_metadata={"trigger": "loop-sidecar-plan", "plannedTarget": True},
+                                    )
+                            except Exception as exc:  # noqa: BLE001
+                                runtime.append_step(
+                                    "error",
+                                    "Failed to launch a planned non-blocking sidecar; the main loop continued.",
+                                    {
+                                        "taskId": task_id,
+                                        "jobId": job_id,
+                                        "round": round_number,
+                                        "target": str(sidecar_target),
+                                        "error": str(exc),
+                                    },
+                                )
+                        parallel_results, auxiliary_results = _execute_parallel_targets(
+                            [*[str(worker["id"]) for worker in round_workers]],
+                            round_number,
+                            target_options_by_target=target_options_by_target,
                         )
-                    parallel_results, auxiliary_results = _execute_parallel_targets(
-                        [*[str(worker["id"]) for worker in round_workers]],
+                        round_result["targets"].extend(parallel_results)
+                        if auxiliary_results:
+                            round_result.setdefault("parallelTargets", [])
+                            round_result["parallelTargets"].extend(auxiliary_results)
+                        continue
+                    target_result = _execute_loop_target(
+                        target,
                         round_number,
+                        options=dict(target_options_by_target.get(target) or {}),
                     )
-                    round_result["targets"].extend(parallel_results)
-                    if auxiliary_results:
-                        round_result.setdefault("parallelTargets", [])
-                        round_result["parallelTargets"].extend(auxiliary_results)
-                target_result = _execute_loop_target(target, round_number)
-                round_result["targets"].append(target_result)
+                    round_result["targets"].append(target_result)
+
+            post_targets_launched: List[str] = []
+            for post_target in list(loop_blueprint.get("postTargets") or []):
+                try:
+                    post_options = dict(post_options_by_target.get(str(post_target)) or {})
+                    launched_post = _launch_loop_post_target(
+                        runtime,
+                        active_task,
+                        str(post_target),
+                        round_number=round_number,
+                        loop_job_id=job_id,
+                        timeout_seconds_override=int(post_options.get("timeoutSeconds") or 0) or None,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    runtime.append_step(
+                        "error",
+                        "Failed to launch a planned post target after the round completed.",
+                        {
+                            "taskId": task_id,
+                            "jobId": job_id,
+                            "round": round_number,
+                            "target": str(post_target),
+                            "error": str(exc),
+                        },
+                    )
+                    continue
+                if isinstance(launched_post, dict):
+                    post_targets_launched.append(str(post_target))
+            if post_targets_launched:
+                round_result["postTargets"] = post_targets_launched
 
             results.append(round_result)
             completed_rounds = round_number

@@ -169,6 +169,9 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(result["run"]["summary"]["caseCount"], 1)
         stored_run = storage.read_eval_run(storage.project_paths(self.root), str(result["runId"]))
         self.assertEqual(stored_run["live"]["engineVersion"], "v2")
+        self.assertTrue(stored_run["live"]["enginePlan"]["valid"])
+        self.assertTrue(stored_run["live"]["enginePlan"]["runner"]["liveExecution"]["supported"])
+        self.assertGreaterEqual(stored_run["live"]["enginePlan"]["summary"]["workItemCount"], 4)
         launcher.assert_called_once()
 
     def test_sync_front_live_run_tracks_loop_completion(self) -> None:

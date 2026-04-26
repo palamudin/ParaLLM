@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import control, dispatch, queueing, storage
-from runtime.engine import RuntimeErrorWithCode
+from runtime.engine import RuntimeErrorWithCode, compile_engine_graph
 
 from .test_queueing import FakeRedis
 
@@ -170,6 +170,47 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(jobs_by_id[batch["workers"][1]["jobId"]]["status"], "interrupted")
         self.assertEqual(jobs_by_id[batch["commanderReview"]["jobId"]]["status"], "interrupted")
         self.assertEqual(jobs_by_id[batch["summarizer"]["jobId"]]["status"], "interrupted")
+
+    def test_create_round_dispatch_jobs_v2_supported_includes_answer_now_sidecar(self) -> None:
+        state = self._read_state()
+        task = state["activeTask"]
+        task["runtime"]["engineVersion"] = "v2"
+        self._write_state(state)
+
+        runtime = dispatch._runtime(self.root)
+        batch = dispatch.create_round_dispatch_jobs(runtime, task, {"roundNumber": 1})
+
+        self.assertEqual(batch["planSource"], "v2-plan")
+        self.assertEqual(len(batch["jobs"]), 6)
+        self.assertEqual(len(batch["sidecars"]), 1)
+        answer_now = batch["sidecars"][0]
+        self.assertEqual(answer_now["target"], "answer_now")
+        self.assertTrue(answer_now["partialSummary"])
+        self.assertEqual(answer_now["dependencyJobIds"], [batch["commanderReview"]["jobId"]])
+        self.assertEqual(batch["summarizer"]["dependencyJobIds"], [batch["commanderReview"]["jobId"]])
+
+    def test_create_round_dispatch_jobs_v2_supported_uses_work_item_timeout_overrides(self) -> None:
+        state = self._read_state()
+        task = state["activeTask"]
+        task["runtime"]["engineVersion"] = "v2"
+        graph = task["runtime"]["engineGraph"]
+        graph["nodes"]["workers"]["timeoutSeconds"] = 91
+        graph["nodes"]["answerNow"]["timeoutSeconds"] = 73
+        graph["nodes"]["final"]["timeoutSeconds"] = 141
+        task["runtime"]["enginePlan"] = compile_engine_graph(
+            graph,
+            task=task,
+            runtime_config=task["runtime"],
+        )
+        self._write_state(state)
+
+        runtime = dispatch._runtime(self.root)
+        batch = dispatch.create_round_dispatch_jobs(runtime, task, {"roundNumber": 1})
+
+        self.assertTrue(batch["workers"])
+        self.assertTrue(all(int(job["timeoutSeconds"]) == 91 for job in batch["workers"]))
+        self.assertEqual(int(batch["sidecars"][0]["timeoutSeconds"]), 73)
+        self.assertEqual(int(batch["summarizer"]["timeoutSeconds"]), 141)
 
     def test_execute_target_job_provider_error_gets_explicit_failure_class(self) -> None:
         runtime = dispatch._runtime(self.root)

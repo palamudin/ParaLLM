@@ -9,6 +9,7 @@ from runtime.engine import (
     LoopRuntime,
     RuntimeErrorWithCode,
     coerce_bool,
+    compile_engine_graph,
     default_context_mode,
     default_engine_graph,
     default_engine_version,
@@ -304,6 +305,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["frontMode"] = front_mode
         task_runtime["engineVersion"] = engine_version
         task_runtime["engineGraph"] = engine_graph
+        task_runtime["enginePlan"] = {}
         task_runtime["contextMode"] = context_mode
         task_runtime["directBaselineMode"] = direct_baseline_mode
         task_runtime["directProvider"] = direct_provider
@@ -323,6 +325,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         summary["provider"] = summarizer_provider
         summary["model"] = summarizer_model
         task["summarizer"] = summary
+        task_runtime["enginePlan"] = compile_engine_graph(engine_graph, task=task, runtime_config=task_runtime)
         state_next["activeTask"] = task
         state_next["arbiter"] = None
         existing_draft = control.normalize_draft_state(
@@ -378,6 +381,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "frontMode": front_mode,
             "engineVersion": engine_version,
             "engineGraph": engine_graph,
+            "enginePlan": ((updated_state["activeTask"].get("runtime") or {}) if isinstance(updated_state["activeTask"], dict) else {}).get("enginePlan"),
             "contextMode": context_mode,
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
@@ -404,6 +408,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "frontMode": front_mode,
         "engineVersion": engine_version,
         "engineGraph": engine_graph,
+        "enginePlan": (updated_state["activeTask"].get("runtime") or {}).get("enginePlan"),
         "contextMode": context_mode,
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,

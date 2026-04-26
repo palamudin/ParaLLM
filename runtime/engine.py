@@ -492,6 +492,82 @@ def normalize_engine_version(value: Any, fallback: str = "v1") -> str:
     return fallback if fallback in {"v1", "v2"} else default_engine_version()
 
 
+ENGINE_V2_NODE_CONTRACTS: Dict[str, Dict[str, Any]] = {
+    "prompt": {
+        "role": "input",
+        "executionClass": "virtual",
+        "defaultTarget": None,
+        "outputs": ["prompt_packet"],
+        "supportsSpawnCount": False,
+        "supportsToolLinks": False,
+        "supportsWorkerLinks": False,
+    },
+    "activator": {
+        "role": "lead",
+        "executionClass": "blocking",
+        "defaultTarget": "commander",
+        "outputs": ["course_packet", "questions_for_pressure"],
+        "supportsSpawnCount": False,
+        "supportsToolLinks": False,
+        "supportsWorkerLinks": True,
+    },
+    "workers": {
+        "role": "pressure",
+        "executionClass": "fanout",
+        "defaultTarget": "workers",
+        "outputs": ["worker_checkpoints", "pressure_notes"],
+        "supportsSpawnCount": True,
+        "supportsToolLinks": True,
+        "supportsWorkerLinks": True,
+    },
+    "review": {
+        "role": "adjudication",
+        "executionClass": "blocking",
+        "defaultTarget": "commander_review",
+        "outputs": ["control_audit", "direction_update"],
+        "supportsSpawnCount": False,
+        "supportsToolLinks": True,
+        "supportsWorkerLinks": False,
+    },
+    "tools": {
+        "role": "capability",
+        "executionClass": "virtual",
+        "defaultTarget": None,
+        "outputs": ["capability_grants"],
+        "supportsSpawnCount": False,
+        "supportsToolLinks": False,
+        "supportsWorkerLinks": True,
+    },
+    "answerNow": {
+        "role": "sidecar",
+        "executionClass": "sidecar",
+        "defaultTarget": "answer_now",
+        "outputs": ["partial_answer"],
+        "supportsSpawnCount": False,
+        "supportsToolLinks": True,
+        "supportsWorkerLinks": False,
+    },
+    "final": {
+        "role": "output",
+        "executionClass": "blocking",
+        "defaultTarget": "summarizer",
+        "outputs": ["front_answer", "summary_artifact"],
+        "supportsSpawnCount": False,
+        "supportsToolLinks": True,
+        "supportsWorkerLinks": False,
+    },
+    "judge": {
+        "role": "verification",
+        "executionClass": "post",
+        "defaultTarget": "arbiter",
+        "outputs": ["score_matrix", "blind_verdict"],
+        "supportsSpawnCount": False,
+        "supportsToolLinks": False,
+        "supportsWorkerLinks": False,
+    },
+}
+
+
 def default_engine_graph() -> Dict[str, Any]:
     return {
         "version": "v2",
@@ -510,6 +586,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 32,
                 "width": 208,
                 "spawnCount": 1,
+                "timeoutSeconds": 0,
             },
             "activator": {
                 "id": "activator",
@@ -525,6 +602,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 32,
                 "width": 236,
                 "spawnCount": 1,
+                "timeoutSeconds": 0,
             },
             "workers": {
                 "id": "workers",
@@ -540,6 +618,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 196,
                 "width": 230,
                 "spawnCount": 3,
+                "timeoutSeconds": 0,
             },
             "review": {
                 "id": "review",
@@ -555,6 +634,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 196,
                 "width": 236,
                 "spawnCount": 1,
+                "timeoutSeconds": 0,
             },
             "tools": {
                 "id": "tools",
@@ -570,6 +650,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 32,
                 "width": 212,
                 "spawnCount": 1,
+                "timeoutSeconds": 0,
             },
             "answerNow": {
                 "id": "answerNow",
@@ -585,6 +666,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 382,
                 "width": 200,
                 "spawnCount": 1,
+                "timeoutSeconds": 0,
             },
             "final": {
                 "id": "final",
@@ -600,6 +682,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 196,
                 "width": 204,
                 "spawnCount": 1,
+                "timeoutSeconds": 0,
             },
             "judge": {
                 "id": "judge",
@@ -615,6 +698,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 382,
                 "width": 184,
                 "spawnCount": 1,
+                "timeoutSeconds": 0,
             },
         },
         "edges": [
@@ -659,6 +743,7 @@ def normalize_engine_graph(value: Any) -> Dict[str, Any]:
             "y": max(0, min(1200, int(base.get("y") or 0))),
             "width": max(168, min(360, int(base.get("width") or 208))),
             "spawnCount": max(1, min(12, int(base.get("spawnCount") or 1))),
+            "timeoutSeconds": max(0, min(3600, int(base.get("timeoutSeconds") or 0))),
         }
 
     for node_id, default_node in default_graph["nodes"].items():
@@ -692,6 +777,405 @@ def normalize_engine_graph(value: Any) -> Dict[str, Any]:
     if not edges:
         return default_graph
     return {"version": "v2", "nodes": nodes, "edges": edges}
+
+
+def engine_v2_node_contract(module_type: Any) -> Dict[str, Any]:
+    normalized = str(module_type or "").strip()
+    return dict(ENGINE_V2_NODE_CONTRACTS.get(normalized) or {
+        "role": "custom",
+        "executionClass": "blocking",
+        "defaultTarget": None,
+        "outputs": [],
+        "supportsSpawnCount": True,
+        "supportsToolLinks": True,
+        "supportsWorkerLinks": True,
+    })
+
+
+def default_engine_plan() -> Dict[str, Any]:
+    return {
+        "version": "v2",
+        "graphSignature": "",
+        "valid": True,
+        "errors": [],
+        "warnings": [],
+        "summary": {
+            "nodeCount": 0,
+            "enabledNodeCount": 0,
+            "edgeCount": 0,
+            "stageCount": 0,
+            "workerBlocks": 0,
+            "sidecarBlocks": 0,
+            "postBlocks": 0,
+            "workItemCount": 0,
+        },
+        "roots": [],
+        "terminals": [],
+        "executionOrder": [],
+        "stages": [],
+        "nodes": [],
+        "nodesById": {},
+        "runner": {
+            "mainPath": [],
+            "workerBlocks": [],
+            "sidecars": [],
+            "post": [],
+            "workItems": [],
+            "workItemsById": {},
+            "liveExecution": {
+                "supported": False,
+                "mode": "fallback-only",
+                "reason": "V2 execution has not been classified yet.",
+                "reasons": [],
+            },
+        },
+    }
+
+
+def compile_engine_graph(
+    graph: Any,
+    *,
+    task: Optional[Dict[str, Any]] = None,
+    runtime_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_graph = normalize_engine_graph(graph)
+    plan = default_engine_plan()
+    plan["graphSignature"] = hashlib.md5(
+        json.dumps(normalized_graph, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    nodes = normalized_graph.get("nodes") if isinstance(normalized_graph.get("nodes"), dict) else {}
+    edges = normalized_graph.get("edges") if isinstance(normalized_graph.get("edges"), list) else []
+    enabled_nodes = {
+        node_id: node
+        for node_id, node in nodes.items()
+        if isinstance(node, dict) and coerce_bool(node.get("enabled"), True)
+    }
+    inbound: Dict[str, List[Dict[str, str]]] = {node_id: [] for node_id in enabled_nodes}
+    outbound: Dict[str, List[Dict[str, str]]] = {node_id: [] for node_id in enabled_nodes}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source_id = str(edge.get("from") or "").strip()
+        target_id = str(edge.get("to") or "").strip()
+        if source_id not in enabled_nodes or target_id not in enabled_nodes:
+            continue
+        normalized_edge = {
+            "from": source_id,
+            "to": target_id,
+            "label": str(edge.get("label") or "").strip(),
+        }
+        outbound[source_id].append(normalized_edge)
+        inbound[target_id].append(normalized_edge)
+
+    indegree: Dict[str, int] = {node_id: len(inbound[node_id]) for node_id in enabled_nodes}
+    ready: List[str] = sorted([node_id for node_id, count in indegree.items() if count == 0])
+    topo_order: List[str] = []
+    while ready:
+        current = ready.pop(0)
+        topo_order.append(current)
+        for edge in outbound.get(current, []):
+            target_id = edge["to"]
+            indegree[target_id] = max(0, indegree[target_id] - 1)
+            if indegree[target_id] == 0:
+                ready.append(target_id)
+                ready.sort()
+
+    if len(topo_order) != len(enabled_nodes):
+        cycle_nodes = sorted(node_id for node_id in enabled_nodes if node_id not in topo_order)
+        plan["valid"] = False
+        plan["errors"].append(
+            f"Engine graph contains a cycle or unreachable dependency loop involving: {', '.join(cycle_nodes)}"
+        )
+        topo_order.extend(cycle_nodes)
+
+    stage_by_id: Dict[str, int] = {}
+    for node_id in topo_order:
+        dependencies = [edge["from"] for edge in inbound.get(node_id, [])]
+        if not dependencies:
+            stage_by_id[node_id] = 0
+        else:
+            stage_by_id[node_id] = max(stage_by_id.get(dep_id, 0) for dep_id in dependencies) + 1
+
+    task_workers_count = len(task_workers(task or {})) if isinstance(task, dict) else 0
+    runtime_provider = normalize_provider_id(
+        ((runtime_config or {}).get("provider") if isinstance(runtime_config, dict) else None) or ((task or {}).get("runtime") or {}).get("provider"),
+        DEFAULT_PROVIDER_ID,
+    ) if isinstance((task or {}).get("runtime"), dict) or isinstance(runtime_config, dict) else DEFAULT_PROVIDER_ID
+    capability_profile = provider_capability_profile(runtime_provider)
+
+    nodes_payload: List[Dict[str, Any]] = []
+    nodes_by_id: Dict[str, Dict[str, Any]] = {}
+    worker_block_ids: List[str] = []
+    sidecar_ids: List[str] = []
+    post_ids: List[str] = []
+    roots = sorted(node_id for node_id in enabled_nodes if not inbound.get(node_id))
+    terminals = sorted(node_id for node_id in enabled_nodes if not outbound.get(node_id))
+
+    for node_id in topo_order:
+        node = enabled_nodes.get(node_id)
+        if not isinstance(node, dict):
+            continue
+        module_type = str(node.get("moduleType") or node_id).strip() or node_id
+        contract = engine_v2_node_contract(module_type)
+        dependencies = [edge["from"] for edge in inbound.get(node_id, [])]
+        dependents = [edge["to"] for edge in outbound.get(node_id, [])]
+        tool_inputs = [edge["from"] for edge in inbound.get(node_id, []) if str(nodes.get(edge["from"], {}).get("moduleType") or "") == "tools"]
+        worker_parents = [
+            edge["from"]
+            for edge in inbound.get(node_id, [])
+            if str(nodes.get(edge["from"], {}).get("moduleType") or "") == "workers"
+        ]
+        worker_children = [
+            edge["to"]
+            for edge in outbound.get(node_id, [])
+            if str(nodes.get(edge["to"], {}).get("moduleType") or "") == "workers"
+        ]
+        schedule_class = str(contract.get("executionClass") or "blocking")
+        runner_target = contract.get("defaultTarget")
+        lane_count = int(node.get("spawnCount") or 1)
+        if module_type == "workers":
+            lane_count = max(1, lane_count or task_workers_count or 1)
+            worker_block_ids.append(node_id)
+        if schedule_class == "sidecar":
+            sidecar_ids.append(node_id)
+        if schedule_class == "post":
+            post_ids.append(node_id)
+        if module_type == "workers" and not worker_parents:
+            plan["warnings"].append(f"Worker block '{node_id}' has no activator or parent worker input.")
+        if module_type == "final" and "review" not in [str(nodes.get(dep_id, {}).get("moduleType") or "") for dep_id in dependencies]:
+            plan["warnings"].append(f"Final block '{node_id}' is not directly gated by a review block.")
+        if module_type == "judge" and runner_target and "final" not in [str(nodes.get(dep_id, {}).get("moduleType") or "") for dep_id in dependencies]:
+            plan["warnings"].append(f"Judge block '{node_id}' is not downstream of a final-answer block.")
+        node_payload = {
+            "id": node_id,
+            "label": str(node.get("label") or node_id),
+            "moduleType": module_type,
+            "kicker": str(node.get("kicker") or "Module"),
+            "meta": str(node.get("meta") or ""),
+            "enabled": True,
+            "protected": coerce_bool(node.get("protected"), False),
+            "blockingMode": str(node.get("blockingMode") or "blocking"),
+            "packetMode": str(node.get("packetMode") or "full"),
+            "timeoutSeconds": max(0, int(node.get("timeoutSeconds") or 0)),
+            "stageIndex": int(stage_by_id.get(node_id, 0)),
+            "dependencies": dependencies,
+            "dependents": dependents,
+            "toolInputs": tool_inputs,
+            "workerParents": worker_parents,
+            "workerChildren": worker_children,
+            "contract": {
+                "role": contract.get("role"),
+                "executionClass": schedule_class,
+                "defaultTarget": runner_target,
+                "outputs": list(contract.get("outputs") or []),
+                "supportsSpawnCount": bool(contract.get("supportsSpawnCount")),
+                "supportsToolLinks": bool(contract.get("supportsToolLinks")),
+                "supportsWorkerLinks": bool(contract.get("supportsWorkerLinks")),
+            },
+            "execution": {
+                "target": runner_target,
+                "scheduleClass": schedule_class,
+                "sidecar": schedule_class == "sidecar",
+                "post": schedule_class == "post",
+                "virtual": schedule_class == "virtual",
+                "blocking": schedule_class == "blocking",
+                "fanout": schedule_class == "fanout",
+                "laneCount": lane_count,
+                "timeoutSeconds": max(0, int(node.get("timeoutSeconds") or 0)),
+                "provider": runtime_provider,
+                "toolsEnabled": bool(tool_inputs) and (
+                    capability_profile.get("localFiles")
+                    or capability_profile.get("githubTools")
+                    or capability_profile.get("webSearch")
+                ),
+            },
+        }
+        nodes_payload.append(node_payload)
+        nodes_by_id[node_id] = node_payload
+
+    max_stage = max(stage_by_id.values(), default=-1)
+    stages: List[Dict[str, Any]] = []
+    for stage_index in range(max_stage + 1):
+        stage_node_ids = [node_id for node_id in topo_order if stage_by_id.get(node_id) == stage_index]
+        blocking_nodes = [node_id for node_id in stage_node_ids if nodes_by_id[node_id]["execution"]["blocking"]]
+        fanout_nodes = [node_id for node_id in stage_node_ids if nodes_by_id[node_id]["execution"]["fanout"]]
+        sidecar_nodes = [node_id for node_id in stage_node_ids if nodes_by_id[node_id]["execution"]["sidecar"]]
+        post_nodes = [node_id for node_id in stage_node_ids if nodes_by_id[node_id]["execution"]["post"]]
+        virtual_nodes = [node_id for node_id in stage_node_ids if nodes_by_id[node_id]["execution"]["virtual"]]
+        stages.append(
+            {
+                "index": stage_index,
+                "nodeIds": stage_node_ids,
+                "blockingNodeIds": blocking_nodes,
+                "fanoutNodeIds": fanout_nodes,
+                "sidecarNodeIds": sidecar_nodes,
+                "postNodeIds": post_nodes,
+                "virtualNodeIds": virtual_nodes,
+            }
+        )
+
+    executable_node_ids = [
+        node_id
+        for node_id in topo_order
+        if node_id in nodes_by_id and nodes_by_id[node_id]["execution"]["target"]
+    ]
+    work_items: List[Dict[str, Any]] = []
+    work_items_by_id: Dict[str, Dict[str, Any]] = {}
+    work_item_ids_by_node: Dict[str, str] = {}
+    work_item_schedule_class_by_node: Dict[str, str] = {}
+    for index, node_id in enumerate(executable_node_ids, start=1):
+        node_payload = nodes_by_id[node_id]
+        execution_payload = node_payload["execution"]
+        work_item_id = f"work-{index:02d}-{node_id}"
+        blocking_dependency_work_item_ids: List[str] = []
+        advisory_dependency_work_item_ids: List[str] = []
+        for dep_id in node_payload["dependencies"]:
+            if dep_id not in work_item_ids_by_node:
+                continue
+            dep_work_item_id = work_item_ids_by_node[dep_id]
+            dep_schedule_class = str(work_item_schedule_class_by_node.get(dep_id) or "")
+            if dep_schedule_class in {"sidecar", "post", "virtual"}:
+                advisory_dependency_work_item_ids.append(dep_work_item_id)
+            else:
+                blocking_dependency_work_item_ids.append(dep_work_item_id)
+        work_item = {
+            "id": work_item_id,
+            "nodeId": node_id,
+            "moduleType": node_payload["moduleType"],
+            "target": execution_payload["target"],
+            "stageIndex": int(node_payload["stageIndex"]),
+            "scheduleClass": execution_payload["scheduleClass"],
+            "blocking": bool(execution_payload["blocking"]),
+            "fanout": bool(execution_payload["fanout"]),
+            "sidecar": bool(execution_payload["sidecar"]),
+            "post": bool(execution_payload["post"]),
+            "laneCount": int(execution_payload["laneCount"] or 1),
+            "timeoutSeconds": max(0, int(execution_payload.get("timeoutSeconds") or 0)),
+            "provider": execution_payload["provider"],
+            "packetMode": str(node_payload["packetMode"] or "full"),
+            "dependencies": list(node_payload["dependencies"]),
+            "dependencyWorkItemIds": blocking_dependency_work_item_ids,
+            "advisoryDependencyWorkItemIds": advisory_dependency_work_item_ids,
+            "toolNodeIds": list(node_payload["toolInputs"]),
+        }
+        work_items.append(work_item)
+        work_items_by_id[work_item_id] = work_item
+        work_item_ids_by_node[node_id] = work_item_id
+        work_item_schedule_class_by_node[node_id] = str(execution_payload["scheduleClass"] or "")
+        execution_payload["workItemId"] = work_item_id
+        execution_payload["dependencyWorkItemIds"] = blocking_dependency_work_item_ids
+        execution_payload["advisoryDependencyWorkItemIds"] = advisory_dependency_work_item_ids
+
+    executable_module_ids_by_type: Dict[str, List[str]] = {}
+    for node_id in executable_node_ids:
+        executable_module_ids_by_type.setdefault(str(nodes_by_id[node_id]["moduleType"]), []).append(node_id)
+
+    main_path_targets = [
+        str(nodes_by_id[node_id]["execution"]["target"])
+        for node_id in topo_order
+        if node_id in nodes_by_id
+        and (
+            nodes_by_id[node_id]["execution"]["blocking"]
+            or nodes_by_id[node_id]["execution"]["fanout"]
+        )
+        and nodes_by_id[node_id]["execution"]["target"]
+    ]
+    live_execution_reasons: List[str] = []
+    activator_ids = executable_module_ids_by_type.get("activator", [])
+    worker_ids = executable_module_ids_by_type.get("workers", [])
+    review_ids = executable_module_ids_by_type.get("review", [])
+    final_ids = executable_module_ids_by_type.get("final", [])
+    answer_now_ids = executable_module_ids_by_type.get("answerNow", [])
+    judge_ids = executable_module_ids_by_type.get("judge", [])
+
+    if len(activator_ids) != 1:
+        live_execution_reasons.append("V2 live execution currently requires exactly one activator block.")
+    if len(review_ids) != 1:
+        live_execution_reasons.append("V2 live execution currently requires exactly one review block.")
+    if len(final_ids) != 1:
+        live_execution_reasons.append("V2 live execution currently requires exactly one final block.")
+    if len(worker_ids) > 1:
+        live_execution_reasons.append("V2 live execution currently supports at most one worker fan-out block.")
+    nested_worker_ids = [node_id for node_id in worker_ids if nodes_by_id[node_id]["workerParents"]]
+    if nested_worker_ids:
+        live_execution_reasons.append(
+            "Nested worker-to-worker chains compile, but they still fall back to V1 execution."
+        )
+    if len(answer_now_ids) > 1:
+        live_execution_reasons.append("V2 live execution currently supports at most one Answer Now sidecar.")
+    if len(judge_ids) > 1:
+        live_execution_reasons.append("V2 live execution currently supports at most one judge block.")
+    if main_path_targets not in (
+        ["commander", "commander_review", "summarizer"],
+        ["commander", "workers", "commander_review", "summarizer"],
+    ):
+        live_execution_reasons.append(
+            "Main path must currently resolve to commander -> [workers] -> commander_review -> summarizer."
+        )
+
+    if activator_ids and worker_ids:
+        activator_id = activator_ids[0]
+        worker_id = worker_ids[0]
+        if activator_id not in nodes_by_id[worker_id]["dependencies"]:
+            live_execution_reasons.append("Worker fan-out must currently depend directly on the activator.")
+    if review_ids and final_ids:
+        review_id = review_ids[0]
+        final_id = final_ids[0]
+        if review_id not in nodes_by_id[final_id]["dependencies"]:
+            live_execution_reasons.append("Final block must currently depend directly on the review block.")
+    if review_ids and worker_ids:
+        review_id = review_ids[0]
+        worker_id = worker_ids[0]
+        if worker_id not in nodes_by_id[review_id]["dependencies"]:
+            live_execution_reasons.append("Review block must currently ingest the worker fan-out output.")
+    if judge_ids and final_ids:
+        judge_id = judge_ids[0]
+        final_id = final_ids[0]
+        if final_id not in nodes_by_id[judge_id]["dependencies"]:
+            live_execution_reasons.append("Judge block must currently sit downstream of the final answer.")
+
+    live_execution_supported = bool(plan["valid"]) and not live_execution_reasons
+    if live_execution_reasons:
+        for reason in live_execution_reasons:
+            plan["warnings"].append(f"V2 execution fallback: {reason}")
+
+    plan["summary"] = {
+        "nodeCount": len(nodes),
+        "enabledNodeCount": len(enabled_nodes),
+        "edgeCount": len(edges),
+        "stageCount": len(stages),
+        "workerBlocks": len(worker_block_ids),
+        "sidecarBlocks": len(sidecar_ids),
+        "postBlocks": len(post_ids),
+        "workItemCount": len(work_items),
+    }
+    plan["roots"] = roots
+    plan["terminals"] = terminals
+    plan["executionOrder"] = topo_order
+    plan["stages"] = stages
+    plan["nodes"] = nodes_payload
+    plan["nodesById"] = nodes_by_id
+    plan["runner"] = {
+        "mainPath": [
+            node_id
+            for node_id in topo_order
+            if nodes_by_id[node_id]["execution"]["blocking"] or nodes_by_id[node_id]["execution"]["fanout"]
+        ],
+        "workerBlocks": worker_block_ids,
+        "sidecars": sidecar_ids,
+        "post": post_ids,
+        "workItems": work_items,
+        "workItemsById": work_items_by_id,
+        "liveExecution": {
+            "supported": live_execution_supported,
+            "mode": "v1-compatible" if live_execution_supported else "fallback-only",
+            "reason": "" if live_execution_supported else live_execution_reasons[0],
+            "reasons": live_execution_reasons,
+        },
+    }
+    if not any(str(nodes_by_id[node_id]["moduleType"]) == "final" for node_id in topo_order if node_id in nodes_by_id):
+        plan["warnings"].append("No final-answer block is enabled in the current V2 graph.")
+    return plan
 
 
 def default_direct_baseline_mode() -> str:
@@ -3247,7 +3731,24 @@ class LoopRuntime:
         )
 
     def get_request_timeout_seconds(self, task: Dict[str, Any], target: Optional[str] = None) -> int:
-        return target_timeout_seconds(self.get_target_timeout_config(task), target)
+        fallback = target_timeout_seconds(self.get_target_timeout_config(task), target)
+        context = self.current_execution_context()
+        override_raw = context.get("timeoutSeconds")
+        if override_raw is None:
+            return fallback
+        try:
+            override_seconds = int(override_raw)
+        except (TypeError, ValueError):
+            return fallback
+        if override_seconds <= 0:
+            return fallback
+        override_target = normalize_auth_target(
+            context.get("timeoutTarget") or context.get("traceTarget") or context.get("target") or target
+        )
+        requested_target = normalize_auth_target(target or override_target)
+        if target is None or requested_target == override_target:
+            return clamp_timeout_seconds(override_seconds, fallback)
+        return fallback
 
     def get_task_runtime(
         self,
@@ -3263,6 +3764,7 @@ class LoopRuntime:
             "frontMode": default_front_mode(),
             "engineVersion": default_engine_version(),
             "engineGraph": default_engine_graph(),
+            "enginePlan": default_engine_plan(),
             "contextMode": default_context_mode(),
             "directBaselineMode": default_direct_baseline_mode(),
             "directProvider": DEFAULT_PROVIDER_ID,
@@ -3318,6 +3820,7 @@ class LoopRuntime:
             runtime["provider"] = normalize_provider_id(provider_override, runtime["provider"])
         if model_override:
             runtime["model"] = normalize_model_id(model_override, runtime["model"], runtime["provider"])
+        runtime["enginePlan"] = compile_engine_graph(runtime["engineGraph"], task=task, runtime_config=runtime)
         return runtime
 
     def get_direct_baseline_runtime(self, task: Dict[str, Any]) -> Dict[str, Any]:

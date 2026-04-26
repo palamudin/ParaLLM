@@ -8,7 +8,7 @@ from unittest import mock
 
 from backend.app import control, dispatch, jobs, queueing, storage
 from backend.app.config import DeploymentTopology
-from runtime.engine import RuntimeErrorWithCode
+from runtime.engine import RuntimeErrorWithCode, compile_engine_graph
 
 from .test_queueing import FakeRedis
 
@@ -457,6 +457,64 @@ class LoopJobTests(unittest.TestCase):
         self.assertEqual(result["requestedRounds"], 1)
         self.assertTrue(result["results"])
         self.assertNotIn("parallelTargets", result["results"][0])
+
+    def test_execute_loop_job_v2_live_compatible_plan_drives_round_sequence(self) -> None:
+        paths = storage.project_paths(self.root)
+        state = storage.read_state_payload(paths)
+        task = state["activeTask"]
+        task["runtime"]["engineVersion"] = "v2"
+        task["runtime"]["engineGraph"]["nodes"]["workers"]["timeoutSeconds"] = 88
+        task["runtime"]["engineGraph"]["nodes"]["review"]["timeoutSeconds"] = 144
+        task["runtime"]["engineGraph"]["nodes"]["answerNow"]["timeoutSeconds"] = 77
+        task["runtime"]["engineGraph"]["nodes"]["judge"]["timeoutSeconds"] = 155
+        task["runtime"]["enginePlan"] = compile_engine_graph(
+            task["runtime"]["engineGraph"],
+            task=task,
+            runtime_config=task["runtime"],
+        )
+        paths.state.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        (paths.tasks / f"{task['taskId']}.json").write_text(json.dumps(task, indent=2), encoding="utf-8")
+
+        runtime = jobs._runtime(self.root)
+        with runtime.with_lock():
+            runtime.initialize_task_state_unlocked(task, state)
+        job = jobs.create_loop_job(runtime, task, 1, 0, "background")
+        seen_targets: list[str] = []
+        seen_options: dict[str, dict[str, object]] = {}
+
+        def fake_run_target(_runtime, target, _task_id, _payload):
+            seen_targets.append(str(target))
+            seen_options[str(target)] = dict(_payload or {})
+            return {"target": target, "output": f"{target} complete", "exitCode": 0}
+
+        with mock.patch("backend.app.jobs.runtime_execution.run_target", side_effect=fake_run_target):
+            with mock.patch(
+                "backend.app.dispatch.launch_dispatch_job_runner",
+                side_effect=lambda job_payload, root_path: dispatch.execute_target_job_process(
+                    str(job_payload.get("jobId") or ""),
+                    root_path,
+                ),
+            ):
+                with mock.patch("backend.app.jobs._launch_loop_post_target") as launch_post_target:
+                    launch_post_target.return_value = {"jobId": "dispatch-arbiter", "target": "arbiter"}
+                    result = jobs.execute_loop_job(job["jobId"], self.root)
+
+        self.assertEqual(result["results"][0]["planSource"], "v2-plan")
+        self.assertTrue(str(result["results"][0].get("batchId") or "").startswith("batch-"))
+        self.assertIn("commander", seen_targets)
+        self.assertIn("commander_review", seen_targets)
+        self.assertIn("summarizer", seen_targets)
+        self.assertIn("A", seen_targets)
+        self.assertIn("B", seen_targets)
+        self.assertNotIn("workers", seen_targets)
+        self.assertIn("answer_now", seen_targets)
+        launch_post_target.assert_called_once()
+        self.assertEqual(int(seen_options["A"]["timeoutSeconds"]), 88)
+        self.assertEqual(int(seen_options["B"]["timeoutSeconds"]), 88)
+        self.assertEqual(int(seen_options["commander_review"]["timeoutSeconds"]), 144)
+        self.assertEqual(int(seen_options["answer_now"]["timeoutSeconds"]), 77)
+        self.assertEqual(int(launch_post_target.call_args.kwargs["timeout_seconds_override"]), 155)
+        self.assertEqual(result["results"][0]["postTargets"], ["arbiter"])
 
 
 if __name__ == "__main__":

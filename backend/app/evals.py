@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from runtime.engine import RuntimeErrorWithCode
+from runtime.engine import RuntimeErrorWithCode, compile_engine_graph
 from runtime.eval_runner import validate_arm_manifest, validate_suite_manifest
 
 from . import control, jobs, metadata, storage
@@ -239,6 +239,17 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
     direct_provider = str(payload.get("directProvider") or provider).strip() or provider
     direct_model = str(payload.get("directModel") or model).strip() or model
     execution_mode = str(payload.get("executionMode") or "live").strip() or "live"
+    engine_version = str(payload.get("engineVersion") or "v1").strip() or "v1"
+    engine_graph = payload.get("engineGraph") if isinstance(payload.get("engineGraph"), dict) else None
+    worker_list = _front_worker_list(payload)
+    runtime_payload = {
+        "provider": provider,
+        "model": model,
+        "summarizerProvider": summarizer_provider,
+        "summarizerModel": summarizer_model,
+        "directProvider": direct_provider,
+        "directModel": direct_model,
+    }
     return {
         "armId": f"front-eval-{uuid.uuid4().hex[:8]}",
         "title": str(payload.get("title") or "Current setup vs single-thread baseline").strip() or "Current setup vs single-thread baseline",
@@ -246,8 +257,9 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
         "type": "steered",
         "runtime": {
             "executionMode": execution_mode,
-            "engineVersion": str(payload.get("engineVersion") or "v1").strip() or "v1",
-            "engineGraph": payload.get("engineGraph") if isinstance(payload.get("engineGraph"), dict) else None,
+            "engineVersion": engine_version,
+            "engineGraph": engine_graph,
+            "enginePlan": compile_engine_graph(engine_graph, task={"workers": worker_list, "runtime": runtime_payload}, runtime_config=runtime_payload),
             "contextMode": str(payload.get("contextMode") or "weighted").strip() or "weighted",
             "directBaselineMode": "both",
             "provider": provider,
@@ -267,7 +279,7 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
             "requireLive": execution_mode == "live",
             "allowMockFallback": execution_mode != "live",
         },
-        "workers": _front_worker_list(payload),
+        "workers": worker_list,
     }
 
 
@@ -303,6 +315,7 @@ def _build_front_live_run(paths: storage.Paths, run_id: str, task: Dict[str, Any
             "objective": str(task.get("objective") or "").strip(),
             "engineVersion": str(runtime.get("engineVersion") or "v1"),
             "engineGraph": runtime.get("engineGraph") if isinstance(runtime.get("engineGraph"), dict) else None,
+            "enginePlan": runtime.get("enginePlan") if isinstance(runtime.get("enginePlan"), dict) else None,
             "provider": str(runtime.get("provider") or ""),
             "model": str(runtime.get("model") or ""),
             "summarizerProvider": str((task.get("summarizer") or {}).get("provider") or ""),
@@ -391,6 +404,7 @@ def sync_front_live_run(run_id: str, root: Optional[Path] = None) -> Optional[Di
             "objective": str(task.get("objective") or live.get("objective") or "").strip(),
             "engineVersion": str(runtime.get("engineVersion") or live.get("engineVersion") or "v1"),
             "engineGraph": runtime.get("engineGraph") if isinstance(runtime.get("engineGraph"), dict) else live.get("engineGraph"),
+            "enginePlan": runtime.get("enginePlan") if isinstance(runtime.get("enginePlan"), dict) else live.get("enginePlan"),
             "provider": str(runtime.get("provider") or live.get("provider") or ""),
             "model": str(runtime.get("model") or live.get("model") or ""),
             "summarizerProvider": str((task.get("summarizer") or {}).get("provider") or live.get("summarizerProvider") or ""),

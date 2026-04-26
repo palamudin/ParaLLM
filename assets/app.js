@@ -148,7 +148,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 28,
     y: 32,
     width: 208,
-    spawnCount: 1
+    spawnCount: 1,
+    timeoutSeconds: 0
   },
   activator: {
     moduleType: "activator",
@@ -162,7 +163,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 290,
     y: 32,
     width: 236,
-    spawnCount: 1
+    spawnCount: 1,
+    timeoutSeconds: 0
   },
   workers: {
     moduleType: "workers",
@@ -176,7 +178,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 116,
     y: 196,
     width: 230,
-    spawnCount: 3
+    spawnCount: 3,
+    timeoutSeconds: 0
   },
   review: {
     moduleType: "review",
@@ -190,7 +193,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 432,
     y: 196,
     width: 236,
-    spawnCount: 1
+    spawnCount: 1,
+    timeoutSeconds: 0
   },
   tools: {
     moduleType: "tools",
@@ -204,7 +208,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 824,
     y: 32,
     width: 212,
-    spawnCount: 1
+    spawnCount: 1,
+    timeoutSeconds: 0
   },
   answerNow: {
     moduleType: "answerNow",
@@ -218,7 +223,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 676,
     y: 382,
     width: 200,
-    spawnCount: 1
+    spawnCount: 1,
+    timeoutSeconds: 0
   },
   final: {
     moduleType: "final",
@@ -232,7 +238,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 840,
     y: 196,
     width: 204,
-    spawnCount: 1
+    spawnCount: 1,
+    timeoutSeconds: 0
   },
   judge: {
     moduleType: "judge",
@@ -246,7 +253,8 @@ const ENGINE_V2_NODE_LIBRARY = {
     x: 904,
     y: 382,
     width: 184,
-    spawnCount: 1
+    spawnCount: 1,
+    timeoutSeconds: 0
   }
 };
 const ENGINE_V2_DEFAULT_EDGES = [
@@ -1022,7 +1030,8 @@ function normalizeEngineGraphNode(nodeId, rawNode, fallbackNode = null) {
     x: Math.max(0, Math.min(1800, parseInt(source.x ?? base.x ?? 0, 10) || 0)),
     y: Math.max(0, Math.min(1200, parseInt(source.y ?? base.y ?? 0, 10) || 0)),
     width: Math.max(168, Math.min(360, parseInt(source.width ?? base.width ?? 208, 10) || 208)),
-    spawnCount: Math.max(1, Math.min(12, parseInt(source.spawnCount ?? base.spawnCount ?? 1, 10) || 1))
+    spawnCount: Math.max(1, Math.min(12, parseInt(source.spawnCount ?? base.spawnCount ?? 1, 10) || 1)),
+    timeoutSeconds: Math.max(0, Math.min(3600, parseInt(source.timeoutSeconds ?? base.timeoutSeconds ?? 0, 10) || 0))
   };
 }
 
@@ -3386,10 +3395,400 @@ function activeFrontTargets(loop, state) {
   return inferred ? [inferred] : [];
 }
 
+function normalizeSchedulerEventState(value, fallback = "ready") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "waiting on key") return "waiting_on_key";
+  if (["queued", "waiting_on_key", "launching", "running", "completed", "error", "cancelled"].includes(normalized)) {
+    return normalized;
+  }
+  if (["interrupted", "budget_exhausted"].includes(normalized)) return "error";
+  return fallback;
+}
+
+function schedulerEventStateLabel(state) {
+  const normalized = normalizeSchedulerEventState(state, "ready");
+  if (normalized === "waiting_on_key") return "Key wait";
+  if (normalized === "launching") return "Launching";
+  if (normalized === "running") return "Running";
+  if (normalized === "queued") return "Queued";
+  if (normalized === "completed") return "Completed";
+  if (normalized === "error") return "Error";
+  if (normalized === "cancelled") return "Cancelled";
+  return "Ready";
+}
+
+function schedulerEventNodeState(state) {
+  const normalized = normalizeSchedulerEventState(state, "ready");
+  if (normalized === "running" || normalized === "launching") return "active";
+  if (normalized === "waiting_on_key" || normalized === "queued") return "waiting";
+  if (normalized === "completed") return "completed";
+  if (normalized === "error" || normalized === "cancelled") return "error";
+  return "ready";
+}
+
+function schedulerEventTimestamp(job) {
+  const raw = String(job?.startedAt || job?.queuedAt || job?.finishedAt || job?.lastHeartbeatAt || "").trim();
+  const time = raw ? Date.parse(raw) : Number.NaN;
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function schedulerEventSummaryCounts(counts) {
+  const parts = [];
+  if (Number(counts.running || 0) > 0) parts.push(`${counts.running} running`);
+  if (Number(counts.launching || 0) > 0) parts.push(`${counts.launching} launching`);
+  if (Number(counts.waiting_on_key || 0) > 0) parts.push(`${counts.waiting_on_key} key wait`);
+  if (Number(counts.queued || 0) > 0) parts.push(`${counts.queued} queued`);
+  if (Number(counts.completed || 0) > 0) parts.push(`${counts.completed} completed`);
+  if (Number(counts.error || 0) > 0) parts.push(`${counts.error} error`);
+  if (Number(counts.cancelled || 0) > 0) parts.push(`${counts.cancelled} cancelled`);
+  return parts.join(" | ");
+}
+
+function schedulerWorkItemMatchesJob(item, job) {
+  const itemId = String(item?.id || "").trim();
+  const itemTarget = String(item?.target || "").trim().toLowerCase();
+  const jobWorkItemId = String(job?.workItemId || "").trim();
+  if (itemId && jobWorkItemId && itemId === jobWorkItemId) {
+    return true;
+  }
+  const jobTarget = String(job?.target || "").trim().toLowerCase();
+  if (!jobTarget || !itemTarget) return false;
+  if (itemTarget === "workers") {
+    return /^[a-z]$/.test(jobTarget);
+  }
+  return itemTarget === jobTarget;
+}
+
+function taskSchedulerHistoryJobs(taskId) {
+  return (Array.isArray(latestHistoryState?.jobs) ? latestHistoryState.jobs : []).filter(function (job) {
+    return String(job?.taskId || "") === String(taskId || "") && String(job?.jobType || "") === "target";
+  });
+}
+
+function buildCompiledWorkItemEvents(task, state, compiledPlan) {
+  const empty = { byNodeId: {}, rows: [], counts: { active: 0, queued: 0, completed: 0, errors: 0 } };
+  if (!task?.taskId || !compiledPlan?.runner?.workItems) return empty;
+  const workItems = Array.isArray(compiledPlan.runner.workItems) ? compiledPlan.runner.workItems : [];
+  if (!workItems.length) return empty;
+  const activeJobs = activeDispatchEntries(state).filter(function (job) {
+    return (
+      String(job?.jobId || "").trim()
+      && String(job?.target || "").trim()
+      && (!job?.taskId || String(job.taskId || "") === String(task?.taskId || ""))
+    );
+  });
+  const historyJobs = taskSchedulerHistoryJobs(task.taskId);
+  const mergedJobs = [];
+  const seenJobIds = new Set();
+  activeJobs.forEach(function (job) {
+    const jobId = String(job?.jobId || "").trim();
+    if (!jobId || seenJobIds.has(jobId)) return;
+    seenJobIds.add(jobId);
+    mergedJobs.push(job);
+  });
+  historyJobs.forEach(function (job) {
+    const jobId = String(job?.jobId || "").trim();
+    if (!jobId || seenJobIds.has(jobId)) return;
+    seenJobIds.add(jobId);
+    mergedJobs.push(job);
+  });
+  const rows = [];
+  const byNodeId = {};
+  const counts = { active: 0, queued: 0, completed: 0, errors: 0 };
+
+  workItems.forEach(function (item) {
+    const compiledNode = compiledPlan?.nodesById?.[item.nodeId] || {};
+    const jobs = mergedJobs
+      .filter(function (job) { return schedulerWorkItemMatchesJob(item, job); })
+      .sort(function (left, right) {
+        const leftRank = String(left?.status || "") === "running" ? 0 : 1;
+        const rightRank = String(right?.status || "") === "running" ? 0 : 1;
+        if (leftRank !== rightRank) return leftRank - rightRank;
+        return schedulerEventTimestamp(right) - schedulerEventTimestamp(left);
+      });
+    const jobCounts = {
+      running: 0,
+      launching: 0,
+      waiting_on_key: 0,
+      queued: 0,
+      completed: 0,
+      error: 0,
+      cancelled: 0
+    };
+    jobs.forEach(function (job) {
+      const rawState = String(job?.schedulerState || job?.status || "").trim().toLowerCase();
+      const normalized = normalizeSchedulerEventState(rawState, normalizeSchedulerEventState(job?.status || "", "ready"));
+      if (Object.prototype.hasOwnProperty.call(jobCounts, normalized)) {
+        jobCounts[normalized] += 1;
+      } else if (normalized === "error") {
+        jobCounts.error += 1;
+      }
+    });
+    let eventState = "ready";
+    if (jobCounts.running > 0) eventState = "running";
+    else if (jobCounts.launching > 0) eventState = "launching";
+    else if (jobCounts.waiting_on_key > 0) eventState = "waiting_on_key";
+    else if (jobCounts.queued > 0) eventState = "queued";
+    else if (jobCounts.error > 0) eventState = "error";
+    else if (jobCounts.cancelled > 0) eventState = "cancelled";
+    else if (jobCounts.completed > 0) eventState = "completed";
+
+    if (eventState === "running" || eventState === "launching") counts.active += 1;
+    else if (eventState === "waiting_on_key" || eventState === "queued") counts.queued += 1;
+    else if (eventState === "completed") counts.completed += 1;
+    else if (eventState === "error" || eventState === "cancelled") counts.errors += 1;
+
+    const latestJob = jobs[0] || null;
+    const provider = String(latestJob?.provider || item?.provider || compiledNode?.execution?.provider || "").trim();
+    const model = String(latestJob?.model || "").trim();
+    const dependencyIds = Array.isArray(item?.dependencyWorkItemIds) ? item.dependencyWorkItemIds : [];
+    const advisoryIds = Array.isArray(item?.advisoryDependencyWorkItemIds) ? item.advisoryDependencyWorkItemIds : [];
+    const summaryParts = [];
+    if (provider) {
+      summaryParts.push(
+        providerLabel(provider) + (model ? " / " + modelLabel(model, provider) : "")
+      );
+    }
+    const countSummary = schedulerEventSummaryCounts(jobCounts);
+    if (countSummary) summaryParts.push(countSummary);
+    if (latestJob?.lastMessage) summaryParts.push(String(latestJob.lastMessage).trim());
+    const detailLines = [
+      "Work item: " + String(item.id || "n/a"),
+      "Target: " + String(item.target || "virtual"),
+      "Schedule class: " + String(item.scheduleClass || "blocking"),
+      "Blocking deps: " + (dependencyIds.length ? dependencyIds.join(", ") : "none"),
+      "Advisory deps: " + (advisoryIds.length ? advisoryIds.join(", ") : "none"),
+      Number(item?.laneCount || 0) > 1 ? ("Lane count: " + String(item.laneCount)) : "",
+      latestJob?.jobId ? ("Latest job: " + String(latestJob.jobId)) : "",
+      latestJob?.lastMessage ? ("Latest note: " + String(latestJob.lastMessage).trim()) : ""
+    ].filter(Boolean);
+    const event = {
+      nodeId: String(item.nodeId || ""),
+      workItemId: String(item.id || ""),
+      title: String(compiledNode?.label || item?.nodeId || item?.target || "Work item"),
+      target: String(item.target || ""),
+      status: eventState,
+      stateLabel: schedulerEventStateLabel(eventState),
+      nodeState: schedulerEventNodeState(eventState),
+      badge: schedulerEventStateLabel(eventState),
+      meta: summaryParts.join(" | ") || "Waiting for the scheduler to reach this work item.",
+      note: String(latestJob?.lastMessage || "").trim(),
+      detailLines: detailLines,
+      jobCounts: jobCounts,
+      jobCount: jobs.length,
+      dependencyCount: dependencyIds.length,
+      advisoryDependencyCount: advisoryIds.length,
+      laneCount: Number(item?.laneCount || 1),
+      jobs: jobs,
+      provider: provider,
+      model: model
+    };
+    byNodeId[event.nodeId] = event;
+    rows.push(event);
+  });
+
+  return { byNodeId, rows, counts };
+}
+
+function renderSchedulerEventBadge(status, extraClass = "") {
+  const normalized = normalizeSchedulerEventState(status, "ready");
+  return `<span class="scheduler-event-badge is-${escapeHtml(normalized)}${extraClass ? " " + escapeHtml(extraClass) : ""}">${escapeHtml(schedulerEventStateLabel(normalized))}</span>`;
+}
+
+function renderSchedulerEvents(task, state) {
+  const runtime = task?.runtime || {};
+  const compiledPlan = runtime?.enginePlan && typeof runtime.enginePlan === "object" ? runtime.enginePlan : null;
+  if (!task?.taskId) {
+    return `<div class="review-empty">No active task.</div>`;
+  }
+  if (!compiledPlan?.runner?.workItems?.length) {
+    const dispatchEntries = activeDispatchEntries(state);
+    if (!dispatchEntries.length) {
+      return `<div class="review-empty">No scheduler work items for the current task yet.</div>`;
+    }
+    return `
+      <div class="scheduler-event-stack">
+        ${dispatchEntries.map(function (entry) {
+          const status = normalizeSchedulerEventState(entry?.schedulerState || entry?.status || "", "queued");
+          const meta = [
+            friendlyTargetLabel(entry?.target, task),
+            entry?.provider ? providerLabel(entry.provider) : "",
+            entry?.model ? modelLabel(entry.model, entry.provider || "") : "",
+            entry?.lastMessage || ""
+          ].filter(Boolean).join(" | ");
+          return `
+            <article class="scheduler-event-card is-${escapeHtml(status)}">
+              <div class="scheduler-event-head">
+                <div class="scheduler-event-title">${escapeHtml(entry?.targetLabel || friendlyTargetLabel(entry?.target, task))}</div>
+                ${renderSchedulerEventBadge(status)}
+              </div>
+              <div class="scheduler-event-meta">${escapeHtml(meta || "Dispatch entry active.")}</div>
+            </article>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+  const eventBundle = buildCompiledWorkItemEvents(task, state, compiledPlan);
+  const liveExecution = compiledPlan?.runner?.liveExecution || {};
+  const rows = eventBundle.rows || [];
+  if (!rows.length) {
+    return `<div class="review-empty">No V2 scheduler events yet.</div>`;
+  }
+  return `
+    <div class="scheduler-event-stack">
+      <article class="scheduler-event-card">
+        <div class="scheduler-event-head">
+          <div class="scheduler-event-title">${escapeHtml(normalizeEngineVersion(runtime.engineVersion) === "v2" ? "V2 scheduler view" : "V1 fallback scheduler view")}</div>
+          ${renderSchedulerEventBadge(liveExecution?.supported ? "completed" : "queued")}
+        </div>
+        <div class="scheduler-event-meta">${escapeHtml(liveExecution?.supported ? "Compiled V2 work items are driving the compatible subset of the live scheduler." : ("Execution fallback: " + String(liveExecution?.reason || "This graph still falls back to the proven V1 path.")))}</div>
+        <div class="scheduler-event-grid">
+          <div class="scheduler-event-stat">
+            <span class="scheduler-event-stat-label">Work items</span>
+            <strong>${escapeHtml(String(rows.length))}</strong>
+          </div>
+          <div class="scheduler-event-stat">
+            <span class="scheduler-event-stat-label">In flight</span>
+            <strong>${escapeHtml(String(eventBundle.counts.active + eventBundle.counts.queued))}</strong>
+          </div>
+          <div class="scheduler-event-stat">
+            <span class="scheduler-event-stat-label">Completed</span>
+            <strong>${escapeHtml(String(eventBundle.counts.completed))}</strong>
+          </div>
+        </div>
+      </article>
+      ${rows.map(function (event) {
+        return `
+          <article class="scheduler-event-card is-${escapeHtml(event.status)}">
+            <div class="scheduler-event-head">
+              <div class="scheduler-event-title">${escapeHtml(event.title)}</div>
+              ${renderSchedulerEventBadge(event.status)}
+            </div>
+            <div class="scheduler-event-meta">${escapeHtml(event.meta || "Waiting for scheduler activity.")}</div>
+            <div class="scheduler-event-grid">
+              <div class="scheduler-event-stat">
+                <span class="scheduler-event-stat-label">Target</span>
+                <strong>${escapeHtml(String(event.target || "virtual"))}</strong>
+              </div>
+              <div class="scheduler-event-stat">
+                <span class="scheduler-event-stat-label">Blocking deps</span>
+                <strong>${escapeHtml(String(event.dependencyCount || 0))}</strong>
+              </div>
+              <div class="scheduler-event-stat">
+                <span class="scheduler-event-stat-label">Jobs seen</span>
+                <strong>${escapeHtml(String(event.jobCount || 0))}</strong>
+              </div>
+            </div>
+            <div class="scheduler-event-note">${escapeHtml(event.detailLines.join("\n"))}</div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderTopologyNodeRuntimeLedger(task, state, graph, nodeId, compiledPlan) {
+  const liveExecution = compiledPlan?.runner?.liveExecution || null;
+  const compiledNode = compiledPlan?.nodesById?.[nodeId] || null;
+  const eventBundle = buildCompiledWorkItemEvents(task, state, compiledPlan);
+  const event = eventBundle.byNodeId?.[nodeId] || null;
+  const node = graph?.nodes?.[nodeId] || {};
+  const incoming = Array.isArray(graph?.edges) ? graph.edges.filter(function (edge) { return edge.to === nodeId; }) : [];
+  const outgoing = Array.isArray(graph?.edges) ? graph.edges.filter(function (edge) { return edge.from === nodeId; }) : [];
+
+  if (!task?.taskId) {
+    return `<div class="review-empty">No active task is attached to this module yet.</div>`;
+  }
+
+  const topCard = `
+    <article class="scheduler-event-card${event ? ` is-${escapeHtml(event.status)}` : ""}">
+      <div class="scheduler-event-head">
+        <div class="scheduler-event-title">Live runtime ledger</div>
+        ${renderSchedulerEventBadge(event?.status || (liveExecution?.supported ? "completed" : "queued"))}
+      </div>
+      <div class="scheduler-event-meta">${escapeHtml(
+        event?.meta
+        || (
+          liveExecution?.supported
+            ? "This block is part of the compiled V2 plan but has no scheduler activity yet."
+            : ("Execution fallback: " + String(liveExecution?.reason || "This graph is still riding the proven V1 path."))
+        )
+      )}</div>
+      <div class="scheduler-event-grid">
+        <div class="scheduler-event-stat">
+          <span class="scheduler-event-stat-label">Work item</span>
+          <strong>${escapeHtml(String(event?.workItemId || compiledNode?.execution?.workItemId || "none"))}</strong>
+        </div>
+        <div class="scheduler-event-stat">
+          <span class="scheduler-event-stat-label">Target</span>
+          <strong>${escapeHtml(String(event?.target || compiledNode?.execution?.target || "virtual"))}</strong>
+        </div>
+        <div class="scheduler-event-stat">
+          <span class="scheduler-event-stat-label">Jobs seen</span>
+          <strong>${escapeHtml(String(event?.jobCount || 0))}</strong>
+        </div>
+        <div class="scheduler-event-stat">
+          <span class="scheduler-event-stat-label">Blocking deps</span>
+          <strong>${escapeHtml(String(event?.dependencyCount || compiledNode?.execution?.dependencyWorkItemIds?.length || 0))}</strong>
+        </div>
+        <div class="scheduler-event-stat">
+          <span class="scheduler-event-stat-label">Advisory deps</span>
+          <strong>${escapeHtml(String(event?.advisoryDependencyCount || compiledNode?.execution?.advisoryDependencyWorkItemIds?.length || 0))}</strong>
+        </div>
+        <div class="scheduler-event-stat">
+          <span class="scheduler-event-stat-label">Links</span>
+          <strong>${escapeHtml(String(incoming.length) + " in / " + String(outgoing.length) + " out")}</strong>
+        </div>
+      </div>
+      <div class="scheduler-event-note">${escapeHtml([
+        compiledNode ? ("Schedule class: " + String(compiledNode.execution?.scheduleClass || "blocking")) : "",
+        compiledNode ? ("Packet mode: " + String(compiledNode.packetMode || node.packetMode || "full")) : "",
+        compiledNode && Number(compiledNode.execution?.laneCount || 0) > 1 ? ("Lane count: " + String(compiledNode.execution.laneCount)) : "",
+        compiledNode?.execution?.dependencyWorkItemIds?.length ? ("Blocking work deps: " + compiledNode.execution.dependencyWorkItemIds.join(", ")) : "",
+        compiledNode?.execution?.advisoryDependencyWorkItemIds?.length ? ("Advisory work deps: " + compiledNode.execution.advisoryDependencyWorkItemIds.join(", ")) : ""
+      ].filter(Boolean).join("\n") || "No compiled work-item detail for this block yet.")}</div>
+    </article>
+  `;
+
+  const jobCards = (event?.jobs || []).map(function (job) {
+    const status = normalizeSchedulerEventState(job?.schedulerState || job?.status || "", "queued");
+    const meta = [
+      job?.provider ? providerLabel(job.provider) : "",
+      job?.model ? modelLabel(job.model, job.provider || "") : "",
+      job?.queuedAt ? ("queued " + String(job.queuedAt)) : "",
+      job?.startedAt ? ("started " + String(job.startedAt)) : ""
+    ].filter(Boolean).join(" | ");
+    const noteLines = [
+      job?.jobId ? ("Job: " + String(job.jobId)) : "",
+      Array.isArray(job?.dependencyJobIds) && job.dependencyJobIds.length ? ("Job deps: " + job.dependencyJobIds.join(", ")) : "",
+      job?.lastMessage ? String(job.lastMessage).trim() : ""
+    ].filter(Boolean);
+    return `
+      <article class="scheduler-event-card is-${escapeHtml(status)} compact">
+        <div class="scheduler-event-head">
+          <div class="scheduler-event-title">${escapeHtml(job?.targetLabel || friendlyTargetLabel(job?.target, task))}</div>
+          ${renderSchedulerEventBadge(status)}
+        </div>
+        <div class="scheduler-event-meta">${escapeHtml(meta || "Job metadata not available.")}</div>
+        <div class="scheduler-event-note">${escapeHtml(noteLines.join("\n") || "No additional job note.")}</div>
+      </article>
+    `;
+  }).join("");
+
+  return `
+    <div class="topology-node-runtime">
+      ${topCard}
+      <div class="topology-node-runtime-head">Observed jobs</div>
+      ${jobCards ? `<div class="scheduler-event-stack">${jobCards}</div>` : `<div class="review-empty">No scheduler job has been created for this block yet.</div>`}
+    </div>
+  `;
+}
+
 function setTopologyNodeState(nodeId, metaId, stateKey, metaText) {
   const $node = $("#" + nodeId);
   if ($node.length) {
-    $node.removeClass("is-active is-waiting is-ready");
+    $node.removeClass("is-active is-waiting is-ready is-completed is-error is-idle");
     $node.addClass("is-" + String(stateKey || "ready"));
   }
   const $meta = $("#" + metaId);
@@ -3423,6 +3822,7 @@ function topologyV2NodeRuntime(node, context) {
   const activeTargets = context.activeTargets || [];
   const workerIds = context.workerIds || [];
   const providerTraceText = context.providerTraceText || "provider-neutral orchestration";
+  const workEvent = context.nodeEventsByNodeId?.[String(node?.id || "")] || null;
   const busy = !!context.busy;
   const nodeEnabled = node?.enabled !== false;
   const base = {
@@ -3524,6 +3924,17 @@ function topologyV2NodeRuntime(node, context) {
     base.state = "idle";
     base.stat = "OFF";
   }
+  if (workEvent) {
+    base.state = nodeEnabled ? workEvent.nodeState : "idle";
+    base.meta = workEvent.meta || base.meta;
+    base.stat = workEvent.badge || base.stat;
+    base.event = workEvent;
+    base.details = [
+      "Scheduler: " + String(workEvent.stateLabel || "Ready"),
+      ...base.details,
+      ...((workEvent.detailLines || []).filter(Boolean))
+    ];
+  }
   return base;
 }
 
@@ -3553,7 +3964,10 @@ function renderTopologyV2NodeLayer(graph, nodeStates) {
           <span class="topology-v2-node-kicker">${escapeHtml(state.kicker || node.kicker || "Module")}</span>
           <span class="topology-v2-node-title">${escapeHtml(state.title || node.label || nodeId)}</span>
           <span class="topology-v2-node-meta">${escapeHtml(state.meta || node.meta || "")}</span>
-          <span class="topology-v2-node-stat">${escapeHtml(state.stat || String(node.packetMode || "FULL").toUpperCase())}</span>
+          <div class="topology-v2-node-event-row">
+            <span class="topology-v2-node-stat">${escapeHtml(state.stat || String(node.packetMode || "FULL").toUpperCase())}</span>
+            ${state.event ? `<span class="topology-v2-node-event is-${escapeHtml(normalizeSchedulerEventState(state.event.status, "ready"))}">${escapeHtml(state.event.badge || schedulerEventStateLabel(state.event.status))}</span>` : ""}
+          </div>
           <span class="topology-v2-node-type">${escapeHtml(String(node.moduleType || nodeId))} | ${escapeHtml(String(node.blockingMode || "blocking"))}</span>
         </div>
       </div>
@@ -3562,7 +3976,7 @@ function renderTopologyV2NodeLayer(graph, nodeStates) {
   $("#topologyV2NodeLayer").html(html);
 }
 
-function renderTopologyV2Edges(graph) {
+function renderTopologyV2Edges(graph, nodeStates = {}) {
   const svg = document.getElementById("topologyV2Links");
   const layer = document.getElementById("topologyV2NodeLayer");
   if (!svg || !layer) return;
@@ -3586,8 +4000,20 @@ function renderTopologyV2Edges(graph) {
     const d = `M ${x1} ${y1} C ${x1 + distance} ${y1}, ${x2 - distance} ${y2}, ${x2} ${y2}`;
     const labelX = ((x1 + x2) / 2);
     const labelY = ((y1 + y2) / 2) - 10;
+    const fromState = String(nodeStates?.[edge.from]?.event?.status || nodeStates?.[edge.from]?.state || "ready");
+    const toState = String(nodeStates?.[edge.to]?.event?.status || nodeStates?.[edge.to]?.state || "ready");
+    let toneClass = "";
+    if (["running", "launching", "active"].includes(toState) || ["running", "launching", "active"].includes(fromState)) {
+      toneClass = "is-live";
+    } else if (["waiting_on_key", "queued", "waiting"].includes(toState)) {
+      toneClass = "is-waiting";
+    } else if (["error", "cancelled"].includes(toState)) {
+      toneClass = "is-error";
+    } else if (["completed"].includes(toState)) {
+      toneClass = "is-completed";
+    }
     return `
-      <g class="topology-v2-edge-route" data-edge-index="${index}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}">
+      <g class="topology-v2-edge-route ${toneClass}" data-edge-index="${index}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}">
         <path class="topology-v2-edge-hit" d="${d}"></path>
         <path class="topology-v2-edge-path" d="${d}"></path>
         <text class="topology-v2-edge-label" x="${labelX}" y="${labelY}">${escapeHtml(String(edge.label || ""))}</text>
@@ -3609,7 +4035,7 @@ function updateTopologyV2PendingLinkBanner(graph) {
   $banner.prop("hidden", false);
 }
 
-function renderTopologyV2Inspector(graph, nodeStates) {
+function renderTopologyV2Inspector(graph, nodeStates, compiledPlan = null) {
   const normalizedGraph = normalizeEngineGraph(graph);
   const catalog = normalizedGraph.nodes || {};
   const keys = Object.keys(catalog);
@@ -3617,6 +4043,7 @@ function renderTopologyV2Inspector(graph, nodeStates) {
   const selectedKey = catalog[activeTopologyV2Node] ? activeTopologyV2Node : keys[0];
   const selectedNode = catalog[selectedKey];
   const selected = nodeStates[selectedKey] || {};
+  const compiledNode = compiledPlan?.nodesById?.[selectedKey] || null;
   selectTopologyV2Node(selectedKey);
   $("#topologyV2InspectorTitle").text(selected.title || selectedNode.label || "Node");
   $("#topologyV2InspectorMeta").text(selected.meta || selectedNode.meta || "");
@@ -3628,9 +4055,56 @@ function renderTopologyV2Inspector(graph, nodeStates) {
     .concat([
       "Packet mode: " + String(selectedNode.packetMode || "full"),
       "Blocking mode: " + String(selectedNode.blockingMode || "blocking"),
-      "Links in/out: " + incoming + " / " + outgoing,
-      "Execution fallback: graph edits persist now, but execution still resolves through V1."
+      "Links in/out: " + incoming + " / " + outgoing
     ]);
+  if (compiledNode) {
+    details.push("Compiled stage: " + String((compiledNode.stageIndex ?? 0) + 1));
+    details.push("Runtime target: " + String(compiledNode.execution?.target || "virtual"));
+    details.push("Schedule class: " + String(compiledNode.execution?.scheduleClass || "blocking"));
+    if (compiledNode.execution?.workItemId) {
+      details.push("Work item: " + String(compiledNode.execution.workItemId));
+    }
+    if (Array.isArray(compiledNode.dependencies) && compiledNode.dependencies.length) {
+      details.push("Depends on: " + compiledNode.dependencies.join(", "));
+    }
+    if (Array.isArray(compiledNode.workerParents) && compiledNode.workerParents.length) {
+      details.push("Worker parents: " + compiledNode.workerParents.join(", "));
+    }
+    if (Array.isArray(compiledNode.workerChildren) && compiledNode.workerChildren.length) {
+      details.push("Worker children: " + compiledNode.workerChildren.join(", "));
+    }
+    if (Array.isArray(compiledNode.toolInputs) && compiledNode.toolInputs.length) {
+      details.push("Tool inputs: " + compiledNode.toolInputs.join(", "));
+    }
+    if (Number(compiledNode.execution?.laneCount || 0) > 1) {
+      details.push("Lane count: " + String(compiledNode.execution.laneCount));
+    }
+    if (Number(compiledNode.execution?.timeoutSeconds || 0) > 0) {
+      details.push("Timeout override: " + String(compiledNode.execution.timeoutSeconds) + "s");
+    }
+  }
+  if (selected.event) {
+    details.push("Scheduler status: " + String(selected.event.stateLabel || "Ready"));
+    if (selected.event.jobCount) {
+      details.push("Jobs seen: " + String(selected.event.jobCount));
+    }
+    if (selected.event.provider || selected.event.model) {
+      details.push(
+        "Provider: "
+        + providerLabel(selected.event.provider || "")
+        + (selected.event.model ? (" / " + modelLabel(selected.event.model, selected.event.provider || "")) : "")
+      );
+    }
+  }
+  if (compiledPlan?.runner?.liveExecution) {
+    const liveExecution = compiledPlan.runner.liveExecution;
+    details.push("V2 runner: " + (liveExecution.supported ? "live-compatible" : "fallback to V1"));
+    if (liveExecution.reason) {
+      details.push("Fallback reason: " + String(liveExecution.reason));
+    }
+  } else {
+    details.push("Execution fallback: graph edits persist now, but execution still resolves through V1.");
+  }
   const $list = $("#topologyV2InspectorList");
   if ($list.length) {
     $list.empty();
@@ -3641,8 +4115,13 @@ function renderTopologyV2Inspector(graph, nodeStates) {
 }
 
 function renderTopologyNodeModal() {
-  const graph = selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null);
+  const task = latestState?.activeTask || null;
+  const graph = selectedEngineGraph(task, latestState?.draft || null);
   const node = graph.nodes[topologyNodeModalState.nodeId];
+  const runtime = task?.runtime || {};
+  const compiledPlan = !formDirty && runtime?.enginePlan && typeof runtime.enginePlan === "object"
+    ? runtime.enginePlan
+    : null;
   const $body = $("#topologyNodeBody");
   if (!node || !$body.length) return;
   $("#topologyNodeTitle").text(node.label || "Module");
@@ -3690,6 +4169,10 @@ function renderTopologyNodeModal() {
           <input id="topologyNodeSpawnCount" type="number" min="1" max="12" step="1" value="${Number(node.spawnCount || 1)}" />
         </label>
         <label>
+          Timeout override (s)
+          <input id="topologyNodeTimeoutSeconds" type="number" min="0" max="3600" step="5" value="${Number(node.timeoutSeconds || 0)}" />
+        </label>
+        <label>
           Module type
           <input type="text" value="${escapeHtml(String(node.moduleType || ""))}" disabled />
         </label>
@@ -3698,6 +4181,9 @@ function renderTopologyNodeModal() {
         Meta / runtime note
         <textarea id="topologyNodeMetaInput" rows="3">${escapeHtml(node.meta || "")}</textarea>
       </label>
+      <div class="topology-node-runtime-shell">
+        ${renderTopologyNodeRuntimeLedger(task, latestState, graph, topologyNodeModalState.nodeId, compiledPlan)}
+      </div>
       <p class="topology-node-note">Use the visual graph to experiment with packet flow and dependency shape. V1 execution stays intact until the modular runner is ready.</p>
       <div class="topology-node-actions">
         <div class="topology-v2-toolbar-actions">
@@ -3808,6 +4294,10 @@ function updateTopologyPanelV2(task, loop, state) {
   const stagedPayload = collectCommanderPayload();
   const runtime = task?.runtime || {};
   const graph = selectedEngineGraph(task, state?.draft || null);
+  const compiledPlan = !formDirty && runtime?.enginePlan && typeof runtime.enginePlan === "object"
+    ? runtime.enginePlan
+    : null;
+  const workItemEvents = buildCompiledWorkItemEvents(task, state, compiledPlan);
   const toolEnabled = !!(
     runtime?.research?.enabled ||
     runtime?.localFiles?.enabled ||
@@ -3829,21 +4319,22 @@ function updateTopologyPanelV2(task, loop, state) {
     objectiveReady: !!String(task?.objective || state?.draft?.objective || "").trim(),
     commanderStarted: !!task?.stateCommander?.round,
     reviewStarted: !!task?.stateCommanderReview?.round,
-    busy: isWorkspaceBusy(loop, state)
+    busy: isWorkspaceBusy(loop, state),
+    nodeEventsByNodeId: workItemEvents.byNodeId
   };
   const nodeStates = {};
   Object.keys(graph.nodes || {}).forEach(function (nodeId) {
-    nodeStates[nodeId] = topologyV2NodeRuntime(graph.nodes[nodeId], context);
+    nodeStates[nodeId] = topologyV2NodeRuntime({ id: nodeId, ...(graph.nodes[nodeId] || {}) }, context);
   });
   renderTopologyV2NodeLayer(graph, nodeStates);
-  renderTopologyV2Edges(graph);
-  renderTopologyV2Inspector(graph, nodeStates);
+  renderTopologyV2Edges(graph, nodeStates);
+  renderTopologyV2Inspector(graph, nodeStates, compiledPlan);
   updateTopologyV2PendingLinkBanner(graph);
   $("#topologyNodeCount").text(String(Object.keys(graph.nodes || {}).length));
   $("#topologyEdgeCount").text(String((graph.edges || []).length));
   $("#topologyActiveCount").text(
     Object.keys(nodeStates).filter(function (nodeKey) {
-      return nodeStates[nodeKey].state === "active";
+      return ["active", "waiting"].includes(nodeStates[nodeKey].state);
     }).length
   );
 }
@@ -7657,10 +8148,14 @@ function refreshState() {
       renderHomeRuntimeControls(data.activeTask || null, data.draft || null, data.loop || null);
       renderQualityProfileCards();
       renderDebugTargetControls(task, data.loop || null, data.workers || {});
+      $("#schedulerEvents").html(renderSchedulerEvents(task, data));
       renderFooterCheckpoints(task);
       renderConversationThread(task, data.summary || null, data.directBaseline || null, data.workers || {}, data.loop || null, data);
       renderSummaryReview(data.summary || null, data.directBaseline || null, task, data.workers || {});
       maybeQueueFrontEvalArbiter(task, data.summary || null, data.directBaseline || null, data.loop || null, data);
+      if (!$("#topologyNodeModal").prop("hidden")) {
+        renderTopologyNodeModal();
+      }
       $("#summary").text(data.summary ? pretty(data.summary) : "No data.");
       $("#memory").text(pretty({
         activeTask: data.activeTask,
@@ -7703,11 +8198,43 @@ function refreshState() {
       $("#roundHistory").html(renderRoundHistory(data.rounds || []));
       $("#sessionArchives").html(renderSessionArchives(data.sessions || []));
       $("#artifactPolicy").html(renderArtifactPolicy(data.artifactPolicy || null));
+      if (latestState) {
+        const task = latestState.activeTask
+          ? Object.assign({}, latestState.activeTask, {
+              stateWorkers: latestState.workers || {},
+              stateCommander: latestState.commander || null,
+              stateCommanderReview: latestState.commanderReview || null,
+              directBaseline: latestState.directBaseline || null,
+              summary: latestState.summary || null
+            })
+          : null;
+        $("#schedulerEvents").html(renderSchedulerEvents(task, latestState));
+        if (!$("#topologyNodeModal").prop("hidden")) {
+          renderTopologyNodeModal();
+        }
+      }
       syncSessionArchiveClearButton(data);
       syncArtifactReview(data.artifacts || []);
     })
     .fail(function (xhr) {
       latestHistoryState = null;
+      if (latestState) {
+        const task = latestState.activeTask
+          ? Object.assign({}, latestState.activeTask, {
+              stateWorkers: latestState.workers || {},
+              stateCommander: latestState.commander || null,
+              stateCommanderReview: latestState.commanderReview || null,
+              directBaseline: latestState.directBaseline || null,
+              summary: latestState.summary || null
+            })
+          : null;
+        $("#schedulerEvents").html(renderSchedulerEvents(task, latestState));
+        if (!$("#topologyNodeModal").prop("hidden")) {
+          renderTopologyNodeModal();
+        }
+      } else {
+        $("#schedulerEvents").html(`<div class="review-empty">Scheduler history failed to load.</div>`);
+      }
       syncSessionArchiveClearButton(null);
       showMessage("History load failed: " + (xhr.responseText || "Unknown error"), true);
     });
@@ -8269,7 +8796,7 @@ $(function () {
     closeTopologyNodeModal();
   });
 
-  $(document).on("input change", "#topologyNodeLabel, #topologyNodeKicker, #topologyNodeBlockingMode, #topologyNodePacketMode, #topologyNodeWidth, #topologyNodeEnabled, #topologyNodeSpawnCount, #topologyNodeMetaInput", function () {
+  $(document).on("input change", "#topologyNodeLabel, #topologyNodeKicker, #topologyNodeBlockingMode, #topologyNodePacketMode, #topologyNodeWidth, #topologyNodeEnabled, #topologyNodeSpawnCount, #topologyNodeTimeoutSeconds, #topologyNodeMetaInput", function () {
     const nodeId = topologyNodeModalState.nodeId;
     if (!nodeId) return;
     mutateEngineGraph(function (graph) {
@@ -8282,6 +8809,7 @@ $(function () {
       node.width = Math.max(168, Math.min(360, parseInt($("#topologyNodeWidth").val(), 10) || node.width || 208));
       node.enabled = $("#topologyNodeEnabled").val() !== "0";
       node.spawnCount = Math.max(1, Math.min(12, parseInt($("#topologyNodeSpawnCount").val(), 10) || node.spawnCount || 1));
+      node.timeoutSeconds = Math.max(0, Math.min(3600, parseInt($("#topologyNodeTimeoutSeconds").val(), 10) || 0));
       node.meta = $("#topologyNodeMetaInput").val().trim();
     });
   });

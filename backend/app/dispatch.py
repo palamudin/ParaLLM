@@ -550,18 +550,26 @@ def create_target_job(runtime: LoopRuntime, task: Dict[str, Any], target: str, o
     return job
 
 
-def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    overrides = overrides or {}
-    round_number = max(1, int(overrides.get("roundNumber") or 1))
+def _round_dispatch_timeout_seconds(overrides: Dict[str, Any]) -> int:
+    return max(30, int(overrides.get("timeoutSeconds") or 1800))
+
+
+def _create_round_dispatch_jobs_v1(
+    runtime: LoopRuntime,
+    task: Dict[str, Any],
+    *,
+    round_number: int,
+    timeout_seconds: int,
+    batch_id: str,
+) -> Dict[str, Any]:
     round_workers = task_workers(task, round_number)
-    batch_id = "batch-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(8).hex()[:6]
     commander_job = create_target_job(
         runtime,
         task,
         "commander",
         {
             "batchId": batch_id,
-            "timeoutSeconds": overrides.get("timeoutSeconds", 1800),
+            "timeoutSeconds": timeout_seconds,
             "workerCount": len(round_workers),
             "lastMessage": "Queued commander dispatch.",
             "metadata": {"trigger": "round"},
@@ -577,7 +585,7 @@ def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overr
                 {
                     "batchId": batch_id,
                     "dependencyJobIds": [commander_job["jobId"]],
-                    "timeoutSeconds": overrides.get("timeoutSeconds", 1800),
+                    "timeoutSeconds": timeout_seconds,
                     "workerCount": len(round_workers),
                     "lastMessage": "Waiting for commander.",
                     "metadata": {"trigger": "round"},
@@ -591,7 +599,7 @@ def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overr
         {
             "batchId": batch_id,
             "dependencyJobIds": [str(job["jobId"]) for job in worker_jobs],
-            "timeoutSeconds": overrides.get("timeoutSeconds", 1800),
+            "timeoutSeconds": timeout_seconds,
             "workerCount": len(round_workers),
             "lastMessage": "Waiting for workers." if worker_jobs else "Waiting for commander.",
             "metadata": {"trigger": "round"},
@@ -604,7 +612,7 @@ def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overr
         {
             "batchId": batch_id,
             "dependencyJobIds": [commander_review_job["jobId"]],
-            "timeoutSeconds": overrides.get("timeoutSeconds", 1800),
+            "timeoutSeconds": timeout_seconds,
             "workerCount": len(round_workers),
             "lastMessage": "Waiting for commander review.",
             "metadata": {"trigger": "round"},
@@ -616,7 +624,164 @@ def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overr
         "workers": worker_jobs,
         "commanderReview": commander_review_job,
         "summarizer": summarizer_job,
+        "sidecars": [],
+        "jobs": [commander_job, *worker_jobs, commander_review_job, summarizer_job],
+        "planSource": "v1-fallback",
     }
+
+
+def _create_round_dispatch_jobs_from_plan(
+    runtime: LoopRuntime,
+    task: Dict[str, Any],
+    *,
+    round_number: int,
+    timeout_seconds: int,
+    batch_id: str,
+    engine_plan: Dict[str, Any],
+) -> Dict[str, Any]:
+    round_workers = task_workers(task, round_number)
+    runner = engine_plan.get("runner") if isinstance(engine_plan.get("runner"), dict) else {}
+    work_items = runner.get("workItems") if isinstance(runner.get("workItems"), list) else []
+    job_ids_by_work_item: Dict[str, List[str]] = {}
+    all_jobs: List[Dict[str, Any]] = []
+    commander_job: Optional[Dict[str, Any]] = None
+    worker_jobs: List[Dict[str, Any]] = []
+    commander_review_job: Optional[Dict[str, Any]] = None
+    summarizer_job: Optional[Dict[str, Any]] = None
+    sidecar_jobs: List[Dict[str, Any]] = []
+
+    def _dependency_job_ids(item: Dict[str, Any]) -> List[str]:
+        resolved: List[str] = []
+        for dep_work_item_id in item.get("dependencyWorkItemIds") or []:
+            for job_id in job_ids_by_work_item.get(str(dep_work_item_id), []):
+                if job_id not in resolved:
+                    resolved.append(job_id)
+        return resolved
+
+    for item in work_items:
+        if not isinstance(item, dict):
+            continue
+        if bool(item.get("post")):
+            continue
+        target = str(item.get("target") or "").strip()
+        if not target:
+            continue
+        dependency_job_ids = _dependency_job_ids(item)
+        schedule_class = str(item.get("scheduleClass") or "")
+        item_timeout_seconds = max(30, int(item.get("timeoutSeconds") or timeout_seconds or 0))
+        metadata = {
+            "trigger": "round-plan",
+            "workItemId": item.get("id"),
+            "scheduleClass": schedule_class,
+            "moduleType": item.get("moduleType"),
+        }
+        if target == "workers":
+            current_worker_jobs: List[Dict[str, Any]] = []
+            for worker in round_workers:
+                job = create_target_job(
+                    runtime,
+                    task,
+                    str(worker["id"]),
+                    {
+                        "batchId": batch_id,
+                        "dependencyJobIds": dependency_job_ids,
+                        "timeoutSeconds": item_timeout_seconds,
+                        "workerCount": len(round_workers),
+                        "lastMessage": "Waiting for commander." if dependency_job_ids else "Queued worker dispatch.",
+                        "metadata": metadata,
+                    },
+                )
+                current_worker_jobs.append(job)
+                worker_jobs.append(job)
+                all_jobs.append(job)
+            job_ids_by_work_item[str(item.get("id") or "")] = [str(job["jobId"]) for job in current_worker_jobs]
+            continue
+
+        partial_summary = target == "answer_now"
+        if partial_summary:
+            last_message = "Waiting for review gate." if dependency_job_ids else "Queued partial summary from current checkpoints."
+        elif target == "commander_review":
+            last_message = "Waiting for workers." if dependency_job_ids else "Queued commander review."
+        elif target == "summarizer":
+            last_message = "Waiting for commander review." if dependency_job_ids else "Queued summarizer."
+        elif target == "commander":
+            last_message = "Queued commander dispatch."
+        else:
+            last_message = "Queued target dispatch."
+
+        job = create_target_job(
+            runtime,
+            task,
+            target,
+            {
+                "batchId": batch_id,
+                "dependencyJobIds": dependency_job_ids,
+                "timeoutSeconds": item_timeout_seconds,
+                "workerCount": len(round_workers),
+                "partialSummary": partial_summary,
+                "lastMessage": last_message,
+                "metadata": metadata,
+            },
+        )
+        all_jobs.append(job)
+        job_ids_by_work_item[str(item.get("id") or "")] = [str(job["jobId"])]
+        if target == "commander":
+            commander_job = job
+        elif target == "commander_review":
+            commander_review_job = job
+        elif target == "summarizer":
+            summarizer_job = job
+        elif partial_summary:
+            sidecar_jobs.append(job)
+
+    if not isinstance(commander_job, dict) or not isinstance(commander_review_job, dict) or not isinstance(summarizer_job, dict):
+        raise RuntimeErrorWithCode("Compiled V2 dispatch plan is missing required round targets.", 500)
+
+    return {
+        "batchId": batch_id,
+        "commander": commander_job,
+        "workers": worker_jobs,
+        "commanderReview": commander_review_job,
+        "summarizer": summarizer_job,
+        "sidecars": sidecar_jobs,
+        "jobs": all_jobs,
+        "planSource": "v2-plan",
+    }
+
+
+def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    overrides = overrides or {}
+    round_number = max(1, int(overrides.get("roundNumber") or 1))
+    batch_id = "batch-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(8).hex()[:6]
+    timeout_seconds = _round_dispatch_timeout_seconds(overrides)
+    task_runtime = runtime.get_task_runtime(task)
+    if str(task_runtime.get("engineVersion") or "v1").strip().lower() != "v2":
+        return _create_round_dispatch_jobs_v1(
+            runtime,
+            task,
+            round_number=round_number,
+            timeout_seconds=timeout_seconds,
+            batch_id=batch_id,
+        )
+    engine_plan = task_runtime.get("enginePlan") if isinstance(task_runtime.get("enginePlan"), dict) else {}
+    runner = engine_plan.get("runner") if isinstance(engine_plan.get("runner"), dict) else {}
+    live_execution = runner.get("liveExecution") if isinstance(runner.get("liveExecution"), dict) else {}
+    if bool(live_execution.get("supported")):
+        return _create_round_dispatch_jobs_from_plan(
+            runtime,
+            task,
+            round_number=round_number,
+            timeout_seconds=timeout_seconds,
+            batch_id=batch_id,
+            engine_plan=engine_plan,
+        )
+    return _create_round_dispatch_jobs_v1(
+        runtime,
+        task,
+        round_number=round_number,
+        timeout_seconds=timeout_seconds,
+        batch_id=batch_id,
+    )
 
 
 def promote_ready_dispatch_jobs(runtime: LoopRuntime, task_id: Optional[str] = None, batch_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -765,6 +930,8 @@ def execute_target_job_process(job_id: str, root: Optional[Path] = None, auth_pa
     dispatch_label = dispatch_target_label({"target": target, "partialSummary": options["partialSummary"]})
     options["dispatchJobId"] = job_id
     options["dispatchHeartbeatMessage"] = f"Waiting on {dispatch_label} response..."
+    options["timeoutSeconds"] = timeout_seconds
+    options["timeoutTarget"] = target
     if not job_id or not target or not task_id:
         raise RuntimeErrorWithCode("Target job metadata is incomplete.", 500)
     if dispatch_job_cancelled_unlocked(runtime, job_id):
@@ -1019,11 +1186,12 @@ def run_round(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str,
         return {
             "message": "Round dispatch queued.",
             "batchId": batch["batchId"],
-            "jobIds": [batch["commander"]["jobId"], *[str(job["jobId"]) for job in batch["workers"]], batch["commanderReview"]["jobId"], batch["summarizer"]["jobId"]],
+            "planSource": batch.get("planSource"),
+            "jobIds": [str(job["jobId"]) for job in batch.get("jobs", [])],
         }
     except Exception as exc:  # noqa: BLE001
         if isinstance(batch, dict):
-            for job in [batch["commander"], *batch["workers"], batch["commanderReview"], batch["summarizer"]]:
+            for job in batch.get("jobs", []):
                 runtime.mutate_job(
                     str(job.get("jobId") or ""),
                     lambda existing, message=str(exc): storage.default_job(

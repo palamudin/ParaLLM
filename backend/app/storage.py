@@ -600,15 +600,28 @@ def current_dispatch_state(state: Dict[str, Any], jobs: List[Dict[str, Any]]) ->
         "activeJobs": [
             {
                 "jobId": job.get("jobId"),
+                "taskId": job.get("taskId"),
                 "target": job.get("target"),
                 "targetLabel": dispatch_target_label(job),
                 "status": job.get("status"),
+                "schedulerState": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("schedulerState") or ""),
                 "batchId": job.get("batchId"),
                 "partialSummary": bool(job.get("partialSummary")),
                 "queuedAt": job.get("queuedAt"),
                 "startedAt": job.get("startedAt"),
                 "lastHeartbeatAt": job.get("lastHeartbeatAt"),
                 "lastMessage": job.get("lastMessage"),
+                "provider": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("provider") or ""),
+                "model": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("model") or ""),
+                "workItemId": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("workItemId") or ""),
+                "scheduleClass": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("scheduleClass") or ""),
+                "plannedTarget": bool((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("plannedTarget")),
+                "postTarget": bool((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("postTarget")),
+                "dependencyJobIds": [
+                    str(value).strip()
+                    for value in (job.get("dependencyJobIds") or [])
+                    if str(value).strip()
+                ] if isinstance(job.get("dependencyJobIds"), list) else [],
                 "providerTrace": normalize_provider_trace(((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {}).get("providerTrace")),
             }
             for job in active_jobs
@@ -1073,6 +1086,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
                 "target": job.get("target"),
                 "batchId": job.get("batchId"),
                 "partialSummary": bool(job.get("partialSummary")),
+                "schedulerState": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("schedulerState") or ""),
                 "objective": (task or {}).get("objective"),
                 "status": job.get("status"),
                 "mode": job.get("mode"),
@@ -1089,6 +1103,17 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
                 "finishedAt": job.get("finishedAt"),
                 "lastHeartbeatAt": job.get("lastHeartbeatAt"),
                 "lastMessage": job.get("lastMessage"),
+                "provider": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("provider") or ""),
+                "model": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("model") or ""),
+                "workItemId": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("workItemId") or ""),
+                "scheduleClass": str((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("scheduleClass") or ""),
+                "plannedTarget": bool((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("plannedTarget")),
+                "postTarget": bool((((job.get("metadata") or {}) if isinstance(job.get("metadata"), dict) else {})).get("postTarget")),
+                "dependencyJobIds": [
+                    str(value).strip()
+                    for value in (job.get("dependencyJobIds") or [])
+                    if str(value).strip()
+                ] if isinstance(job.get("dependencyJobIds"), list) else [],
                 "totalTokens": int(((job.get("usage") or {}) if isinstance(job.get("usage"), dict) else {}).get("totalTokens") or 0),
                 "estimatedCostUsd": float(((job.get("usage") or {}) if isinstance(job.get("usage"), dict) else {}).get("estimatedCostUsd") or 0.0),
                 "error": job.get("error"),
