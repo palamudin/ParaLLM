@@ -632,9 +632,66 @@ Scenario snapshot: `MSP Midnight Breach Bakeoff`
 - Judge-provider verdict: `mixed`
 - Current read: the full-full ParaLLM answer was strongest overall, but not by enough to clearly earn its much higher cost over direct `gpt-5.4`
 
+### Judge: xAI `grok-4.20-reasoning`
+
+Scenario snapshot: `MSP Midnight Breach Bakeoff`
+
+| Variant | Overall | Current read |
+| --- | --- | --- |
+| `ParaLLM 5.4 mini \| mini adversarials` | `9.5` | Best final answer and best tactical detail |
+| `Direct GPT-5.4` | `8.5` | Best value |
+| `ParaLLM 5.4 full \| mini adversarials` | `8.5` | Compact and competent, but still behind the mini path |
+| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Rich enough, but did not justify its cost |
+
+- Judge-provider verdict: `did_not_earn`
+- Current read: xAI strongly preferred the lighter ParaLLM mini path; the heavier variants did not produce enough extra control or artifact value to earn their additional spend
+
+### Judge: Anthropic `claude-sonnet-4-6`
+
+Scenario snapshot: `MSP Midnight Breach Bakeoff`
+
+| Variant | Overall | Current read |
+| --- | --- | --- |
+| `ParaLLM 5.4 full \| mini adversarials` | `9.5` | Best final answer, best tactical detail, and best value |
+| `ParaLLM 5.4 mini \| mini adversarials` | `9.0` | Strong tactical structure and restraint |
+| `Direct GPT-5.4` | `9.0` | Very close second; strongest first-hour realism |
+| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Competent, but too expensive for the gain |
+
+- Judge-provider verdict: `did_not_earn`
+- Current read: Anthropic preferred the tighter full-main-thread plus mini-adversarial package; direct stayed close enough that the heaviest ParaLLM path still did not justify its cost
+
+### Judge: MiniMax `MiniMax-M2.7`
+
+Scenario snapshot: `MSP Midnight Breach Bakeoff`
+
+| Variant | Overall | Current read |
+| --- | --- | --- |
+| `ParaLLM 5.4 mini \| mini adversarials` | `9.0` | Best final answer |
+| `Direct GPT-5.4` | `8.0` | Best tactical detail |
+| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Tied on overall, stronger on restraint than direct |
+| `ParaLLM 5.4 full \| mini adversarials` | `8.0` | Best value, but not strongest overall |
+
+- Judge-provider verdict: `mixed`
+- Current read: MiniMax again leaned toward the lighter ParaLLM mini variant for the answer you would ship, while giving direct the narrow tactical-detail edge and treating the heavier paths as mostly lateral
+
 ### Overall Cross-Provider Summary
 
-This table stays intentionally blank until multiple judge providers have enough comparable bakeoffs recorded. For now, results are published per judge provider/model instead of being blended prematurely.
+Judge-provider snapshots are still published separately above, but there are now enough comparable reads to show a simple cross-provider scoreboard.
 
-- Local blind vetting runs recorded so far: `4`
+| Judge | Best final answer | Best tactical detail | Best value | Verdict |
+| --- | --- | --- | --- | --- |
+| `OpenAI gpt-5.4` | `ParaLLM 5.4 full \| full adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `Direct GPT-5.4` | `mixed` |
+| `xAI grok-4.20-reasoning` | `ParaLLM 5.4 mini \| mini adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `Direct GPT-5.4` | `did_not_earn` |
+| `Anthropic claude-sonnet-4-6` | `ParaLLM 5.4 full \| mini adversarials` | `ParaLLM 5.4 full \| mini adversarials` | `ParaLLM 5.4 full \| mini adversarials` | `did_not_earn` |
+| `MiniMax MiniMax-M2.7` | `ParaLLM 5.4 mini \| mini adversarials` | `Direct GPT-5.4` | `ParaLLM 5.4 full \| mini adversarials` | `mixed` |
+
+| Variant | Best final wins | Best tactical wins | Best value wins |
+| --- | --- | --- | --- |
+| `ParaLLM 5.4 mini \| mini adversarials` | `2` | `2` | `0` |
+| `ParaLLM 5.4 full \| mini adversarials` | `1` | `1` | `2` |
+| `ParaLLM 5.4 full \| full adversarials` | `1` | `0` | `0` |
+| `Direct GPT-5.4` | `0` | `1` | `2` |
+
+- Judge-provider snapshots published so far: `4`
+- Local blind vetting runs recorded so far: `9`
 - Benchmark artifacts: [summary.json](data/benchmarks/vetting/summary.json), [latest blind run](data/benchmarks/vetting/latest.json)
