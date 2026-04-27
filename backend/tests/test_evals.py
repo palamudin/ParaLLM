@@ -133,7 +133,11 @@ class EvalTests(unittest.TestCase):
         payload = {
             "suiteIds": ["suite-a"],
             "armIds": ["compare-mini-full", "direct-gpt54"],
+            "judgeProvider": "ollama",
             "judgeModel": "gpt-5.4",
+            "ollamaBaseUrl": "http://192.168.0.26:11434",
+            "timeoutMode": "user",
+            "targetTimeouts": {"arbiter": 333},
             "replicates": 1,
             "loopSweep": [1],
         }
@@ -141,7 +145,10 @@ class EvalTests(unittest.TestCase):
             result = evals.start_front_judge_run(payload, self.root)
 
         self.assertEqual(result["run"]["canvas"], "judge")
+        self.assertEqual(result["run"]["judgeProvider"], "ollama")
         self.assertEqual(result["run"]["judgeModel"], "gpt-5.4")
+        self.assertEqual(result["run"]["judgeRuntime"]["requestTimeoutSeconds"], 333)
+        self.assertEqual(result["run"]["judgeRuntime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertTrue((self.root / "data" / "evals" / "runs" / result["runId"] / "run.json").is_file())
         launch_runner.assert_called_once()
 

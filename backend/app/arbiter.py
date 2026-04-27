@@ -114,14 +114,15 @@ def run_current_task_arbiter(runtime: LoopRuntime, task_id: Optional[str] = None
         provider=str(direct_baseline.get("provider") or ((task.get("runtime") or {}) if isinstance(task.get("runtime"), dict) else {}).get("directProvider") or ""),
         model=str(direct_baseline.get("model") or ((task.get("runtime") or {}) if isinstance(task.get("runtime"), dict) else {}).get("directModel") or ""),
     )
-    quality = run_quality_judge(runtime, api_key, judge_model, case, ARBITER_RUBRIC, pressurized_answer)
-    answer_health = run_answer_health_judge(runtime, api_key, judge_model, case, pressurized_answer, pressurized_telemetry)
-    control = run_control_judge(runtime, api_key, judge_model, case, summary)
-    baseline_quality = run_quality_judge(runtime, api_key, judge_model, case, ARBITER_RUBRIC, baseline_answer)
-    baseline_answer_health = run_answer_health_judge(runtime, api_key, judge_model, case, baseline_answer, baseline_telemetry)
+    quality = run_quality_judge(runtime, judge_provider, api_key, judge_model, case, ARBITER_RUBRIC, pressurized_answer, {})
+    answer_health = run_answer_health_judge(runtime, judge_provider, api_key, judge_model, case, pressurized_answer, pressurized_telemetry, {})
+    control = run_control_judge(runtime, judge_provider, api_key, judge_model, case, summary, {})
+    baseline_quality = run_quality_judge(runtime, judge_provider, api_key, judge_model, case, ARBITER_RUBRIC, baseline_answer, {})
+    baseline_answer_health = run_answer_health_judge(runtime, judge_provider, api_key, judge_model, case, baseline_answer, baseline_telemetry, {})
     similarity = answer_similarity_metrics(pressurized_answer, baseline_answer)
     comparison = run_comparison_judge(
         runtime,
+        judge_provider,
         api_key,
         judge_model,
         case,
@@ -133,6 +134,7 @@ def run_current_task_arbiter(runtime: LoopRuntime, task_id: Optional[str] = None
         baseline_quality,
         baseline_answer_health,
         similarity,
+        {},
     )
 
     arbiter_payload = {

@@ -10,6 +10,8 @@ Local-first adversarial reasoning workspace for testing whether structured disag
 
 Instead of asking one model for one pass, ParaLLM runs a lead thread plus adversarial lanes, preserves disagreement at checkpoints, and lets the final answer be shaped by pressure rather than narrated as a debate recap.
 
+Need a reusable project blurb, launch post, or demo talk track? See [PROMO.md](PROMO.md).
+
 ## Why This Exists
 
 Most "multi-agent" demos are really just wrappers around extra API calls. This project is trying to answer a harder question:
@@ -614,7 +616,11 @@ The next serious tuning work is not more surface polish. It is:
 
 ## Status
 
-Latest blind external vetting snapshot: `MSP Midnight Breach Bakeoff` on `gpt-5.4` judge. Public timing is intentionally omitted here; internal benchmark artifacts also track latency and speed-adjusted scores while we stabilize the sample size.
+Blind external vetting snapshots are grouped by judge provider/model so cross-provider reads stay explicit. Public timing is intentionally omitted here; local benchmark artifacts still track latency and speed-adjusted scores while the sample size grows.
+
+### Judge: OpenAI `gpt-5.4`
+
+Scenario snapshot: `MSP Midnight Breach Bakeoff`
 
 | Variant | Overall | Current read |
 | --- | --- | --- |
@@ -623,7 +629,12 @@ Latest blind external vetting snapshot: `MSP Midnight Breach Bakeoff` on `gpt-5.
 | `ParaLLM 5.4 full \| mini adversarials` | `9.0` | Strong second; restrained and shippable |
 | `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Strong artifact detail, but under-escalates early |
 
-- Compute verdict: `mixed`
-- Latest judge read: the full-full ParaLLM answer was strongest overall, but not by enough to clearly earn its much higher cost over direct `gpt-5.4`
+- Judge-provider verdict: `mixed`
+- Current read: the full-full ParaLLM answer was strongest overall, but not by enough to clearly earn its much higher cost over direct `gpt-5.4`
+
+### Overall Cross-Provider Summary
+
+This table stays intentionally blank until multiple judge providers have enough comparable bakeoffs recorded. For now, results are published per judge provider/model instead of being blended prematurely.
+
 - Local blind vetting runs recorded so far: `4`
 - Benchmark artifacts: [summary.json](data/benchmarks/vetting/summary.json), [latest blind run](data/benchmarks/vetting/latest.json)

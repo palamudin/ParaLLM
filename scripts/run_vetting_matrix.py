@@ -568,13 +568,10 @@ def main() -> int:
 
     judge_provider = str(args.judge_provider or manifest.get("judgeProvider") or DEFAULT_JUDGE_PROVIDER).strip().lower() or DEFAULT_JUDGE_PROVIDER
     judge_model = str(args.judge_model or manifest.get("judgeModel") or DEFAULT_JUDGE_MODEL).strip() or DEFAULT_JUDGE_MODEL
-    if judge_provider != "openai":
-        raise SystemExit("The scripted vetting matrix currently uses the OpenAI judge path only.")
-
     runtime = LoopRuntime(PROJECT_ROOT)
-    api_key = runtime.get_api_key(judge_provider)
-    if not api_key:
-        raise SystemExit("No OpenAI API key is available for the vetting judge.")
+    api_key = runtime.provider_live_api_key(judge_provider, None) or runtime.get_api_key(judge_provider)
+    if runtime.provider_requires_api_key(judge_provider) and not api_key:
+        raise SystemExit(f"No live API key is available for the {judge_provider} vetting judge.")
 
     run_seed = str(args.seed or manifest.get("seed") or manifest_path.name).strip()
     slotted_answers = assign_blind_slots(answers, run_seed)
@@ -589,14 +586,17 @@ def main() -> int:
         for answer in slotted_answers
     ]
     judge_rubric = manifest.get("judgeRubric") if isinstance(manifest.get("judgeRubric"), dict) else default_vetting_rubric()
+    judge_runtime = manifest.get("judgeRuntime") if isinstance(manifest.get("judgeRuntime"), dict) else {}
     try:
         slot_result = eval_runner.vetting_matrix_judge_live(
             runtime=runtime,
+            judge_provider=judge_provider,
             api_key=api_key,
             judge_model=judge_model,
             case=case,
             judge_rubric=judge_rubric,
             answers=slot_payload,
+            provider_settings=judge_runtime,
         )
     except RuntimeErrorWithCode as error:
         raise SystemExit(str(error)) from error

@@ -92,7 +92,7 @@ def auth_key_provider_label(provider: Any) -> str:
 def auth_backend_mode_label(mode: Any) -> str:
     normalized = normalize_auth_backend_mode(mode)
     if normalized == "local":
-        return "Local"
+        return "Local file"
     if normalized == "db":
         return "DB"
     return "Env"

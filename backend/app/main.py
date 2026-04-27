@@ -95,6 +95,19 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)
 
+    @app.get("/v1/providers/status")
+    def get_provider_instances_status() -> JSONResponse:
+        return JSONResponse(settings.get_provider_instance_status(paths.root))
+
+    @app.post("/v1/providers/instances")
+    async def post_provider_instances(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = settings.set_provider_instances(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
     @app.get("/v1/state")
     def get_state() -> JSONResponse:
         return JSONResponse(storage.read_state_payload(paths))

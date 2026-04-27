@@ -121,6 +121,24 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(task["summarizer"]["harness"]["concision"], "none")
         self.assertEqual(task["summarizer"]["harness"]["instruction"], "Only state verified operational facts.")
 
+    def test_judge_provider_settings_uses_ollama_auto_profile_for_arbiter_timeout(self) -> None:
+        settings = eval_runner.judge_provider_settings(
+            {
+                "judgeRuntime": {
+                    "timeoutMode": "auto",
+                    "ollamaBaseUrl": "http://192.168.0.26:11434",
+                    "ollamaTimeoutProfile": {
+                        "status": "ready",
+                        "targetTimeouts": {"arbiter": 612},
+                    },
+                }
+            },
+            "ollama",
+        )
+
+        self.assertEqual(settings["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(settings["requestTimeoutSeconds"], 612)
+
     def test_extract_public_answer_prefers_direct_baseline_for_single_mode(self) -> None:
         answer = eval_runner.extract_public_answer(
             {"type": "steered"},

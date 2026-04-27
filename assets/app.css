@@ -4165,6 +4165,83 @@ textarea {
   margin-top: 14px;
 }
 
+.provider-routing-grid {
+  margin-top: 14px;
+}
+
+.provider-instance-card {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: var(--radius-panel);
+  border: 1px solid rgba(128, 186, 224, 0.18);
+  background: color-mix(in srgb, var(--card-background) 86%, transparent);
+}
+
+.provider-instance-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.provider-instance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.6fr) minmax(0, 1.2fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border-radius: var(--radius-panel);
+  border: 1px solid rgba(128, 186, 224, 0.16);
+  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
+}
+
+.provider-instance-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding-bottom: 6px;
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.provider-instance-toggle input {
+  margin: 0;
+}
+
+.provider-instance-row .danger {
+  align-self: stretch;
+}
+
+.provider-instance-empty {
+  padding: 14px;
+  border-radius: var(--radius-panel);
+  border: 1px dashed rgba(128, 186, 224, 0.24);
+  color: var(--muted);
+}
+
+.provider-instance-status-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.provider-instance-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 186, 224, 0.18);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.provider-instance-status-pill strong {
+  color: var(--text);
+}
+
 .auth-provider-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4411,6 +4488,8 @@ textarea {
 
 .eval-answer-preview {
   font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .workspace-view[data-view="eval"] .eval-case-stack,
@@ -4445,6 +4524,8 @@ textarea {
   font-size: 14px;
   line-height: 1.65;
   color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .eval-artifact-visual {

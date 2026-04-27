@@ -22,6 +22,7 @@ from runtime.engine import (
     default_model_for_provider,
     default_ollama_base_url,
     default_ollama_timeout_profile,
+    default_provider_routing_config,
     default_timeout_mode,
     default_target_timeout_config,
     clamp_timeout_seconds,
@@ -38,12 +39,17 @@ from runtime.engine import (
     normalize_model_id,
     normalize_ollama_base_url,
     normalize_provider_id,
+    normalize_provider_routing_config,
+    normalize_provider_instance_catalog,
     normalize_research_config,
     normalize_target_timeout_config,
     normalize_vetting_config,
+    provider_instance_pool_status,
+    read_provider_instance_catalog,
     normalize_worker_definition,
     summarizer_config,
     task_workers,
+    write_provider_instance_catalog,
     worker_slot_ids,
 )
 
@@ -186,6 +192,39 @@ def set_auth_backend_mode(payload: Dict[str, Any], root: Optional[Path] = None) 
     }
 
 
+def get_provider_instance_status(root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    return provider_instance_pool_status(runtime.root)
+
+
+def set_provider_instances(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    provider = normalize_provider_id(payload.get("provider"), DEFAULT_PROVIDER_ID)
+    instances_input = control._parse_json_like(payload.get("instances"), [])
+    if not isinstance(instances_input, list):
+        raise RuntimeErrorWithCode("instances must be a list.", 400)
+    catalog = read_provider_instance_catalog(runtime.root)
+    catalog[provider] = instances_input
+    saved_catalog = write_provider_instance_catalog(runtime.root, catalog)
+    instances = normalize_provider_instance_catalog(saved_catalog).get(provider, [])
+    runtime.append_step(
+        "provider_pool",
+        "Updated provider instance pool.",
+        {
+            "provider": provider,
+            "instanceCount": len(instances),
+            "instances": instances,
+        },
+    )
+    return {
+        "ok": True,
+        "message": f"Updated {provider} provider instances.",
+        "provider": provider,
+        "instances": instances,
+        "status": provider_instance_pool_status(runtime.root),
+    }
+
+
 def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
     runtime = _runtime(root)
     state = storage.read_state_payload(storage.project_paths(runtime.root))
@@ -215,6 +254,9 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     current_front_mode = normalize_front_mode(runtime_config.get("frontMode", default_front_mode()), default_front_mode())
     current_engine_version = normalize_engine_version(runtime_config.get("engineVersion", default_engine_version()), default_engine_version())
     current_engine_graph = normalize_engine_graph(runtime_config.get("engineGraph", default_engine_graph()))
+    current_provider_routing = normalize_provider_routing_config(
+        runtime_config.get("providerRouting") if isinstance(runtime_config.get("providerRouting"), dict) else default_provider_routing_config()
+    )
     current_context_mode = normalize_context_mode(runtime_config.get("contextMode", default_context_mode()), default_context_mode())
     current_direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     current_direct_provider = normalize_provider_id(str(runtime_config.get("directProvider") or current_provider), current_provider)
@@ -242,6 +284,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     engine_version = normalize_engine_version(payload.get("engineVersion", current_engine_version), current_engine_version)
     engine_graph_input = control._parse_json_like(payload.get("engineGraph"), current_engine_graph)
     engine_graph = normalize_engine_graph(engine_graph_input if isinstance(engine_graph_input, dict) else current_engine_graph)
+    provider_routing_input = control._parse_json_like(payload.get("providerRouting"), current_provider_routing)
+    provider_routing = normalize_provider_routing_config(
+        provider_routing_input if isinstance(provider_routing_input, dict) else current_provider_routing
+    )
     context_mode = normalize_context_mode(payload.get("contextMode", current_context_mode), current_context_mode)
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", current_direct_baseline_mode), current_direct_baseline_mode)
     direct_provider = normalize_provider_id(str(payload.get("directProvider") or current_direct_provider), provider)
@@ -322,6 +368,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["frontMode"] = front_mode
         task_runtime["engineVersion"] = engine_version
         task_runtime["engineGraph"] = engine_graph
+        task_runtime["providerRouting"] = provider_routing
         task_runtime["enginePlan"] = {}
         task_runtime["contextMode"] = context_mode
         task_runtime["directBaselineMode"] = direct_baseline_mode
@@ -360,6 +407,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "frontMode": front_mode,
                 "engineVersion": engine_version,
                 "engineGraph": engine_graph,
+                "providerRouting": provider_routing,
                 "contextMode": context_mode,
                 "directBaselineMode": direct_baseline_mode,
                 "directProvider": direct_provider,
@@ -402,6 +450,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "frontMode": front_mode,
             "engineVersion": engine_version,
             "engineGraph": engine_graph,
+            "providerRouting": provider_routing,
             "enginePlan": ((updated_state["activeTask"].get("runtime") or {}) if isinstance(updated_state["activeTask"], dict) else {}).get("enginePlan"),
             "contextMode": context_mode,
             "directBaselineMode": direct_baseline_mode,
@@ -431,6 +480,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "frontMode": front_mode,
         "engineVersion": engine_version,
         "engineGraph": engine_graph,
+        "providerRouting": provider_routing,
         "enginePlan": (updated_state["activeTask"].get("runtime") or {}).get("enginePlan"),
         "contextMode": context_mode,
         "directBaselineMode": direct_baseline_mode,
@@ -474,6 +524,9 @@ def _build_task_from_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
             "frontMode": normalize_front_mode(normalized.get("frontMode", default_front_mode()), default_front_mode()),
             "engineVersion": normalize_engine_version(normalized.get("engineVersion", default_engine_version()), default_engine_version()),
             "engineGraph": normalize_engine_graph(normalized.get("engineGraph", default_engine_graph())),
+            "providerRouting": normalize_provider_routing_config(
+                normalized.get("providerRouting", default_provider_routing_config())
+            ),
             "contextMode": normalize_context_mode(normalized.get("contextMode", default_context_mode()), default_context_mode()),
             "directBaselineMode": normalize_direct_baseline_mode(normalized.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode()),
             "directProvider": normalize_provider_id(normalized.get("directProvider"), provider),

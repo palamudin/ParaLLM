@@ -114,6 +114,7 @@ class SettingsTests(unittest.TestCase):
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
                 "ollamaBaseUrl": "http://192.168.0.26:11434",
+                "providerRouting": {"ollama": {"selectionMode": "mix", "judgeMode": "prefer_distinct"}},
                 "targetTimeouts": {"commander": 100, "workerDefault": 120, "workers": {"A": 80}, "commanderReview": 230, "summarizer": 245},
                 "reasoningEffort": "high",
                 "maxCostUsd": 19,
@@ -146,6 +147,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["directProvider"], "anthropic")
         self.assertEqual(result["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(result["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(result["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(result["targetTimeouts"]["commander"], 100)
         self.assertEqual(result["targetTimeouts"]["workerDefault"], 120)
         self.assertEqual(result["targetTimeouts"]["workers"]["A"], 80)
@@ -163,6 +165,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
         self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(state["activeTask"]["runtime"]["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["commander"], 100)
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workerDefault"], 120)
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workers"]["A"], 80)
@@ -179,6 +182,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["draft"]["directProvider"], "anthropic")
         self.assertEqual(state["draft"]["directModel"], "claude-sonnet-4-20250514")
         self.assertEqual(state["draft"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(state["draft"]["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(state["draft"]["targetTimeouts"]["commander"], 100)
         self.assertEqual(state["draft"]["targetTimeouts"]["workerDefault"], 120)
         self.assertEqual(state["draft"]["targetTimeouts"]["workers"]["A"], 80)
@@ -196,9 +200,40 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(scoped["activeTask"]["runtime"]["enginePlan"]["valid"])
         self.assertTrue(scoped["activeTask"]["runtime"]["enginePlan"]["runner"]["liveExecution"]["supported"])
         self.assertEqual(scoped["activeTask"]["runtime"]["directBaselineMode"], "both")
+        self.assertEqual(scoped["activeTask"]["runtime"]["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(scoped["activeTask"]["runtime"]["targetTimeouts"]["workers"]["A"], 80)
         self.assertEqual(scoped["draft"]["provider"], "ollama")
         self.assertEqual(scoped["draft"]["summarizerProvider"], "openai")
+
+    def test_set_provider_instances_persists_local_provider_pool(self) -> None:
+        result = settings.set_provider_instances(
+            {
+                "provider": "ollama",
+                "instances": [
+                    {
+                        "label": "Primary Ollama",
+                        "baseUrl": "http://192.168.0.26:11434",
+                        "models": ["qwen3.5:9b"],
+                        "enabled": True,
+                    },
+                    {
+                        "label": "Heavy Ollama",
+                        "baseUrl": "http://192.168.0.30:11434",
+                        "models": ["qwen3.5:27b"],
+                        "enabled": True,
+                    },
+                ],
+            },
+            self.root,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "ollama")
+        self.assertEqual(len(result["instances"]), 2)
+        self.assertEqual(result["status"]["providerGroups"]["ollama"]["instanceCount"], 2)
+        saved = json.loads((self.root / "providers.txt").read_text(encoding="utf-8"))
+        self.assertEqual(len(saved["ollama"]), 2)
+        self.assertEqual(saved["ollama"][0]["baseUrl"], "http://192.168.0.26:11434")
 
     def test_apply_runtime_settings_clears_stale_arbiter_score(self) -> None:
         paths = storage.project_paths(self.root)

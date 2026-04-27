@@ -377,6 +377,10 @@
                     <select id="frontEvalCaseSelect"></select>
                   </div>
                   <div>
+                    <label for="frontEvalJudgeProvider">Judge provider</label>
+                    <select id="frontEvalJudgeProvider"></select>
+                  </div>
+                  <div>
                     <label for="frontEvalJudgeModel">Judge model</label>
                     <select id="frontEvalJudgeModel"></select>
                   </div>
@@ -415,6 +419,10 @@
                   <div class="front-canvas-note">Runs selected repo suites against selected preset arms in isolated eval workspaces, then scores them with the external judge.</div>
                 </div>
                 <div class="front-canvas-controls">
+                  <div>
+                    <label for="frontJudgeProvider">Judge provider</label>
+                    <select id="frontJudgeProvider"></select>
+                  </div>
                   <div>
                     <label for="frontJudgeModel">Judge model</label>
                     <select id="frontJudgeModel"></select>
@@ -494,7 +502,7 @@
                       <h3>API key management</h3>
                       <div class="inline-help">
                         <button type="button" class="inline-help-trigger" aria-label="Show API key guidance">Info</button>
-                        <div class="inline-help-popup">Each provider group can choose Local, Env, or DB-backed credentials. Local writes prefixed entries into shared Auth.txt. Env uses environment or mounted platform secrets. DB uses the external/provider-backed secret path.</div>
+                        <div class="inline-help-popup">Each provider group can independently use Local file, Env, or DB-backed credentials. Local file reads shared <code>Auth.txt</code> with one key per line using that provider's prefix, for example <code>openai:sk-...</code>, <code>ant:sk-...</code>, <code>xai:...</code>, or <code>min:...</code>. Switching one provider does not change the others.</div>
                       </div>
                     </div>
                   </div>
@@ -661,6 +669,37 @@
                       </div>
                     </div>
                     <div id="ollamaTimeoutProfileHint" class="integration-note">Timeout tuning appears when an Ollama provider is active.</div>
+                    <div class="settings-grid provider-routing-grid">
+                      <div>
+                        <label for="ollamaRoutingMode">Ollama endpoint routing</label>
+                        <select id="ollamaRoutingMode">
+                          <option value="single">Single endpoint</option>
+                          <option value="rotate">Rotate by run</option>
+                          <option value="mix">Mix by lane</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label for="ollamaJudgeMode">Judge impartiality</label>
+                        <select id="ollamaJudgeMode">
+                          <option value="prefer_distinct">Prefer distinct endpoint</option>
+                          <option value="default">Same routing as answer path</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="provider-instance-card">
+                      <div class="integration-header">
+                        <div>
+                          <div class="panel-kicker">Runtime / provider pool</div>
+                          <h3>Ollama endpoints</h3>
+                        </div>
+                        <button id="addOllamaProviderInstance" type="button">Add Endpoint</button>
+                      </div>
+                      <div id="ollamaProviderInstances" class="provider-instance-list"></div>
+                      <div id="ollamaProviderPoolHint" class="integration-note">No Ollama endpoints configured yet.</div>
+                      <div class="integration-actions">
+                        <button id="saveOllamaProviderPool" type="button">Save Ollama Pool</button>
+                      </div>
+                    </div>
                   </div>
                 </div>
 

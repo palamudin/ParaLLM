@@ -8,7 +8,19 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from runtime.engine import RuntimeErrorWithCode, compile_engine_graph
+from runtime.engine import (
+    RuntimeErrorWithCode,
+    compile_engine_graph,
+    default_ollama_timeout_profile,
+    default_target_timeout_config,
+    default_timeout_mode,
+    normalize_ollama_base_url,
+    normalize_ollama_timeout_profile,
+    normalize_provider_id,
+    normalize_target_timeout_config,
+    normalize_timeout_mode,
+    target_timeout_seconds,
+)
 from runtime.eval_runner import validate_arm_manifest, validate_suite_manifest
 
 from . import control, jobs, metadata, storage
@@ -209,6 +221,36 @@ def _front_runtime_timeouts(payload: Dict[str, Any]) -> Dict[str, Any]:
         except json.JSONDecodeError:
             raw = {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _front_ollama_timeout_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw = payload.get("ollamaTimeoutProfile")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    return normalize_ollama_timeout_profile(raw if isinstance(raw, dict) else default_ollama_timeout_profile())
+
+
+def _front_judge_runtime(payload: Dict[str, Any]) -> Dict[str, Any]:
+    provider = normalize_provider_id(payload.get("judgeProvider"), "openai")
+    timeout_mode = normalize_timeout_mode(payload.get("timeoutMode"), default_timeout_mode())
+    manual = normalize_target_timeout_config(_front_runtime_timeouts(payload))
+    ollama_profile = _front_ollama_timeout_profile(payload)
+    effective = default_target_timeout_config()
+    if timeout_mode == "user":
+        effective = manual
+    elif provider == "ollama" and timeout_mode == "auto" and str(ollama_profile.get("status") or "") == "ready":
+        effective = normalize_target_timeout_config(ollama_profile.get("targetTimeouts"))
+    return {
+        "provider": provider,
+        "ollamaBaseUrl": normalize_ollama_base_url(payload.get("ollamaBaseUrl")),
+        "requestTimeoutSeconds": target_timeout_seconds(effective, "arbiter"),
+        "timeoutMode": timeout_mode,
+        "targetTimeouts": effective,
+        "ollamaTimeoutProfile": ollama_profile,
+    }
 
 
 def _front_summarizer_harness(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -460,14 +502,24 @@ def sync_front_live_runs(root: Optional[Path] = None) -> None:
             sync_front_live_run(run_id, paths.root)
 
 
-def _base_run_payload(run_id: str, suite: Dict[str, Any], arm_ids: List[str], judge_model: str, canvas: str) -> Dict[str, Any]:
+def _base_run_payload(
+    run_id: str,
+    suite: Dict[str, Any],
+    arm_ids: List[str],
+    judge_provider: str,
+    judge_model: str,
+    canvas: str,
+    judge_runtime: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     return {
         "runId": run_id,
         "suiteId": str(suite.get("suiteId") or "").strip(),
         "armIds": arm_ids,
         "replicates": 1,
         "loopSweep": [1],
+        "judgeProvider": normalize_provider_id(judge_provider, "openai"),
         "judgeModel": str(judge_model or "gpt-5.4").strip() or "gpt-5.4",
+        "judgeRuntime": dict(judge_runtime or {}),
         "status": "queued",
         "createdAt": storage.utc_now(),
         "updatedAt": storage.utc_now(),
@@ -486,7 +538,15 @@ def start_front_eval_run(payload: Dict[str, Any], root: Optional[Path] = None) -
     suite = _subset_suite_case(_load_suite(paths, suite_id), case_id)
     arm = validate_arm_manifest(_build_front_eval_arm(payload), paths.root / "front-eval")
     run_id = _new_run_id("eval")
-    run = _base_run_payload(run_id, suite, [arm["armId"]], str(payload.get("judgeModel") or "gpt-5.4"), "eval")
+    run = _base_run_payload(
+        run_id,
+        suite,
+        [arm["armId"]],
+        str(payload.get("judgeProvider") or "openai"),
+        str(payload.get("judgeModel") or "gpt-5.4"),
+        "eval",
+        _front_judge_runtime(payload),
+    )
     run["loopSweep"] = [max(1, int(arm["runtime"]["preferredLoop"]["rounds"]))]
     run["inlineSuite"] = suite
     run["inlineArms"] = {arm["armId"]: arm}
@@ -547,7 +607,15 @@ def start_front_judge_run(payload: Dict[str, Any], root: Optional[Path] = None) 
     arms = [_load_arm(paths, arm_id) for arm_id in arm_ids]
     suite = validate_suite_manifest(_combine_suites(suites), paths.root / "front-judge")
     run_id = _new_run_id("judge")
-    run = _base_run_payload(run_id, suite, [arm["armId"] for arm in arms], str(payload.get("judgeModel") or "gpt-5.4"), "judge")
+    run = _base_run_payload(
+        run_id,
+        suite,
+        [arm["armId"] for arm in arms],
+        str(payload.get("judgeProvider") or "openai"),
+        str(payload.get("judgeModel") or "gpt-5.4"),
+        "judge",
+        _front_judge_runtime(payload),
+    )
     run["replicates"] = _parse_int(payload.get("replicates"), 1, 1)
     run["loopSweep"] = [
         _parse_int(value, 1, 1)

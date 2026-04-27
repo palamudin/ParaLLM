@@ -1632,7 +1632,9 @@ def build_eval_run_preview(run: Dict[str, Any]) -> Dict[str, Any]:
         "completedAt": run.get("completedAt"),
         "replicates": int(run.get("replicates") or 0),
         "loopSweep": [int(value) for value in (run.get("loopSweep") or []) if str(value).strip()] if isinstance(run.get("loopSweep"), list) else [],
+        "judgeProvider": run.get("judgeProvider"),
         "judgeModel": run.get("judgeModel"),
+        "judgeRuntime": run.get("judgeRuntime") if isinstance(run.get("judgeRuntime"), dict) else None,
         "current": run.get("current") if isinstance(run.get("current"), dict) else None,
         "error": run.get("error"),
         "summary": {

@@ -24,6 +24,8 @@ from runtime.engine import (
     coerce_bool,
     default_context_mode,
     default_direct_baseline_mode,
+    default_target_timeout_config,
+    default_timeout_mode,
     default_summarizer_harness,
     default_model_for_provider,
     default_budget_config,
@@ -40,14 +42,18 @@ from runtime.engine import (
     normalize_harness_config,
     normalize_model_id,
     normalize_ollama_base_url,
+    normalize_ollama_timeout_profile,
     normalize_target_timeout_config,
     normalize_provider_id,
+    normalize_provider_routing_config,
     normalize_research_config,
     normalize_string_array_preserve_items,
+    normalize_timeout_mode,
     normalize_usage_state,
     normalize_vetting_config,
     provider_capability_profile,
     task_workers,
+    target_timeout_seconds,
     utc_now,
 )
 
@@ -667,6 +673,9 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
     target_timeouts = normalize_target_timeout_config(
         runtime_payload.get("targetTimeouts") if isinstance(runtime_payload.get("targetTimeouts"), dict) else {}
     )
+    provider_routing = normalize_provider_routing_config(
+        runtime_payload.get("providerRouting") if isinstance(runtime_payload.get("providerRouting"), dict) else {}
+    )
     ollama_base_url = normalize_ollama_base_url(runtime_payload.get("ollamaBaseUrl", default_ollama_base_url()))
     summarizer_harness = normalize_harness_config(
         runtime_payload.get("summarizerHarness", default_summarizer_harness()),
@@ -690,6 +699,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "directProvider": direct_provider,
             "directModel": direct_model,
             "ollamaBaseUrl": ollama_base_url,
+            "providerRouting": provider_routing,
             "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
             "summarizerHarness": summarizer_harness,
@@ -730,6 +740,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "directProvider": runtime_config["directProvider"],
             "directModel": runtime_config["directModel"],
             "ollamaBaseUrl": runtime_config["ollamaBaseUrl"],
+            "providerRouting": deepcopy(runtime_config["providerRouting"]),
             "reasoningEffort": runtime_config["reasoningEffort"],
             "budget": deepcopy(runtime_config["budget"]),
             "research": deepcopy(runtime_config["research"]),
@@ -949,13 +960,73 @@ def run_steered_answer(
     }
 
 
+def judge_provider_settings(run: Dict[str, Any], judge_provider: str) -> Dict[str, Any]:
+    runtime_settings = run.get("judgeRuntime") if isinstance(run.get("judgeRuntime"), dict) else {}
+    provider = normalize_provider_id(judge_provider, "openai")
+    settings: Dict[str, Any] = {
+        "requestTimeoutSeconds": target_timeout_seconds(default_target_timeout_config(), "arbiter"),
+        "providerRouting": normalize_provider_routing_config(
+            runtime_settings.get("providerRouting") if isinstance(runtime_settings.get("providerRouting"), dict) else {}
+        ),
+    }
+    if provider == "ollama":
+        settings["ollamaBaseUrl"] = normalize_ollama_base_url(runtime_settings.get("ollamaBaseUrl", default_ollama_base_url()))
+        timeout_mode = normalize_timeout_mode(runtime_settings.get("timeoutMode"), default_timeout_mode())
+        profile = normalize_ollama_timeout_profile(runtime_settings.get("ollamaTimeoutProfile"))
+        if timeout_mode == "auto" and str(profile.get("status") or "") == "ready":
+            settings["requestTimeoutSeconds"] = target_timeout_seconds(
+                normalize_target_timeout_config(profile.get("targetTimeouts")),
+                "arbiter",
+            )
+        else:
+            settings["requestTimeoutSeconds"] = target_timeout_seconds(
+                normalize_target_timeout_config(runtime_settings.get("targetTimeouts")),
+                "arbiter",
+            )
+    else:
+        settings["requestTimeoutSeconds"] = target_timeout_seconds(
+            normalize_target_timeout_config(runtime_settings.get("targetTimeouts")),
+            "arbiter",
+        )
+    return settings
+
+
+def invoke_live_judge_json(
+    runtime: LoopRuntime,
+    judge_provider: str,
+    api_key: str,
+    judge_model: str,
+    instructions: str,
+    input_text: str,
+    schema_name: str,
+    schema: Dict[str, Any],
+    max_output_tokens: int,
+    provider_settings: Optional[Dict[str, Any]] = None,
+):
+    return runtime.invoke_provider_json(
+        provider=judge_provider,
+        api_key=api_key,
+        model=judge_model,
+        reasoning_effort="high",
+        instructions=instructions,
+        input_text=input_text,
+        schema_name=schema_name,
+        schema=schema,
+        max_output_tokens=max_output_tokens,
+        target_kind="arbiter",
+        provider_settings=provider_settings or {},
+    )
+
+
 def quality_judge_live(
     runtime: LoopRuntime,
+    judge_provider: str,
     api_key: str,
     judge_model: str,
     case: Dict[str, Any],
     judge_rubric: Any,
     public_answer: str,
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     instructions = (
         "You are grading one candidate assistant answer to a benchmark prompt.\n"
@@ -971,16 +1042,17 @@ def quality_judge_live(
         f"Hidden gold guidance:\n{json.dumps(case.get('gold', {}), ensure_ascii=False, indent=2)}\n\n"
         f"Candidate answer:\n{public_answer}\n"
     )
-    result = runtime.invoke_openai_json(
-        api_key=api_key,
-        model=judge_model,
-        reasoning_effort="high",
-        instructions=instructions,
-        input_text=input_text,
-        schema_name="eval_quality_judge",
-        schema=quality_judge_schema(),
-        max_output_tokens=1400,
-        target_kind="generic",
+    result = invoke_live_judge_json(
+        runtime,
+        judge_provider,
+        api_key,
+        judge_model,
+        instructions,
+        input_text,
+        "eval_quality_judge",
+        quality_judge_schema(),
+        1400,
+        provider_settings,
     )
     parsed = result.parsed
     return {
@@ -1027,11 +1099,13 @@ def heuristic_quality_judge(public_answer: str) -> Dict[str, Any]:
 
 def answer_health_judge_live(
     runtime: LoopRuntime,
+    judge_provider: str,
     api_key: str,
     judge_model: str,
     case: Dict[str, Any],
     public_answer: str,
     telemetry: Dict[str, Any],
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     instructions = (
         "You are grading the operational health of one candidate assistant answer.\n"
@@ -1045,16 +1119,17 @@ def answer_health_judge_live(
         f"Answer telemetry:\n{json.dumps(telemetry, ensure_ascii=False, indent=2)}\n\n"
         f"Candidate answer:\n{public_answer}\n"
     )
-    result = runtime.invoke_openai_json(
-        api_key=api_key,
-        model=judge_model,
-        reasoning_effort="high",
-        instructions=instructions,
-        input_text=input_text,
-        schema_name="eval_answer_health_judge",
-        schema=answer_health_judge_schema(),
-        max_output_tokens=1200,
-        target_kind="generic",
+    result = invoke_live_judge_json(
+        runtime,
+        judge_provider,
+        api_key,
+        judge_model,
+        instructions,
+        input_text,
+        "eval_answer_health_judge",
+        answer_health_judge_schema(),
+        1200,
+        provider_settings,
     )
     parsed = result.parsed
     scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
@@ -1104,10 +1179,12 @@ def heuristic_answer_health(public_answer: str, telemetry: Dict[str, Any]) -> Di
 
 def control_judge_live(
     runtime: LoopRuntime,
+    judge_provider: str,
     api_key: str,
     judge_model: str,
     case: Dict[str, Any],
     summary: Dict[str, Any],
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     front_answer = summary.get("frontAnswer", {}) if isinstance(summary.get("frontAnswer"), dict) else {}
     opinion = summary.get("summarizerOpinion", {}) if isinstance(summary.get("summarizerOpinion"), dict) else {}
@@ -1133,16 +1210,17 @@ def control_judge_live(
         f"Held-out concerns:\n{json.dumps(control_audit.get('heldOutConcerns', []), ensure_ascii=False, indent=2)}\n\n"
         f"Pre-release self-check:\n{control_audit.get('selfCheck', '')}\n"
     )
-    result = runtime.invoke_openai_json(
-        api_key=api_key,
-        model=judge_model,
-        reasoning_effort="high",
-        instructions=instructions,
-        input_text=input_text,
-        schema_name="eval_control_judge",
-        schema=control_judge_schema(),
-        max_output_tokens=1400,
-        target_kind="generic",
+    result = invoke_live_judge_json(
+        runtime,
+        judge_provider,
+        api_key,
+        judge_model,
+        instructions,
+        input_text,
+        "eval_control_judge",
+        control_judge_schema(),
+        1400,
+        provider_settings,
     )
     parsed = result.parsed
     scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
@@ -1190,15 +1268,17 @@ def heuristic_control_judge(summary: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_quality_judge(
     judge_runtime: LoopRuntime,
+    judge_provider: str,
     api_key: Optional[str],
     judge_model: str,
     case: Dict[str, Any],
     judge_rubric: Any,
     public_answer: str,
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if api_key:
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
-            return quality_judge_live(judge_runtime, api_key, judge_model, case, judge_rubric, public_answer)
+            return quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings)
         except RuntimeErrorWithCode:
             pass
     return heuristic_quality_judge(public_answer)
@@ -1206,15 +1286,17 @@ def run_quality_judge(
 
 def run_answer_health_judge(
     judge_runtime: LoopRuntime,
+    judge_provider: str,
     api_key: Optional[str],
     judge_model: str,
     case: Dict[str, Any],
     public_answer: str,
     telemetry: Dict[str, Any],
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if api_key:
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
-            return answer_health_judge_live(judge_runtime, api_key, judge_model, case, public_answer, telemetry)
+            return answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings)
         except RuntimeErrorWithCode:
             pass
     return heuristic_answer_health(public_answer, telemetry)
@@ -1222,14 +1304,16 @@ def run_answer_health_judge(
 
 def run_control_judge(
     judge_runtime: LoopRuntime,
+    judge_provider: str,
     api_key: Optional[str],
     judge_model: str,
     case: Dict[str, Any],
     summary: Dict[str, Any],
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if api_key:
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
-            return control_judge_live(judge_runtime, api_key, judge_model, case, summary)
+            return control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings)
         except RuntimeErrorWithCode:
             pass
     return heuristic_control_judge(summary)
@@ -1237,6 +1321,7 @@ def run_control_judge(
 
 def comparison_judge_live(
     runtime: LoopRuntime,
+    judge_provider: str,
     api_key: str,
     judge_model: str,
     case: Dict[str, Any],
@@ -1248,6 +1333,7 @@ def comparison_judge_live(
     baseline_quality: Dict[str, Any],
     baseline_health: Dict[str, Any],
     similarity: Dict[str, Any],
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     instructions = (
         "You are comparing a pressurized multi-lane answer against a single-thread baseline for the same prompt.\n"
@@ -1271,16 +1357,17 @@ def comparison_judge_live(
         f"Pressurized answer:\n{primary_answer}\n\n"
         f"Single-thread baseline answer:\n{baseline_answer}\n"
     )
-    result = runtime.invoke_openai_json(
-        api_key=api_key,
-        model=judge_model,
-        reasoning_effort="high",
-        instructions=instructions,
-        input_text=input_text,
-        schema_name="eval_comparison_judge",
-        schema=comparison_judge_schema(),
-        max_output_tokens=1600,
-        target_kind="generic",
+    result = invoke_live_judge_json(
+        runtime,
+        judge_provider,
+        api_key,
+        judge_model,
+        instructions,
+        input_text,
+        "eval_comparison_judge",
+        comparison_judge_schema(),
+        1600,
+        provider_settings,
     )
     parsed = result.parsed
     scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
@@ -1343,6 +1430,7 @@ def heuristic_comparison_judge(
 
 def run_comparison_judge(
     judge_runtime: LoopRuntime,
+    judge_provider: str,
     api_key: Optional[str],
     judge_model: str,
     case: Dict[str, Any],
@@ -1354,12 +1442,14 @@ def run_comparison_judge(
     baseline_quality: Dict[str, Any],
     baseline_health: Dict[str, Any],
     similarity: Dict[str, Any],
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if api_key:
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
             return comparison_judge_live(
                 judge_runtime,
-                api_key,
+                judge_provider,
+                api_key or "",
                 judge_model,
                 case,
                 judge_rubric,
@@ -1370,6 +1460,7 @@ def run_comparison_judge(
                 baseline_quality,
                 baseline_health,
                 similarity,
+                provider_settings,
             )
         except RuntimeErrorWithCode:
             pass
@@ -1378,11 +1469,13 @@ def run_comparison_judge(
 
 def vetting_matrix_judge_live(
     runtime: LoopRuntime,
+    judge_provider: str,
     api_key: str,
     judge_model: str,
     case: Dict[str, Any],
     judge_rubric: Any,
     answers: List[Dict[str, Any]],
+    provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized_answers = [dict(answer) for answer in answers if isinstance(answer, dict) and str(answer.get("id", "")).strip()]
     if not normalized_answers:
@@ -1421,16 +1514,17 @@ def vetting_matrix_judge_live(
         f"Hidden gold guidance:\n{json.dumps(case.get('gold', {}), ensure_ascii=False, indent=2)}\n\n"
         f"Candidate answers:\n{json.dumps(answer_packets, ensure_ascii=False, indent=2)}\n"
     )
-    result = runtime.invoke_openai_json(
-        api_key=api_key,
-        model=judge_model,
-        reasoning_effort="high",
-        instructions=instructions,
-        input_text=input_text,
-        schema_name="eval_vetting_matrix_judge",
-        schema=vetting_matrix_judge_schema(answer_ids),
-        max_output_tokens=2600,
-        target_kind="generic",
+    result = invoke_live_judge_json(
+        runtime,
+        judge_provider,
+        api_key,
+        judge_model,
+        instructions,
+        input_text,
+        "eval_vetting_matrix_judge",
+        vetting_matrix_judge_schema(answer_ids),
+        2600,
+        provider_settings,
     )
     normalized = normalize_vetting_matrix_result(result.parsed, answer_ids, result.response_id)
     return {
@@ -1840,8 +1934,23 @@ def execute_replicate(
     replicate_dir.mkdir(parents=True, exist_ok=True)
     seed = f"{run['runId']}:{case['caseId']}:{variant_id}:{replicate_index}"
     judge_runtime = LoopRuntime(replicate_dir / "_judge_runtime", auth_path=auth_path)
-    judge_auth_assignment = judge_runtime.get_api_key_assignment("judge", salt=seed + ":judge")
-    api_key = str(judge_auth_assignment.get("apiKey")) if judge_auth_assignment else None
+    judge_provider = normalize_provider_id(str(run.get("judgeProvider") or "openai").strip(), "openai")
+    judge_runtime_settings = judge_provider_settings(run, judge_provider)
+    selected_judge_instance = judge_runtime.select_provider_instance(
+        None,
+        judge_runtime_settings,
+        judge_provider,
+        judge_model,
+        "arbiter",
+        replicate_index,
+    )
+    if isinstance(selected_judge_instance, dict):
+        judge_runtime_settings["providerInstance"] = selected_judge_instance
+        if judge_provider == "ollama":
+            judge_runtime_settings["ollamaBaseUrl"] = str(selected_judge_instance.get("baseUrl") or judge_runtime_settings.get("ollamaBaseUrl") or "")
+    judge_auth_assignments = judge_runtime.provider_auth_assignments(judge_provider, "judge", salt=seed + ":judge")
+    judge_auth_assignment = judge_auth_assignments[0] if judge_auth_assignments else None
+    api_key = judge_runtime.provider_live_api_key(judge_provider, judge_auth_assignments) or None
     result: Dict[str, Any]
     baseline_quality: Optional[Dict[str, Any]] = None
     answer_health: Optional[Dict[str, Any]] = None
@@ -1928,22 +2037,26 @@ def execute_replicate(
     )
     quality = run_quality_judge(
         judge_runtime,
+        judge_provider,
         api_key or None,
         judge_model,
         case,
         run.get("suite", {}).get("judgeRubric", {}),
         public_answer,
+        judge_runtime_settings,
     )
     answer_health = run_answer_health_judge(
         judge_runtime,
+        judge_provider,
         api_key or None,
         judge_model,
         case,
         public_answer,
         primary_telemetry,
+        judge_runtime_settings,
     )
     control = (
-        run_control_judge(judge_runtime, api_key or None, judge_model, case, result["summary"])
+        run_control_judge(judge_runtime, judge_provider, api_key or None, judge_model, case, result["summary"], judge_runtime_settings)
         if arm["type"] == "steered" and isinstance(result.get("summary"), dict)
         else None
     )
@@ -1960,19 +2073,23 @@ def execute_replicate(
             )
             baseline_quality = run_quality_judge(
                 judge_runtime,
+                judge_provider,
                 api_key or None,
                 judge_model,
                 case,
                 run.get("suite", {}).get("judgeRubric", {}),
                 baseline_text,
+                judge_runtime_settings,
             )
             baseline_answer_health = run_answer_health_judge(
                 judge_runtime,
+                judge_provider,
                 api_key or None,
                 judge_model,
                 case,
                 baseline_text,
                 baseline_telemetry,
+                judge_runtime_settings,
             )
             primary_scores = quality.get("scores") if isinstance(quality.get("scores"), dict) else {}
             baseline_scores = baseline_quality.get("scores") if isinstance(baseline_quality.get("scores"), dict) else {}
@@ -1980,6 +2097,7 @@ def execute_replicate(
             similarity = answer_similarity_metrics(public_answer, baseline_text)
             comparison = run_comparison_judge(
                 judge_runtime,
+                judge_provider,
                 api_key or None,
                 judge_model,
                 case,
@@ -1991,6 +2109,7 @@ def execute_replicate(
                 baseline_quality,
                 baseline_answer_health,
                 similarity,
+                judge_runtime_settings,
             )
             comparison = {
                 **comparison,
@@ -2135,7 +2254,8 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
     loop_sweep = [int(value) for value in run.get("loopSweep", []) if int(value) > 0]
     if not loop_sweep:
         loop_sweep = [1]
-    judge_model = normalize_model_id(str(run.get("judgeModel", "")).strip(), "gpt-5.4")
+    judge_provider = normalize_provider_id(str(run.get("judgeProvider") or "openai").strip(), "openai")
+    judge_model = normalize_model_id(str(run.get("judgeModel", "")).strip(), default_model_for_provider(judge_provider))
 
     for case in suite["cases"]:
         case_entry = find_case_entry(run, case["caseId"])

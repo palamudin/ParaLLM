@@ -94,6 +94,10 @@ class ControlPlaneTests(unittest.TestCase):
             self.assertEqual(control.read_auth_key_pool(self.root, "minimax"), ["sk-minimax-4444"])
             self.assertEqual(status["providerGroups"]["anthropic"]["selectedMode"], "local")
             self.assertEqual(status["providerGroups"]["anthropic"]["effectiveBackend"], "local_file")
+            self.assertEqual(status["providerGroups"]["anthropic"]["selectedModeLabel"], "Local file")
+            self.assertEqual(status["providerGroups"]["anthropic"]["localFilePath"], str(self.root / "Auth.txt"))
+            self.assertEqual(status["providerGroups"]["anthropic"]["localFilePrefix"], "ant")
+            self.assertEqual(status["providerGroups"]["anthropic"]["localFileFormat"], "ant:<api_key>")
 
     def test_auth_pool_status_respects_provider_local_override_under_safe_backend(self) -> None:
         (self.root / "Auth.txt").write_text("openai:sk-local-1111\n", encoding="utf-8")

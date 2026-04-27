@@ -31,6 +31,7 @@ from runtime.engine import (
     default_timeout_mode,
     default_target_timeout_config,
     default_vetting_config,
+    default_provider_routing_config,
     normalize_allowed_domains,
     normalize_budget_config,
     normalize_context_mode,
@@ -48,6 +49,7 @@ from runtime.engine import (
     normalize_ollama_base_url,
     normalize_ollama_timeout_profile,
     normalize_provider_id,
+    normalize_provider_routing_config,
     normalize_research_config,
     normalize_string_list,
     normalize_timeout_mode,
@@ -63,6 +65,7 @@ from .secrets import (
     auth_key_file_path,
     auth_backend_mode_for_provider,
     auth_backend_mode_label,
+    auth_local_file_prefix,
     auth_key_provider_ids,
     auth_key_provider_label,
     default_auth_backend_mode,
@@ -130,6 +133,7 @@ def default_draft_state() -> Dict[str, Any]:
         "frontMode": default_front_mode(),
         "engineVersion": default_engine_version(),
         "engineGraph": default_engine_graph(),
+        "providerRouting": default_provider_routing_config(),
         "contextMode": default_context_mode(),
         "directBaselineMode": default_direct_baseline_mode(),
         "directProvider": provider,
@@ -217,6 +221,7 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     front_mode = normalize_front_mode(current.get("frontMode", default["frontMode"]), default["frontMode"])
     engine_version = normalize_engine_version(current.get("engineVersion", default["engineVersion"]), default["engineVersion"])
     engine_graph = normalize_engine_graph(current.get("engineGraph", default["engineGraph"]))
+    provider_routing = normalize_provider_routing_config(current.get("providerRouting", default["providerRouting"]))
     context_mode = normalize_context_mode(current.get("contextMode", default["contextMode"]), default["contextMode"])
     direct_baseline_mode = normalize_direct_baseline_mode(current.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"])
     direct_provider = normalize_provider_id(
@@ -255,6 +260,7 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "frontMode": front_mode,
         "engineVersion": engine_version,
         "engineGraph": engine_graph,
+        "providerRouting": provider_routing,
         "contextMode": context_mode,
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
@@ -330,6 +336,7 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         "frontMode": normalize_front_mode(runtime.get("frontMode", default["frontMode"]), default["frontMode"]),
         "engineVersion": normalize_engine_version(runtime.get("engineVersion", default["engineVersion"]), default["engineVersion"]),
         "engineGraph": normalize_engine_graph(runtime.get("engineGraph", default["engineGraph"])),
+        "providerRouting": normalize_provider_routing_config(runtime.get("providerRouting", default["providerRouting"])),
         "contextMode": normalize_context_mode(runtime.get("contextMode", default["contextMode"]), default["contextMode"]),
         "directBaselineMode": normalize_direct_baseline_mode(runtime.get("directBaselineMode", default["directBaselineMode"]), default["directBaselineMode"]),
         "directProvider": normalize_provider_id(runtime.get("directProvider"), provider),
@@ -402,6 +409,12 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
     backend_resolution = resolve_provider_secret_backend(root, normalized_provider)
     backend_mode = backend_resolution["mode"]
     backend_name = backend_resolution["backend"]
+    local_file_path = local_auth_file_path(root)
+    local_file_prefix = auth_local_file_prefix(normalized_provider)
+    local_file_format = f"{local_file_prefix}:<api_key>"
+    local_file_guidance = (
+        f"Edit {local_file_path} and add one {label} key per line as {local_file_format}."
+    )
     if backend_name == "env":
         status = env_secret_status(normalized_provider)
         return {
@@ -418,6 +431,10 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "failureDetail": str(status.get("detail") or ""),
             "managed": True,
             "writable": False,
+            "localFilePath": str(local_file_path),
+            "localFilePrefix": local_file_prefix,
+            "localFileFormat": local_file_format,
+            "localFileGuidance": local_file_guidance,
         }
     if backend_name == "external":
         status = external_secret_status(root, provider=normalized_provider)
@@ -435,6 +452,10 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "failureDetail": str(status.get("detail") or ""),
             "managed": True,
             "writable": False,
+            "localFilePath": str(local_file_path),
+            "localFilePrefix": local_file_prefix,
+            "localFileFormat": local_file_format,
+            "localFileGuidance": local_file_guidance,
         }
     if backend_name == "docker_secret":
         secret_base_path = auth_file_path(root)
@@ -454,6 +475,10 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
                 "failureDetail": f"Mounted {label} secret file not found at {secret_path}.",
                 "managed": True,
                 "writable": False,
+                "localFilePath": str(local_file_path),
+                "localFilePrefix": local_file_prefix,
+                "localFileFormat": local_file_format,
+                "localFileGuidance": local_file_guidance,
             }
         keys = normalize_auth_key_pool(secret_path.read_text(encoding="utf-8", errors="replace"))
         return {
@@ -470,10 +495,13 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "failureDetail": f"Using mounted {label} secret file at {secret_path}." if keys else f"Mounted {label} secret file at {secret_path} is empty.",
             "managed": True,
             "writable": False,
+            "localFilePath": str(local_file_path),
+            "localFilePrefix": local_file_prefix,
+            "localFileFormat": local_file_format,
+            "localFileGuidance": local_file_guidance,
         }
-    path = local_auth_file_path(root)
-    keys = read_local_auth_keys(path, normalized_provider)
-    if not path.is_file() and not keys:
+    keys = read_local_auth_keys(local_file_path, normalized_provider)
+    if not local_file_path.is_file() and not keys:
         return {
             "backend": "local_file",
             "selectedMode": backend_mode,
@@ -485,9 +513,13 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
             "configured": True,
             "ready": False,
             "failureMode": "empty",
-            "failureDetail": f"Local fallback {label} secret file not found at {path}.",
+            "failureDetail": f"Shared local credential file not found at {local_file_path}.",
             "managed": False,
             "writable": True,
+            "localFilePath": str(local_file_path),
+            "localFilePrefix": local_file_prefix,
+            "localFileFormat": local_file_format,
+            "localFileGuidance": local_file_guidance,
         }
     return {
         "backend": "local_file",
@@ -500,9 +532,17 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -
         "configured": True,
         "ready": len(keys) > 0,
         "failureMode": None if keys else "empty",
-        "failureDetail": f"Using local fallback {label} secret file at {path}." if keys else f"Local fallback {label} secret file at {path} is empty.",
+        "failureDetail": (
+            f"Using shared local credential file at {local_file_path}."
+            if keys
+            else f"Shared local credential file at {local_file_path} is missing a {local_file_format} entry."
+        ),
         "managed": False,
         "writable": True,
+        "localFilePath": str(local_file_path),
+        "localFilePrefix": local_file_prefix,
+        "localFileFormat": local_file_format,
+        "localFileGuidance": local_file_guidance,
     }
 
 
@@ -603,6 +643,10 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
             "writable": bool(pool_state.get("writable")),
             "failureMode": pool_state.get("failureMode"),
             "failureDetail": pool_state.get("failureDetail"),
+            "localFilePath": str(pool_state.get("localFilePath") or local_auth_file_path(root)),
+            "localFilePrefix": str(pool_state.get("localFilePrefix") or auth_local_file_prefix(provider_id)),
+            "localFileFormat": str(pool_state.get("localFileFormat") or f"{auth_local_file_prefix(provider_id)}:<api_key>"),
+            "localFileGuidance": str(pool_state.get("localFileGuidance") or ""),
             "strictLiveFailure": bool(pool_state.get("managed")) and len(keys) == 0,
         }
         total_keys += len(keys)
@@ -749,6 +793,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     budget_targets = _parse_json_like(payload.get("budgetTargets"), existing_draft["budgetTargets"])
     target_timeouts = _parse_json_like(payload.get("targetTimeouts"), existing_draft["targetTimeouts"])
     engine_graph = _parse_json_like(payload.get("engineGraph"), existing_draft["engineGraph"])
+    provider_routing = _parse_json_like(payload.get("providerRouting"), existing_draft["providerRouting"])
     ollama_timeout_profile = _parse_json_like(payload.get("ollamaTimeoutProfile"), existing_draft["ollamaTimeoutProfile"])
     draft = normalize_draft_state(
         {
@@ -764,6 +809,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "frontMode": payload.get("frontMode", existing_draft["frontMode"]),
             "engineVersion": payload.get("engineVersion", existing_draft["engineVersion"]),
             "engineGraph": engine_graph if isinstance(engine_graph, dict) else existing_draft["engineGraph"],
+            "providerRouting": provider_routing if isinstance(provider_routing, dict) else existing_draft["providerRouting"],
             "contextMode": payload.get("contextMode", existing_draft["contextMode"]),
             "directBaselineMode": payload.get("directBaselineMode", existing_draft["directBaselineMode"]),
             "directProvider": payload.get("directProvider", existing_draft["directProvider"]),
@@ -838,6 +884,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     )
     live_run_id = str(payload.get("liveRunId") or "").strip() or None
     engine_graph = normalize_engine_graph(_parse_json_like(payload.get("engineGraph"), default_engine_graph()))
+    provider_routing = normalize_provider_routing_config(_parse_json_like(payload.get("providerRouting"), default_provider_routing_config()))
     ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", default_ollama_base_url()))
     timeout_mode = normalize_timeout_mode(payload.get("timeoutMode", default_timeout_mode()), default_timeout_mode())
     ollama_timeout_profile = normalize_ollama_timeout_profile(
@@ -911,6 +958,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "frontMode": front_mode,
             "engineVersion": engine_version,
             "engineGraph": engine_graph,
+            "providerRouting": provider_routing,
             "contextMode": context_mode,
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,

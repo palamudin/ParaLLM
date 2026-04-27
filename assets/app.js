@@ -15,11 +15,13 @@ const MODEL_CATALOG = {
 };
 
 const ANTHROPIC_MODEL_CATALOG = {
+  "claude-opus-4-7": { label: "Claude Opus 4.7" },
+  "claude-sonnet-4-6": { label: "Claude Sonnet 4.6" },
+  "claude-opus-4-6": { label: "Claude Opus 4.6" },
+  "claude-opus-4-5-20251101": { label: "Claude Opus 4.5" },
+  "claude-haiku-4-5-20251001": { label: "Claude Haiku 4.5" },
+  "claude-sonnet-4-5-20250929": { label: "Claude Sonnet 4.5" },
   "claude-opus-4-1-20250805": { label: "Claude Opus 4.1" },
-  "claude-opus-4-20250514": { label: "Claude Opus 4" },
-  "claude-sonnet-4-20250514": { label: "Claude Sonnet 4" },
-  "claude-3-7-sonnet-20250219": { label: "Claude Sonnet 3.7" },
-  "claude-3-5-haiku-latest": { label: "Claude Haiku 3.5" }
 };
 
 const XAI_MODEL_CATALOG = {
@@ -119,7 +121,7 @@ const PROVIDER_MODEL_CATALOG = {
 };
 const PROVIDER_DEFAULT_MODELS = {
   openai: "gpt-5-mini",
-  anthropic: "claude-sonnet-4-20250514",
+  anthropic: "claude-sonnet-4-6",
   xai: "grok-4.20-reasoning",
   minimax: "MiniMax-M2.7",
   ollama: "qwen3"
@@ -176,6 +178,106 @@ function normalizeOllamaTimeoutProfile(value) {
     note: String(source.note || "").trim()
   };
 }
+
+function defaultProviderRoutingConfig() {
+  return {
+    ollama: {
+      selectionMode: "single",
+      judgeMode: "prefer_distinct"
+    }
+  };
+}
+
+function normalizeProviderRoutingConfig(value) {
+  const source = (value && typeof value === "object") ? value : {};
+  const defaults = defaultProviderRoutingConfig();
+  const normalized = {};
+  Object.keys(defaults).forEach(function (providerId) {
+    const defaultNode = defaults[providerId] || {};
+    const sourceNode = source[providerId] && typeof source[providerId] === "object" ? source[providerId] : {};
+    const selectionMode = String(sourceNode.selectionMode || defaultNode.selectionMode || "single").trim().toLowerCase();
+    const judgeMode = String(sourceNode.judgeMode || defaultNode.judgeMode || "prefer_distinct").trim().toLowerCase();
+    normalized[providerId] = {
+      selectionMode: ["single", "rotate", "mix"].includes(selectionMode) ? selectionMode : String(defaultNode.selectionMode || "single"),
+      judgeMode: judgeMode === "default" ? "default" : "prefer_distinct"
+    };
+  });
+  return normalized;
+}
+
+function currentProviderRoutingSource(task, draft) {
+  return normalizeProviderRoutingConfig(
+    draft?.providerRouting
+    || task?.runtime?.providerRouting
+    || defaultProviderRoutingConfig()
+  );
+}
+
+function defaultProviderInstanceStatus() {
+  const providerGroups = {};
+  Object.keys(PROVIDER_CATALOG).forEach(function (providerId) {
+    providerGroups[providerId] = {
+      provider: providerId,
+      label: PROVIDER_CATALOG[providerId]?.label || providerId,
+      writable: true,
+      instanceCount: 0,
+      instances: [],
+      statusNote: "No local endpoints configured for this provider group."
+    };
+  });
+  return {
+    file: "providers.txt",
+    providerOrder: Object.keys(PROVIDER_CATALOG),
+    providerGroups: providerGroups,
+    storage: "local_file",
+    statusNote: ""
+  };
+}
+
+function normalizeProviderInstanceEntry(entry, provider = "ollama", index = 1) {
+  const source = (entry && typeof entry === "object") ? entry : {};
+  const normalizedProvider = normalizeProviderId(source.provider || provider || "ollama");
+  const baseUrl = normalizeOllamaBaseUrl(source.baseUrl || source.url || "");
+  if (!baseUrl) return null;
+  const models = splitCommaList(Array.isArray(source.models) ? source.models.join(",") : String(source.models || ""));
+  return {
+    id: String(source.id || (normalizedProvider + "-" + index)).trim() || (normalizedProvider + "-" + index),
+    provider: normalizedProvider,
+    label: String(source.label || ((PROVIDER_CATALOG[normalizedProvider]?.label || normalizedProvider) + " " + index)).trim(),
+    baseUrl: baseUrl,
+    enabled: source.enabled !== false,
+    models: models
+  };
+}
+
+function normalizeProviderInstanceStatus(data) {
+  const defaults = defaultProviderInstanceStatus();
+  const rawGroups = data?.providerGroups && typeof data.providerGroups === "object" ? data.providerGroups : {};
+  const normalizedGroups = {};
+  defaults.providerOrder.forEach(function (providerId) {
+    const group = rawGroups[providerId] && typeof rawGroups[providerId] === "object" ? rawGroups[providerId] : {};
+    const rawInstances = Array.isArray(group.instances) ? group.instances : [];
+    const instances = rawInstances
+      .map(function (entry, entryIndex) { return normalizeProviderInstanceEntry(entry, providerId, entryIndex + 1); })
+      .filter(Boolean);
+    normalizedGroups[providerId] = {
+      provider: providerId,
+      label: String(group.label || defaults.providerGroups[providerId].label || providerId),
+      writable: group.writable !== false,
+      instanceCount: Number(group.instanceCount || instances.length || 0),
+      instances: instances,
+      statusNote: String(group.statusNote || (instances.length ? (instances.length + " local endpoint(s) available.") : defaults.providerGroups[providerId].statusNote || ""))
+    };
+  });
+  return {
+    file: String(data?.file || defaults.file),
+    providerOrder: Array.isArray(data?.providerOrder) && data.providerOrder.length ? data.providerOrder : defaults.providerOrder,
+    providerGroups: normalizedGroups,
+    storage: String(data?.storage || defaults.storage),
+    statusNote: String(data?.statusNote || defaults.statusNote)
+  };
+}
+
 const ENGINE_V2_NODE_LIBRARY = {
   prompt: {
     moduleType: "prompt",
@@ -466,6 +568,11 @@ let latestAuthStatus = {
   isolationNote: "",
   termsWarning: ""
 };
+let latestProviderInstanceStatus = defaultProviderInstanceStatus();
+let providerInstanceEditorState = {};
+let providerInstanceEditorDirty = {};
+let providerInstanceStatusLoaded = false;
+let providerInstanceStatusLoading = false;
 let authDynamicRowsByProvider = {};
 let authRowSequence = 0;
 let authSaveTimers = {};
@@ -498,11 +605,13 @@ let selectedFrontJudgeRunId = localStorage.getItem("loopSelectedFrontJudgeRunId"
 let frontEvalSelection = safeJsonParse(localStorage.getItem("loopFrontEvalSelection") || "{}", {
   suiteId: "msp-rmm-midnight-malware-push",
   caseId: "rmm-midnight-malware-push",
+  judgeProvider: "openai",
   judgeModel: "gpt-5.4"
 });
 let frontJudgeSelection = safeJsonParse(localStorage.getItem("loopFrontJudgeSelection") || "{}", {
   suiteIds: ["msp-rmm-midnight-malware-push"],
   armIds: ["compare-mini-full", "compare-54-full-miniworkers", "compare-54-full-triple", "direct-gpt54"],
+  judgeProvider: "openai",
   judgeModel: "gpt-5.4",
   replicates: 1,
   loopSweep: "1"
@@ -534,6 +643,8 @@ const API = {
   authStatus: "/v1/auth/status",
   authKeys: "/v1/auth/keys",
   authMode: "/v1/auth/mode",
+  providersStatus: "/v1/providers/status",
+  providerInstances: "/v1/providers/instances",
   evalArtifact: "/v1/evals/artifact",
   evalHistory: "/v1/evals/history",
   frontLiveRuns: "/v1/front/live/runs",
@@ -678,6 +789,132 @@ function truncateText(value, maxLength = 220) {
   const text = String(value || "").trim().replace(/\s+/g, " ");
   if (!text) return "";
   return text.length > maxLength ? text.slice(0, Math.max(0, maxLength - 3)).trim() + "..." : text;
+}
+
+function flattenTextFragments(value, depth = 0, limit = 160) {
+  if (value == null || depth > 12 || limit <= 0) return [];
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text ? [text] : [];
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return [String(value)];
+  }
+  if (Array.isArray(value)) {
+    const collected = [];
+    for (const item of value) {
+      const fragments = flattenTextFragments(item, depth + 1, limit - collected.length);
+      for (const fragment of fragments) {
+        if (fragment) collected.push(fragment);
+        if (collected.length >= limit) return collected.slice(0, limit);
+      }
+    }
+    return collected.slice(0, limit);
+  }
+  if (typeof value !== "object") return [];
+
+  const blockType = String(value.type || "").trim().toLowerCase();
+  if (["thinking", "reasoning", "tool_use", "tool_result", "server_tool_use"].includes(blockType)) {
+    return [];
+  }
+
+  const collected = [];
+  const directTextKeys = ["text", "content", "completion", "output_text", "answer", "value"];
+  for (const key of directTextKeys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      collected.push(candidate.trim());
+      break;
+    }
+  }
+
+  const containerKeys = ["message", "content", "output", "messages", "parts", "items", "data", "result"];
+  for (const key of containerKeys) {
+    const candidate = value[key];
+    const fragments = flattenTextFragments(candidate, depth + 1, limit - collected.length);
+    for (const fragment of fragments) {
+      if (fragment && !collected.includes(fragment)) {
+        collected.push(fragment);
+      }
+      if (collected.length >= limit) return collected.slice(0, limit);
+    }
+  }
+  return collected.slice(0, limit);
+}
+
+function joinFlattenedText(value, separator = "\n\n") {
+  const deduped = [];
+  for (const fragment of flattenTextFragments(value)) {
+    const cleaned = String(fragment || "").trim();
+    if (cleaned && !deduped.includes(cleaned)) {
+      deduped.push(cleaned);
+    }
+  }
+  return deduped.join(separator).trim();
+}
+
+function canonicalDirectAnswerText(payload, fallback = "") {
+  if (typeof payload === "string") {
+    return String(payload || "").trim() || String(fallback || "").trim();
+  }
+  if (!payload || typeof payload !== "object") {
+    return String(fallback || "").trim();
+  }
+  const directAnswer = String(payload.answer || "").trim();
+  if (directAnswer) return directAnswer;
+  return joinFlattenedText(payload) || String(fallback || "").trim();
+}
+
+function canonicalSummaryAnswerText(summary) {
+  if (!summary || typeof summary !== "object") return "";
+  const candidates = [
+    summary.flattenedOutputText,
+    summary.publicAnswer,
+    summary?.frontAnswer?.answer,
+    summary?.summarizerOpinion?.stance,
+    summary?.answerDraft
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate || "").trim();
+    if (text) return text;
+  }
+  return joinFlattenedText(summary);
+}
+
+function canonicalArtifactAnswerText(content, kind = "") {
+  const normalizedKind = String(kind || content?.artifactType || "").trim().toLowerCase();
+  const output = content?.output && typeof content.output === "object" ? content.output : {};
+  const candidates = [
+    content?.flattenedOutputText,
+    output?.flattenedOutputText,
+    content?.publicAnswer,
+    output?.publicAnswer,
+    output?.frontAnswer?.answer,
+    content?.frontAnswer?.answer,
+    output?.answer?.answer,
+    content?.answer?.answer
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate || "").trim();
+    if (text) return text;
+  }
+  if (["commander_output", "commander_review_output", "summary_output", "summary_partial_output"].includes(normalizedKind)) {
+    const answerDraft = String(output?.answerDraft || content?.answerDraft || "").trim();
+    if (answerDraft) return answerDraft;
+  }
+  if (["worker_output", "worker_step"].includes(normalizedKind)) {
+    const observation = String(output?.observation || content?.observation || "").trim();
+    if (observation) return observation;
+    const requestToPeer = String(output?.requestToPeer || content?.requestToPeer || "").trim();
+    if (requestToPeer) return requestToPeer;
+  }
+  const flattenedOutput = joinFlattenedText(output);
+  if (flattenedOutput) return flattenedOutput;
+  if (content?.rawOutputText) {
+    const rawOutput = String(content.rawOutputText || "").trim();
+    if (rawOutput) return rawOutput;
+  }
+  return joinFlattenedText(content);
 }
 
 function safeJsonParse(raw, fallback) {
@@ -992,6 +1229,7 @@ function defaultDraftState() {
     directProvider: "openai",
     directModel: "gpt-5-mini",
     ollamaBaseUrl: "http://127.0.0.1:11434",
+    providerRouting: defaultProviderRoutingConfig(),
     timeoutMode: defaultTimeoutMode(),
     ollamaTimeoutProfile: defaultOllamaTimeoutProfile(),
     reasoningEffort: "low",
@@ -1309,6 +1547,17 @@ function currentOllamaTimeoutProfileSource(task, draft) {
   );
 }
 
+function collectProviderRoutingSelection() {
+  const source = currentProviderRoutingSource(latestState?.activeTask || null, latestState?.draft || null);
+  const next = {
+    ollama: {
+      selectionMode: String($("#ollamaRoutingMode").val() || source.ollama?.selectionMode || "single"),
+      judgeMode: String($("#ollamaJudgeMode").val() || source.ollama?.judgeMode || "prefer_distinct")
+    }
+  };
+  return normalizeProviderRoutingConfig(next);
+}
+
 function storedTargetTimeoutsSource(task, draft) {
   return normalizeTargetTimeouts(
     draft?.targetTimeouts
@@ -1476,6 +1725,172 @@ function syncOllamaBaseUrlField() {
       $profileHint.text(timeoutProfile.note ? (statusText + " " + timeoutProfile.note) : statusText);
     }
   }
+  $("#ollamaRoutingMode, #ollamaJudgeMode, #addOllamaProviderInstance, #saveOllamaProviderPool")
+    .prop("disabled", !visible);
+  if (visible && !providerInstanceStatusLoaded && !providerInstanceStatusLoading) {
+    refreshProviderInstances();
+  }
+  renderProviderInstanceEditor("ollama");
+}
+
+function providerPoolHasEditorState(provider = "ollama") {
+  return Object.prototype.hasOwnProperty.call(providerInstanceEditorState, normalizeProviderId(provider));
+}
+
+function providerPoolStatusGroup(provider = "ollama") {
+  const normalizedProvider = normalizeProviderId(provider);
+  return latestProviderInstanceStatus?.providerGroups?.[normalizedProvider] || defaultProviderInstanceStatus().providerGroups[normalizedProvider];
+}
+
+function providerPoolDefaultRows(provider = "ollama") {
+  const normalizedProvider = normalizeProviderId(provider);
+  const statusGroup = providerPoolStatusGroup(normalizedProvider);
+  const saved = Array.isArray(statusGroup?.instances) ? statusGroup.instances : [];
+  if (saved.length) {
+    return saved.map(function (entry, index) {
+      return normalizeProviderInstanceEntry(entry, normalizedProvider, index + 1);
+    }).filter(Boolean);
+  }
+  const primaryBaseUrl = normalizeOllamaBaseUrl($("#ollamaBaseUrl").val() || currentOllamaTimeoutProfileSource(latestState?.activeTask || null, latestState?.draft || null).baseUrl || "");
+  if (!primaryBaseUrl) return [];
+  const primaryEntry = normalizeProviderInstanceEntry(
+    {
+      id: normalizedProvider + "-primary",
+      provider: normalizedProvider,
+      label: "Primary session endpoint",
+      baseUrl: primaryBaseUrl,
+      enabled: true,
+      models: []
+    },
+    normalizedProvider,
+    1
+  );
+  return primaryEntry ? [primaryEntry] : [];
+}
+
+function currentProviderPoolRows(provider = "ollama") {
+  const normalizedProvider = normalizeProviderId(provider);
+  if (providerPoolHasEditorState(normalizedProvider)) {
+    const rows = (providerInstanceEditorState[normalizedProvider] || []).map(function (entry, index) {
+      return normalizeProviderInstanceEntry(entry, normalizedProvider, index + 1);
+    }).filter(Boolean);
+    if (rows.length || providerInstanceEditorDirty[normalizedProvider]) {
+      return rows;
+    }
+  }
+  return providerPoolDefaultRows(normalizedProvider);
+}
+
+function setProviderPoolRows(provider, rows, options = {}) {
+  const normalizedProvider = normalizeProviderId(provider);
+  providerInstanceEditorState[normalizedProvider] = (Array.isArray(rows) ? rows : [])
+    .map(function (entry, index) {
+      return normalizeProviderInstanceEntry(entry, normalizedProvider, index + 1);
+    })
+    .filter(Boolean);
+  providerInstanceEditorDirty[normalizedProvider] = options.dirty === true;
+}
+
+function readProviderPoolRowsFromDom(provider = "ollama") {
+  const normalizedProvider = normalizeProviderId(provider);
+  return $(`#ollamaProviderInstances .provider-instance-row`).map(function (index) {
+    const $row = $(this);
+    return normalizeProviderInstanceEntry(
+      {
+        id: String($row.data("instanceId") || "").trim() || (normalizedProvider + "-" + (index + 1)),
+        provider: normalizedProvider,
+        label: $row.find(".provider-instance-label").val(),
+        baseUrl: $row.find(".provider-instance-base-url").val(),
+        models: $row.find(".provider-instance-models").val(),
+        enabled: $row.find(".provider-instance-enabled").is(":checked")
+      },
+      normalizedProvider,
+      index + 1
+    );
+  }).get().filter(Boolean);
+}
+
+function renderProviderPoolStatusNote(provider = "ollama", rows = []) {
+  const statusGroup = providerPoolStatusGroup(provider);
+  const noteParts = [];
+  if (providerInstanceEditorDirty[provider]) {
+    noteParts.push("Unsaved endpoint edits are staged locally.");
+  } else if (statusGroup?.statusNote) {
+    noteParts.push(String(statusGroup.statusNote));
+  }
+  if (!rows.length) {
+    noteParts.push("ParaLLM will still use the session base URL until you save extra endpoints.");
+  } else {
+    noteParts.push("`providers.txt` keeps endpoint pools local for the prototype. Session base URL remains available as a fallback.");
+  }
+  const pills = rows.length
+    ? `<div class="provider-instance-status-list">${rows.map(function (entry) {
+      const models = Array.isArray(entry.models) && entry.models.length ? " | models: " + entry.models.join(", ") : "";
+      return `<div class="provider-instance-status-pill"><strong>${escapeHtml(entry.label || entry.id || entry.baseUrl)}</strong><span>${escapeHtml(entry.baseUrl)}${escapeHtml(models)}</span></div>`;
+    }).join("")}</div>`
+    : "";
+  return `${escapeHtml(noteParts.join(" "))}${pills}`;
+}
+
+function renderProviderInstanceEditor(provider = "ollama") {
+  const normalizedProvider = normalizeProviderId(provider);
+  const $list = $("#ollamaProviderInstances");
+  const $hint = $("#ollamaProviderPoolHint");
+  if (!$list.length || !$hint.length) return;
+  const rows = currentProviderPoolRows(normalizedProvider);
+  if (!rows.length) {
+    $list.html('<div class="provider-instance-empty">No saved endpoints yet. Add one or keep using the session base URL only.</div>');
+    $hint.html(renderProviderPoolStatusNote(normalizedProvider, rows));
+    return;
+  }
+  $list.html(rows.map(function (entry, index) {
+    return `
+      <div class="provider-instance-row" data-provider="${escapeHtml(normalizedProvider)}" data-instance-index="${index}" data-instance-id="${escapeHtml(entry.id || "")}">
+        <div>
+          <label>Label</label>
+          <input class="provider-instance-field provider-instance-label" type="text" value="${escapeHtml(entry.label || "")}" placeholder="Ollama 1" />
+        </div>
+        <div>
+          <label>Base URL</label>
+          <input class="provider-instance-field provider-instance-base-url" type="text" value="${escapeHtml(entry.baseUrl || "")}" placeholder="http://192.168.0.26:11434" />
+        </div>
+        <div>
+          <label>Models</label>
+          <input class="provider-instance-field provider-instance-models" type="text" value="${escapeHtml((entry.models || []).join(", "))}" placeholder="Optional comma-separated models" />
+        </div>
+        <label class="provider-instance-toggle">
+          <input class="provider-instance-field provider-instance-enabled" type="checkbox" ${entry.enabled === false ? "" : "checked"} />
+          Enabled
+        </label>
+        <button type="button" class="danger provider-instance-remove">Remove</button>
+      </div>
+    `;
+  }).join(""));
+  $hint.html(renderProviderPoolStatusNote(normalizedProvider, rows));
+}
+
+function refreshProviderInstances(options = {}) {
+  providerInstanceStatusLoading = true;
+  return $.getJSON(apiRoute(API.providersStatus))
+    .done(function (data) {
+      providerInstanceStatusLoaded = true;
+      providerInstanceStatusLoading = false;
+      latestProviderInstanceStatus = normalizeProviderInstanceStatus(data);
+      if (!providerInstanceEditorDirty.ollama) {
+        setProviderPoolRows("ollama", latestProviderInstanceStatus.providerGroups?.ollama?.instances || [], { dirty: false });
+      }
+      renderProviderInstanceEditor("ollama");
+    })
+    .fail(function () {
+      providerInstanceStatusLoaded = false;
+      providerInstanceStatusLoading = false;
+      latestProviderInstanceStatus = defaultProviderInstanceStatus();
+      if (options.forceClear) {
+        delete providerInstanceEditorState.ollama;
+        providerInstanceEditorDirty.ollama = false;
+      }
+      renderProviderInstanceEditor("ollama");
+    });
 }
 
 function buildWorkerTypeOptions(selectedValue) {
@@ -1916,11 +2331,16 @@ function renderArtifactContent(data) {
   const content = data?.content || {};
   const summary = data?.summary || {};
   const sections = [];
+  const canonicalText = canonicalArtifactAnswerText(content, data?.kind || content?.artifactType || "");
 
   if (Object.prototype.hasOwnProperty.call(content, "output")) {
     sections.push("Canonical Structured Output\n" + pretty(content.output));
   } else {
     sections.push("Artifact Content\n" + pretty(content));
+  }
+
+  if (canonicalText) {
+    sections.push("Canonical Flattened Text\n" + canonicalText);
   }
 
   const providerTraceLines = providerTraceSummaryLines(summary.providerTrace);
@@ -1993,8 +2413,10 @@ function normalizeEvalAnswerEntry(payload, fallbackLabel, provider, model, mode,
 function extractEvalPrimaryAnswer(data) {
   const content = data?.content || {};
   const output = content?.output || {};
+  const kind = String(data?.kind || content?.artifactType || "").trim().toLowerCase();
   const frontAnswer = output?.frontAnswer || content?.frontAnswer || {};
   const answer = output?.answer || content?.answer || {};
+  const canonicalAnswer = canonicalArtifactAnswerText(content, kind);
   const provider = String(content?.provider || content?.primaryTelemetry?.provider || data?.summary?.provider || "").trim();
   const model = String(content?.model || content?.primaryTelemetry?.model || data?.summary?.model || "").trim();
   const mode = String(content?.mode || data?.summary?.mode || "").trim();
@@ -2015,6 +2437,20 @@ function extractEvalPrimaryAnswer(data) {
         null
       )
       : null)
+    || (canonicalAnswer
+      ? normalizeEvalAnswerEntry(
+        {
+          answer: canonicalAnswer,
+          stance: content?.summary?.frontAnswer?.stance || output?.frontAnswer?.stance || "",
+          confidenceNote: content?.summary?.frontAnswer?.confidenceNote || output?.frontAnswer?.confidenceNote || content?.quality?.rationale || ""
+        },
+        "Pressurized answer",
+        provider,
+        model,
+        mode,
+        content?.usage || null
+      )
+      : null)
     || normalizeEvalAnswerEntry(
       {
         answer: content?.publicAnswer || "",
@@ -2032,8 +2468,10 @@ function extractEvalPrimaryAnswer(data) {
 
 function extractEvalBaselineAnswer(data) {
   const content = data?.content || {};
+  const kind = String(data?.kind || content?.artifactType || "").trim().toLowerCase();
   const directBaseline = content?.directBaseline || {};
   const baselineAnswer = directBaseline?.answer || content?.baselineAnswer || content?.directAnswer || {};
+  const canonicalAnswer = canonicalArtifactAnswerText(directBaseline, "direct_baseline_output") || canonicalArtifactAnswerText(content, kind);
   const provider = String(directBaseline?.provider || content?.baselineTelemetry?.provider || content?.provider || data?.summary?.provider || "").trim();
   const model = String(directBaseline?.model || content?.baselineTelemetry?.model || content?.model || data?.summary?.model || "").trim();
   const mode = String(directBaseline?.mode || content?.mode || data?.summary?.mode || "").trim();
@@ -2058,7 +2496,20 @@ function extractEvalBaselineAnswer(data) {
     model,
     mode,
     directBaseline?.usage || null
-  );
+  ) || (canonicalAnswer
+    ? normalizeEvalAnswerEntry(
+      {
+        answer: canonicalAnswer,
+        stance: content?.baselineQuality?.verdict || "",
+        confidenceNote: content?.baselineAnswerHealth?.verdict || ""
+      },
+      "Single-thread baseline",
+      provider,
+      model,
+      mode,
+      directBaseline?.usage || null
+    )
+    : null);
 }
 
 function renderEvalMetricStrip(metrics) {
@@ -2507,7 +2958,7 @@ function renderEvalArtifactVisual(data) {
   if (!blocks.length) {
     const fallbackSections = [
       renderTextSection("Artifact kind", kind || "artifact"),
-      renderTextSection("Quick summary", truncateText(pretty(content), 900))
+      renderTextSection("Quick summary", canonicalArtifactAnswerText(content, kind) || pretty(content))
     ].filter(Boolean);
     if (fallbackSections.length) {
       blocks.push(`<section class="eval-visual-section">${fallbackSections.join("")}</section>`);
@@ -2625,6 +3076,7 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.directProvider || safeDraft.provider || "openai",
         safeDraft.directModel || safeDraft.model || "gpt-5-mini",
         safeDraft.ollamaBaseUrl || "http://127.0.0.1:11434",
+        JSON.stringify(normalizeProviderRoutingConfig(safeDraft.providerRouting || defaultProviderRoutingConfig())),
         normalizeTimeoutMode(safeDraft.timeoutMode || defaultTimeoutMode()),
         JSON.stringify(normalizeOllamaTimeoutProfile(safeDraft.ollamaTimeoutProfile || defaultOllamaTimeoutProfile())),
         JSON.stringify(normalizeTargetTimeouts(safeDraft.targetTimeouts || DEFAULT_TARGET_TIMEOUTS)),
@@ -2671,6 +3123,7 @@ function buildCommanderFormSource(task, draft) {
         task.runtime?.directProvider || task.runtime?.provider || "openai",
         task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
         task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
+        JSON.stringify(normalizeProviderRoutingConfig(task.runtime?.providerRouting || defaultProviderRoutingConfig())),
         normalizeTimeoutMode(task.runtime?.timeoutMode || defaultTimeoutMode()),
         JSON.stringify(normalizeOllamaTimeoutProfile(task.runtime?.ollamaTimeoutProfile || defaultOllamaTimeoutProfile())),
         JSON.stringify(normalizeTargetTimeouts(task.runtime?.targetTimeouts || DEFAULT_TARGET_TIMEOUTS)),
@@ -2709,6 +3162,7 @@ function buildCommanderFormSource(task, draft) {
         directProvider: task.runtime?.directProvider || task.runtime?.provider || "openai",
         directModel: task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
         ollamaBaseUrl: task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
+        providerRouting: normalizeProviderRoutingConfig(task.runtime?.providerRouting || defaultProviderRoutingConfig()),
         timeoutMode: normalizeTimeoutMode(task.runtime?.timeoutMode || defaultTimeoutMode()),
         ollamaTimeoutProfile: normalizeOllamaTimeoutProfile(task.runtime?.ollamaTimeoutProfile || defaultOllamaTimeoutProfile()),
         targetTimeouts: normalizeTargetTimeouts(task.runtime?.targetTimeouts || DEFAULT_TARGET_TIMEOUTS),
@@ -2752,6 +3206,7 @@ function applyCommanderForm(values) {
   const workerModel = normalizeSelectedModelForProvider(safe.model, workerProvider);
   const summarizerModel = normalizeSelectedModelForProvider(safe.summarizerModel || safe.model, summarizerProvider);
   const directModel = normalizeSelectedModelForProvider(safe.directModel || safe.model, directProvider);
+  const providerRouting = normalizeProviderRoutingConfig(safe.providerRouting || defaultProviderRoutingConfig());
   $("#sessionContext").val(safe.sessionContext || "");
   $("#objective").val(safe.objective || "");
   $("#constraints").val((safe.constraints || []).join("\n"));
@@ -2765,6 +3220,8 @@ function applyCommanderForm(values) {
   $("#summarizerProvider").val(summarizerProvider);
   $("#directProvider").val(directProvider);
   $("#ollamaBaseUrl").val(normalizeOllamaBaseUrl(safe.ollamaBaseUrl));
+  $("#ollamaRoutingMode").val(providerRouting.ollama?.selectionMode || "single");
+  $("#ollamaJudgeMode").val(providerRouting.ollama?.judgeMode || "prefer_distinct");
   $("#ollamaTimeoutMode").val(normalizeTimeoutMode(safe.timeoutMode || defaultTimeoutMode()));
   populateStaticModelSelect("#model", workerModel, workerProvider);
   populateStaticModelSelect(
@@ -2825,6 +3282,7 @@ function collectCommanderPayload() {
     directProvider: $("#directProvider").val(),
     directModel: $("#directModel").val(),
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
+    providerRouting: collectProviderRoutingSelection(),
     timeoutMode: normalizeTimeoutMode($("#ollamaTimeoutMode").val()),
     ollamaTimeoutProfile: currentOllamaTimeoutProfileSource(latestState?.activeTask || null, latestState?.draft || null),
     reasoningEffort: $("#reasoningEffort").val(),
@@ -2918,6 +3376,7 @@ function buildDraftSavePayload(options = {}) {
   payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
   payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
+  payload.providerRouting = JSON.stringify(normalizeProviderRoutingConfig(payload.providerRouting));
   payload.timeoutMode = normalizeTimeoutMode(payload.timeoutMode);
   payload.ollamaTimeoutProfile = JSON.stringify(normalizeOllamaTimeoutProfile(payload.ollamaTimeoutProfile));
   payload.targetTimeouts = JSON.stringify(storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null));
@@ -2940,6 +3399,7 @@ function buildFrontCanvasRuntimePayload() {
     directProvider: String(base.directProvider || base.provider || "openai"),
     directModel: String(base.directModel || base.model || ""),
     ollamaBaseUrl: normalizeOllamaBaseUrl(base.ollamaBaseUrl),
+    providerRouting: normalizeProviderRoutingConfig(base.providerRouting),
     timeoutMode: normalizeTimeoutMode(base.timeoutMode),
     ollamaTimeoutProfile: normalizeOllamaTimeoutProfile(base.ollamaTimeoutProfile),
     reasoningEffort: String(base.reasoningEffort || "low"),
@@ -4665,9 +5125,41 @@ function compactMaskedKey(masked) {
 
 function authModeLabel(mode) {
   const normalized = String(mode || "").trim().toLowerCase();
-  if (normalized === "local") return "Local";
+  if (normalized === "local") return "Local file";
   if (normalized === "db") return "DB";
   return "Env";
+}
+
+function authLocalFilePrefix(group) {
+  return String(group?.localFilePrefix || normalizeProviderId(group?.provider || "openai"));
+}
+
+function authLocalFileFormat(group) {
+  return String(group?.localFileFormat || (authLocalFilePrefix(group) + ":<api_key>"));
+}
+
+function authLocalFilePath(group) {
+  return String(group?.localFilePath || "Auth.txt");
+}
+
+function authLocalFileGuidance(group) {
+  const label = String(group?.label || group?.provider || "Provider");
+  return String(
+    group?.localFileGuidance
+    || ("Edit " + authLocalFilePath(group) + " and add one " + label + " key per line as " + authLocalFileFormat(group) + ".")
+  );
+}
+
+function authLocalFileHint(group) {
+  return "Local file -> " + authLocalFilePath(group) + " | format " + authLocalFileFormat(group);
+}
+
+function authModeSwitchSuccessText(group, mode, effectiveGroup) {
+  const resolved = effectiveGroup || group || {};
+  if (String(mode || "").trim().toLowerCase() !== "local") {
+    return String(resolved.label || group?.label || "Provider") + " credential mode updated";
+  }
+  return String(resolved.label || group?.label || "Provider") + " now uses Local file. " + authLocalFileGuidance(resolved) + " If the file already exists without that prefix, add it and try again.";
 }
 
 function authProviderGroup(provider) {
@@ -4686,7 +5178,11 @@ function authProviderGroup(provider) {
     safeBackend: latestAuthStatus.recommendedBackend || "env",
     writable: !!latestAuthStatus.writable,
     failureMode: "",
-    failureDetail: ""
+    failureDetail: "",
+    localFilePath: "Auth.txt",
+    localFilePrefix: normalized,
+    localFileFormat: normalized + ":<api_key>",
+    localFileGuidance: ""
   };
 }
 
@@ -4808,7 +5304,7 @@ function renderAuthProviderCards(force = false) {
     const envActive = selectedMode === "env";
     const dbActive = selectedMode === "db";
     const modeSummary = localActive
-      ? "Local -> shared Auth.txt using provider prefixes."
+      ? authLocalFileHint(group)
       : (authModeLabel(selectedMode) + " -> " + String(group.effectiveBackend || group.safeBackend || recommended));
     const rows = [];
 
@@ -4850,7 +5346,7 @@ function renderAuthProviderCards(force = false) {
             <div class="auth-key-row-head">
               <div>
                 <div class="auth-key-row-label">New key ${index + 1}</div>
-                <div class="auth-key-row-meta">Paste a ${escapeHtml(group.label)} key here and it will append into shared Auth.txt using the ${escapeHtml(providerId === "anthropic" ? "ant" : providerId === "minimax" ? "min" : providerId)} prefix.</div>
+                <div class="auth-key-row-meta">Paste a ${escapeHtml(group.label)} key here and it will append into ${escapeHtml(authLocalFilePath(group))} as ${escapeHtml(authLocalFileFormat(group))}.</div>
               </div>
             </div>
             <div class="auth-key-row-inputs">
@@ -4888,8 +5384,9 @@ function renderAuthProviderCards(force = false) {
         </div>
         <div class="auth-provider-card-meta">${escapeHtml(modeSummary)}</div>
         <div class="auth-provider-card-meta">${escapeHtml(group.failureDetail || (group.hasKey ? (group.label + " keys available.") : ("No " + group.label + " keys configured.")))}</div>
+        ${localActive ? `<div class="auth-provider-card-meta">${escapeHtml(authLocalFileGuidance(group))}</div>` : ""}
         <div class="auth-mode-switch" role="group" aria-label="${escapeHtml(group.label + " credential mode")}">
-          <button type="button" class="auth-mode-toggle${localActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="local" ${inputsLocked ? "disabled" : ""}>Local</button>
+          <button type="button" class="auth-mode-toggle${localActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="local" ${inputsLocked ? "disabled" : ""}>Local file</button>
           <button type="button" class="auth-mode-toggle${envActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="env" ${inputsLocked ? "disabled" : ""}>Env</button>
           <button type="button" class="auth-mode-toggle${dbActive ? " active" : ""}" data-provider="${escapeHtml(providerId)}" data-auth-mode="db" ${inputsLocked ? "disabled" : ""}>DB</button>
         </div>
@@ -4936,7 +5433,11 @@ function renderAuthStatus(data) {
       writable: !!group.writable,
       managed: !!group.managed,
       failureMode: String(group.failureMode || ""),
-      failureDetail: String(group.failureDetail || "")
+      failureDetail: String(group.failureDetail || ""),
+      localFilePath: String(group.localFilePath || "Auth.txt"),
+      localFilePrefix: String(group.localFilePrefix || providerId),
+      localFileFormat: String(group.localFileFormat || (String(group.localFilePrefix || providerId) + ":<api_key>")),
+      localFileGuidance: String(group.localFileGuidance || "")
     };
   });
   latestAuthStatus = {
@@ -5596,8 +6097,17 @@ function renderFrontCanvasCatalogs() {
   frontEvalSelection.caseId = effectiveCaseId;
   $("#frontEvalSuiteSelect").html(buildEvalSuiteOptions(suites, effectiveSuiteId)).val(effectiveSuiteId);
   $("#frontEvalCaseSelect").html(buildEvalCaseOptions(suites, effectiveSuiteId, effectiveCaseId)).val(effectiveCaseId);
-  populateStaticModelSelect("#frontEvalJudgeModel", normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || "gpt-5.4", "openai"), "openai");
-  $("#frontEvalJudgeModel").val(normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || "gpt-5.4", "openai"));
+  frontEvalSelection.judgeProvider = normalizeProviderId(frontEvalSelection.judgeProvider || "openai");
+  populateStaticProviderSelect("#frontEvalJudgeProvider", frontEvalSelection.judgeProvider);
+  populateStaticModelSelect(
+    "#frontEvalJudgeModel",
+    normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider),
+    frontEvalSelection.judgeProvider
+  );
+  $("#frontEvalJudgeProvider").val(frontEvalSelection.judgeProvider);
+  $("#frontEvalJudgeModel").val(
+    normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider)
+  );
   persistFrontEvalSelection();
 
   const judgeCatalog = frontCanvasCatalogSource("judge");
@@ -5611,8 +6121,17 @@ function renderFrontCanvasCatalogs() {
   });
   frontJudgeSelection.suiteIds = suiteIds.length ? suiteIds : judgeSuites.slice(0, 1).map(function (suite) { return String(suite.suiteId || ""); });
   frontJudgeSelection.armIds = armIds.length ? armIds : suggestDefaultEvalArmIds(judgeArms);
-  populateStaticModelSelect("#frontJudgeModel", normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || "gpt-5.4", "openai"), "openai");
-  $("#frontJudgeModel").val(normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || "gpt-5.4", "openai"));
+  frontJudgeSelection.judgeProvider = normalizeProviderId(frontJudgeSelection.judgeProvider || "openai");
+  populateStaticProviderSelect("#frontJudgeProvider", frontJudgeSelection.judgeProvider);
+  populateStaticModelSelect(
+    "#frontJudgeModel",
+    normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider),
+    frontJudgeSelection.judgeProvider
+  );
+  $("#frontJudgeProvider").val(frontJudgeSelection.judgeProvider);
+  $("#frontJudgeModel").val(
+    normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider)
+  );
   $("#frontJudgeReplicates").val(Number(frontJudgeSelection.replicates || 1));
   $("#frontJudgeLoopSweep").val(String(frontJudgeSelection.loopSweep || "1"));
   renderFrontJudgeChecklist(
@@ -5882,7 +6401,7 @@ function renderEvalRunDetail(run) {
     <div class="eval-summary-grid">
       <article class="history-card">
         <div class="history-title">${escapeHtml(run?.suite?.title || run?.suiteId || "Eval suite")}</div>
-        <div class="history-meta">${escapeHtml((run?.status || "unknown") + " | judge " + (run?.judgeModel || "n/a"))}</div>
+        <div class="history-meta">${escapeHtml((run?.status || "unknown") + " | judge " + modelLabel(run?.judgeModel || "n/a", run?.judgeProvider || "openai"))}</div>
       </article>
       <article class="history-card">
         <div class="history-title">Quality</div>
@@ -5958,7 +6477,7 @@ function renderEvalRunDetail(run) {
                 " | diff " + Number(comparison.scores?.overallDifferentiation || 0).toFixed(1) +
                 " | baseline quality " + Number(comparison.baselineQuality?.scores?.overallQuality || 0).toFixed(1)
               )}</div>` : ""}
-              <div class="eval-answer-preview">${escapeHtml(truncateText(replicate.publicAnswer || replicate.error || "No answer captured.", 240))}</div>
+              <div class="eval-answer-preview">${escapeHtml(String(replicate.publicAnswer || replicate.error || "No answer captured.").trim())}</div>
             </div>
             ${inlineCompare}
             ${buttons.length ? `<div class="round-history-actions">${buttons.join("")}</div>` : ""}
@@ -7200,7 +7719,7 @@ function buildLegacyAgentReplyText(summary) {
 }
 
 function buildAgentReplyText(summary) {
-  const directAnswer = String(summary?.frontAnswer?.answer || "").trim();
+  const directAnswer = canonicalSummaryAnswerText(summary);
   if (directAnswer) {
     return directAnswer;
   }
@@ -7476,8 +7995,8 @@ function renderSummaryOpinion(summary, directBaseline) {
       ? renderReviewBlock("State contract", contractWarnings.join("\n"))
       : "",
     hasSummary
-      ? renderReviewBlock("Public answer", frontAnswer.answer || buildAgentReplyText(summary))
-      : renderReviewBlock("Single-thread answer", directAnswer.answer || ""),
+      ? renderReviewBlock("Public answer", buildAgentReplyText(summary))
+      : renderReviewBlock("Single-thread answer", canonicalDirectAnswerText(directAnswer)),
     directBaseline
       ? renderReviewBlock(
           "Single-thread baseline",
@@ -8177,7 +8696,7 @@ function renderConversationThread(task, summary, directBaseline, workerState, lo
       author: "Assistant",
       tag: directMode === "single" ? "Single-thread baseline" : "Baseline fallback",
       sections: [
-        renderPlainTextBlock(String(directBaseline.answer.answer || "").trim())
+        renderPlainTextBlock(canonicalDirectAnswerText(directBaseline.answer))
       ]
     }));
   } else {
@@ -8636,6 +9155,7 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     directProvider: $("#directProvider").val(),
     directModel: $("#directModel").val(),
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
+    providerRouting: JSON.stringify(collectProviderRoutingSelection()),
     timeoutMode: normalizeTimeoutMode($("#ollamaTimeoutMode").val()),
     ollamaTimeoutProfile: JSON.stringify(currentOllamaTimeoutProfileSource(latestState?.activeTask || null, latestState?.draft || null)),
     targetTimeouts: JSON.stringify(storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
@@ -8806,8 +9326,19 @@ $(function () {
   renderApiModeStatus();
   renderDispatchActivity();
   syncOperatorNoticeVisibility();
-  populateStaticModelSelect("#frontEvalJudgeModel", normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || "gpt-5.4", "openai"), "openai");
-  populateStaticModelSelect("#frontJudgeModel", normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || "gpt-5.4", "openai"), "openai");
+  populateStaticProviderSelect("#frontEvalJudgeProvider", normalizeProviderId(frontEvalSelection.judgeProvider || "openai"));
+  populateStaticProviderSelect("#frontJudgeProvider", normalizeProviderId(frontJudgeSelection.judgeProvider || "openai"));
+  populateStaticModelSelect(
+    "#frontEvalJudgeModel",
+    normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || defaultModelForProvider(normalizeProviderId(frontEvalSelection.judgeProvider || "openai")), normalizeProviderId(frontEvalSelection.judgeProvider || "openai")),
+    normalizeProviderId(frontEvalSelection.judgeProvider || "openai")
+  );
+  populateStaticModelSelect(
+    "#frontJudgeModel",
+    normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || defaultModelForProvider(normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")), normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")),
+    normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")
+  );
+  refreshProviderInstances();
   refreshState();
   setInterval(refreshState, 2000);
 
@@ -9024,13 +9555,29 @@ $(function () {
     persistFrontEvalSelection();
   });
 
-  $("#frontEvalJudgeModel").on("change", function () {
-    frontEvalSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), "openai");
+  $("#frontEvalJudgeProvider").on("change", function () {
+    frontEvalSelection.judgeProvider = normalizeProviderId($(this).val() || "openai");
+    frontEvalSelection.judgeModel = normalizeSelectedModelForProvider($("#frontEvalJudgeModel").val(), frontEvalSelection.judgeProvider);
+    populateStaticModelSelect("#frontEvalJudgeModel", frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider);
+    $("#frontEvalJudgeModel").val(frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider));
     persistFrontEvalSelection();
   });
 
+  $("#frontEvalJudgeModel").on("change", function () {
+    frontEvalSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), frontEvalSelection.judgeProvider || "openai");
+    persistFrontEvalSelection();
+  });
+
+  $("#frontJudgeProvider").on("change", function () {
+    frontJudgeSelection.judgeProvider = normalizeProviderId($(this).val() || "openai");
+    frontJudgeSelection.judgeModel = normalizeSelectedModelForProvider($("#frontJudgeModel").val(), frontJudgeSelection.judgeProvider);
+    populateStaticModelSelect("#frontJudgeModel", frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider);
+    $("#frontJudgeModel").val(frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider));
+    persistFrontJudgeSelection();
+  });
+
   $("#frontJudgeModel").on("change", function () {
-    frontJudgeSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), "openai");
+    frontJudgeSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), frontJudgeSelection.judgeProvider || "openai");
     persistFrontJudgeSelection();
   });
 
@@ -9048,6 +9595,7 @@ $(function () {
     const payload = Object.assign({}, buildFrontCanvasRuntimePayload(), {
       suiteId: String(frontEvalSelection.suiteId || ""),
       caseId: String(frontEvalSelection.caseId || ""),
+      judgeProvider: String(frontEvalSelection.judgeProvider || "openai"),
       judgeModel: String(frontEvalSelection.judgeModel || "gpt-5.4")
     });
     postJson(API.frontEvalRuns, payload, "Front eval queued", {
@@ -9062,13 +9610,14 @@ $(function () {
   });
 
   $("#runFrontJudge").on("click", function () {
-    const payload = {
+    const payload = Object.assign({}, buildFrontCanvasRuntimePayload(), {
       suiteIds: frontJudgeSelection.suiteIds || [],
       armIds: frontJudgeSelection.armIds || [],
+      judgeProvider: String(frontJudgeSelection.judgeProvider || "openai"),
       judgeModel: String(frontJudgeSelection.judgeModel || "gpt-5.4"),
       replicates: Math.max(1, parseInt(frontJudgeSelection.replicates, 10) || 1),
       loopSweep: splitCommaList(frontJudgeSelection.loopSweep || "1")
-    };
+    });
     postJson(API.frontJudgeRuns, payload, "Front judge queued", {
       manualDispatch: "Front judge",
       onSuccess: function (resp) {
@@ -9167,7 +9716,7 @@ $(function () {
     queueDraftSave();
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #ollamaTimeoutMode, #reasoningEffort, #maxCostUsd, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #ollamaTimeoutMode, #ollamaRoutingMode, #ollamaJudgeMode, #reasoningEffort, #maxCostUsd, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
     syncDirectBaselineFields();
     syncOllamaBaseUrlField();
     formDirty = true;
@@ -9187,6 +9736,58 @@ $(function () {
         workerControlsSignature = "";
         debugControlsSignature = "";
         $("#ollamaTimeoutMode").val("auto");
+      }
+    });
+  });
+
+  $("#addOllamaProviderInstance").on("click", function () {
+    const existingRows = readProviderPoolRowsFromDom("ollama");
+    const nextRows = existingRows.length ? existingRows.slice() : currentProviderPoolRows("ollama").slice();
+    const nextIndex = nextRows.length + 1;
+    nextRows.push(
+      normalizeProviderInstanceEntry(
+        {
+          id: "ollama-" + nextIndex,
+          provider: "ollama",
+          label: "Ollama " + nextIndex,
+          baseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
+          enabled: true,
+          models: []
+        },
+        "ollama",
+        nextIndex
+      )
+    );
+    setProviderPoolRows("ollama", nextRows, { dirty: true });
+    renderProviderInstanceEditor("ollama");
+  });
+
+  $(document).on("input change", "#ollamaProviderInstances .provider-instance-field", function () {
+    const rows = readProviderPoolRowsFromDom("ollama");
+    setProviderPoolRows("ollama", rows, { dirty: true });
+    $("#ollamaProviderPoolHint").html(renderProviderPoolStatusNote("ollama", rows));
+  });
+
+  $(document).on("click", "#ollamaProviderInstances .provider-instance-remove", function () {
+    const rows = readProviderPoolRowsFromDom("ollama");
+    const index = parseInt($(this).closest(".provider-instance-row").data("instanceIndex"), 10);
+    const nextRows = rows.filter(function (_entry, entryIndex) { return entryIndex !== index; });
+    setProviderPoolRows("ollama", nextRows, { dirty: true });
+    renderProviderInstanceEditor("ollama");
+  });
+
+  $("#saveOllamaProviderPool").on("click", function () {
+    const rows = readProviderPoolRowsFromDom("ollama");
+    postJson(API.providerInstances, {
+      provider: "ollama",
+      instances: rows
+    }, "Ollama provider pool saved", {
+      manualDispatch: "Provider pool save",
+      onSuccess: function (resp) {
+        latestProviderInstanceStatus = normalizeProviderInstanceStatus(resp?.status || defaultProviderInstanceStatus());
+        setProviderPoolRows("ollama", Array.isArray(resp?.instances) ? resp.instances : rows, { dirty: false });
+        providerInstanceStatusLoaded = true;
+        renderProviderInstanceEditor("ollama");
       }
     });
   });
@@ -9222,6 +9823,7 @@ $(function () {
       directProvider: payload.directProvider || payload.provider,
       directModel: payload.directModel || payload.model,
       ollamaBaseUrl: payload.ollamaBaseUrl,
+      providerRouting: normalizeProviderRoutingConfig(payload.providerRouting),
       timeoutMode: normalizeTimeoutMode(payload.timeoutMode),
       ollamaTimeoutProfile: JSON.stringify(normalizeOllamaTimeoutProfile(payload.ollamaTimeoutProfile)),
       targetTimeouts: JSON.stringify(storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
@@ -9597,7 +10199,10 @@ $(function () {
     if (mode === String(group.selectedMode || "")) return;
     $.post(apiRoute(API.authMode), { provider: provider, mode: mode })
       .done(function (resp) {
-        handleAuthMutationSuccess(resp, group.label + " credential mode updated", {
+        let parsed = resp;
+        try { parsed = JSON.parse(resp); } catch (_) {}
+        const refreshedGroup = parsed?.providerGroups?.[provider] || authProviderGroup(provider);
+        handleAuthMutationSuccess(resp, authModeSwitchSuccessText(group, mode, refreshedGroup), {
           onSuccess: function () {
             resetAuthDynamicRows(provider);
             renderAuthProviderCards(true);

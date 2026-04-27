@@ -213,6 +213,100 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(runtime_view["requestTimeoutSeconds"], 275)
         self.assertEqual(summarizer_view["requestTimeoutSeconds"], 420)
 
+    def test_select_provider_instance_prefers_distinct_arbiter_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "providers.txt").write_text(
+                json.dumps(
+                    {
+                        "ollama": [
+                            {
+                                "label": "Ollama A",
+                                "baseUrl": "http://192.168.0.26:11434",
+                                "models": ["qwen3.5:9b"],
+                                "enabled": True,
+                            },
+                            {
+                                "label": "Ollama B",
+                                "baseUrl": "http://192.168.0.30:11434",
+                                "models": ["qwen3.5:9b"],
+                                "enabled": True,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = LoopRuntime(tmpdir)
+            runtime_config = {
+                "ollamaBaseUrl": "http://192.168.0.26:11434",
+                "providerRouting": {"ollama": {"selectionMode": "single", "judgeMode": "prefer_distinct"}},
+            }
+
+            summary_instance = runtime.select_provider_instance(
+                {"taskId": "task-1"},
+                runtime_config,
+                "ollama",
+                "qwen3.5:9b",
+                "summarizer",
+                1,
+            )
+            arbiter_instance = runtime.select_provider_instance(
+                {"taskId": "task-1"},
+                runtime_config,
+                "ollama",
+                "qwen3.5:9b",
+                "arbiter",
+                1,
+            )
+
+        self.assertEqual(summary_instance["baseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(arbiter_instance["baseUrl"], "http://192.168.0.30:11434")
+
+    def test_select_provider_instance_filters_to_matching_model_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "providers.txt").write_text(
+                json.dumps(
+                    {
+                        "ollama": [
+                            {
+                                "label": "Fast host",
+                                "baseUrl": "http://192.168.0.26:11434",
+                                "models": ["qwen3.5:9b"],
+                                "enabled": True,
+                            },
+                            {
+                                "label": "Heavy host",
+                                "baseUrl": "http://192.168.0.30:11434",
+                                "models": ["qwen3.5:27b"],
+                                "enabled": True,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = LoopRuntime(tmpdir)
+            runtime_config = {
+                "ollamaBaseUrl": "http://192.168.0.26:11434",
+                "providerRouting": {"ollama": {"selectionMode": "mix", "judgeMode": "prefer_distinct"}},
+            }
+            filtered_instances = runtime.load_provider_instances("ollama", runtime_config, "qwen3.5:27b")
+
+            instance = runtime.select_provider_instance(
+                {"taskId": "task-2"},
+                runtime_config,
+                "ollama",
+                "qwen3.5:27b",
+                "summarizer",
+                1,
+            )
+
+        self.assertEqual(len(filtered_instances), 1)
+        self.assertEqual(filtered_instances[0]["baseUrl"], "http://192.168.0.30:11434")
+        self.assertEqual(instance["baseUrl"], "http://192.168.0.30:11434")
+
     def test_read_api_key_pool_honors_env_backend_without_falling_back_to_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             auth_path = Path(tmpdir) / "Auth.txt"
@@ -560,6 +654,147 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(usage["inputTokens"], 123)
         self.assertEqual(usage["outputTokens"], 45)
         self.assertEqual(usage["estimatedCostUsd"], 0.0)
+
+    def test_invoke_provider_json_supports_xai_wrapper_flattening(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        payload = {
+            "id": "resp-xai-1",
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "hidden"}]},
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps({"answer": "Grok wrapper reply"}),
+                        }
+                    ],
+                },
+            ],
+            "usage": {"input_tokens": 22, "output_tokens": 14, "total_tokens": 36},
+        }
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=1800):
+            seen_urls.append(str(request.full_url))
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = runtime.invoke_provider_json(
+                    provider="xai",
+                    api_key="xai-test-key",
+                    model="grok-4.20",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something useful.",
+                    schema_name="xai_test",
+                    schema=schema,
+                    target_kind="worker",
+                )
+
+        self.assertEqual(result.provider, "xai")
+        self.assertEqual(result.parsed, {"answer": "Grok wrapper reply"})
+        self.assertEqual(result.output_text, json.dumps({"answer": "Grok wrapper reply"}))
+        self.assertEqual(seen_urls, ["https://api.x.ai/v1/responses"])
+
+    def test_invoke_provider_json_supports_anthropic_wrapper_flattening(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        payload = {
+            "id": "msg-ant-1",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "internal only"},
+                {"type": "text", "text": "```json\n" + json.dumps({"answer": "Claude wrapper reply"}) + "\n```"},
+            ],
+            "usage": {"input_tokens": 18, "output_tokens": 11},
+        }
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=1800):
+            seen_urls.append(str(request.full_url))
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = runtime.invoke_provider_json(
+                    provider="anthropic",
+                    api_key="anthropic-test-key",
+                    model="claude-sonnet-4-20250514",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something useful.",
+                    schema_name="anthropic_test",
+                    schema=schema,
+                    target_kind="worker",
+                )
+
+        self.assertEqual(result.provider, "anthropic")
+        self.assertEqual(result.parsed, {"answer": "Claude wrapper reply"})
+        self.assertEqual(result.output_text, "```json\n" + json.dumps({"answer": "Claude wrapper reply"}) + "\n```")
+        self.assertEqual(runtime.get_response_output_text(result.response), result.output_text)
+        self.assertEqual(seen_urls, ["https://api.anthropic.com/v1/messages"])
+
+    def test_invoke_provider_json_supports_minimax_wrapper_flattening(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        payload = {
+            "id": "msg-min-1",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "tool_use", "name": "ignored_tool", "input": {"city": "Paris"}},
+                {"type": "text", "text": json.dumps({"answer": "MiniMax wrapper reply"})},
+            ],
+            "usage": {"input_tokens": 16, "output_tokens": 9},
+        }
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=1800):
+            seen_urls.append(str(request.full_url))
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = runtime.invoke_provider_json(
+                    provider="minimax",
+                    api_key="minimax-test-key",
+                    model="MiniMax-M2.7",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something useful.",
+                    schema_name="minimax_test",
+                    schema=schema,
+                    target_kind="worker",
+                )
+
+        self.assertEqual(result.provider, "minimax")
+        self.assertEqual(result.parsed, {"answer": "MiniMax wrapper reply"})
+        self.assertEqual(result.output_text, json.dumps({"answer": "MiniMax wrapper reply"}))
+        self.assertEqual(seen_urls, ["https://api.minimax.io/anthropic/v1/messages"])
 
     def test_get_task_runtime_carries_context_mode_and_ollama_endpoint(self) -> None:
         task = {

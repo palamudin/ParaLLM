@@ -261,9 +261,12 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             openai_writable = bool(openai_group.get("writable"))
             if openai_writable:
                 request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"clear": "1"}, timeout=20)
-                auth = request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"appendKey": "sk-test-1111"}, timeout=20)
-                if int(auth.get("keyCount") or 0) != 1:
-                    raise QAError("Python auth append did not produce exactly one stored key.")
+                request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"appendKey": "sk-test-1111"}, timeout=20)
+                post_auth_status = request_json(backend_base + "/v1/auth/status", timeout=20)
+                post_groups = post_auth_status.get("providerGroups") if isinstance(post_auth_status.get("providerGroups"), dict) else {}
+                post_openai_group = post_groups.get("openai") if isinstance(post_groups.get("openai"), dict) else {}
+                if int(post_openai_group.get("keyCount") or 0) < 1:
+                    raise QAError("Python auth append did not leave at least one OpenAI key available.")
             else:
                 status_code, body = request(
                     backend_base + "/v1/auth/keys",

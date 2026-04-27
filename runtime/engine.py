@@ -53,11 +53,13 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
 }
 
 ANTHROPIC_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "claude-opus-4-7": {"label": "Claude Opus 4.7"},
+    "claude-sonnet-4-6": {"label": "Claude Sonnet 4.6"},
+    "claude-opus-4-6": {"label": "Claude Opus 4.6"},
+    "claude-opus-4-5-20251101": {"label": "Claude Opus 4.5"},
+    "claude-haiku-4-5-20251001": {"label": "Claude Haiku 4.5"},
+    "claude-sonnet-4-5-20250929": {"label": "Claude Sonnet 4.5"},
     "claude-opus-4-1-20250805": {"label": "Claude Opus 4.1"},
-    "claude-opus-4-20250514": {"label": "Claude Opus 4"},
-    "claude-sonnet-4-20250514": {"label": "Claude Sonnet 4"},
-    "claude-3-7-sonnet-20250219": {"label": "Claude Sonnet 3.7"},
-    "claude-3-5-haiku-latest": {"label": "Claude Haiku 3.5"},
 }
 
 XAI_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -303,6 +305,16 @@ SENSITIVE_FILE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx", ".asc")
 def provider_model_catalog(provider: Optional[str]) -> Dict[str, Dict[str, Any]]:
     normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     return PROVIDER_MODEL_CATALOG.get(normalized, {})
+
+
+def provider_display_label(provider: Optional[str]) -> str:
+    normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    catalog_entry = PROVIDER_CATALOG.get(normalized)
+    if isinstance(catalog_entry, dict):
+        label = str(catalog_entry.get("label") or "").strip()
+        if label:
+            return label
+    return auth_key_provider_label(normalized)
 
 
 def provider_supports_custom_model(provider: Optional[str]) -> bool:
@@ -1473,6 +1485,205 @@ def normalize_ollama_base_url(value: Any) -> str:
     return base.rstrip("/")
 
 
+def default_provider_routing_config() -> Dict[str, Any]:
+    return {
+        "ollama": {
+            "selectionMode": "single",
+            "judgeMode": "prefer_distinct",
+        }
+    }
+
+
+def normalize_provider_routing_config(value: Any) -> Dict[str, Any]:
+    current = value if isinstance(value, dict) else {}
+    normalized: Dict[str, Any] = {}
+    for provider_id, default_node in default_provider_routing_config().items():
+        source_node = current.get(provider_id) if isinstance(current.get(provider_id), dict) else {}
+        selection_mode = str(source_node.get("selectionMode", default_node.get("selectionMode", "single"))).strip().lower()
+        if selection_mode not in {"single", "rotate", "mix"}:
+            selection_mode = str(default_node.get("selectionMode", "single"))
+        judge_mode = str(source_node.get("judgeMode", default_node.get("judgeMode", "prefer_distinct"))).strip().lower()
+        if judge_mode not in {"default", "prefer_distinct"}:
+            judge_mode = str(default_node.get("judgeMode", "prefer_distinct"))
+        normalized[provider_id] = {
+            "selectionMode": selection_mode,
+            "judgeMode": judge_mode,
+        }
+    return normalized
+
+
+def provider_instance_file_path(root: Path) -> Path:
+    return Path(root).resolve() / "providers.txt"
+
+
+def _provider_instance_id_from_base_url(provider: str, base_url: str, index: int = 1) -> str:
+    host = re.sub(r"[^a-z0-9]+", "-", normalize_ollama_base_url(base_url).lower()).strip("-")
+    provider_prefix = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    candidate = f"{provider_prefix}-{host}" if host else provider_prefix
+    if not candidate:
+        candidate = f"{provider_prefix}-{index}"
+    return candidate[:80]
+
+
+def default_provider_instance_entry(provider: Any, base_url: Any, index: int = 1) -> Dict[str, Any]:
+    normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    normalized_base_url = normalize_ollama_base_url(base_url)
+    return {
+        "id": _provider_instance_id_from_base_url(normalized_provider, normalized_base_url, index),
+        "provider": normalized_provider,
+        "label": f"{provider_display_label(normalized_provider)} {index}",
+        "baseUrl": normalized_base_url,
+        "enabled": True,
+        "models": [],
+    }
+
+
+def normalize_provider_instance_entry(entry: Any, fallback_provider: Any = DEFAULT_PROVIDER_ID, index: int = 1) -> Optional[Dict[str, Any]]:
+    current = entry if isinstance(entry, dict) else {}
+    provider = normalize_provider_id(current.get("provider"), normalize_provider_id(fallback_provider, DEFAULT_PROVIDER_ID))
+    raw_base_url = current.get("baseUrl", current.get("url"))
+    base_url = normalize_ollama_base_url(raw_base_url)
+    if not base_url:
+        return None
+    raw_models = current.get("models")
+    if isinstance(raw_models, str):
+        models = normalize_string_list(raw_models)
+    elif isinstance(raw_models, (list, tuple)):
+        models = normalize_string_list(list(raw_models))
+    else:
+        models = []
+    identifier = str(current.get("id") or "").strip()
+    if not identifier:
+        identifier = _provider_instance_id_from_base_url(provider, base_url, index)
+    label = str(current.get("label") or "").strip() or f"{provider_display_label(provider)} {index}"
+    return {
+        "id": identifier[:80],
+        "provider": provider,
+        "label": label[:120],
+        "baseUrl": base_url,
+        "enabled": coerce_bool(current.get("enabled"), True),
+        "models": models,
+    }
+
+
+def normalize_provider_instance_catalog(value: Any) -> Dict[str, List[Dict[str, Any]]]:
+    catalog = value if isinstance(value, dict) else {}
+    normalized: Dict[str, List[Dict[str, Any]]] = {}
+    for provider_id in PROVIDER_CATALOG:
+        entries = catalog.get(provider_id)
+        source_entries = entries if isinstance(entries, list) else []
+        cleaned: List[Dict[str, Any]] = []
+        seen_ids: Dict[str, bool] = {}
+        seen_urls: Dict[str, bool] = {}
+        for index, entry in enumerate(source_entries, start=1):
+            normalized_entry = normalize_provider_instance_entry(entry, provider_id, index)
+            if not normalized_entry:
+                continue
+            entry_id = str(normalized_entry.get("id") or "").strip().lower()
+            base_url = str(normalized_entry.get("baseUrl") or "").strip().lower()
+            if not entry_id or entry_id in seen_ids or base_url in seen_urls:
+                continue
+            seen_ids[entry_id] = True
+            seen_urls[base_url] = True
+            cleaned.append(normalized_entry)
+        normalized[provider_id] = cleaned
+    return normalized
+
+
+def read_provider_instance_catalog(root: Path) -> Dict[str, List[Dict[str, Any]]]:
+    path = provider_instance_file_path(root)
+    if not path.is_file():
+        return normalize_provider_instance_catalog({})
+    raw = path.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff").strip()
+    if not raw:
+        return normalize_provider_instance_catalog({})
+    parsed: Any = None
+    if raw.startswith("{") or raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+    if isinstance(parsed, list):
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for index, entry in enumerate(parsed, start=1):
+            normalized_entry = normalize_provider_instance_entry(entry, (entry or {}).get("provider"), index)
+            if not normalized_entry:
+                continue
+            grouped.setdefault(normalized_entry["provider"], []).append(normalized_entry)
+        return normalize_provider_instance_catalog(grouped)
+    if isinstance(parsed, dict):
+        return normalize_provider_instance_catalog(parsed)
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for index, raw_line in enumerate(raw.splitlines(), start=1):
+        line = str(raw_line or "").strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        provider = ""
+        base_url = ""
+        label = ""
+        models: List[str] = []
+        match = re.match(r"^([a-z0-9_-]+)\s*:\s*(https?://\S+)$", line, flags=re.IGNORECASE)
+        if match:
+            provider = match.group(1)
+            base_url = match.group(2)
+        else:
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) >= 2:
+                provider = parts[0]
+                base_url = parts[1]
+                if len(parts) >= 3:
+                    label = parts[2]
+                if len(parts) >= 4:
+                    models = normalize_string_list(parts[3:])
+        normalized_entry = normalize_provider_instance_entry(
+            {"provider": provider, "baseUrl": base_url, "label": label, "models": models},
+            provider,
+            index,
+        )
+        if not normalized_entry:
+            continue
+        grouped.setdefault(normalized_entry["provider"], []).append(normalized_entry)
+    return normalize_provider_instance_catalog(grouped)
+
+
+def write_provider_instance_catalog(root: Path, catalog: Any) -> Dict[str, List[Dict[str, Any]]]:
+    normalized = normalize_provider_instance_catalog(catalog)
+    path = provider_instance_file_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if any(normalized.get(provider_id) for provider_id in normalized):
+        path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+    return normalize_provider_instance_catalog(normalized)
+
+
+def provider_instance_pool_status(root: Path) -> Dict[str, Any]:
+    catalog = read_provider_instance_catalog(root)
+    provider_groups: Dict[str, Any] = {}
+    for provider_id in PROVIDER_CATALOG:
+        instances = list(catalog.get(provider_id, []))
+        provider_groups[provider_id] = {
+            "provider": provider_id,
+            "label": provider_display_label(provider_id),
+            "writable": True,
+            "instanceCount": len(instances),
+            "instances": instances,
+            "statusNote": (
+                f"{len(instances)} local endpoint(s) available."
+                if instances
+                else "No local endpoints configured for this provider group."
+            ),
+        }
+    return {
+        "file": str(provider_instance_file_path(root)),
+        "providerOrder": list(PROVIDER_CATALOG.keys()),
+        "providerGroups": provider_groups,
+        "storage": "local_file",
+        "statusNote": "Provider instance pools are local-file backed for the prototype and can later move to managed state.",
+    }
+
+
 def normalize_model_id(model: Optional[str], fallback: Optional[str] = None, provider: Optional[str] = None) -> str:
     normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     candidate = (model or "").strip()
@@ -1742,8 +1953,8 @@ def direct_baseline_mode_label(mode: Any) -> str:
 
 def normalize_direct_answer_payload(payload: Any, objective: str = "") -> Dict[str, str]:
     current = payload if isinstance(payload, dict) else {}
-    fallback_answer = truncate_text(objective, 3200) or "No direct baseline answer was captured."
-    answer = truncate_text(current.get("answer", ""), 3200) or fallback_answer
+    fallback_answer = str(objective or "").strip() or "No direct baseline answer was captured."
+    answer = str(current.get("answer", "") or "").strip() or fallback_answer
     stance = truncate_text(current.get("stance", ""), 260) or truncate_text(answer, 260) or "No explicit stance was captured."
     confidence_note = truncate_text(current.get("confidenceNote", ""), 320) or "No confidence note was captured."
     return {
@@ -2416,7 +2627,7 @@ def normalize_front_answer(front_answer: Any, fallback_summary: Optional[Dict[st
     normalized["leadDirection"] = truncate_text(normalized.get("stance", ""), 260) or "No explicit lead direction was captured."
     normalized["adversarialPressure"] = fallback_pressure or "No strong adversarial pressure was captured."
     if isinstance(front_answer, dict):
-        answer = truncate_text(front_answer.get("answer", ""), 3200)
+        answer = str(front_answer.get("answer", "") or "").strip()
         stance = truncate_text(front_answer.get("stance", ""), 260)
         confidence_note = truncate_text(front_answer.get("confidenceNote", ""), 260)
         lead_direction = truncate_text(front_answer.get("leadDirection", ""), 260)
@@ -2440,6 +2651,119 @@ def normalize_front_answer(front_answer: Any, fallback_summary: Optional[Dict[st
     if not normalized["adversarialPressure"]:
         normalized["adversarialPressure"] = "No strong adversarial pressure was captured."
     return normalized
+
+
+def flatten_provider_text_fragments(value: Any, depth: int = 0, limit: int = 160) -> List[str]:
+    if value is None or depth > 12 or limit <= 0:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (int, float, bool)):
+        return [str(value)]
+    if isinstance(value, list):
+        collected: List[str] = []
+        for item in value:
+            fragments = flatten_provider_text_fragments(item, depth + 1, limit - len(collected))
+            for fragment in fragments:
+                if fragment:
+                    collected.append(fragment)
+                if len(collected) >= limit:
+                    return collected[:limit]
+        return collected[:limit]
+    if not isinstance(value, dict):
+        return []
+
+    block_type = str(value.get("type") or "").strip().lower()
+    if block_type in {"thinking", "reasoning", "tool_use", "tool_result", "server_tool_use"}:
+        return []
+
+    collected: List[str] = []
+    direct_text_keys = ("text", "content", "completion", "output_text", "answer", "value")
+    for key in direct_text_keys:
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            collected.append(candidate.strip())
+            break
+
+    container_keys = ("message", "content", "output", "messages", "parts", "items", "data", "result")
+    for key in container_keys:
+        candidate = value.get(key)
+        fragments = flatten_provider_text_fragments(candidate, depth + 1, limit - len(collected))
+        for fragment in fragments:
+            if fragment and fragment not in collected:
+                collected.append(fragment)
+            if len(collected) >= limit:
+                return collected[:limit]
+    return collected[:limit]
+
+
+def join_flattened_provider_text(value: Any, separator: str = "\n\n") -> str:
+    fragments = flatten_provider_text_fragments(value)
+    deduped: List[str] = []
+    for fragment in fragments:
+        cleaned = str(fragment or "").strip()
+        if cleaned and cleaned not in deduped:
+            deduped.append(cleaned)
+    return separator.join(deduped).strip()
+
+
+def parse_structured_output_text(output_text: str) -> Dict[str, Any]:
+    raw = str(output_text or "").strip()
+    if not raw:
+        raise RuntimeErrorWithCode("Model response JSON parse failed: empty output.", 500)
+    candidates: List[str] = [raw]
+    fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE)
+    for block in fenced_blocks:
+        cleaned = str(block or "").strip()
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    first_object = raw.find("{")
+    last_object = raw.rfind("}")
+    if 0 <= first_object < last_object:
+        extracted = raw[first_object:last_object + 1].strip()
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+    last_error: Optional[json.JSONDecodeError] = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as error:
+            last_error = error
+            continue
+        if not isinstance(parsed, dict):
+            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+        return parsed
+    if last_error is not None:
+        raise RuntimeErrorWithCode(f"Model response JSON parse failed: {last_error}", 500)
+    raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+
+
+def flatten_output_payload_text(payload: Any, artifact_type: str = "") -> str:
+    normalized_type = str(artifact_type or "").strip().lower()
+    if isinstance(payload, dict):
+        front_answer = payload.get("frontAnswer")
+        if isinstance(front_answer, dict):
+            front_text = str(front_answer.get("answer", "") or "").strip()
+            if front_text:
+                return front_text
+        answer = payload.get("answer")
+        if isinstance(answer, dict):
+            answer_text = str(answer.get("answer", "") or "").strip()
+            if answer_text:
+                return answer_text
+        if normalized_type in {"commander_output", "commander_review_output", "summary_output", "summary_partial_output"}:
+            answer_draft = str(payload.get("answerDraft", "") or "").strip()
+            if answer_draft:
+                return answer_draft
+        if normalized_type in {"worker_output", "worker_step"}:
+            observation = str(payload.get("observation", "") or "").strip()
+            if observation:
+                return observation
+            request_to_peer = str(payload.get("requestToPeer", "") or "").strip()
+            if request_to_peer:
+                return request_to_peer
+    return join_flattened_provider_text(payload)
 
 
 def normalize_summarizer_opinion(opinion: Any, fallback_summary: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
@@ -3854,6 +4178,149 @@ class LoopRuntime:
             return clamp_timeout_seconds(override_seconds, fallback)
         return fallback
 
+    def get_provider_routing_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        return normalize_provider_routing_config(
+            task_runtime.get("providerRouting") if isinstance(task_runtime.get("providerRouting"), dict) else {}
+        )
+
+    def load_provider_instances(
+        self,
+        provider: Optional[str],
+        runtime_config: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        if normalized_provider != "ollama":
+            return []
+        catalog = read_provider_instance_catalog(self.config_root)
+        pool = catalog.get(normalized_provider, []) if isinstance(catalog, dict) else []
+        normalized_model = str(model or "").strip()
+        instances = []
+        for entry in pool if isinstance(pool, list) else []:
+            current = normalize_provider_instance_entry(entry, normalized_provider)
+            if not current or not bool(current.get("enabled")):
+                continue
+            supported_models = normalize_string_list(current.get("models", []))
+            if supported_models and normalized_model and normalized_model not in supported_models:
+                continue
+            current["models"] = supported_models
+            instances.append(current)
+        primary_base_url = normalize_ollama_base_url(
+            (runtime_config or {}).get("ollamaBaseUrl", default_ollama_base_url())
+        )
+        if not instances and primary_base_url:
+            instances.append(default_provider_instance_entry(normalized_provider, primary_base_url, 1))
+        elif primary_base_url and not normalized_model and not any(
+            normalize_ollama_base_url(entry.get("baseUrl")) == primary_base_url for entry in instances
+        ):
+            instances.append(
+                normalize_provider_instance_entry(
+                    {
+                        "id": "ollama-primary",
+                        "provider": normalized_provider,
+                        "label": "Primary session endpoint",
+                        "baseUrl": primary_base_url,
+                        "enabled": True,
+                        "models": [],
+                    },
+                    normalized_provider,
+                    len(instances) + 1,
+                )
+            )
+        return [entry for entry in instances if isinstance(entry, dict)]
+
+    def select_provider_instance(
+        self,
+        task: Optional[Dict[str, Any]],
+        runtime_config: Optional[Dict[str, Any]],
+        provider: Optional[str],
+        model: Optional[str],
+        target: Optional[str],
+        round_number: Optional[int] = None,
+        *,
+        prefer_distinct_judge: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+        if normalized_provider != "ollama":
+            return None
+        instances = self.load_provider_instances(normalized_provider, runtime_config, model)
+        if not instances:
+            return None
+        if len(instances) == 1:
+            return dict(instances[0])
+        task_runtime = runtime_config if isinstance(runtime_config, dict) else {}
+        routing = normalize_provider_routing_config(
+            task_runtime.get("providerRouting") if isinstance(task_runtime.get("providerRouting"), dict) else {}
+        )
+        routing_node = routing.get(normalized_provider, default_provider_routing_config()["ollama"])
+        selection_mode = str(routing_node.get("selectionMode") or "single").strip().lower()
+        judge_mode = str(routing_node.get("judgeMode") or "prefer_distinct").strip().lower()
+        normalized_target = normalize_auth_target(target)
+        if selection_mode == "single":
+            base_index = 0
+        else:
+            task_id = str((task or {}).get("taskId") or task_runtime.get("liveRunId") or "").strip()
+            seed_source = "|".join(
+                [
+                    task_id,
+                    str(model or "").strip(),
+                    normalized_target,
+                    str(int(round_number or 1)),
+                ]
+            )
+            seed_value = int(hashlib.md5(seed_source.encode("utf-8")).hexdigest()[:8], 16) if seed_source else 0
+            role_bias = {
+                "commander": 0,
+                "commander_review": 1,
+                "summarizer": 2,
+                "answer_now": 3,
+                "direct_baseline": 4,
+                "arbiter": 5,
+            }.get(normalized_target, 0)
+            if re.match(r"^[A-Z]$", normalized_target):
+                role_bias += (ord(normalized_target) - ord("A"))
+            base_index = seed_value % len(instances)
+            if selection_mode == "mix":
+                base_index = (base_index + role_bias) % len(instances)
+        if (
+            normalized_target == "arbiter"
+            and prefer_distinct_judge
+            and judge_mode == "prefer_distinct"
+            and len(instances) > 1
+        ):
+            answer_instance = self.select_provider_instance(
+                task,
+                runtime_config,
+                provider,
+                model,
+                "summarizer",
+                round_number,
+                prefer_distinct_judge=False,
+            )
+            if isinstance(answer_instance, dict) and str(answer_instance.get("id") or "").strip():
+                answer_id = str(answer_instance.get("id") or "").strip()
+                if str(instances[base_index].get("id") or "").strip() == answer_id:
+                    base_index = (base_index + 1) % len(instances)
+        return dict(instances[base_index])
+
+    def resolve_provider_settings(
+        self,
+        task: Optional[Dict[str, Any]],
+        runtime_config: Optional[Dict[str, Any]],
+        provider: Optional[str],
+        model: Optional[str],
+        target: Optional[str],
+        round_number: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        settings = dict(runtime_config or {})
+        instance = self.select_provider_instance(task, settings, provider, model, target, round_number)
+        if isinstance(instance, dict):
+            settings["providerInstance"] = instance
+            if normalize_provider_id(provider, DEFAULT_PROVIDER_ID) == "ollama":
+                settings["ollamaBaseUrl"] = normalize_ollama_base_url(instance.get("baseUrl"))
+        return settings
+
     def get_task_runtime(
         self,
         task: Dict[str, Any],
@@ -3869,6 +4336,7 @@ class LoopRuntime:
             "engineVersion": default_engine_version(),
             "engineGraph": default_engine_graph(),
             "enginePlan": default_engine_plan(),
+            "providerRouting": default_provider_routing_config(),
             "contextMode": default_context_mode(),
             "directBaselineMode": default_direct_baseline_mode(),
             "directProvider": DEFAULT_PROVIDER_ID,
@@ -3903,6 +4371,9 @@ class LoopRuntime:
             runtime["frontMode"] = normalize_front_mode(task_runtime.get("frontMode"), runtime["frontMode"])
             runtime["engineVersion"] = normalize_engine_version(task_runtime.get("engineVersion"), runtime["engineVersion"])
             runtime["engineGraph"] = normalize_engine_graph(task_runtime.get("engineGraph", runtime["engineGraph"]))
+            runtime["providerRouting"] = normalize_provider_routing_config(
+                task_runtime.get("providerRouting") if isinstance(task_runtime.get("providerRouting"), dict) else {}
+            )
             runtime["contextMode"] = normalize_context_mode(task_runtime.get("contextMode"), runtime["contextMode"])
             runtime["directBaselineMode"] = normalize_direct_baseline_mode(task_runtime.get("directBaselineMode"), runtime["directBaselineMode"])
             runtime["directProvider"] = normalize_provider_id(task_runtime.get("directProvider"), runtime["provider"])
@@ -3950,6 +4421,9 @@ class LoopRuntime:
             "reasoningEffort": runtime["reasoningEffort"],
             "maxOutputTokens": runtime["maxOutputTokens"],
             "ollamaBaseUrl": normalize_ollama_base_url(task_runtime.get("ollamaBaseUrl", runtime.get("ollamaBaseUrl"))),
+            "providerRouting": normalize_provider_routing_config(
+                task_runtime.get("providerRouting") if isinstance(task_runtime.get("providerRouting"), dict) else {}
+            ),
             "targetTimeouts": normalize_target_timeout_config(
                 task_runtime.get("targetTimeouts") if isinstance(task_runtime.get("targetTimeouts"), dict) else {}
             ),
@@ -4022,28 +4496,8 @@ class LoopRuntime:
         return {"model": resolved, **pricing}
 
     def get_response_output_text(self, response: Dict[str, Any]) -> Optional[str]:
-        if isinstance(response.get("message"), dict):
-            content = response["message"].get("content")
-            if content:
-                return str(content)
-        content_blocks = response.get("content")
-        if isinstance(content_blocks, list):
-            text_parts: List[str] = []
-            for block in content_blocks:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "text" and block.get("text"):
-                    text_parts.append(str(block.get("text")))
-            combined = "".join(text_parts).strip()
-            if combined:
-                return combined
-        for item in response.get("output", []):
-            if item.get("type") != "message":
-                continue
-            for content in item.get("content", []):
-                if content.get("type") == "output_text" and content.get("text"):
-                    return str(content["text"])
-        return None
+        flattened = join_flattened_provider_text(response)
+        return flattened or None
 
     def get_response_thinking_text(self, response: Dict[str, Any]) -> Optional[str]:
         if isinstance(response.get("message"), dict):
@@ -5186,17 +5640,14 @@ class LoopRuntime:
                             raise RuntimeErrorWithCode(detail, 500)
 
                         try:
-                            parsed = json.loads(output_text)
-                        except json.JSONDecodeError as error:
+                            parsed = parse_structured_output_text(output_text)
+                        except RuntimeErrorWithCode:
                             if response.get("status") == "incomplete" and incomplete_reason:
                                 detail = f"Model response incomplete: {incomplete_reason}"
                                 if incomplete_reason == "max_output_tokens":
                                     detail += f" after attempts {attempts}"
                                 raise RuntimeErrorWithCode(detail, 500)
-                            raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
-
-                        if not isinstance(parsed, dict):
-                            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+                            raise
 
                         return OpenAIResult(
                             provider="openai",
@@ -5568,17 +6019,14 @@ class LoopRuntime:
                             raise RuntimeErrorWithCode(detail, 500)
 
                         try:
-                            parsed = json.loads(output_text)
-                        except json.JSONDecodeError as error:
+                            parsed = parse_structured_output_text(output_text)
+                        except RuntimeErrorWithCode:
                             if response.get("status") == "incomplete" and incomplete_reason:
                                 detail = f"Model response incomplete: {incomplete_reason}"
                                 if incomplete_reason == "max_output_tokens":
                                     detail += f" after attempts {attempts}"
                                 raise RuntimeErrorWithCode(detail, 500)
-                            raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
-
-                        if not isinstance(parsed, dict):
-                            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+                            raise
 
                         return OpenAIResult(
                             provider="xai",
@@ -5885,16 +6333,13 @@ class LoopRuntime:
                             raise RuntimeErrorWithCode("Model response did not include output_text.", 500)
 
                         try:
-                            parsed = json.loads(output_text)
-                        except json.JSONDecodeError as error:
+                            parsed = parse_structured_output_text(output_text)
+                        except RuntimeErrorWithCode:
                             if stop_reason == "max_tokens" and index < len(attempts) - 1:
                                 recovered_from_incomplete = True
                                 retry_attempt = True
                                 break
-                            raise RuntimeErrorWithCode(f"Model response JSON parse failed: {error}", 500)
-
-                        if not isinstance(parsed, dict):
-                            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+                            raise
 
                         return OpenAIResult(
                             provider=normalized_provider,
@@ -5978,6 +6423,7 @@ class LoopRuntime:
         tools: Optional[List[Dict[str, Any]]] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         base_url: Optional[str] = None,
+        provider_instance: Optional[Dict[str, Any]] = None,
         request_timeout_seconds: int = 1800,
     ) -> OpenAIResult:
         attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
@@ -5986,6 +6432,11 @@ class LoopRuntime:
         ollama_tools = self.convert_function_tools_to_ollama(tools)
         handlers = function_handlers if isinstance(function_handlers, dict) else {}
         provider_trace = self.build_provider_trace_base("ollama", model, target_kind, request_timeout_seconds)
+        normalized_instance = normalize_provider_instance_entry(provider_instance, "ollama") if isinstance(provider_instance, dict) else None
+        if isinstance(normalized_instance, dict):
+            provider_trace["providerInstanceId"] = str(normalized_instance.get("id") or "").strip() or None
+            provider_trace["providerInstanceLabel"] = str(normalized_instance.get("label") or "").strip() or None
+            provider_trace["providerEndpoint"] = normalize_ollama_base_url(normalized_instance.get("baseUrl"))
 
         def report_trace(stage: str, **updates: Any) -> None:
             provider_trace.update({key: value for key, value in updates.items() if value is not None})
@@ -6151,12 +6602,9 @@ class LoopRuntime:
                     last_error = RuntimeErrorWithCode("Ollama response did not include message.content.", 500)
                     break
                 try:
-                    parsed = json.loads(output_text)
-                except json.JSONDecodeError as error:
-                    last_error = RuntimeErrorWithCode(f"Ollama response JSON parse failed: {error}", 500)
-                    break
-                if not isinstance(parsed, dict):
-                    last_error = RuntimeErrorWithCode("Ollama response JSON parse failed: expected object output.", 500)
+                    parsed = parse_structured_output_text(output_text)
+                except RuntimeErrorWithCode as error:
+                    last_error = error
                     break
 
                 response_id = str(response.get("created_at", "") or "") or f"ollama:{int(time.time())}"
@@ -6314,6 +6762,7 @@ class LoopRuntime:
             ollama_base_url = None
             if isinstance(provider_settings, dict) and provider_settings.get("ollamaBaseUrl") is not None:
                 ollama_base_url = str(provider_settings.get("ollamaBaseUrl"))
+            provider_instance = provider_settings.get("providerInstance") if isinstance(provider_settings, dict) else None
             return self.invoke_ollama_json(
                 model=model,
                 instructions=instructions,
@@ -6324,6 +6773,7 @@ class LoopRuntime:
                 tools=normalized_tools,
                 function_handlers=function_handlers,
                 base_url=ollama_base_url,
+                provider_instance=provider_instance if isinstance(provider_instance, dict) else None,
                 request_timeout_seconds=request_timeout_seconds,
             )
         raise RuntimeErrorWithCode(f"provider_not_configured: Unsupported provider {normalized_provider}.", 400)
@@ -6766,6 +7216,7 @@ class LoopRuntime:
             + "Produce the commander's first-pass answer direction for this round."
         )
         input_text = self.maybe_compact_prompt_text(input_text, runtime, "commander")
+        provider_settings = self.resolve_provider_settings(task, runtime, runtime["provider"], runtime["model"], "commander", round_number)
         result = self.invoke_provider_json(
             provider=runtime["provider"],
             api_key=api_key,
@@ -6781,7 +7232,7 @@ class LoopRuntime:
             tool_choice="auto" if tools else None,
             function_handlers=function_handlers if function_handlers else None,
             auth_assignments=auth_assignments,
-            provider_settings=runtime,
+            provider_settings=provider_settings,
         )
         parsed = normalize_commander_checkpoint(dict(result.parsed), task, round_number)
         parsed["localToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("local_",)))
@@ -7015,6 +7466,14 @@ class LoopRuntime:
             + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
         input_text = self.maybe_compact_prompt_text(input_text, runtime, "commander_review")
+        provider_settings = self.resolve_provider_settings(
+            task,
+            runtime,
+            runtime["provider"],
+            runtime["model"],
+            "commander_review",
+            round_number,
+        )
         result = self.invoke_provider_json(
             provider=runtime["provider"],
             api_key=api_key,
@@ -7027,7 +7486,7 @@ class LoopRuntime:
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="commander_review",
             auth_assignments=auth_assignments,
-            provider_settings=runtime,
+            provider_settings=provider_settings,
         )
         parsed = normalize_commander_review_checkpoint(
             dict(result.parsed),
@@ -7369,6 +7828,14 @@ class LoopRuntime:
                 "github_get_pull_request": lambda arguments: self.execute_github_tool_call("github_get_pull_request", arguments, github_tool_config),
                 "github_get_commit": lambda arguments: self.execute_github_tool_call("github_get_commit", arguments, github_tool_config),
             })
+        provider_settings = self.resolve_provider_settings(
+            task,
+            runtime,
+            runtime["provider"],
+            runtime["model"],
+            worker.get("id"),
+            step_number,
+        )
         result = self.invoke_provider_json(
             provider=runtime["provider"],
             api_key=api_key,
@@ -7385,7 +7852,7 @@ class LoopRuntime:
             include=include,
             function_handlers=function_handlers if function_handlers else None,
             auth_assignments=auth_assignments,
-            provider_settings=runtime,
+            provider_settings=provider_settings,
         )
         parsed = dict(result.parsed)
         parsed["researchQueries"] = normalize_string_array_preserve_items(result.web_search_queries)
@@ -8364,6 +8831,14 @@ class LoopRuntime:
             + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
         )
         input_text = self.maybe_compact_prompt_text(input_text, runtime, "summarizer")
+        provider_settings = self.resolve_provider_settings(
+            task,
+            runtime,
+            runtime["provider"],
+            runtime["model"],
+            "answer_now" if partial_mode else "summarizer",
+            int(commander_projection.get("round", 0) or 1),
+        )
         result = self.invoke_provider_json(
             provider=runtime["provider"],
             api_key=api_key,
@@ -8376,7 +8851,7 @@ class LoopRuntime:
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="summarizer",
             auth_assignments=auth_assignments,
-            provider_settings=runtime,
+            provider_settings=provider_settings,
         )
         parsed = dict(result.parsed)
         authoritative_round = int(commander_review_projection.get("round", 0) or commander_projection.get("round", 0) or 0)
@@ -8457,6 +8932,8 @@ class LoopRuntime:
             entry["supportingLineRefs"] = [ref for ref in entry.get("supportingLineRefs", []) if ref in valid_refs]
             entry["challengingLineRefs"] = [ref for ref in entry.get("challengingLineRefs", []) if ref in valid_refs]
         summary["mergedAt"] = summary.get("mergedAt") or utc_now()
+        summary["publicAnswer"] = str(summary.get("frontAnswer", {}).get("answer", "") or "").strip()
+        summary["flattenedOutputText"] = flatten_output_payload_text(summary, "summary_output")
         return summary
 
     def annotate_partial_summary(self, summary: Dict[str, Any], available_workers: List[str], pending_workers: List[str]) -> Dict[str, Any]:
@@ -8558,6 +9035,14 @@ class LoopRuntime:
             f"Session context:\n{task.get('sessionContext', '') or 'none'}\n"
         )
         input_text = self.maybe_compact_prompt_text(input_text, direct_runtime, "generic")
+        provider_settings = self.resolve_provider_settings(
+            task,
+            direct_runtime,
+            direct_runtime["provider"],
+            direct_runtime["model"],
+            "direct_baseline",
+            1,
+        )
         result = self.invoke_provider_json(
             provider=direct_runtime["provider"],
             api_key=api_key,
@@ -8570,7 +9055,7 @@ class LoopRuntime:
             max_output_tokens=int(direct_runtime["maxOutputTokens"]),
             target_kind="generic",
             auth_assignments=auth_assignments,
-            provider_settings=direct_runtime,
+            provider_settings=provider_settings,
         )
         parsed = normalize_direct_answer_payload(result.parsed, str(task.get("objective") or ""))
         call_meta = {
@@ -8750,6 +9235,7 @@ class LoopRuntime:
             "capturedAt": baseline["capturedAt"],
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
+            "flattenedOutputText": flatten_output_payload_text(baseline, "direct_baseline_output"),
             "responseMeta": baseline["responseMeta"],
             "authMeta": auth_meta,
             "output": baseline,
@@ -8908,6 +9394,7 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
+            "flattenedOutputText": flatten_output_payload_text(checkpoint, "commander_output"),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -9146,6 +9633,7 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
+            "flattenedOutputText": flatten_output_payload_text(checkpoint, "commander_review_output"),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -9385,6 +9873,7 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
+            "flattenedOutputText": flatten_output_payload_text(checkpoint, "worker_output"),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -9618,6 +10107,7 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
+            "flattenedOutputText": flatten_output_payload_text(summary, "summary_output"),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -9821,6 +10311,7 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
+            "flattenedOutputText": flatten_output_payload_text(summary, "summary_partial_output"),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
