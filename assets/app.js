@@ -190,6 +190,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 32,
     width: 208,
     spawnCount: 1,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   },
   activator: {
@@ -205,6 +206,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 32,
     width: 236,
     spawnCount: 1,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   },
   workers: {
@@ -220,6 +222,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 196,
     width: 230,
     spawnCount: 3,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   },
   review: {
@@ -235,6 +238,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 196,
     width: 236,
     spawnCount: 1,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   },
   tools: {
@@ -250,6 +254,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 32,
     width: 212,
     spawnCount: 1,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   },
   answerNow: {
@@ -265,6 +270,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 382,
     width: 200,
     spawnCount: 1,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   },
   final: {
@@ -280,6 +286,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 196,
     width: 204,
     spawnCount: 1,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   },
   judge: {
@@ -295,6 +302,7 @@ const ENGINE_V2_NODE_LIBRARY = {
     y: 382,
     width: 184,
     spawnCount: 1,
+    timeoutControlMode: "session",
     timeoutSeconds: 0
   }
 };
@@ -323,6 +331,10 @@ const ENGINE_V2_PACKET_MODES = [
   { value: "on-demand", label: "On-demand" },
   { value: "blind", label: "Blind" },
   { value: "none", label: "None" }
+];
+const ENGINE_V2_TIMEOUT_CONTROL_MODES = [
+  { value: "session", label: "Session" },
+  { value: "override", label: "Override" }
 ];
 const MODEL_ORDER = Object.keys(MODEL_CATALOG);
 const WORKER_SLOT_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -1075,6 +1087,7 @@ function normalizeEngineGraphNode(nodeId, rawNode, fallbackNode = null) {
     y: Math.max(0, Math.min(1200, parseInt(source.y ?? base.y ?? 0, 10) || 0)),
     width: Math.max(168, Math.min(360, parseInt(source.width ?? base.width ?? 208, 10) || 208)),
     spawnCount: Math.max(1, Math.min(12, parseInt(source.spawnCount ?? base.spawnCount ?? 1, 10) || 1)),
+    timeoutControlMode: String(source.timeoutControlMode || base.timeoutControlMode || "session").trim().toLowerCase() === "override" ? "override" : "session",
     timeoutSeconds: Math.max(0, Math.min(3600, parseInt(source.timeoutSeconds ?? base.timeoutSeconds ?? 0, 10) || 0))
   };
 }
@@ -4194,8 +4207,10 @@ function renderTopologyV2Inspector(graph, nodeStates, compiledPlan = null) {
     if (Number(compiledNode.execution?.laneCount || 0) > 1) {
       details.push("Lane count: " + String(compiledNode.execution.laneCount));
     }
-    if (Number(compiledNode.execution?.timeoutSeconds || 0) > 0) {
+    if (String(compiledNode.execution?.timeoutControlMode || "session") === "override" && Number(compiledNode.execution?.timeoutSeconds || 0) > 0) {
       details.push("Timeout override: " + String(compiledNode.execution.timeoutSeconds) + "s");
+    } else {
+      details.push("Timeout source: Session");
     }
   }
   if (selected.event) {
@@ -4249,6 +4264,10 @@ function renderTopologyNodeModal() {
     const selected = option.value === String(node.packetMode || "full") ? " selected" : "";
     return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
   }).join("");
+  const timeoutControlOptions = ENGINE_V2_TIMEOUT_CONTROL_MODES.map(function (option) {
+    const selected = option.value === String(node.timeoutControlMode || "session") ? " selected" : "";
+    return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+  }).join("");
   $body.html(`
     <div class="topology-node-form">
       <div class="topology-node-grid">
@@ -4284,8 +4303,12 @@ function renderTopologyNodeModal() {
           <input id="topologyNodeSpawnCount" type="number" min="1" max="12" step="1" value="${Number(node.spawnCount || 1)}" />
         </label>
         <label>
+          Timeout source
+          <select id="topologyNodeTimeoutControlMode">${timeoutControlOptions}</select>
+        </label>
+        <label>
           Timeout override (s)
-          <input id="topologyNodeTimeoutSeconds" type="number" min="0" max="3600" step="5" value="${Number(node.timeoutSeconds || 0)}" />
+          <input id="topologyNodeTimeoutSeconds" type="number" min="0" max="3600" step="5" value="${Number(node.timeoutSeconds || 0)}" ${String(node.timeoutControlMode || "session") === "override" ? "" : "disabled"} />
         </label>
         <label>
           Module type
@@ -8925,7 +8948,7 @@ $(function () {
     closeTopologyNodeModal();
   });
 
-  $(document).on("input change", "#topologyNodeLabel, #topologyNodeKicker, #topologyNodeBlockingMode, #topologyNodePacketMode, #topologyNodeWidth, #topologyNodeEnabled, #topologyNodeSpawnCount, #topologyNodeTimeoutSeconds, #topologyNodeMetaInput", function () {
+  $(document).on("input change", "#topologyNodeLabel, #topologyNodeKicker, #topologyNodeBlockingMode, #topologyNodePacketMode, #topologyNodeWidth, #topologyNodeEnabled, #topologyNodeSpawnCount, #topologyNodeTimeoutControlMode, #topologyNodeTimeoutSeconds, #topologyNodeMetaInput", function () {
     const nodeId = topologyNodeModalState.nodeId;
     if (!nodeId) return;
     mutateEngineGraph(function (graph) {
@@ -8938,9 +8961,12 @@ $(function () {
       node.width = Math.max(168, Math.min(360, parseInt($("#topologyNodeWidth").val(), 10) || node.width || 208));
       node.enabled = $("#topologyNodeEnabled").val() !== "0";
       node.spawnCount = Math.max(1, Math.min(12, parseInt($("#topologyNodeSpawnCount").val(), 10) || node.spawnCount || 1));
+      node.timeoutControlMode = $("#topologyNodeTimeoutControlMode").val() === "override" ? "override" : "session";
       node.timeoutSeconds = Math.max(0, Math.min(3600, parseInt($("#topologyNodeTimeoutSeconds").val(), 10) || 0));
       node.meta = $("#topologyNodeMetaInput").val().trim();
     });
+    const timeoutMode = $("#topologyNodeTimeoutControlMode").val() === "override" ? "override" : "session";
+    $("#topologyNodeTimeoutSeconds").prop("disabled", timeoutMode !== "override");
   });
 
   $(document).on("click", "#topologyNodeDuplicate", function () {

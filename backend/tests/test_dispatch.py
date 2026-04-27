@@ -72,6 +72,33 @@ class DispatchTests(unittest.TestCase):
             ],
         )
 
+    def test_run_round_v1_uses_session_target_timeouts(self) -> None:
+        state = self._read_state()
+        task = state["activeTask"]
+        task["runtime"]["timeoutMode"] = "user"
+        task["runtime"]["targetTimeouts"] = {
+            "commander": 95,
+            "workerDefault": 115,
+            "workers": {"A": 70},
+            "commanderReview": 210,
+            "summarizer": 230,
+        }
+        self._write_state(state)
+
+        with mock.patch("backend.app.dispatch.launch_dispatch_job_runner"):
+            result = dispatch.run_round({}, self.root)
+
+        jobs_by_target = {
+            str(job["target"]): job
+            for job in storage.read_jobs(storage.project_paths(self.root))
+        }
+        self.assertEqual(result["message"], "Round dispatch queued.")
+        self.assertEqual(int(jobs_by_target["commander"]["timeoutSeconds"]), 95)
+        self.assertEqual(int(jobs_by_target["A"]["timeoutSeconds"]), 70)
+        self.assertEqual(int(jobs_by_target["B"]["timeoutSeconds"]), 115)
+        self.assertEqual(int(jobs_by_target["commander_review"]["timeoutSeconds"]), 210)
+        self.assertEqual(int(jobs_by_target["summarizer"]["timeoutSeconds"]), 230)
+
     def test_start_target_job_requires_commander_before_answer_now(self) -> None:
         with self.assertRaises(RuntimeErrorWithCode) as ctx:
             dispatch.start_target_job({"target": "answer_now"}, self.root)
@@ -194,8 +221,11 @@ class DispatchTests(unittest.TestCase):
         task = state["activeTask"]
         task["runtime"]["engineVersion"] = "v2"
         graph = task["runtime"]["engineGraph"]
+        graph["nodes"]["workers"]["timeoutControlMode"] = "override"
         graph["nodes"]["workers"]["timeoutSeconds"] = 91
+        graph["nodes"]["answerNow"]["timeoutControlMode"] = "override"
         graph["nodes"]["answerNow"]["timeoutSeconds"] = 73
+        graph["nodes"]["final"]["timeoutControlMode"] = "override"
         graph["nodes"]["final"]["timeoutSeconds"] = 141
         task["runtime"]["enginePlan"] = compile_engine_graph(
             graph,
@@ -211,6 +241,38 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(all(int(job["timeoutSeconds"]) == 91 for job in batch["workers"]))
         self.assertEqual(int(batch["sidecars"][0]["timeoutSeconds"]), 73)
         self.assertEqual(int(batch["summarizer"]["timeoutSeconds"]), 141)
+
+    def test_create_round_dispatch_jobs_v2_session_mode_ignores_stale_node_timeout_numbers(self) -> None:
+        state = self._read_state()
+        task = state["activeTask"]
+        task["runtime"]["engineVersion"] = "v2"
+        task["runtime"]["timeoutMode"] = "user"
+        task["runtime"]["targetTimeouts"] = {
+            "commander": 95,
+            "workerDefault": 115,
+            "workers": {"A": 70},
+            "commanderReview": 210,
+            "summarizer": 230,
+            "answerNow": 160,
+        }
+        graph = task["runtime"]["engineGraph"]
+        graph["nodes"]["workers"]["timeoutSeconds"] = 999
+        graph["nodes"]["answerNow"]["timeoutSeconds"] = 888
+        graph["nodes"]["final"]["timeoutSeconds"] = 777
+        task["runtime"]["enginePlan"] = compile_engine_graph(
+            graph,
+            task=task,
+            runtime_config=task["runtime"],
+        )
+        self._write_state(state)
+
+        runtime = dispatch._runtime(self.root)
+        batch = dispatch.create_round_dispatch_jobs(runtime, task, {"roundNumber": 1})
+
+        self.assertEqual(batch["planSource"], "v2-plan")
+        self.assertTrue(all(int(job["timeoutSeconds"]) in {70, 115} for job in batch["workers"]))
+        self.assertEqual(int(batch["sidecars"][0]["timeoutSeconds"]), 160)
+        self.assertEqual(int(batch["summarizer"]["timeoutSeconds"]), 230)
 
     def test_execute_target_job_provider_error_gets_explicit_failure_class(self) -> None:
         runtime = dispatch._runtime(self.root)

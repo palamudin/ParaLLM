@@ -463,9 +463,13 @@ class LoopJobTests(unittest.TestCase):
         state = storage.read_state_payload(paths)
         task = state["activeTask"]
         task["runtime"]["engineVersion"] = "v2"
+        task["runtime"]["engineGraph"]["nodes"]["workers"]["timeoutControlMode"] = "override"
         task["runtime"]["engineGraph"]["nodes"]["workers"]["timeoutSeconds"] = 88
+        task["runtime"]["engineGraph"]["nodes"]["review"]["timeoutControlMode"] = "override"
         task["runtime"]["engineGraph"]["nodes"]["review"]["timeoutSeconds"] = 144
+        task["runtime"]["engineGraph"]["nodes"]["answerNow"]["timeoutControlMode"] = "override"
         task["runtime"]["engineGraph"]["nodes"]["answerNow"]["timeoutSeconds"] = 77
+        task["runtime"]["engineGraph"]["nodes"]["judge"]["timeoutControlMode"] = "override"
         task["runtime"]["engineGraph"]["nodes"]["judge"]["timeoutSeconds"] = 155
         task["runtime"]["enginePlan"] = compile_engine_graph(
             task["runtime"]["engineGraph"],

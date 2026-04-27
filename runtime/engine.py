@@ -586,6 +586,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 32,
                 "width": 208,
                 "spawnCount": 1,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
             "activator": {
@@ -602,6 +603,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 32,
                 "width": 236,
                 "spawnCount": 1,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
             "workers": {
@@ -618,6 +620,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 196,
                 "width": 230,
                 "spawnCount": 3,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
             "review": {
@@ -634,6 +637,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 196,
                 "width": 236,
                 "spawnCount": 1,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
             "tools": {
@@ -650,6 +654,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 32,
                 "width": 212,
                 "spawnCount": 1,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
             "answerNow": {
@@ -666,6 +671,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 382,
                 "width": 200,
                 "spawnCount": 1,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
             "final": {
@@ -682,6 +688,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 196,
                 "width": 204,
                 "spawnCount": 1,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
             "judge": {
@@ -698,6 +705,7 @@ def default_engine_graph() -> Dict[str, Any]:
                 "y": 382,
                 "width": 184,
                 "spawnCount": 1,
+                "timeoutControlMode": "session",
                 "timeoutSeconds": 0,
             },
         },
@@ -722,6 +730,12 @@ def normalize_engine_graph(value: Any) -> Dict[str, Any]:
     source_edges = source.get("edges") if isinstance(source.get("edges"), list) else []
     nodes: Dict[str, Dict[str, Any]] = {}
 
+    def _normalize_timeout_control_mode(raw: Any, fallback: str = "session") -> str:
+        normalized = str(raw or "").strip().lower()
+        if normalized == "override":
+            return "override"
+        return "session" if fallback not in {"session", "override"} else fallback
+
     def _normalize_node(node_id: str, raw: Any, fallback: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         if not re.match(r"^[a-zA-Z0-9_-]+$", str(node_id or "")):
             return None
@@ -743,6 +757,10 @@ def normalize_engine_graph(value: Any) -> Dict[str, Any]:
             "y": max(0, min(1200, int(base.get("y") or 0))),
             "width": max(168, min(360, int(base.get("width") or 208))),
             "spawnCount": max(1, min(12, int(base.get("spawnCount") or 1))),
+            "timeoutControlMode": _normalize_timeout_control_mode(
+                base.get("timeoutControlMode"),
+                str((fallback or {}).get("timeoutControlMode") or "session"),
+            ),
             "timeoutSeconds": max(0, min(3600, int(base.get("timeoutSeconds") or 0))),
         }
 
@@ -946,6 +964,8 @@ def compile_engine_graph(
             plan["warnings"].append(f"Final block '{node_id}' is not directly gated by a review block.")
         if module_type == "judge" and runner_target and "final" not in [str(nodes.get(dep_id, {}).get("moduleType") or "") for dep_id in dependencies]:
             plan["warnings"].append(f"Judge block '{node_id}' is not downstream of a final-answer block.")
+        timeout_control_mode = str(node.get("timeoutControlMode") or "session").strip().lower()
+        timeout_override_seconds = max(0, int(node.get("timeoutSeconds") or 0)) if timeout_control_mode == "override" else 0
         node_payload = {
             "id": node_id,
             "label": str(node.get("label") or node_id),
@@ -956,6 +976,7 @@ def compile_engine_graph(
             "protected": coerce_bool(node.get("protected"), False),
             "blockingMode": str(node.get("blockingMode") or "blocking"),
             "packetMode": str(node.get("packetMode") or "full"),
+            "timeoutControlMode": timeout_control_mode if timeout_control_mode in {"session", "override"} else "session",
             "timeoutSeconds": max(0, int(node.get("timeoutSeconds") or 0)),
             "stageIndex": int(stage_by_id.get(node_id, 0)),
             "dependencies": dependencies,
@@ -981,7 +1002,9 @@ def compile_engine_graph(
                 "blocking": schedule_class == "blocking",
                 "fanout": schedule_class == "fanout",
                 "laneCount": lane_count,
-                "timeoutSeconds": max(0, int(node.get("timeoutSeconds") or 0)),
+                "timeoutControlMode": timeout_control_mode if timeout_control_mode in {"session", "override"} else "session",
+                "timeoutSeconds": timeout_override_seconds,
+                "configuredTimeoutSeconds": max(0, int(node.get("timeoutSeconds") or 0)),
                 "provider": runtime_provider,
                 "toolsEnabled": bool(tool_inputs) and (
                     capability_profile.get("localFiles")
@@ -1050,7 +1073,9 @@ def compile_engine_graph(
             "sidecar": bool(execution_payload["sidecar"]),
             "post": bool(execution_payload["post"]),
             "laneCount": int(execution_payload["laneCount"] or 1),
+            "timeoutControlMode": str(execution_payload.get("timeoutControlMode") or "session"),
             "timeoutSeconds": max(0, int(execution_payload.get("timeoutSeconds") or 0)),
+            "configuredTimeoutSeconds": max(0, int(execution_payload.get("configuredTimeoutSeconds") or 0)),
             "provider": execution_payload["provider"],
             "packetMode": str(node_payload["packetMode"] or "full"),
             "dependencies": list(node_payload["dependencies"]),

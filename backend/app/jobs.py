@@ -1416,7 +1416,7 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                 batch = dispatch.create_round_dispatch_jobs(
                     runtime,
                     active_task,
-                    {"timeoutSeconds": 1800, "roundNumber": round_number},
+                    {"roundNumber": round_number},
                 )
                 dispatch.promote_ready_dispatch_jobs(runtime, task_id, str(batch.get("batchId") or ""))
                 runtime.append_step(

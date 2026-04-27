@@ -506,6 +506,14 @@ def create_target_job(runtime: LoopRuntime, task: Dict[str, Any], target: str, o
     dependency_ids = [str(value).strip() for value in (overrides.get("dependencyJobIds") or []) if str(value).strip()]
     runtime_profile = dispatch_target_runtime_profile(runtime, task, target)
     metadata = overrides.get("metadata") if isinstance(overrides.get("metadata"), dict) else {}
+    try:
+        override_timeout_seconds = int(overrides.get("timeoutSeconds") or 0)
+    except (TypeError, ValueError):
+        override_timeout_seconds = 0
+    resolved_timeout_seconds = max(
+        30,
+        int(override_timeout_seconds or runtime.get_request_timeout_seconds(task, target) or 1800),
+    )
     job = storage.default_job(
         {
             "jobId": job_id,
@@ -522,7 +530,7 @@ def create_target_job(runtime: LoopRuntime, task: Dict[str, Any], target: str, o
             "workerCount": max(0, int(overrides.get("workerCount") or len(task_workers(task)))),
             "dependencyJobIds": dependency_ids,
             "partialSummary": bool(overrides.get("partialSummary") or False),
-            "timeoutSeconds": max(30, int(overrides.get("timeoutSeconds") or 1800)),
+            "timeoutSeconds": resolved_timeout_seconds,
             "queuedAt": utc_now(),
             "lastMessage": str(overrides.get("lastMessage") or ("Waiting for dependencies." if dependency_ids else "Queued target dispatch.")),
             "metadata": {
@@ -551,7 +559,11 @@ def create_target_job(runtime: LoopRuntime, task: Dict[str, Any], target: str, o
 
 
 def _round_dispatch_timeout_seconds(overrides: Dict[str, Any]) -> int:
-    return max(30, int(overrides.get("timeoutSeconds") or 1800))
+    try:
+        value = int(overrides.get("timeoutSeconds") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    return max(0, value)
 
 
 def _create_round_dispatch_jobs_v1(
@@ -668,7 +680,10 @@ def _create_round_dispatch_jobs_from_plan(
             continue
         dependency_job_ids = _dependency_job_ids(item)
         schedule_class = str(item.get("scheduleClass") or "")
-        item_timeout_seconds = max(30, int(item.get("timeoutSeconds") or timeout_seconds or 0))
+        item_timeout_seconds = max(
+            30,
+            int((item.get("timeoutSeconds") or 0) or timeout_seconds or runtime.get_request_timeout_seconds(task, target) or 1800),
+        )
         metadata = {
             "trigger": "round-plan",
             "workItemId": item.get("id"),
@@ -1132,7 +1147,6 @@ def start_target_job(payload: Dict[str, Any], root: Optional[Path] = None) -> Di
         target,
         {
             "partialSummary": target == "answer_now",
-            "timeoutSeconds": 1800,
             "lastMessage": last_message,
             "metadata": {
                 "trigger": "answer-now" if target == "answer_now" else "manual",
@@ -1181,7 +1195,7 @@ def run_round(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str,
     batch: Optional[Dict[str, Any]] = None
     try:
         next_round = max(1, summary_round_from_state(state) + 1)
-        batch = create_round_dispatch_jobs(runtime, task, {"timeoutSeconds": 1800, "roundNumber": next_round})
+        batch = create_round_dispatch_jobs(runtime, task, {"roundNumber": next_round})
         promote_ready_dispatch_jobs(runtime, str(task.get("taskId") or ""), batch["batchId"])
         return {
             "message": "Round dispatch queued.",
