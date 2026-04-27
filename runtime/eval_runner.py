@@ -114,7 +114,33 @@ VETTING_MATRIX_SCORE_LABELS = {
     "overall": "Overall",
 }
 
-VETTING_COMPUTE_VERDICTS = ["earned", "mixed", "did_not_earn"]
+VETTING_ADVANTAGE_BANDS = ["tied", "narrow", "clear", "decisive"]
+
+VETTING_SCORE_FIELD_ALIASES = {
+    "blastRadiusPerception": "blastRadiusPerception",
+    "blast_radius_perception": "blastRadiusPerception",
+    "blastRadius": "blastRadiusPerception",
+    "humanUsability": "humanUsability",
+    "human_usability": "humanUsability",
+    "agentExecutability": "agentExecutability",
+    "aiAgentExecutability": "agentExecutability",
+    "ai_agent_executability": "agentExecutability",
+    "aiAgentExecutable": "agentExecutability",
+    "tacticalDetail": "tacticalDetail",
+    "tactical_detail": "tacticalDetail",
+    "restraintAndCollateral": "restraintAndCollateral",
+    "restraint_and_collateral": "restraintAndCollateral",
+    "restraintCollateralControl": "restraintAndCollateral",
+    "restraint_collateral_control": "restraintAndCollateral",
+    "restraint": "restraintAndCollateral",
+    "decisionGates": "decisionGates",
+    "decision_gates": "decisionGates",
+    "firstHourRealism": "firstHourRealism",
+    "first_hour_realism": "firstHourRealism",
+    "overall": "overall",
+    "overallQuality": "overall",
+    "overall_quality": "overall",
+}
 
 COMPARE_STOPWORDS = {
     "a",
@@ -441,8 +467,6 @@ def vetting_matrix_judge_schema(answer_ids: List[str]) -> Dict[str, Any]:
             "ranking",
             "bestFinalAnswer",
             "bestTacticalDetail",
-            "bestValue",
-            "computeVerdict",
             "answerNotes",
             "rationale",
         ],
@@ -461,8 +485,6 @@ def vetting_matrix_judge_schema(answer_ids: List[str]) -> Dict[str, Any]:
             },
             "bestFinalAnswer": {"type": "string", "enum": normalized_ids},
             "bestTacticalDetail": {"type": "string", "enum": normalized_ids},
-            "bestValue": {"type": "string", "enum": normalized_ids},
-            "computeVerdict": {"type": "string", "enum": VETTING_COMPUTE_VERDICTS},
             "answerNotes": {
                 "type": "object",
                 "additionalProperties": False,
@@ -498,22 +520,113 @@ def vetting_category_leaders(scores: Dict[str, Dict[str, float]]) -> Dict[str, L
     return leaders
 
 
-def normalize_vetting_matrix_result(parsed: Dict[str, Any], answer_ids: List[str], response_id: Optional[str] = None) -> Dict[str, Any]:
-    normalized_ids = [str(answer_id or "").strip() for answer_id in answer_ids if str(answer_id or "").strip()]
-    parsed_scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
-    score_matrix: Dict[str, Dict[str, float]] = {}
-    for answer_id in normalized_ids:
-        score_block = parsed_scores.get(answer_id) if isinstance(parsed_scores.get(answer_id), dict) else {}
-        normalized_block = {
-            field: normalize_vetting_score_value(score_block.get(field, 0.0))
-            for field in VETTING_MATRIX_SCORE_FIELDS
-        }
-        if normalized_block["overall"] <= 0:
-            average_without_overall = mean([normalized_block[field] for field in VETTING_MATRIX_SCORE_FIELDS if field != "overall"])
-            normalized_block["overall"] = normalize_vetting_score_value(average_without_overall)
-        score_matrix[answer_id] = normalized_block
+def _normalize_vetting_score_block(score_block: Any) -> Dict[str, float]:
+    source = score_block if isinstance(score_block, dict) else {}
+    normalized_block = {field: 0.0 for field in VETTING_MATRIX_SCORE_FIELDS}
+    for raw_key, raw_value in source.items():
+        canonical_key = VETTING_SCORE_FIELD_ALIASES.get(str(raw_key))
+        if canonical_key:
+            normalized_block[canonical_key] = normalize_vetting_score_value(raw_value)
+    if normalized_block["overall"] <= 0:
+        average_without_overall = mean([normalized_block[field] for field in VETTING_MATRIX_SCORE_FIELDS if field != "overall"])
+        normalized_block["overall"] = normalize_vetting_score_value(average_without_overall)
+    return normalized_block
 
+
+def _extract_vetting_score_matrix(parsed: Dict[str, Any], normalized_ids: List[str]) -> Dict[str, Dict[str, float]]:
+    parsed_scores = parsed.get("scores")
+    if isinstance(parsed_scores, dict):
+        score_matrix: Dict[str, Dict[str, float]] = {}
+        for answer_id in normalized_ids:
+            score_matrix[answer_id] = _normalize_vetting_score_block(parsed_scores.get(answer_id))
+        return score_matrix
+
+    candidate_lists: List[Any] = []
+    if isinstance(parsed_scores, list):
+        candidate_lists.append(parsed_scores)
+    if isinstance(parsed.get("verdicts"), list):
+        candidate_lists.append(parsed.get("verdicts"))
+    if isinstance(parsed.get("evaluations"), list):
+        candidate_lists.append(parsed.get("evaluations"))
+
+    for candidate_list in candidate_lists:
+        score_matrix = {}
+        for item in candidate_list:
+            if not isinstance(item, dict):
+                continue
+            answer_id = str(item.get("id", "")).strip()
+            if answer_id not in normalized_ids:
+                continue
+            nested_scores = item.get("scores") if isinstance(item.get("scores"), dict) else None
+            score_matrix[answer_id] = _normalize_vetting_score_block(nested_scores if nested_scores is not None else item)
+        if score_matrix:
+            return {
+                answer_id: score_matrix.get(answer_id, _normalize_vetting_score_block({}))
+                for answer_id in normalized_ids
+            }
+
+    return {answer_id: _normalize_vetting_score_block({}) for answer_id in normalized_ids}
+
+
+def _extract_vetting_answer_notes(parsed: Dict[str, Any], normalized_ids: List[str]) -> Dict[str, str]:
+    answer_notes_raw = parsed.get("answerNotes") if isinstance(parsed.get("answerNotes"), dict) else {}
+    if isinstance(answer_notes_raw, dict) and any(str(answer_notes_raw.get(answer_id, "")).strip() for answer_id in normalized_ids):
+        return {
+            answer_id: truncate_text(answer_notes_raw.get(answer_id, ""), 320)
+            for answer_id in normalized_ids
+        }
+
+    notes: Dict[str, str] = {answer_id: "" for answer_id in normalized_ids}
+    candidate_lists = []
+    if isinstance(parsed.get("verdicts"), list):
+        candidate_lists.append(parsed.get("verdicts"))
+    if isinstance(parsed.get("evaluations"), list):
+        candidate_lists.append(parsed.get("evaluations"))
+    if isinstance(parsed.get("scores"), list):
+        candidate_lists.append(parsed.get("scores"))
+    for candidate_list in candidate_lists:
+        for item in candidate_list:
+            if not isinstance(item, dict):
+                continue
+            answer_id = str(item.get("id", "")).strip()
+            if answer_id not in normalized_ids:
+                continue
+            note_parts = []
+            commentary = str(item.get("commentary", "") or item.get("reasoning", "")).strip()
+            if commentary:
+                note_parts.append(commentary)
+            strengths = item.get("strengths")
+            if isinstance(strengths, list) and strengths:
+                note_parts.append("Strengths: " + "; ".join([str(entry).strip() for entry in strengths if str(entry).strip()]))
+            weaknesses = item.get("weaknesses")
+            if isinstance(weaknesses, list) and weaknesses:
+                note_parts.append("Weaknesses: " + "; ".join([str(entry).strip() for entry in weaknesses if str(entry).strip()]))
+            strengths_text = str(item.get("strengths", "")).strip() if not isinstance(strengths, list) else ""
+            weaknesses_text = str(item.get("weaknesses", "")).strip() if not isinstance(weaknesses, list) else ""
+            if strengths_text:
+                note_parts.append("Strengths: " + strengths_text)
+            if weaknesses_text:
+                note_parts.append("Weaknesses: " + weaknesses_text)
+            if note_parts:
+                notes[answer_id] = truncate_text(" ".join(note_parts), 320)
+        if any(notes.values()):
+            return notes
+    return notes
+
+
+def _extract_vetting_ranking(parsed: Dict[str, Any], normalized_ids: List[str], score_matrix: Dict[str, Dict[str, float]]) -> List[str]:
     ranking = [str(answer_id).strip() for answer_id in parsed.get("ranking", []) if str(answer_id).strip() in normalized_ids]
+    if not ranking:
+        rankings_node = parsed.get("rankings")
+        if isinstance(rankings_node, list):
+            ranking = [str(answer_id).strip() for answer_id in rankings_node if str(answer_id).strip() in normalized_ids]
+        elif isinstance(rankings_node, dict):
+            for key in ("overall", "final", "bestFinalAnswer"):
+                candidate_list = rankings_node.get(key)
+                if isinstance(candidate_list, list):
+                    ranking = [str(answer_id).strip() for answer_id in candidate_list if str(answer_id).strip() in normalized_ids]
+                    if ranking:
+                        break
     ranking = list(dict.fromkeys(ranking))
     if len(ranking) != len(normalized_ids):
         fallback_ranking = sorted(
@@ -526,33 +639,124 @@ def normalize_vetting_matrix_result(parsed: Dict[str, Any], answer_ids: List[str
         for answer_id in fallback_ranking:
             if answer_id not in ranking:
                 ranking.append(answer_id)
+    return ranking
 
-    answer_notes_raw = parsed.get("answerNotes") if isinstance(parsed.get("answerNotes"), dict) else {}
-    answer_notes = {
-        answer_id: truncate_text(answer_notes_raw.get(answer_id, ""), 320)
-        for answer_id in normalized_ids
+
+def _extract_vetting_choice(parsed: Dict[str, Any], ranking: List[str], field_names: List[str], fallback_index: int = 0) -> str:
+    comparisons_node = parsed.get("comparisons") if isinstance(parsed.get("comparisons"), dict) else {}
+    for field_name in field_names:
+        candidate = str(parsed.get(field_name, "")).strip()
+        if candidate in ranking:
+            return candidate
+        candidate = str(comparisons_node.get(field_name, "")).strip()
+        if candidate in ranking:
+            return candidate
+    return ranking[min(fallback_index, len(ranking) - 1)]
+
+
+def build_vetting_advantage_summary(score_matrix: Dict[str, Dict[str, float]], ranking: List[str]) -> Dict[str, Any]:
+    if not ranking:
+        return {
+            "leader": "",
+            "runnerUp": "",
+            "leaderOverall": 0.0,
+            "runnerUpOverall": 0.0,
+            "overallMargin": 0.0,
+            "uniqueCategoryLeads": 0,
+            "sharedCategoryLeads": 0,
+            "band": "tied",
+        }
+    leader = ranking[0]
+    runner_up = ranking[1] if len(ranking) > 1 else ""
+    leader_overall = float((score_matrix.get(leader) or {}).get("overall", 0.0) or 0.0)
+    runner_up_overall = float((score_matrix.get(runner_up) or {}).get("overall", 0.0) or 0.0) if runner_up else 0.0
+    overall_margin = round(leader_overall - runner_up_overall, 2)
+    unique_category_leads = 0
+    shared_category_leads = 0
+    for field in VETTING_MATRIX_SCORE_FIELDS:
+        field_values = {
+            answer_id: float((score_block or {}).get(field, 0.0) or 0.0)
+            for answer_id, score_block in score_matrix.items()
+        }
+        if not field_values:
+            continue
+        best_value = max(field_values.values())
+        leaders = [answer_id for answer_id, value in field_values.items() if value == best_value]
+        if leader in leaders:
+            if len(leaders) == 1:
+                unique_category_leads += 1
+            else:
+                shared_category_leads += 1
+    band = "tied"
+    if overall_margin >= 1.0 or unique_category_leads >= 5:
+        band = "decisive"
+    elif overall_margin >= 0.5 or unique_category_leads >= 3:
+        band = "clear"
+    elif overall_margin > 0.0 or unique_category_leads >= 1 or shared_category_leads >= 1:
+        band = "narrow"
+    return {
+        "leader": leader,
+        "runnerUp": runner_up,
+        "leaderOverall": round(leader_overall, 2),
+        "runnerUpOverall": round(runner_up_overall, 2),
+        "overallMargin": overall_margin,
+        "uniqueCategoryLeads": unique_category_leads,
+        "sharedCategoryLeads": shared_category_leads,
+        "band": band if band in VETTING_ADVANTAGE_BANDS else "tied",
     }
 
-    def choose_answer_id(field_name: str, fallback_index: int = 0) -> str:
-        candidate = str(parsed.get(field_name, "")).strip()
-        if candidate in normalized_ids:
-            return candidate
-        return ranking[min(fallback_index, len(ranking) - 1)]
+
+def _extract_vetting_rationale(parsed: Dict[str, Any], answer_notes: Dict[str, str], best_final_answer: str) -> str:
+    direct_node = parsed.get("rationale")
+    direct = ""
+    if isinstance(direct_node, str):
+        direct = direct_node.strip()
+    elif isinstance(direct_node, dict):
+        for key in ("summary", "overall", "explanation", "rationale", "text"):
+            candidate = str(direct_node.get(key, "")).strip()
+            if candidate:
+                direct = candidate
+                break
+    if direct:
+        return truncate_text(direct, 1600)
+    comparisons_node = parsed.get("comparisons") if isinstance(parsed.get("comparisons"), dict) else {}
+    comparison_direct_node = comparisons_node.get("rationale")
+    comparison_direct = ""
+    if isinstance(comparison_direct_node, str):
+        comparison_direct = comparison_direct_node.strip()
+    elif isinstance(comparison_direct_node, dict):
+        for key in ("summary", "overall", "explanation", "rationale", "text"):
+            candidate = str(comparison_direct_node.get(key, "")).strip()
+            if candidate:
+                comparison_direct = candidate
+                break
+    if comparison_direct:
+        return truncate_text(comparison_direct, 1600)
+    note = str(answer_notes.get(best_final_answer, "")).strip()
+    if note:
+        return truncate_text(note, 1600)
+    return ""
+
+
+def normalize_vetting_matrix_result(parsed: Dict[str, Any], answer_ids: List[str], response_id: Optional[str] = None) -> Dict[str, Any]:
+    normalized_ids = [str(answer_id or "").strip() for answer_id in answer_ids if str(answer_id or "").strip()]
+    score_matrix = _extract_vetting_score_matrix(parsed, normalized_ids)
+    ranking = _extract_vetting_ranking(parsed, normalized_ids, score_matrix)
+    answer_notes = _extract_vetting_answer_notes(parsed, normalized_ids)
+    best_final_answer = _extract_vetting_choice(parsed, ranking, ["bestFinalAnswer", "bestFinal"], 0)
+    best_tactical_detail = _extract_vetting_choice(parsed, ranking, ["bestTacticalDetail"], 0)
+    advantage_summary = build_vetting_advantage_summary(score_matrix, ranking)
+    rationale = _extract_vetting_rationale(parsed, answer_notes, best_final_answer)
 
     return {
         "scores": score_matrix,
         "ranking": ranking,
-        "bestFinalAnswer": choose_answer_id("bestFinalAnswer", 0),
-        "bestTacticalDetail": choose_answer_id("bestTacticalDetail", 0),
-        "bestValue": choose_answer_id("bestValue", 0),
-        "computeVerdict": (
-            str(parsed.get("computeVerdict", "")).strip()
-            if str(parsed.get("computeVerdict", "")).strip() in VETTING_COMPUTE_VERDICTS
-            else "mixed"
-        ),
+        "bestFinalAnswer": best_final_answer,
+        "bestTacticalDetail": best_tactical_detail,
         "answerNotes": answer_notes,
         "categoryLeaders": vetting_category_leaders(score_matrix),
-        "rationale": truncate_text(parsed.get("rationale", ""), 1600),
+        "advantageSummary": advantage_summary,
+        "rationale": rationale,
         "responseId": response_id,
     }
 
@@ -1487,8 +1691,7 @@ def vetting_matrix_judge_live(
         "Score each answer from 0 to 10 in 0.5-point increments on these categories: blast radius perception, human usability, AI-agent executability, tactical detail, restraint / collateral control, decision gates, first-hour realism, and overall quality.\n"
         "Best final answer means the answer you would most trust to ship to an operator as the primary response.\n"
         "Best tactical detail means the answer that contributes the most useful extra checks, artifacts, or specialist detail.\n"
-        "Best value means the answer with the strongest quality relative to its declared compute/cost envelope.\n"
-        "computeVerdict must be exactly one of: earned, mixed, did_not_earn.\n"
+        "Do not decide whether extra compute or orchestration was worth the spend; only score answer quality and choose the best answer on the merits of the output.\n"
         "Do not bias toward length or drama. Reward correct sequencing, evidence preservation, escalation discipline, and operational restraint.\n"
         "Return JSON only that matches the schema."
     )

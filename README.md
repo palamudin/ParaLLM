@@ -39,9 +39,10 @@ The current prototype is built to make that test inspectable:
 - Read-only GitHub repo tools for commander and worker lanes with owner/repo allowlist and audit logs
 - Provider-grouped API key pools with deterministic per-position assignment per vendor
 - Container-friendly secret backends via provider-isolated env keys or mounted secret files
-- Initial multi-provider runtime slice:
-  - OpenAI remains the full-featured path
-  - Ollama now works as a native structured-output path with an operator-set base URL for local or remote/dockerized hosts
+- Live multi-provider runtime:
+  - OpenAI remains the full-featured hosted path
+  - Anthropic, xAI, and MiniMax are callable live runtime paths with provider-normalized structured parsing
+  - Ollama works as a native structured-output path with operator-set endpoint routing for local, remote, or dockerized hosts
   - workers and summarizer can be assigned different providers
 - Reversible QA scripts for mock, live, and eval smoke tests
 
@@ -157,6 +158,9 @@ Current skill layers:
 - Runtime profiles now tune model mix, reasoning effort, auto-loop depth, and spend wall for `Low` / `Mid` / `High` / `Ultra`
 - OpenAI live runs now request server-side input autocompression, and oversized prompt packets are locally compacted before provider calls when needed
 - Task/runtime-scoped Ollama base URL override so remote or dockerized Ollama hosts do not require a control-plane relaunch
+- Multi-endpoint Ollama provider pools via local `providers.txt`, with per-run routing modes `Single endpoint`, `Rotate by run`, and `Mix by lane`
+- Judge-aware Ollama endpoint preference so judge/eval lanes can `Prefer distinct endpoint` when another host is available
+- Ollama timeout modes `Default`, `User set`, and `Auto benchmark`, with live benchmark-derived session timeouts for slow or large local models
 - Read-only local workspace inspection via `local_list_dir`, `local_read_file`, and `local_search_text`
 - Read-only GitHub inspection via `github_list_paths`, `github_read_file`, `github_get_issue`, `github_get_pull_request`, and `github_get_commit`
 - Secret-shaped files are filtered from retrieval listings and blocked from direct local/GitHub reads by default
@@ -399,17 +403,18 @@ The secret backend is now hosted-aware too:
 2. Prefer setting the provider env vars you actually plan to use before launch, especially `LOOP_OPENAI_API_KEYS` for the current full-featured live path
 3. If you explicitly start with `LOOP_SECRET_BACKEND=local_file`, paste keys into the matching provider group cards in Settings
 4. Pick a runtime profile in `Home` or `Settings`
-5. If workers or the summarizer use `ollama`, set `Ollama base URL` in Runtime controls to the actual host such as `http://192.168.0.26:11434`
-6. Write a prompt in `Home`
-7. Press `Send`
-8. Inspect `Review` if you want the internal adjudication trace
+5. If workers, judge lanes, or the summarizer use `ollama`, set `Ollama base URL` in Runtime controls to the actual host such as `http://192.168.0.26:11434`
+6. If you want multiple Ollama servers in one local pool, add them to `providers.txt` and choose a routing mode in Runtime controls
+7. Write a prompt in `Home`
+8. Press `Send`
+9. Inspect `Review` if you want the internal adjudication trace
 
 ## Local API Key Pool
 
 ParaLLM still supports local key pools through the UI, but only when you explicitly run with `LOOP_SECRET_BACKEND=local_file`.
 
 - One provider card per vendor group
-- Each provider group can switch between `Local`, `Env`, and `DB`
+- Each provider group can switch between `Local file`, `Env`, and `DB`
 - One key slot per input row inside that provider group
 - `+ Key` adds another slot
 - Pasting into a stored slot replaces it immediately
@@ -418,10 +423,27 @@ ParaLLM still supports local key pools through the UI, but only when you explici
 
 Credential store modes:
 
-- `Local` is the testing path and is browser-editable
+- `Local file` is the testing path and is browser-editable
 - `Env` routes that provider group to the managed environment path for the current deployment (`env` locally, or mounted `docker_secret` on hosted/self-hosted profiles)
 - `DB` routes that provider group to the external/provider-backed secret path (`external`)
 - mixed mode is allowed, so one vendor can stay local while another stays on env or db-backed credentials
+- switching one provider group to `Local file` does not change the others
+- the UI shows the canonical shared file path and the exact prefix format required for that provider group; if the file exists without that prefix, add it and retry
+
+## Local Ollama Endpoint Pool
+
+ParaLLM can also keep a local pool of Ollama endpoints for prototype routing. This is separate from `Auth.txt` and lives in shared `providers.txt`.
+
+- format is one endpoint per line using `ollama:<base_url>`
+- example:
+  - `ollama:http://192.168.0.26:11434`
+  - `ollama:http://192.168.0.30:11434`
+- Runtime controls choose how that pool is used:
+  - `Single endpoint`: stick to the selected endpoint for the run
+  - `Rotate by run`: advance the starting endpoint between runs
+  - `Mix by lane`: spread compatible lanes across the pool
+- Judge preference can stay `Default` or switch to `Prefer distinct endpoint` so eval/judge work can avoid the same Ollama host when another one is available
+- session `Ollama base URL` still exists as the direct fallback when you want one explicit host instead of a pool
 
 Assignment behavior:
 
@@ -625,12 +647,12 @@ Scenario snapshot: `MSP Midnight Breach Bakeoff`
 | Variant | Overall | Current read |
 | --- | --- | --- |
 | `ParaLLM 5.4 full \| full adversarials` | `9.5` | Best final answer and best tactical detail |
-| `Direct GPT-5.4` | `9.0` | Best value |
-| `ParaLLM 5.4 full \| mini adversarials` | `9.0` | Strong second; restrained and shippable |
-| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Strong artifact detail, but under-escalates early |
+| `Direct GPT-5.4` | `9.0` | Strongest direct single-pass answer |
+| `ParaLLM 5.4 full \| mini adversarials` | `9.0` | Close third; restrained and shippable |
+| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Rich artifacts, but lighter on the main-line answer |
 
-- Judge-provider verdict: `mixed`
-- Current read: the full-full ParaLLM answer was strongest overall, but not by enough to clearly earn its much higher cost over direct `gpt-5.4`
+- Measured advantage: `clear` for `ParaLLM 5.4 full | full adversarials` over `Direct GPT-5.4` (`overall margin 0.5`, `4` unique category leads)
+- Current read: OpenAI preferred the heaviest ParaLLM path on this case, but the edge over direct stayed measurable rather than runaway.
 
 ### Judge: xAI `grok-4.20-reasoning`
 
@@ -639,12 +661,12 @@ Scenario snapshot: `MSP Midnight Breach Bakeoff`
 | Variant | Overall | Current read |
 | --- | --- | --- |
 | `ParaLLM 5.4 mini \| mini adversarials` | `9.5` | Best final answer and best tactical detail |
-| `Direct GPT-5.4` | `8.5` | Best value |
-| `ParaLLM 5.4 full \| mini adversarials` | `8.5` | Compact and competent, but still behind the mini path |
-| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Rich enough, but did not justify its cost |
+| `Direct GPT-5.4` | `8.5` | Runner-up; clean direct baseline |
+| `ParaLLM 5.4 full \| mini adversarials` | `8.5` | Tied on overall, but behind direct in the ranking |
+| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Rich enough, but less sharp than the lighter options |
 
-- Judge-provider verdict: `did_not_earn`
-- Current read: xAI strongly preferred the lighter ParaLLM mini path; the heavier variants did not produce enough extra control or artifact value to earn their additional spend
+- Measured advantage: `decisive` for `ParaLLM 5.4 mini | mini adversarials` over `Direct GPT-5.4` (`overall margin 1.0`, `7` unique category leads)
+- Current read: xAI strongly preferred the lighter ParaLLM mini path and treated it as the most shippable operational answer in the set.
 
 ### Judge: Anthropic `claude-sonnet-4-6`
 
@@ -652,13 +674,13 @@ Scenario snapshot: `MSP Midnight Breach Bakeoff`
 
 | Variant | Overall | Current read |
 | --- | --- | --- |
-| `ParaLLM 5.4 full \| mini adversarials` | `9.5` | Best final answer, best tactical detail, and best value |
-| `ParaLLM 5.4 mini \| mini adversarials` | `9.0` | Strong tactical structure and restraint |
-| `Direct GPT-5.4` | `9.0` | Very close second; strongest first-hour realism |
-| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Competent, but too expensive for the gain |
+| `ParaLLM 5.4 full \| mini adversarials` | `9.5` | Best final answer and best tactical detail |
+| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Strong evidence discipline and tactical density |
+| `Direct GPT-5.4` | `8.5` | Tied runner-up; strong sequencing and realism |
+| `ParaLLM 5.4 full \| full adversarials` | `7.5` | Competent, but the least usable of the four under pressure |
 
-- Judge-provider verdict: `did_not_earn`
-- Current read: Anthropic preferred the tighter full-main-thread plus mini-adversarial package; direct stayed close enough that the heaviest ParaLLM path still did not justify its cost
+- Measured advantage: `decisive` for `ParaLLM 5.4 full | mini adversarials` over `ParaLLM 5.4 mini | mini adversarials` (`overall margin 1.0`, `7` unique category leads)
+- Current read: Anthropic preferred the tighter full-main-thread plus mini-adversarial package and scored it clearly above the rest.
 
 ### Judge: MiniMax `MiniMax-M2.7`
 
@@ -666,32 +688,32 @@ Scenario snapshot: `MSP Midnight Breach Bakeoff`
 
 | Variant | Overall | Current read |
 | --- | --- | --- |
-| `ParaLLM 5.4 mini \| mini adversarials` | `9.0` | Best final answer |
-| `Direct GPT-5.4` | `8.0` | Best tactical detail |
-| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Tied on overall, stronger on restraint than direct |
-| `ParaLLM 5.4 full \| mini adversarials` | `8.0` | Best value, but not strongest overall |
+| `ParaLLM 5.4 mini \| mini adversarials` | `9.5` | Best final answer and best tactical detail |
+| `Direct GPT-5.4` | `8.5` | Three-way runner-up tie led by direct in the ranking |
+| `ParaLLM 5.4 full \| full adversarials` | `8.5` | Tied runner-up; solid but not sharper than the mini path |
+| `ParaLLM 5.4 full \| mini adversarials` | `8.5` | Tied runner-up; competent but not differentiated enough |
 
-- Judge-provider verdict: `mixed`
-- Current read: MiniMax again leaned toward the lighter ParaLLM mini variant for the answer you would ship, while giving direct the narrow tactical-detail edge and treating the heavier paths as mostly lateral
+- Measured advantage: `decisive` for `ParaLLM 5.4 mini | mini adversarials` over `Direct GPT-5.4` (`overall margin 1.0`, `8` unique category leads)
+- Current read: MiniMax sharply favored the lighter ParaLLM mini variant and treated the rest of the field as a clustered second tier.
 
 ### Overall Cross-Provider Summary
 
-Judge-provider snapshots are still published separately above, but there are now enough comparable reads to show a simple cross-provider scoreboard.
+Judge-provider snapshots are still published separately above, but there are now enough comparable reads to show a simple cross-provider scoreboard based on measured answer quality alone.
 
-| Judge | Best final answer | Best tactical detail | Best value | Verdict |
-| --- | --- | --- | --- | --- |
-| `OpenAI gpt-5.4` | `ParaLLM 5.4 full \| full adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `Direct GPT-5.4` | `mixed` |
-| `xAI grok-4.20-reasoning` | `ParaLLM 5.4 mini \| mini adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `Direct GPT-5.4` | `did_not_earn` |
-| `Anthropic claude-sonnet-4-6` | `ParaLLM 5.4 full \| mini adversarials` | `ParaLLM 5.4 full \| mini adversarials` | `ParaLLM 5.4 full \| mini adversarials` | `did_not_earn` |
-| `MiniMax MiniMax-M2.7` | `ParaLLM 5.4 mini \| mini adversarials` | `Direct GPT-5.4` | `ParaLLM 5.4 full \| mini adversarials` | `mixed` |
-
-| Variant | Best final wins | Best tactical wins | Best value wins |
+| Judge | Best final answer | Best tactical detail | Measured advantage |
 | --- | --- | --- | --- |
-| `ParaLLM 5.4 mini \| mini adversarials` | `2` | `2` | `0` |
-| `ParaLLM 5.4 full \| mini adversarials` | `1` | `1` | `2` |
-| `ParaLLM 5.4 full \| full adversarials` | `1` | `0` | `0` |
-| `Direct GPT-5.4` | `0` | `1` | `2` |
+| `OpenAI gpt-5.4` | `ParaLLM 5.4 full \| full adversarials` | `ParaLLM 5.4 full \| full adversarials` | `clear` over `Direct GPT-5.4` |
+| `xAI grok-4.20-reasoning` | `ParaLLM 5.4 mini \| mini adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `decisive` over `Direct GPT-5.4` |
+| `Anthropic claude-sonnet-4-6` | `ParaLLM 5.4 full \| mini adversarials` | `ParaLLM 5.4 full \| mini adversarials` | `decisive` over `ParaLLM 5.4 mini \| mini adversarials` |
+| `MiniMax MiniMax-M2.7` | `ParaLLM 5.4 mini \| mini adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `decisive` over `Direct GPT-5.4` |
+
+| Variant | Best final wins | Best tactical wins | Leader wins |
+| --- | --- | --- | --- |
+| `ParaLLM 5.4 mini \| mini adversarials` | `2` | `2` | `2` |
+| `ParaLLM 5.4 full \| mini adversarials` | `1` | `1` | `1` |
+| `ParaLLM 5.4 full \| full adversarials` | `1` | `1` | `1` |
+| `Direct GPT-5.4` | `0` | `0` | `0` |
 
 - Judge-provider snapshots published so far: `4`
-- Local blind vetting runs recorded so far: `9`
+- Local blind vetting runs recorded so far: `13`
 - Benchmark artifacts: [summary.json](data/benchmarks/vetting/summary.json), [latest blind run](data/benchmarks/vetting/latest.json)

@@ -250,7 +250,8 @@ class EvalRunnerTests(unittest.TestCase):
         schema = eval_runner.vetting_matrix_judge_schema(["A", "B", "C"])
 
         self.assertEqual(schema["properties"]["bestFinalAnswer"]["enum"], ["A", "B", "C"])
-        self.assertEqual(schema["properties"]["computeVerdict"]["enum"], eval_runner.VETTING_COMPUTE_VERDICTS)
+        self.assertNotIn("computeVerdict", schema["properties"])
+        self.assertNotIn("bestValue", schema["properties"])
         self.assertEqual(
             schema["properties"]["scores"]["properties"]["A"]["required"],
             eval_runner.VETTING_MATRIX_SCORE_FIELDS,
@@ -283,8 +284,6 @@ class EvalRunnerTests(unittest.TestCase):
                 },
                 "bestFinalAnswer": "B",
                 "bestTacticalDetail": "A",
-                "bestValue": "A",
-                "computeVerdict": "earned",
                 "answerNotes": {"A": "More tactical detail.", "B": "Best final answer."},
                 "rationale": "B is cleaner, A is tactically denser.",
             },
@@ -295,11 +294,122 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(normalized["ranking"], ["B", "A"])
         self.assertEqual(normalized["bestFinalAnswer"], "B")
         self.assertEqual(normalized["bestTacticalDetail"], "A")
-        self.assertEqual(normalized["computeVerdict"], "earned")
         self.assertEqual(normalized["responseId"], "resp_123")
         self.assertEqual(normalized["scores"]["A"]["overall"], 8.0)
         self.assertEqual(normalized["categoryLeaders"]["tacticalDetail"], ["A"])
         self.assertEqual(normalized["categoryLeaders"]["blastRadiusPerception"], ["B"])
+        self.assertEqual(normalized["advantageSummary"]["leader"], "B")
+        self.assertEqual(normalized["advantageSummary"]["runnerUp"], "A")
+        self.assertEqual(normalized["advantageSummary"]["band"], "decisive")
+        self.assertEqual(normalized["advantageSummary"]["overallMargin"], 1.0)
+
+    def test_normalize_vetting_matrix_result_accepts_anthropic_verdict_shape(self) -> None:
+        normalized = eval_runner.normalize_vetting_matrix_result(
+            {
+                "verdicts": [
+                    {
+                        "id": "A",
+                        "blastRadiusPerception": 8.5,
+                        "humanUsability": 8.0,
+                        "aiAgentExecutability": 7.5,
+                        "tacticalDetail": 8.5,
+                        "restraintCollateralControl": 9.0,
+                        "decisionGates": 8.5,
+                        "firstHourRealism": 8.0,
+                        "overallQuality": 8.5,
+                        "strengths": "Good sequencing.",
+                        "weaknesses": "Slightly verbose.",
+                    },
+                    {
+                        "id": "B",
+                        "blastRadiusPerception": 9.0,
+                        "humanUsability": 8.5,
+                        "aiAgentExecutability": 8.5,
+                        "tacticalDetail": 9.0,
+                        "restraintCollateralControl": 9.0,
+                        "decisionGates": 9.5,
+                        "firstHourRealism": 9.0,
+                        "overallQuality": 9.0,
+                        "strengths": "Best decision gates.",
+                        "weaknesses": "No ready-to-send client note.",
+                    },
+                ],
+                "comparisons": {
+                    "bestFinalAnswer": "B",
+                    "bestTacticalDetail": "B",
+                },
+            },
+            ["A", "B"],
+        )
+
+        self.assertEqual(normalized["bestFinalAnswer"], "B")
+        self.assertEqual(normalized["bestTacticalDetail"], "B")
+        self.assertEqual(normalized["scores"]["A"]["restraintAndCollateral"], 9.0)
+        self.assertEqual(normalized["scores"]["B"]["overall"], 9.0)
+        self.assertIn("Strengths:", normalized["answerNotes"]["A"])
+        self.assertEqual(normalized["advantageSummary"]["leader"], "B")
+        self.assertEqual(normalized["advantageSummary"]["band"], "decisive")
+
+    def test_normalize_vetting_matrix_result_accepts_minimax_score_list_shape(self) -> None:
+        normalized = eval_runner.normalize_vetting_matrix_result(
+            {
+                "bestFinal": "B",
+                "bestTacticalDetail": "A",
+                "scores": [
+                    {
+                        "id": "A",
+                        "blastRadius": 7.5,
+                        "humanUsability": 7.0,
+                        "aiAgentExecutable": 6.5,
+                        "tacticalDetail": 8.5,
+                        "restraint": 8.0,
+                        "decisionGates": 7.0,
+                        "firstHourRealism": 7.5,
+                        "overall": 7.5,
+                        "reasoning": "Best low-latency answer despite lower ceiling.",
+                    },
+                    {
+                        "id": "B",
+                        "blastRadius": 8.5,
+                        "humanUsability": 8.5,
+                        "aiAgentExecutable": 8.0,
+                        "tacticalDetail": 8.0,
+                        "restraint": 8.5,
+                        "decisionGates": 8.5,
+                        "firstHourRealism": 8.5,
+                        "overall": 8.5,
+                        "reasoning": "Most shippable under pressure.",
+                    },
+                ],
+            },
+            ["A", "B"],
+        )
+
+        self.assertEqual(normalized["bestFinalAnswer"], "B")
+        self.assertEqual(normalized["bestTacticalDetail"], "A")
+        self.assertEqual(normalized["scores"]["A"]["agentExecutability"], 6.5)
+        self.assertEqual(normalized["scores"]["B"]["blastRadiusPerception"], 8.5)
+        self.assertEqual(normalized["ranking"], ["B", "A"])
+        self.assertEqual(normalized["advantageSummary"]["leader"], "B")
+        self.assertEqual(normalized["advantageSummary"]["band"], "decisive")
+
+    def test_normalize_vetting_matrix_result_extracts_string_from_structured_rationale(self) -> None:
+        normalized = eval_runner.normalize_vetting_matrix_result(
+            {
+                "scores": {
+                    "A": {field: 9.0 for field in eval_runner.VETTING_MATRIX_SCORE_FIELDS},
+                    "B": {field: 8.0 for field in eval_runner.VETTING_MATRIX_SCORE_FIELDS},
+                },
+                "ranking": ["A", "B"],
+                "bestFinalAnswer": "A",
+                "bestTacticalDetail": "A",
+                "answerNotes": {"A": "", "B": ""},
+                "rationale": {"summary": "A wins on cleaner decision gates."},
+            },
+            ["A", "B"],
+        )
+
+        self.assertEqual(normalized["rationale"], "A wins on cleaner decision gates.")
 
 
 if __name__ == "__main__":

@@ -245,12 +245,6 @@ def default_vetting_rubric() -> Dict[str, Any]:
         "awards": {
             "bestFinalAnswer": "The safest, clearest, most production-ready primary answer.",
             "bestTacticalDetail": "The answer that contributed the strongest useful extra checks or artifacts.",
-            "bestValue": "The strongest answer relative to its declared cost / compute envelope.",
-        },
-        "computeVerdict": {
-            "earned": "Extra compute or orchestration clearly improved the result enough to justify itself.",
-            "mixed": "The gain exists but is situational, narrow, or not decisive.",
-            "did_not_earn": "The extra compute or orchestration did not justify its cost or complexity.",
         },
     }
 
@@ -301,6 +295,7 @@ def remap_vetting_result(slot_result: Dict[str, Any], slotted_answers: List[Dict
         field: [describe_slot(slot) for slot in leaders]
         for field, leaders in category_leaders_slots.items()
     }
+    advantage_summary_raw = slot_result.get("advantageSummary") if isinstance(slot_result.get("advantageSummary"), dict) else {}
     answers = []
     for answer in slotted_answers:
         answer_id = str(answer.get("answerId") or "").strip()
@@ -366,6 +361,18 @@ def remap_vetting_result(slot_result: Dict[str, Any], slotted_answers: List[Dict
             str(item.get("answerId") or ""),
         )
     )
+    leader_slot = str(advantage_summary_raw.get("leader") or "").strip()
+    runner_up_slot = str(advantage_summary_raw.get("runnerUp") or "").strip()
+    advantage_summary = {
+        "band": str(advantage_summary_raw.get("band") or "tied").strip() or "tied",
+        "leader": describe_slot(leader_slot) if leader_slot else {},
+        "runnerUp": describe_slot(runner_up_slot) if runner_up_slot else {},
+        "leaderOverall": advantage_summary_raw.get("leaderOverall"),
+        "runnerUpOverall": advantage_summary_raw.get("runnerUpOverall"),
+        "overallMargin": advantage_summary_raw.get("overallMargin"),
+        "uniqueCategoryLeads": advantage_summary_raw.get("uniqueCategoryLeads"),
+        "sharedCategoryLeads": advantage_summary_raw.get("sharedCategoryLeads"),
+    }
     return {
         "slotResult": slot_result,
         "scoresByAnswer": scores_by_answer,
@@ -373,7 +380,7 @@ def remap_vetting_result(slot_result: Dict[str, Any], slotted_answers: List[Dict
         "rankingAnswers": ranking_answers,
         "bestFinalAnswer": describe_slot(str(slot_result.get("bestFinalAnswer") or "")),
         "bestTacticalDetail": describe_slot(str(slot_result.get("bestTacticalDetail") or "")),
-        "bestValue": describe_slot(str(slot_result.get("bestValue") or "")),
+        "advantageSummary": advantage_summary,
         "categoryLeaders": category_leaders_answers,
         "answers": answers,
         "internalTiming": {
@@ -431,13 +438,23 @@ def markdown_legend(answers: List[Dict[str, Any]]) -> str:
 def markdown_summary(result: Dict[str, Any]) -> str:
     best_final = result.get("bestFinalAnswer") or {}
     best_tactical = result.get("bestTacticalDetail") or {}
-    best_value = result.get("bestValue") or {}
+    advantage_summary = result.get("advantageSummary") if isinstance(result.get("advantageSummary"), dict) else {}
+    leader = advantage_summary.get("leader") if isinstance(advantage_summary.get("leader"), dict) else {}
+    runner_up = advantage_summary.get("runnerUp") if isinstance(advantage_summary.get("runnerUp"), dict) else {}
+    leader_text = f"`{leader.get('slot', '')}` | {leader.get('label', '')}".strip()
+    runner_up_text = f"`{runner_up.get('slot', '')}` | {runner_up.get('label', '')}".strip()
+    measured_advantage = (
+        f"`{advantage_summary.get('band', 'tied')}`"
+        f" | leader {leader_text or 'n/a'}"
+        f" | runner-up {runner_up_text or 'n/a'}"
+        f" | overall margin {advantage_summary.get('overallMargin', 0.0)}"
+        f" | unique category leads {advantage_summary.get('uniqueCategoryLeads', 0)}"
+    )
     return "\n".join(
         [
             f"- Best final answer: `{best_final.get('slot', '')}` | {best_final.get('label', '')}",
             f"- Best tactical detail: `{best_tactical.get('slot', '')}` | {best_tactical.get('label', '')}",
-            f"- Best value: `{best_value.get('slot', '')}` | {best_value.get('label', '')}",
-            f"- Compute verdict: `{result.get('slotResult', {}).get('computeVerdict', 'mixed')}`",
+            f"- Measured advantage: {measured_advantage}",
             f"- Judge rationale: {str(result.get('slotResult', {}).get('rationale') or '').strip()}",
         ]
     )
@@ -462,7 +479,7 @@ def build_rollup(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         answers = run.get("answers") if isinstance(run.get("answers"), list) else []
         best_final = (run.get("bestFinalAnswer") or {}).get("slot")
         best_tactical = (run.get("bestTacticalDetail") or {}).get("slot")
-        best_value = (run.get("bestValue") or {}).get("slot")
+        leader_slot = ((run.get("advantageSummary") or {}).get("leader") or {}).get("slot")
         for answer in answers:
             if not isinstance(answer, dict):
                 continue
@@ -475,7 +492,7 @@ def build_rollup(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
                     "appearances": 0,
                     "bestFinalWins": 0,
                     "bestTacticalWins": 0,
-                    "bestValueWins": 0,
+                    "leaderWins": 0,
                     "scoreSums": {field: 0.0 for field in eval_runner.VETTING_MATRIX_SCORE_FIELDS},
                     "timedAppearances": 0,
                     "elapsedSecondsSum": 0.0,
@@ -487,8 +504,8 @@ def build_rollup(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
                 aggregate["bestFinalWins"] += 1
             if str(answer.get("slot") or "") == str(best_tactical or ""):
                 aggregate["bestTacticalWins"] += 1
-            if str(answer.get("slot") or "") == str(best_value or ""):
-                aggregate["bestValueWins"] += 1
+            if str(answer.get("slot") or "") == str(leader_slot or ""):
+                aggregate["leaderWins"] += 1
             score_block = answer.get("scores") if isinstance(answer.get("scores"), dict) else {}
             for field in eval_runner.VETTING_MATRIX_SCORE_FIELDS:
                 aggregate["scoreSums"][field] += float(score_block.get(field, 0.0) or 0.0)
@@ -513,7 +530,7 @@ def build_rollup(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "appearances": appearances,
                 "bestFinalWins": int(aggregate["bestFinalWins"]),
                 "bestTacticalWins": int(aggregate["bestTacticalWins"]),
-                "bestValueWins": int(aggregate["bestValueWins"]),
+                "leaderWins": int(aggregate["leaderWins"]),
                 "averageScores": average_scores,
                 "timedAppearances": timed_appearances,
                 "averageElapsedSeconds": (
@@ -621,7 +638,7 @@ def main() -> int:
         "internalTiming": remapped["internalTiming"],
         "bestFinalAnswer": remapped["bestFinalAnswer"],
         "bestTacticalDetail": remapped["bestTacticalDetail"],
-        "bestValue": remapped["bestValue"],
+        "advantageSummary": remapped["advantageSummary"],
         "categoryLeaders": remapped["categoryLeaders"],
         "markdown": {
             "scoreTable": markdown_score_table(remapped["answers"], remapped["scoresByAnswer"]),
