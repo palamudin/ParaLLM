@@ -150,6 +150,69 @@ class RuntimeAuthTests(unittest.TestCase):
 
         self.assertEqual(attempts, [0])
 
+    def test_target_timeout_modes_resolve_default_user_and_auto_profiles(self) -> None:
+        manual = {
+            "commander": 101,
+            "workerDefault": 111,
+            "workers": {"A": 77},
+            "commanderReview": 222,
+            "summarizer": 333,
+            "answerNow": 144,
+            "arbiter": 155,
+        }
+        auto_profile = {
+            "status": "ready",
+            "baseUrl": "http://192.168.0.26:11434",
+            "models": {"qwen3.5:9b": {"wallSeconds": 42}},
+            "targetTimeouts": {
+                "commander": 260,
+                "workerDefault": 275,
+                "workers": {"A": 205},
+                "commanderReview": 320,
+                "summarizer": 420,
+                "answerNow": 210,
+                "arbiter": 180,
+            },
+        }
+        task = {
+            "runtime": {
+                "provider": "ollama",
+                "directProvider": "ollama",
+                "targetTimeouts": manual,
+                "timeoutMode": "user",
+                "ollamaTimeoutProfile": auto_profile,
+            },
+            "summarizer": {"provider": "ollama"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            user_config = runtime.get_target_timeout_config(task, "A")
+            task["runtime"]["timeoutMode"] = "default"
+            default_config = runtime.get_target_timeout_config(task, "A")
+            task["runtime"]["timeoutMode"] = "auto"
+            auto_worker = runtime.get_target_timeout_config(task, "A")
+            auto_summary = runtime.get_target_timeout_config(task, "summarizer")
+            task["runtime"]["provider"] = "openai"
+            task["summarizer"]["provider"] = "openai"
+            auto_openai = runtime.get_target_timeout_config(task, "summarizer")
+            task["runtime"]["provider"] = "ollama"
+            task["summarizer"]["provider"] = "ollama"
+            runtime_view = runtime.get_task_runtime(task)
+            summarizer_view = runtime.get_task_runtime(task, budget_target="summarizer")
+
+        self.assertEqual(user_config["workers"]["A"], 77)
+        self.assertEqual(user_config["commander"], 101)
+        self.assertEqual(default_config["commander"], 180)
+        self.assertEqual(default_config["workers"], {})
+        self.assertEqual(auto_worker["workers"]["A"], 205)
+        self.assertEqual(auto_summary["summarizer"], 420)
+        self.assertEqual(auto_openai["summarizer"], 240)
+        self.assertEqual(runtime_view["timeoutMode"], "auto")
+        self.assertEqual(runtime_view["ollamaTimeoutProfile"]["status"], "ready")
+        self.assertEqual(runtime_view["requestTimeoutSeconds"], 275)
+        self.assertEqual(summarizer_view["requestTimeoutSeconds"], 420)
+
     def test_read_api_key_pool_honors_env_backend_without_falling_back_to_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             auth_path = Path(tmpdir) / "Auth.txt"
@@ -509,6 +572,7 @@ class RuntimeAuthTests(unittest.TestCase):
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
                 "ollamaBaseUrl": "http://192.168.0.26:11434/api",
+                "timeoutMode": "user",
                 "targetTimeouts": {"commander": 95, "workerDefault": 115, "workers": {"A": 70}, "commanderReview": 210, "summarizer": 230},
             },
         }

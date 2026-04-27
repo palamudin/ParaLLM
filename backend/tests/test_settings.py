@@ -239,6 +239,76 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(next(worker for worker in state["draft"]["workers"] if worker["id"] == "B")["type"], "security")
         self.assertEqual(next(worker for worker in state["draft"]["workers"] if worker["id"] == "B")["temperature"], "hot")
 
+    def test_apply_runtime_settings_persists_timeout_mode_and_profile(self) -> None:
+        profile = {
+            "status": "ready",
+            "baseUrl": "http://192.168.0.26:11434",
+            "models": {"qwen3.5:9b": {"wallSeconds": 42}},
+            "targetTimeouts": {"commander": 260, "workerDefault": 275, "workers": {"A": 205}, "commanderReview": 320, "summarizer": 420},
+            "note": "Benchmarked profile.",
+        }
+
+        result = settings.apply_runtime_settings(
+            {
+                "provider": "ollama",
+                "model": "qwen3.5:9b",
+                "summarizerProvider": "ollama",
+                "summarizerModel": "qwen3.5:9b",
+                "ollamaBaseUrl": "http://192.168.0.26:11434",
+                "timeoutMode": "auto",
+                "ollamaTimeoutProfile": profile,
+            },
+            self.root,
+        )
+
+        self.assertEqual(result["timeoutMode"], "auto")
+        self.assertEqual(result["ollamaTimeoutProfile"]["status"], "ready")
+        self.assertEqual(result["ollamaTimeoutProfile"]["targetTimeouts"]["commander"], 260)
+
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertEqual(state["draft"]["timeoutMode"], "auto")
+        self.assertEqual(state["draft"]["ollamaTimeoutProfile"]["status"], "ready")
+        self.assertEqual(state["activeTask"]["runtime"]["timeoutMode"], "auto")
+        self.assertEqual(state["activeTask"]["runtime"]["ollamaTimeoutProfile"]["targetTimeouts"]["commander"], 260)
+
+    @mock.patch("backend.app.settings._benchmark_ollama_model")
+    def test_benchmark_ollama_timeouts_derives_profile_for_active_session(self, benchmark_model) -> None:
+        settings.apply_runtime_settings(
+            {
+                "provider": "ollama",
+                "model": "qwen3.5:9b",
+                "summarizerProvider": "ollama",
+                "summarizerModel": "qwen3.5:9b",
+                "directBaselineMode": "both",
+                "directProvider": "ollama",
+                "directModel": "qwen3.5:2b",
+                "ollamaBaseUrl": "http://192.168.0.26:11434",
+            },
+            self.root,
+        )
+
+        def fake_benchmark(base_url, model):
+            if model == "qwen3.5:2b":
+                return {"wallSeconds": 9, "totalDurationMs": 9100, "evalCount": 32, "promptEvalCount": 12}
+            return {"wallSeconds": 45, "totalDurationMs": 45100, "evalCount": 64, "promptEvalCount": 18}
+
+        benchmark_model.side_effect = fake_benchmark
+
+        result = settings.benchmark_ollama_timeouts({}, self.root)
+
+        self.assertEqual(result["timeoutMode"], "auto")
+        self.assertEqual(set(result["benchmarkedModels"]), {"qwen3.5:2b", "qwen3.5:9b"})
+        self.assertEqual(result["ollamaTimeoutProfile"]["status"], "ready")
+        self.assertGreater(result["targetTimeouts"]["workerDefault"], result["targetTimeouts"]["directBaseline"])
+        self.assertGreater(result["targetTimeouts"]["summarizer"], result["targetTimeouts"]["commanderReview"])
+
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertEqual(state["draft"]["timeoutMode"], "auto")
+        self.assertEqual(state["draft"]["ollamaTimeoutProfile"]["status"], "ready")
+        self.assertEqual(state["draft"]["ollamaTimeoutProfile"]["baseUrl"], "http://192.168.0.26:11434")
+        self.assertEqual(state["activeTask"]["runtime"]["timeoutMode"], "auto")
+        self.assertEqual(state["activeTask"]["runtime"]["ollamaTimeoutProfile"]["models"]["qwen3.5:9b"]["wallSeconds"], 45)
+
     def test_update_worker_config_mutates_draft_only(self) -> None:
         result = settings.update_worker_config(
             {"workerId": "B", "type": "security", "temperature": "hot", "model": "gpt-5.4-mini"},

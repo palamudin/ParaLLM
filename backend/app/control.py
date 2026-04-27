@@ -25,8 +25,10 @@ from runtime.engine import (
     default_github_tool_config,
     default_local_file_tool_config,
     default_ollama_base_url,
+    default_ollama_timeout_profile,
     default_research_config,
     default_summarizer_harness,
+    default_timeout_mode,
     default_target_timeout_config,
     default_vetting_config,
     normalize_allowed_domains,
@@ -44,9 +46,11 @@ from runtime.engine import (
     normalize_local_file_tool_config,
     normalize_model_id,
     normalize_ollama_base_url,
+    normalize_ollama_timeout_profile,
     normalize_provider_id,
     normalize_research_config,
     normalize_string_list,
+    normalize_timeout_mode,
     normalize_target_timeout_config,
     normalize_vetting_config,
     provider_capability_profile,
@@ -131,6 +135,8 @@ def default_draft_state() -> Dict[str, Any]:
         "directProvider": provider,
         "directModel": model,
         "ollamaBaseUrl": default_ollama_base_url(),
+        "timeoutMode": default_timeout_mode(),
+        "ollamaTimeoutProfile": default_ollama_timeout_profile(),
         "reasoningEffort": "low",
         "targetTimeouts": default_target_timeout_config(),
         "maxTotalTokens": budget["maxTotalTokens"],
@@ -223,6 +229,10 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         direct_provider,
     )
     ollama_base_url = normalize_ollama_base_url(current.get("ollamaBaseUrl", default["ollamaBaseUrl"]))
+    timeout_mode = normalize_timeout_mode(current.get("timeoutMode", default["timeoutMode"]), default["timeoutMode"])
+    ollama_timeout_profile = normalize_ollama_timeout_profile(
+        current.get("ollamaTimeoutProfile", default["ollamaTimeoutProfile"])
+    )
     feature_alignment = align_provider_runtime_features(
         provider,
         {
@@ -250,6 +260,8 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "directProvider": direct_provider,
         "directModel": direct_model,
         "ollamaBaseUrl": ollama_base_url,
+        "timeoutMode": timeout_mode,
+        "ollamaTimeoutProfile": ollama_timeout_profile,
         "reasoningEffort": reasoning_effort,
         "targetTimeouts": target_timeouts,
         "maxTotalTokens": budget["maxTotalTokens"],
@@ -327,6 +339,10 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
             normalize_provider_id(runtime.get("directProvider"), provider),
         ),
         "ollamaBaseUrl": normalize_ollama_base_url(runtime.get("ollamaBaseUrl", default["ollamaBaseUrl"])),
+        "timeoutMode": normalize_timeout_mode(runtime.get("timeoutMode", default["timeoutMode"]), default["timeoutMode"]),
+        "ollamaTimeoutProfile": normalize_ollama_timeout_profile(
+            runtime.get("ollamaTimeoutProfile", default["ollamaTimeoutProfile"])
+        ),
         "reasoningEffort": str(runtime.get("reasoningEffort", default["reasoningEffort"])).strip(),
         "targetTimeouts": normalize_target_timeout_config(
             runtime.get("targetTimeouts") if isinstance(runtime.get("targetTimeouts"), dict) else default["targetTimeouts"]
@@ -733,6 +749,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     budget_targets = _parse_json_like(payload.get("budgetTargets"), existing_draft["budgetTargets"])
     target_timeouts = _parse_json_like(payload.get("targetTimeouts"), existing_draft["targetTimeouts"])
     engine_graph = _parse_json_like(payload.get("engineGraph"), existing_draft["engineGraph"])
+    ollama_timeout_profile = _parse_json_like(payload.get("ollamaTimeoutProfile"), existing_draft["ollamaTimeoutProfile"])
     draft = normalize_draft_state(
         {
             **existing_draft,
@@ -752,6 +769,8 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "directProvider": payload.get("directProvider", existing_draft["directProvider"]),
             "directModel": payload.get("directModel", existing_draft["directModel"]),
             "ollamaBaseUrl": payload.get("ollamaBaseUrl", existing_draft["ollamaBaseUrl"]),
+            "timeoutMode": payload.get("timeoutMode", existing_draft["timeoutMode"]),
+            "ollamaTimeoutProfile": ollama_timeout_profile if isinstance(ollama_timeout_profile, dict) else existing_draft["ollamaTimeoutProfile"],
             "reasoningEffort": payload.get("reasoningEffort", existing_draft["reasoningEffort"]),
             "targetTimeouts": target_timeouts if isinstance(target_timeouts, dict) else existing_draft["targetTimeouts"],
             "maxCostUsd": payload.get("maxCostUsd", existing_draft["maxCostUsd"]),
@@ -820,6 +839,10 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     live_run_id = str(payload.get("liveRunId") or "").strip() or None
     engine_graph = normalize_engine_graph(_parse_json_like(payload.get("engineGraph"), default_engine_graph()))
     ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", default_ollama_base_url()))
+    timeout_mode = normalize_timeout_mode(payload.get("timeoutMode", default_timeout_mode()), default_timeout_mode())
+    ollama_timeout_profile = normalize_ollama_timeout_profile(
+        _parse_json_like(payload.get("ollamaTimeoutProfile"), default_ollama_timeout_profile())
+    )
     reasoning_effort = str(payload.get("reasoningEffort", "low")).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = "low"
@@ -894,6 +917,8 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "directModel": direct_model,
             "liveRunId": live_run_id,
             "ollamaBaseUrl": ollama_base_url,
+            "timeoutMode": timeout_mode,
+            "ollamaTimeoutProfile": ollama_timeout_profile,
             "reasoningEffort": reasoning_effort,
             "targetTimeouts": target_timeouts,
             "budget": budget,

@@ -646,6 +646,21 @@
                     </div>
                     <input id="ollamaBaseUrl" type="text" placeholder="http://127.0.0.1:11434" />
                     <div id="ollamaBaseUrlHint" class="integration-note">Only used when an Ollama provider is active.</div>
+                    <div class="settings-grid">
+                      <div>
+                        <label for="ollamaTimeoutMode">Ollama timeout mode</label>
+                        <select id="ollamaTimeoutMode">
+                          <option value="default">Default</option>
+                          <option value="user">User set</option>
+                          <option value="auto">Auto benchmark</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label>&nbsp;</label>
+                        <button id="benchmarkOllamaTimeouts" type="button">Benchmark Ollama</button>
+                      </div>
+                    </div>
+                    <div id="ollamaTimeoutProfileHint" class="integration-note">Timeout tuning appears when an Ollama provider is active.</div>
                   </div>
                 </div>
 

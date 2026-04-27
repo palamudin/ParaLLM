@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -17,7 +21,12 @@ from runtime.engine import (
     default_front_mode,
     default_model_for_provider,
     default_ollama_base_url,
+    default_ollama_timeout_profile,
+    default_timeout_mode,
     default_target_timeout_config,
+    clamp_timeout_seconds,
+    normalize_ollama_timeout_profile,
+    normalize_timeout_mode,
     normalize_budget_config,
     normalize_context_mode,
     normalize_engine_graph,
@@ -210,6 +219,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     current_direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     current_direct_provider = normalize_provider_id(str(runtime_config.get("directProvider") or current_provider), current_provider)
     current_ollama_base_url = normalize_ollama_base_url(runtime_config.get("ollamaBaseUrl", default_ollama_base_url()))
+    current_timeout_mode = normalize_timeout_mode(runtime_config.get("timeoutMode", default_timeout_mode()), default_timeout_mode())
+    current_ollama_timeout_profile = normalize_ollama_timeout_profile(
+        runtime_config.get("ollamaTimeoutProfile") if isinstance(runtime_config.get("ollamaTimeoutProfile"), dict) else default_ollama_timeout_profile()
+    )
     current_target_timeouts = normalize_target_timeout_config(
         runtime_config.get("targetTimeouts") if isinstance(runtime_config.get("targetTimeouts"), dict) else default_target_timeout_config()
     )
@@ -238,6 +251,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         direct_provider,
     )
     ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", current_ollama_base_url))
+    timeout_mode = normalize_timeout_mode(payload.get("timeoutMode", current_timeout_mode), current_timeout_mode)
+    ollama_timeout_profile = normalize_ollama_timeout_profile(
+        control._parse_json_like(payload.get("ollamaTimeoutProfile"), current_ollama_timeout_profile)
+    )
     target_timeouts_input = control._parse_json_like(payload.get("targetTimeouts"), current_target_timeouts)
     target_timeouts = normalize_target_timeout_config(
         target_timeouts_input if isinstance(target_timeouts_input, dict) else current_target_timeouts
@@ -311,6 +328,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["directProvider"] = direct_provider
         task_runtime["directModel"] = direct_model
         task_runtime["ollamaBaseUrl"] = ollama_base_url
+        task_runtime["timeoutMode"] = timeout_mode
+        task_runtime["ollamaTimeoutProfile"] = ollama_timeout_profile
         task_runtime["targetTimeouts"] = target_timeouts
         task_runtime["reasoningEffort"] = reasoning_effort
         task_runtime["budget"] = budget
@@ -346,6 +365,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "directProvider": direct_provider,
                 "directModel": direct_model,
                 "ollamaBaseUrl": ollama_base_url,
+                "timeoutMode": timeout_mode,
+                "ollamaTimeoutProfile": ollama_timeout_profile,
                 "targetTimeouts": target_timeouts,
                 "reasoningEffort": reasoning_effort,
                 "maxTotalTokens": budget["maxTotalTokens"],
@@ -387,6 +408,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "directProvider": direct_provider,
             "directModel": direct_model,
             "ollamaBaseUrl": ollama_base_url,
+            "timeoutMode": timeout_mode,
+            "ollamaTimeoutProfile": ollama_timeout_profile,
             "targetTimeouts": target_timeouts,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
@@ -414,6 +437,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "directProvider": direct_provider,
         "directModel": direct_model,
         "ollamaBaseUrl": ollama_base_url,
+        "timeoutMode": timeout_mode,
+        "ollamaTimeoutProfile": ollama_timeout_profile,
         "targetTimeouts": target_timeouts,
         "reasoningEffort": reasoning_effort,
         "budget": budget,
@@ -423,6 +448,242 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "dynamicSpinup": dynamic_spinup,
         "vetting": vetting,
         "preferredLoop": preferred_loop,
+    }
+
+
+def _ollama_generate_url(base_url: str) -> str:
+    normalized = normalize_ollama_base_url(base_url)
+    lowered = normalized.rstrip("/").lower()
+    if lowered.endswith("/api"):
+        return normalized.rstrip("/") + "/generate"
+    return normalized.rstrip("/") + "/api/generate"
+
+
+def _build_task_from_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = control.normalize_draft_state(draft)
+    provider = normalize_provider_id(normalized.get("provider"), DEFAULT_PROVIDER_ID)
+    summarizer_provider = normalize_provider_id(normalized.get("summarizerProvider"), provider)
+    return {
+        "taskId": "draft-timeout-profile",
+        "objective": str(normalized.get("objective") or "").strip(),
+        "constraints": list(normalized.get("constraints") or []),
+        "sessionContext": str(normalized.get("sessionContext") or "").strip(),
+        "runtime": {
+            "provider": provider,
+            "model": normalize_model_id(normalized.get("model"), default_model_for_provider(provider), provider),
+            "frontMode": normalize_front_mode(normalized.get("frontMode", default_front_mode()), default_front_mode()),
+            "engineVersion": normalize_engine_version(normalized.get("engineVersion", default_engine_version()), default_engine_version()),
+            "engineGraph": normalize_engine_graph(normalized.get("engineGraph", default_engine_graph())),
+            "contextMode": normalize_context_mode(normalized.get("contextMode", default_context_mode()), default_context_mode()),
+            "directBaselineMode": normalize_direct_baseline_mode(normalized.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode()),
+            "directProvider": normalize_provider_id(normalized.get("directProvider"), provider),
+            "directModel": normalize_model_id(
+                normalized.get("directModel"),
+                default_model_for_provider(normalize_provider_id(normalized.get("directProvider"), provider)),
+                normalize_provider_id(normalized.get("directProvider"), provider),
+            ),
+            "ollamaBaseUrl": normalize_ollama_base_url(normalized.get("ollamaBaseUrl", default_ollama_base_url())),
+            "timeoutMode": normalize_timeout_mode(normalized.get("timeoutMode", default_timeout_mode()), default_timeout_mode()),
+            "ollamaTimeoutProfile": normalize_ollama_timeout_profile(normalized.get("ollamaTimeoutProfile", default_ollama_timeout_profile())),
+            "targetTimeouts": normalize_target_timeout_config(normalized.get("targetTimeouts", default_target_timeout_config())),
+        },
+        "summarizer": {
+            "provider": summarizer_provider,
+            "model": normalize_model_id(normalized.get("summarizerModel"), default_model_for_provider(summarizer_provider), summarizer_provider),
+        },
+        "workers": task_workers(
+            {
+                "runtime": {"provider": provider, "model": normalize_model_id(normalized.get("model"), default_model_for_provider(provider), provider)},
+                "workers": normalized.get("workers", []),
+            }
+        ),
+    }
+
+
+def _ollama_timeout_benchmark_models(task: Dict[str, Any]) -> Dict[str, str]:
+    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    summarizer = task.get("summarizer") if isinstance(task.get("summarizer"), dict) else {}
+    roles: Dict[str, str] = {}
+    main_provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
+    if main_provider == "ollama":
+        main_model = normalize_model_id(runtime_config.get("model"), default_model_for_provider("ollama"), "ollama")
+        roles["commander"] = main_model
+        roles["review"] = main_model
+        for worker in task_workers(task):
+            worker_id = str(worker.get("id") or "").strip().upper()
+            if worker_id:
+                roles[f"worker:{worker_id}"] = normalize_model_id(worker.get("model"), main_model, "ollama")
+    summarizer_provider = normalize_provider_id(summarizer.get("provider"), main_provider)
+    if summarizer_provider == "ollama":
+        roles["summarizer"] = normalize_model_id(summarizer.get("model"), default_model_for_provider("ollama"), "ollama")
+        roles["answer_now"] = roles["summarizer"]
+    direct_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
+    direct_provider = normalize_provider_id(runtime_config.get("directProvider"), main_provider)
+    if direct_mode != "off" and direct_provider == "ollama":
+        roles["direct_baseline"] = normalize_model_id(runtime_config.get("directModel"), default_model_for_provider("ollama"), "ollama")
+    return roles
+
+
+def _benchmark_ollama_model(base_url: str, model: str) -> Dict[str, Any]:
+    payload = {
+        "model": model,
+        "prompt": "Reply with READY only.",
+        "stream": False,
+        "options": {
+            "temperature": 0,
+            "num_predict": 8,
+        },
+    }
+    request = urllib.request.Request(
+        _ollama_generate_url(base_url),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    started = time.perf_counter()
+    with urllib.request.urlopen(request, timeout=900) as handle:
+        response = json.loads(handle.read().decode("utf-8"))
+    finished = time.perf_counter()
+    total_duration_ns = float(response.get("total_duration") or 0.0)
+    return {
+        "wallSeconds": max(0.001, round(finished - started, 3)),
+        "totalDurationMs": max(0.0, round(total_duration_ns / 1_000_000.0, 3)),
+        "evalCount": max(0, int(response.get("eval_count") or 0)),
+        "promptEvalCount": max(0, int(response.get("prompt_eval_count") or 0)),
+    }
+
+
+def _scaled_timeout(default_seconds: int, benchmark_seconds: float, factor: float, buffer_seconds: int) -> int:
+    candidate = int(round((max(0.0, float(benchmark_seconds or 0.0)) * factor) + float(buffer_seconds)))
+    return clamp_timeout_seconds(max(int(default_seconds), candidate), int(default_seconds))
+
+
+def _derive_ollama_auto_target_timeouts(task: Dict[str, Any], model_metrics: Dict[str, Dict[str, Any]], roles: Dict[str, str]) -> Dict[str, Any]:
+    defaults = default_target_timeout_config()
+
+    def _seconds_for_model(model: str, fallback: float = 0.0) -> float:
+        payload = model_metrics.get(str(model or "").strip()) if isinstance(model_metrics, dict) else None
+        if not isinstance(payload, dict):
+            return float(fallback)
+        try:
+            return max(0.0, float(payload.get("wallSeconds") or fallback))
+        except (TypeError, ValueError):
+            return float(fallback)
+
+    main_seconds = max(
+        [_seconds_for_model(model) for role, model in roles.items() if role in {"commander", "review"}] or [0.0]
+    )
+    summary_seconds = max(
+        [_seconds_for_model(model, main_seconds) for role, model in roles.items() if role in {"summarizer", "answer_now"}] or [main_seconds]
+    )
+    direct_seconds = max(
+        [_seconds_for_model(model, main_seconds) for role, model in roles.items() if role == "direct_baseline"] or [main_seconds]
+    )
+
+    worker_overrides: Dict[str, int] = {}
+    for role, model in roles.items():
+        if not role.startswith("worker:"):
+            continue
+        worker_id = role.split(":", 1)[1].strip().upper()
+        worker_overrides[worker_id] = _scaled_timeout(defaults["workerDefault"], _seconds_for_model(model, main_seconds), 6.0, 60)
+
+    return normalize_target_timeout_config(
+        {
+            "directBaseline": _scaled_timeout(defaults["directBaseline"], direct_seconds, 6.0, 60),
+            "commander": _scaled_timeout(defaults["commander"], main_seconds, 6.0, 90),
+            "workerDefault": _scaled_timeout(defaults["workerDefault"], max([_seconds_for_model(model, main_seconds) for role, model in roles.items() if role.startswith("worker:")] or [main_seconds]), 6.0, 60),
+            "workers": worker_overrides,
+            "commanderReview": _scaled_timeout(defaults["commanderReview"], main_seconds, 8.0, 120),
+            "summarizer": _scaled_timeout(defaults["summarizer"], summary_seconds, 10.0, 120),
+            "answerNow": _scaled_timeout(defaults["answerNow"], summary_seconds, 6.0, 60),
+            "arbiter": defaults["arbiter"],
+        }
+    )
+
+
+def benchmark_ollama_timeouts(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    state = storage.read_state_payload(storage.project_paths(runtime.root))
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    draft = control.normalize_draft_state(state.get("draft") if isinstance(state.get("draft"), dict) else {})
+    task = active_task if isinstance(active_task, dict) else _build_task_from_draft(draft)
+    runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+    base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", runtime_config.get("ollamaBaseUrl", default_ollama_base_url())))
+    roles = _ollama_timeout_benchmark_models(task)
+    unique_models = sorted({model for model in roles.values() if str(model).strip()})
+    if not unique_models:
+        raise RuntimeErrorWithCode("No Ollama-backed models are active for the current session.", 409)
+
+    model_metrics: Dict[str, Dict[str, Any]] = {}
+    for model in unique_models:
+        try:
+            model_metrics[model] = _benchmark_ollama_model(base_url, model)
+        except urllib.error.URLError as exc:
+            raise RuntimeErrorWithCode(f"Ollama benchmark failed for {model}: {exc}", 502) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeErrorWithCode(f"Ollama benchmark failed for {model}: {exc}", 500) from exc
+
+    derived_timeouts = _derive_ollama_auto_target_timeouts(task, model_metrics, roles)
+    profile = normalize_ollama_timeout_profile(
+        {
+            "status": "ready",
+            "measuredAt": utc_now(),
+            "baseUrl": base_url,
+            "models": model_metrics,
+            "targetTimeouts": derived_timeouts,
+            "note": f"Auto profile derived from {len(unique_models)} Ollama benchmark call(s).",
+        }
+    )
+
+    def mutate(current: Dict[str, Any]) -> Dict[str, Any]:
+        next_state = dict(current)
+        current_draft = control.normalize_draft_state(next_state.get("draft") if isinstance(next_state.get("draft"), dict) else {})
+        next_state["draft"] = control.normalize_draft_state(
+            {
+                **current_draft,
+                "ollamaBaseUrl": base_url,
+                "timeoutMode": "auto",
+                "ollamaTimeoutProfile": profile,
+                "updatedAt": utc_now(),
+            }
+        )
+        if isinstance(next_state.get("activeTask"), dict):
+            task_next = dict(next_state["activeTask"])
+            task_runtime = dict(task_next.get("runtime") if isinstance(task_next.get("runtime"), dict) else {})
+            task_runtime["ollamaBaseUrl"] = base_url
+            task_runtime["timeoutMode"] = "auto"
+            task_runtime["ollamaTimeoutProfile"] = profile
+            task_next["runtime"] = task_runtime
+            task_runtime["enginePlan"] = compile_engine_graph(
+                normalize_engine_graph(task_runtime.get("engineGraph", default_engine_graph())),
+                task=task_next,
+                runtime_config=task_runtime,
+            )
+            next_state["activeTask"] = task_next
+        return next_state
+
+    updated_state = runtime.mutate_state(mutate)
+    if isinstance(updated_state.get("activeTask"), dict):
+        control._write_task_snapshot_unlocked(runtime, updated_state["activeTask"])
+        _sync_active_task_state(runtime, updated_state)
+    runtime.append_step(
+        "model",
+        "Benchmarked Ollama and derived an automatic timeout profile.",
+        {
+            "taskId": ((updated_state.get("activeTask") or {}) if isinstance(updated_state.get("activeTask"), dict) else {}).get("taskId"),
+            "ollamaBaseUrl": base_url,
+            "timeoutMode": "auto",
+            "models": model_metrics,
+            "targetTimeouts": derived_timeouts,
+        },
+    )
+    return {
+        "message": "Ollama timeout profile updated from live benchmark.",
+        "timeoutMode": "auto",
+        "ollamaBaseUrl": base_url,
+        "ollamaTimeoutProfile": profile,
+        "targetTimeouts": derived_timeouts,
+        "benchmarkedModels": unique_models,
     }
 
 

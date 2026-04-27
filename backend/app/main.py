@@ -252,6 +252,15 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)
 
+    @app.post("/v1/runtime/ollama/benchmark")
+    async def post_runtime_ollama_benchmark(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = settings.benchmark_ollama_timeouts(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
     @app.post("/v1/positions/model")
     async def post_position_model(request: Request) -> JSONResponse:
         payload = await request_payload(request)

@@ -135,6 +135,47 @@ const DEFAULT_TARGET_TIMEOUTS = {
   answerNow: 180,
   arbiter: 180
 };
+
+function defaultTimeoutMode() {
+  return "default";
+}
+
+function normalizeTimeoutMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "user" || raw === "auto") return raw;
+  return defaultTimeoutMode();
+}
+
+function timeoutModeLabel(value) {
+  const normalized = normalizeTimeoutMode(value);
+  if (normalized === "user") return "User set";
+  if (normalized === "auto") return "Auto benchmark";
+  return "Default";
+}
+
+function defaultOllamaTimeoutProfile() {
+  return {
+    status: "idle",
+    measuredAt: "",
+    baseUrl: "",
+    models: {},
+    targetTimeouts: normalizeTargetTimeouts(DEFAULT_TARGET_TIMEOUTS),
+    note: ""
+  };
+}
+
+function normalizeOllamaTimeoutProfile(value) {
+  const source = (value && typeof value === "object") ? value : {};
+  const status = String(source.status || "").trim().toLowerCase();
+  return {
+    status: status || "idle",
+    measuredAt: String(source.measuredAt || "").trim(),
+    baseUrl: normalizeOllamaBaseUrl(source.baseUrl || ""),
+    models: source.models && typeof source.models === "object" ? source.models : {},
+    targetTimeouts: normalizeTargetTimeouts(source.targetTimeouts || DEFAULT_TARGET_TIMEOUTS),
+    note: String(source.note || "").trim()
+  };
+}
 const ENGINE_V2_NODE_LIBRARY = {
   prompt: {
     moduleType: "prompt",
@@ -492,6 +533,7 @@ const API = {
   steps: "/v1/steps",
   history: "/v1/history",
   runtimeApply: "/v1/runtime/apply",
+  runtimeOllamaBenchmark: "/v1/runtime/ollama/benchmark",
   tasks: "/v1/tasks",
   loops: "/v1/loops",
   targetsBackground: "/v1/targets/background",
@@ -938,6 +980,8 @@ function defaultDraftState() {
     directProvider: "openai",
     directModel: "gpt-5-mini",
     ollamaBaseUrl: "http://127.0.0.1:11434",
+    timeoutMode: defaultTimeoutMode(),
+    ollamaTimeoutProfile: defaultOllamaTimeoutProfile(),
     reasoningEffort: "low",
     targetTimeouts: Object.assign({}, DEFAULT_TARGET_TIMEOUTS, { workers: {} }),
     maxCostUsd: DEFAULT_RUNTIME_BUDGET.maxCostUsd,
@@ -1240,12 +1284,38 @@ function normalizeTargetTimeouts(value) {
   };
 }
 
-function currentTargetTimeoutsSource(task, draft) {
+function currentTimeoutModeSource(task, draft) {
+  return normalizeTimeoutMode(draft?.timeoutMode || task?.runtime?.timeoutMode || defaultTimeoutMode());
+}
+
+function currentOllamaTimeoutProfileSource(task, draft) {
+  return normalizeOllamaTimeoutProfile(
+    draft?.ollamaTimeoutProfile
+    || task?.runtime?.ollamaTimeoutProfile
+    || defaultOllamaTimeoutProfile()
+  );
+}
+
+function storedTargetTimeoutsSource(task, draft) {
   return normalizeTargetTimeouts(
     draft?.targetTimeouts
     || task?.runtime?.targetTimeouts
     || DEFAULT_TARGET_TIMEOUTS
   );
+}
+
+function currentTargetTimeoutsSource(task, draft) {
+  const mode = currentTimeoutModeSource(task, draft);
+  if (mode === "user") {
+    return storedTargetTimeoutsSource(task, draft);
+  }
+  if (mode === "auto") {
+    const profile = currentOllamaTimeoutProfileSource(task, draft);
+    if (profile.status === "ready") {
+      return normalizeTargetTimeouts(profile.targetTimeouts);
+    }
+  }
+  return normalizeTargetTimeouts(DEFAULT_TARGET_TIMEOUTS);
 }
 
 function targetTimeoutSeconds(config, target) {
@@ -1345,10 +1415,23 @@ function syncOllamaBaseUrlField() {
   const visible = shouldShowOllamaBaseUrl(workerProvider, summarizerProvider) || (directMode !== "off" && directProvider === "ollama");
   const $field = $("#ollamaBaseUrlField");
   const $input = $("#ollamaBaseUrl");
+  const $mode = $("#ollamaTimeoutMode");
+  const $benchmark = $("#benchmarkOllamaTimeouts");
   const $hint = $("#ollamaBaseUrlHint");
+  const $profileHint = $("#ollamaTimeoutProfileHint");
   if (!$field.length || !$input.length || !$hint.length) return;
+  const timeoutMode = normalizeTimeoutMode($mode.val() || currentTimeoutModeSource(latestState?.activeTask || null, latestState?.draft || null));
+  const timeoutProfile = currentOllamaTimeoutProfileSource(latestState?.activeTask || null, latestState?.draft || null);
   $field.prop("hidden", !visible);
   $input.prop("disabled", !visible);
+  if ($mode.length) {
+    $mode.prop("disabled", !visible).val(timeoutMode);
+  }
+  if ($benchmark.length) {
+    $benchmark
+      .prop("disabled", !visible)
+      .text(timeoutProfile.status === "ready" ? "Re-benchmark Ollama" : "Benchmark Ollama");
+  }
   if (!$input.val().trim()) {
     $input.val(normalizeOllamaBaseUrl(""));
   }
@@ -1361,6 +1444,25 @@ function syncOllamaBaseUrlField() {
       ? ("Used by " + roles.join(" and ") + ". Accepts either a host like http://192.168.0.26:11434 or an /api base URL.")
       : "Only used when an Ollama provider is active."
   );
+  if ($profileHint.length) {
+    if (!visible) {
+      $profileHint.text("Timeout tuning appears when an Ollama provider is active.");
+    } else if (timeoutMode === "default") {
+      $profileHint.text("Default mode uses ParaLLM's built-in timeout ladder for Ollama-backed stages.");
+    } else if (timeoutMode === "user") {
+      $profileHint.text("User set mode preserves your manual per-target timeout values from Debug and runtime settings.");
+    } else {
+      const measuredAt = timeoutProfile.measuredAt
+        ? new Date(timeoutProfile.measuredAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : "";
+      const models = Object.keys(timeoutProfile.models || {});
+      const modelText = models.length ? models.join(", ") : "active Ollama model(s)";
+      const statusText = timeoutProfile.status === "ready"
+        ? ("Auto profile ready" + (measuredAt ? " at " + measuredAt : "") + " using " + modelText + ".")
+        : "Auto mode will benchmark the current Ollama session and derive timeouts for this run.";
+      $profileHint.text(timeoutProfile.note ? (statusText + " " + timeoutProfile.note) : statusText);
+    }
+  }
 }
 
 function buildWorkerTypeOptions(selectedValue) {
@@ -2510,6 +2612,8 @@ function buildCommanderFormSource(task, draft) {
         safeDraft.directProvider || safeDraft.provider || "openai",
         safeDraft.directModel || safeDraft.model || "gpt-5-mini",
         safeDraft.ollamaBaseUrl || "http://127.0.0.1:11434",
+        normalizeTimeoutMode(safeDraft.timeoutMode || defaultTimeoutMode()),
+        JSON.stringify(normalizeOllamaTimeoutProfile(safeDraft.ollamaTimeoutProfile || defaultOllamaTimeoutProfile())),
         JSON.stringify(normalizeTargetTimeouts(safeDraft.targetTimeouts || DEFAULT_TARGET_TIMEOUTS)),
         safeDraft.reasoningEffort || "low",
         safeDraft.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
@@ -2554,6 +2658,8 @@ function buildCommanderFormSource(task, draft) {
         task.runtime?.directProvider || task.runtime?.provider || "openai",
         task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
         task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
+        normalizeTimeoutMode(task.runtime?.timeoutMode || defaultTimeoutMode()),
+        JSON.stringify(normalizeOllamaTimeoutProfile(task.runtime?.ollamaTimeoutProfile || defaultOllamaTimeoutProfile())),
         JSON.stringify(normalizeTargetTimeouts(task.runtime?.targetTimeouts || DEFAULT_TARGET_TIMEOUTS)),
         task.runtime?.reasoningEffort || "low",
         task.runtime?.budget?.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
@@ -2590,6 +2696,8 @@ function buildCommanderFormSource(task, draft) {
         directProvider: task.runtime?.directProvider || task.runtime?.provider || "openai",
         directModel: task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
         ollamaBaseUrl: task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
+        timeoutMode: normalizeTimeoutMode(task.runtime?.timeoutMode || defaultTimeoutMode()),
+        ollamaTimeoutProfile: normalizeOllamaTimeoutProfile(task.runtime?.ollamaTimeoutProfile || defaultOllamaTimeoutProfile()),
         targetTimeouts: normalizeTargetTimeouts(task.runtime?.targetTimeouts || DEFAULT_TARGET_TIMEOUTS),
         reasoningEffort: task.runtime?.reasoningEffort || "low",
         maxCostUsd: task.runtime?.budget?.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd,
@@ -2644,6 +2752,7 @@ function applyCommanderForm(values) {
   $("#summarizerProvider").val(summarizerProvider);
   $("#directProvider").val(directProvider);
   $("#ollamaBaseUrl").val(normalizeOllamaBaseUrl(safe.ollamaBaseUrl));
+  $("#ollamaTimeoutMode").val(normalizeTimeoutMode(safe.timeoutMode || defaultTimeoutMode()));
   populateStaticModelSelect("#model", workerModel, workerProvider);
   populateStaticModelSelect(
     "#summarizerModel",
@@ -2703,6 +2812,8 @@ function collectCommanderPayload() {
     directProvider: $("#directProvider").val(),
     directModel: $("#directModel").val(),
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
+    timeoutMode: normalizeTimeoutMode($("#ollamaTimeoutMode").val()),
+    ollamaTimeoutProfile: currentOllamaTimeoutProfileSource(latestState?.activeTask || null, latestState?.draft || null),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: parseFloat($("#maxCostUsd").val()) || 0,
     maxTotalTokens: 0,
@@ -2794,7 +2905,9 @@ function buildDraftSavePayload(options = {}) {
   payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
   payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
-  payload.targetTimeouts = JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null));
+  payload.timeoutMode = normalizeTimeoutMode(payload.timeoutMode);
+  payload.ollamaTimeoutProfile = JSON.stringify(normalizeOllamaTimeoutProfile(payload.ollamaTimeoutProfile));
+  payload.targetTimeouts = JSON.stringify(storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null));
   return payload;
 }
 
@@ -2814,8 +2927,10 @@ function buildFrontCanvasRuntimePayload() {
     directProvider: String(base.directProvider || base.provider || "openai"),
     directModel: String(base.directModel || base.model || ""),
     ollamaBaseUrl: normalizeOllamaBaseUrl(base.ollamaBaseUrl),
+    timeoutMode: normalizeTimeoutMode(base.timeoutMode),
+    ollamaTimeoutProfile: normalizeOllamaTimeoutProfile(base.ollamaTimeoutProfile),
     reasoningEffort: String(base.reasoningEffort || "low"),
-    targetTimeouts: currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null),
+    targetTimeouts: storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null),
     maxCostUsd: Number(base.maxCostUsd || 0),
     loopRounds: Number(base.loopRounds || 1),
     loopDelayMs: Number(base.loopDelayMs || 0),
@@ -6372,6 +6487,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   const currentCommander = task?.stateCommander || null;
   const currentCommanderReview = task?.stateCommanderReview || null;
   const timeoutConfig = currentTargetTimeoutsSource(task || null, latestState?.draft || null);
+  const timeoutMode = currentTimeoutModeSource(task || null, latestState?.draft || null);
+  const timeoutsEditable = timeoutMode === "user";
   const signature = JSON.stringify({
     taskId: task?.taskId || "",
     commanderRound: currentCommander?.round || 0,
@@ -6380,6 +6497,7 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
     loopStatus: loop?.status || "idle",
     dispatchStatus: latestState?.dispatch?.status || "idle",
     summaryReady: summarizerReadyForCommanderRound(task, stateWorkers || {}),
+    timeoutMode: timeoutMode,
     targetTimeouts: timeoutConfig
   });
   if (signature === debugControlsSignature || hasFocusWithin("#debugTargetControls")) return;
@@ -6411,6 +6529,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
         .attr("step", "5")
         .addClass("target-timeout-input")
         .attr("data-timeout-target", target)
+        .prop("disabled", !timeoutsEditable)
+        .attr("title", timeoutsEditable ? "Edit timeout for this target." : ("Timeouts are " + timeoutModeLabel(timeoutMode).toLowerCase() + " right now. Switch to User set to edit."))
         .val(currentValue),
       $("<span>").addClass("debug-timeout-suffix").text("s"),
       $("<button>").addClass("run-target").attr("data-target", target).prop("disabled", !!disabled).text(buttonLabel)
@@ -6498,6 +6618,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
         .attr("step", "5")
         .addClass("target-timeout-input")
         .attr("data-timeout-target", "summarizer")
+        .prop("disabled", !timeoutsEditable)
+        .attr("title", timeoutsEditable ? "Edit timeout for this target." : ("Timeouts are " + timeoutModeLabel(timeoutMode).toLowerCase() + " right now. Switch to User set to edit."))
         .val(targetTimeoutSeconds(timeoutConfig, "summarizer")),
       $("<span>").addClass("debug-timeout-suffix").text("s"),
       $("<button>").addClass("run-target").attr("data-target", "summarizer").prop("disabled", isActive || !summaryReady).text("Summarize"),
@@ -8491,7 +8613,9 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     directProvider: $("#directProvider").val(),
     directModel: $("#directModel").val(),
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
-    targetTimeouts: JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
+    timeoutMode: normalizeTimeoutMode($("#ollamaTimeoutMode").val()),
+    ollamaTimeoutProfile: JSON.stringify(currentOllamaTimeoutProfileSource(latestState?.activeTask || null, latestState?.draft || null)),
+    targetTimeouts: JSON.stringify(storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
     reasoningEffort: $("#reasoningEffort").val(),
     maxCostUsd: $("#maxCostUsd").val(),
     loopRounds: $("#loopRounds").val(),
@@ -8518,7 +8642,7 @@ function saveDebugTargetTimeout(target, rawValue) {
     showMessage("No active task.", true);
     return;
   }
-  const nextConfig = currentTargetTimeoutsSource(latestState.activeTask, latestState?.draft || null);
+  const nextConfig = storedTargetTimeoutsSource(latestState.activeTask, latestState?.draft || null);
   const normalizedTarget = String(target || "").trim();
   const nextSeconds = clampTimeoutSeconds(rawValue, targetTimeoutSeconds(nextConfig, normalizedTarget));
   if (/^[A-Za-z]$/.test(normalizedTarget)) {
@@ -8548,10 +8672,15 @@ function saveDebugTargetTimeout(target, rawValue) {
         break;
     }
   }
-  postForm(API.runtimeApply, { targetTimeouts: JSON.stringify(nextConfig) }, "Timeout updated", {
+  postForm(API.runtimeApply, {
+    timeoutMode: "user",
+    ollamaTimeoutProfile: JSON.stringify(currentOllamaTimeoutProfileSource(latestState?.activeTask || null, latestState?.draft || null)),
+    targetTimeouts: JSON.stringify(nextConfig)
+  }, "Timeout updated", {
     onSuccess: function () {
       workerControlsSignature = "";
       debugControlsSignature = "";
+      $("#ollamaTimeoutMode").val("user");
     }
   });
 }
@@ -9012,7 +9141,7 @@ $(function () {
     queueDraftSave();
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #reasoningEffort, #maxCostUsd, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #ollamaTimeoutMode, #reasoningEffort, #maxCostUsd, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
     syncDirectBaselineFields();
     syncOllamaBaseUrlField();
     formDirty = true;
@@ -9021,6 +9150,19 @@ $(function () {
     renderComposerTools();
     renderAuthPoolPreview();
     queueDraftSave();
+  });
+
+  $("#benchmarkOllamaTimeouts").on("click", function () {
+    postJson(API.runtimeOllamaBenchmark, {
+      ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val())
+    }, "Ollama benchmark completed", {
+      manualDispatch: "Ollama benchmark",
+      onSuccess: function () {
+        workerControlsSignature = "";
+        debugControlsSignature = "";
+        $("#ollamaTimeoutMode").val("auto");
+      }
+    });
   });
 
   $("#sendPrompt").on("click", function () {
@@ -9054,7 +9196,9 @@ $(function () {
       directProvider: payload.directProvider || payload.provider,
       directModel: payload.directModel || payload.model,
       ollamaBaseUrl: payload.ollamaBaseUrl,
-      targetTimeouts: JSON.stringify(currentTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
+      timeoutMode: normalizeTimeoutMode(payload.timeoutMode),
+      ollamaTimeoutProfile: JSON.stringify(normalizeOllamaTimeoutProfile(payload.ollamaTimeoutProfile)),
+      targetTimeouts: JSON.stringify(storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
       summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "balanced")),
       reasoningEffort: payload.reasoningEffort,
       maxCostUsd: payload.maxCostUsd,
