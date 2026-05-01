@@ -704,6 +704,8 @@ The active publication gate is:
 
 Latest verified live stability runs are summarized in [2026-05-01 MSP RMM OpenAI Mini Stability Runs](docs/eval-results/2026-05-01-msp-rmm-openai-mini.md).
 
+Latest hard-mode cross-provider shakeout is summarized in [2026-05-01 MSP Critical Council Hard Sweep](docs/eval-results/2026-05-01-msp-critical-council-hard-openai-judge.md). That run is useful operational signal, but not a clean score claim: it includes provider-arm failures and configuration findings.
+
 | Field | Value |
 | --- | --- |
 | Date | `2026-05-01` |
