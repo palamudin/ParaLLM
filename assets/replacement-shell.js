@@ -3,6 +3,7 @@
     state: "/v1/state",
     draft: "/v1/draft",
     frontLiveRuns: "/v1/front/live/runs",
+    evalHistory: "/v1/evals/history",
   };
 
   const providerCatalog = {
@@ -49,6 +50,13 @@
     sidebarCollapsed: false,
     inspectorMode: "repo",
   };
+  const scoreState = {
+    selectedRunId: "",
+    selectedSessionId: "",
+    payload: null,
+    sessions: [],
+    loaded: false,
+  };
   let activeSurfaceDrag = null;
 
   const navButtons = Array.from(document.querySelectorAll("[data-view-target]"));
@@ -88,6 +96,12 @@
     headerVetting: document.getElementById("previewHeaderVetting"),
     headerProgress: document.getElementById("previewHeaderProgress"),
     headerElapsed: document.getElementById("previewHeaderElapsed"),
+    scoreRunSelect: document.getElementById("scoreRunSelect"),
+    scoreSessionSelect: document.getElementById("scoreSessionSelect"),
+    scoreRefreshBtn: document.getElementById("scoreRefreshBtn"),
+    scoreRunMeta: document.getElementById("scoreRunMeta"),
+    scoreStatus: document.getElementById("scoreStatus"),
+    scoreCompareDetail: document.getElementById("scoreCompareDetail"),
   };
 
   function applySidebarState(collapsed) {
@@ -177,6 +191,34 @@
       throw new Error(message);
     }
     return response.json();
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function truncateText(value, maxLength) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    const limit = Math.max(20, Number(maxLength || 160));
+    return text.length <= limit ? text : text.slice(0, limit - 3).trimEnd() + "...";
+  }
+
+  function formatTimestamp(value) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) return text;
+    return date.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
 
   function populateSelect(select, options, selectedValue) {
@@ -500,6 +542,425 @@
     await loadState({ hydrate: false });
   }
 
+  function scoreBlockScores(block) {
+    if (!block || typeof block !== "object") return {};
+    return block.scores && typeof block.scores === "object" ? block.scores : block;
+  }
+
+  function scoreValue(block, key) {
+    const scores = scoreBlockScores(block);
+    const value = Number(scores?.[key] || 0);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  function formatScore(value) {
+    return value == null ? "n/a" : Number(value).toFixed(1);
+  }
+
+  function replicateNumber(replicate, fallbackIndex) {
+    const value = Number(replicate?.replicate || fallbackIndex || 1);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  }
+
+  function variantType(variant) {
+    const type = String(variant?.type || "").trim().toLowerCase();
+    if (type) return type;
+    const id = String(variant?.variantId || "");
+    if (id.startsWith("direct-")) return "direct";
+    if (id.startsWith("para-")) return "steered";
+    return "";
+  }
+
+  function variantProvider(variant) {
+    return String(variant?.provider || variant?.directProvider || variant?.summarizerProvider || "").trim();
+  }
+
+  function variantModel(variant) {
+    return String(variant?.model || variant?.directModel || variant?.summarizerModel || "").trim();
+  }
+
+  function answerTextFromEntry(entry) {
+    if (!entry || typeof entry !== "object") return "";
+    if (typeof entry.publicAnswer === "string") return entry.publicAnswer;
+    const answer = entry.answer;
+    if (typeof answer === "string") return answer;
+    if (answer && typeof answer === "object") {
+      return String(answer.answer || answer.publicAnswer || answer.output || "").trim();
+    }
+    return "";
+  }
+
+  function buildScoreLane(kind, variant, replicate, overrides = {}) {
+    const isPara = kind === "para";
+    const provider = overrides.provider || (isPara ? variant?.summarizerProvider : variant?.provider) || variantProvider(variant);
+    const model = overrides.model || (isPara ? variant?.summarizerModel : variant?.model) || variantModel(variant);
+    const hasOverride = (key) => Object.prototype.hasOwnProperty.call(overrides, key);
+    return {
+      kind,
+      label: overrides.label || (isPara ? "Summarizer -> Judge" : "Direct -> Judge"),
+      source: overrides.source || String(variant?.variantId || "baseline"),
+      provider,
+      model,
+      status: String(overrides.status || replicate?.status || "unknown"),
+      answer: String(hasOverride("answer") ? overrides.answer : answerTextFromEntry(replicate)).trim(),
+      quality: hasOverride("quality") ? overrides.quality : replicate?.quality || null,
+      health: hasOverride("health") ? overrides.health : replicate?.answerHealth || null,
+      control: hasOverride("control") ? overrides.control : replicate?.control || null,
+      deterministic: hasOverride("deterministic") ? overrides.deterministic : replicate?.deterministic || null,
+      usage: hasOverride("usage") ? overrides.usage : replicate?.usage || null,
+      updatedAt: overrides.updatedAt || replicate?.updatedAt || "",
+    };
+  }
+
+  function baselineLaneFromSteered(variant, replicate) {
+    const comparison = replicate?.comparison && typeof replicate.comparison === "object" ? replicate.comparison : {};
+    const baselineAnswer = String(comparison.baselineAnswer || "").trim();
+    const hasBaselineScores = !!(replicate?.baselineQuality || replicate?.baselineAnswerHealth);
+    if (!baselineAnswer && !hasBaselineScores) return null;
+    return buildScoreLane("direct", variant, replicate, {
+      label: "Direct baseline -> Judge",
+      source: "embedded baseline",
+      provider: variant?.directProvider || variantProvider(variant),
+      model: variant?.directModel || variantModel(variant),
+      answer: baselineAnswer,
+      quality: replicate?.baselineQuality || comparison?.baselineQuality || null,
+      health: replicate?.baselineAnswerHealth || comparison?.baselineAnswerHealth || null,
+      control: null,
+    });
+  }
+
+  function directMatchScore(directVariant, steeredVariant) {
+    const targetProvider = String(steeredVariant?.directProvider || steeredVariant?.provider || steeredVariant?.summarizerProvider || "").trim();
+    const targetModel = String(steeredVariant?.directModel || steeredVariant?.model || steeredVariant?.summarizerModel || "").trim();
+    const provider = variantProvider(directVariant);
+    const model = variantModel(directVariant);
+    let score = 0;
+    if (targetProvider && provider === targetProvider) score += 50;
+    if (targetModel && model === targetModel) score += 45;
+    if (targetProvider && String(directVariant?.directProvider || "") === targetProvider) score += 10;
+    if (targetModel && String(directVariant?.directModel || "") === targetModel) score += 10;
+    if (provider && String(steeredVariant?.summarizerProvider || "") === provider) score += 5;
+    return score;
+  }
+
+  function directLaneForSteered(caseEntry, steeredVariant, steeredReplicate, fallbackIndex) {
+    const baselineLane = baselineLaneFromSteered(steeredVariant, steeredReplicate);
+    if (baselineLane) return baselineLane;
+    const variants = Array.isArray(caseEntry?.variants) ? caseEntry.variants : [];
+    const directVariants = variants.filter((variant) => variantType(variant) === "direct");
+    if (!directVariants.length) return null;
+    const ranked = directVariants
+      .map((variant) => ({ variant, score: directMatchScore(variant, steeredVariant) }))
+      .sort((a, b) => b.score - a.score);
+    const match = ranked[0]?.variant || directVariants[0];
+    const targetReplicate = replicateNumber(steeredReplicate, fallbackIndex);
+    const replicate = (Array.isArray(match.replicates) ? match.replicates : []).find((entry, index) => {
+      return replicateNumber(entry, index + 1) === targetReplicate;
+    }) || (Array.isArray(match.replicates) ? match.replicates[0] : null);
+    return replicate ? buildScoreLane("direct", match, replicate) : null;
+  }
+
+  function buildScoreSessions(run) {
+    const cases = Array.isArray(run?.cases) ? run.cases : [];
+    const sessions = [];
+    cases.forEach((caseEntry) => {
+      const variants = Array.isArray(caseEntry?.variants) ? caseEntry.variants : [];
+      const steeredVariants = variants.filter((variant) => variantType(variant) === "steered");
+      steeredVariants.forEach((variant) => {
+        const replicates = Array.isArray(variant?.replicates) ? variant.replicates : [];
+        replicates.forEach((replicate, index) => {
+          const repNo = replicateNumber(replicate, index + 1);
+          const directLane = directLaneForSteered(caseEntry, variant, replicate, index + 1);
+          const paraLane = buildScoreLane("para", variant, replicate);
+          const sessionId = [
+            String(caseEntry?.caseId || "case"),
+            String(variant?.variantId || "para"),
+            "r" + repNo,
+            directLane?.source || "direct",
+          ].join("::");
+          sessions.push({
+            sessionId,
+            label: [
+              String(caseEntry?.title || caseEntry?.caseId || "Case"),
+              String(variant?.title || variant?.variantId || "Para"),
+              "r" + repNo,
+            ].filter(Boolean).join(" | "),
+            caseId: String(caseEntry?.caseId || ""),
+            caseTitle: String(caseEntry?.title || caseEntry?.caseId || "Case"),
+            objective: String(caseEntry?.objective || ""),
+            variantId: String(variant?.variantId || ""),
+            replicate: repNo,
+            para: paraLane,
+            direct: directLane,
+            judge: {
+              provider: String(run?.judgeProvider || ""),
+              model: String(run?.judgeModel || ""),
+              status: String(run?.status || ""),
+              runId: String(run?.runId || ""),
+            },
+          });
+        });
+      });
+    });
+    return sessions;
+  }
+
+  function renderScoreMetricStrip(lane) {
+    const quality = scoreValue(lane?.quality, "overallQuality");
+    const health = scoreValue(lane?.health, "overallHealth");
+    const control = scoreValue(lane?.control, "overallControl");
+    const metrics = [
+      { label: "Quality", value: quality },
+      { label: "Health", value: health },
+      { label: "Control", value: control },
+    ];
+    return `
+      <div class="replacement-score-metrics">
+        ${metrics.map((metric) => `
+          <div class="replacement-score-metric">
+            <span>${escapeHtml(metric.label)}</span>
+            <strong>${escapeHtml(formatScore(metric.value))}</strong>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderJudgeReadout(lane) {
+    const rows = [];
+    const quality = lane?.quality || {};
+    const health = lane?.health || {};
+    const control = lane?.control || {};
+    [
+      ["Quality verdict", quality.verdict || quality.rationale || ""],
+      ["Quality weakness", quality.strongestWeakness || ""],
+      ["Health verdict", health.verdict || health.rationale || ""],
+      ["Control verdict", control.verdict || control.strongestControlWeakness || control.rationale || ""],
+    ].forEach(([label, value]) => {
+      const text = truncateText(value, 320);
+      if (text) {
+        rows.push(`
+          <div class="replacement-score-note">
+            <span>${escapeHtml(label)}</span>
+            <p>${escapeHtml(text)}</p>
+          </div>
+        `);
+      }
+    });
+    return rows.length ? `<div class="replacement-score-notes">${rows.join("")}</div>` : "";
+  }
+
+  function renderScoreLaneCard(lane, tone) {
+    if (!lane) {
+      return `
+        <section class="replacement-surface replacement-score-card ${escapeHtml(tone || "")}">
+          <div class="replacement-surface-head"><h4>Direct -> Judge</h4></div>
+          <div class="replacement-inline-note">No comparable direct answer was found for this session.</div>
+        </section>
+      `;
+    }
+    const metaBits = [
+      providerLabel(lane.provider),
+      modelLabel(lane.provider, lane.model),
+      lane.source,
+      lane.status,
+    ].filter(Boolean);
+    return `
+      <section class="replacement-surface replacement-score-card ${escapeHtml(tone || "")}">
+        <div class="replacement-surface-head">
+          <div>
+            <div class="replacement-surface-kicker">${escapeHtml(lane.kind === "para" ? "Summarizer output" : "Direct output")}</div>
+            <h4>${escapeHtml(lane.label)}</h4>
+          </div>
+          <span class="replacement-pill ${lane.kind === "para" ? "replacement-pill-success" : "replacement-pill-warn"}">To judge</span>
+        </div>
+        <div class="replacement-score-meta">${escapeHtml(metaBits.join(" | ") || "No metadata")}</div>
+        ${renderScoreMetricStrip(lane)}
+        ${renderJudgeReadout(lane)}
+        <div class="replacement-score-answer">
+          <div class="replacement-score-answer-label">Answer text sent to judge</div>
+          <pre>${escapeHtml(lane.answer || "No answer captured.")}</pre>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderScoreJudgePanel(session) {
+    const paraQuality = scoreValue(session?.para?.quality, "overallQuality");
+    const directQuality = scoreValue(session?.direct?.quality, "overallQuality");
+    const paraHealth = scoreValue(session?.para?.health, "overallHealth");
+    const directHealth = scoreValue(session?.direct?.health, "overallHealth");
+    const deltaQuality = paraQuality != null && directQuality != null ? paraQuality - directQuality : null;
+    const deltaHealth = paraHealth != null && directHealth != null ? paraHealth - directHealth : null;
+    const packet = {
+      runId: session?.judge?.runId || "",
+      caseId: session?.caseId || "",
+      variantId: session?.variantId || "",
+      replicate: session?.replicate || 1,
+      judge: session?.judge || {},
+      scores: {
+        summarizer: {
+          quality: paraQuality,
+          health: paraHealth,
+          control: scoreValue(session?.para?.control, "overallControl"),
+        },
+        direct: {
+          quality: directQuality,
+          health: directHealth,
+        },
+        delta: {
+          quality: deltaQuality,
+          health: deltaHealth,
+        },
+      },
+    };
+    const metaBits = [
+      providerLabel(session?.judge?.provider || ""),
+      modelLabel(session?.judge?.provider || "", session?.judge?.model || ""),
+      session?.judge?.status ? ("run " + session.judge.status) : "",
+    ].filter(Boolean);
+    return `
+      <section class="replacement-surface replacement-score-judge">
+        <div class="replacement-surface-head">
+          <div>
+            <div class="replacement-surface-kicker">Judge comparison</div>
+            <h4>Score side by side</h4>
+          </div>
+          <span class="replacement-pill replacement-pill-muted">${escapeHtml(metaBits.join(" | ") || "Judge")}</span>
+        </div>
+        <div class="replacement-score-delta-grid">
+          <div class="replacement-score-delta">
+            <span>Quality delta</span>
+            <strong>${escapeHtml(deltaQuality == null ? "n/a" : (deltaQuality >= 0 ? "+" : "") + deltaQuality.toFixed(1))}</strong>
+          </div>
+          <div class="replacement-score-delta">
+            <span>Health delta</span>
+            <strong>${escapeHtml(deltaHealth == null ? "n/a" : (deltaHealth >= 0 ? "+" : "") + deltaHealth.toFixed(1))}</strong>
+          </div>
+          <div class="replacement-score-delta">
+            <span>Session</span>
+            <strong>${escapeHtml("r" + String(session?.replicate || 1))}</strong>
+          </div>
+        </div>
+        <details class="replacement-score-packet">
+          <summary>AI score packet</summary>
+          <pre>${escapeHtml(JSON.stringify(packet, null, 2))}</pre>
+        </details>
+      </section>
+    `;
+  }
+
+  function renderScoreSession(session) {
+    if (!session) {
+      return `<div class="replacement-inline-note">No comparable judged sessions found in this run.</div>`;
+    }
+    return `
+      <section class="replacement-score-session-head">
+        <div>
+          <div class="replacement-kicker">${escapeHtml(session.caseId || "case")}</div>
+          <h4>${escapeHtml(session.caseTitle || "Judged session")}</h4>
+        </div>
+        <p>${escapeHtml(truncateText(session.objective || "", 260) || "No objective recorded.")}</p>
+      </section>
+      <div class="replacement-score-lane-grid">
+        ${renderScoreLaneCard(session.para, "primary")}
+        ${renderScoreLaneCard(session.direct, "secondary")}
+      </div>
+      ${renderScoreJudgePanel(session)}
+    `;
+  }
+
+  function renderScoreRunMeta(run, sessions) {
+    if (!run) return "No judged runs available.";
+    const summary = run.summary || {};
+    const bits = [
+      String(run.suiteId || "").trim(),
+      String(run.status || "").trim(),
+      run.judgeProvider ? providerLabel(run.judgeProvider) : "",
+      run.judgeModel ? modelLabel(run.judgeProvider || "", run.judgeModel) : "",
+      Number(summary.variantCount || 0) ? `${Number(summary.variantCount || 0)} variants` : "",
+      Number(summary.errorCount || 0) ? `${Number(summary.errorCount || 0)} errors` : "0 errors",
+      Number(summary.totalTokens || 0) ? `${Number(summary.totalTokens || 0).toLocaleString()} tokens` : "",
+      sessions.length ? `${sessions.length} comparable sessions` : "",
+    ].filter(Boolean);
+    return bits.join(" | ");
+  }
+
+  function syncScoreSelectors(payload) {
+    if (!elements.scoreRunSelect || !elements.scoreSessionSelect || !elements.scoreCompareDetail) return;
+    const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+    const selectedRun = payload?.selectedRun && typeof payload.selectedRun === "object" ? payload.selectedRun : null;
+    if (!scoreState.selectedRunId && payload?.selectedRunId) {
+      scoreState.selectedRunId = String(payload.selectedRunId || "");
+    }
+    const runOptions = runs.map((run) => {
+      const label = [
+        String(run.suiteId || run.runId || "Run"),
+        String(run.status || ""),
+        run.judgeProvider ? providerLabel(run.judgeProvider) : "",
+        run.updatedAt ? formatTimestamp(run.updatedAt) : "",
+      ].filter(Boolean).join(" | ");
+      return `<option value="${escapeHtml(String(run.runId || ""))}">${escapeHtml(label)}</option>`;
+    }).join("");
+    elements.scoreRunSelect.innerHTML = runOptions || `<option value="">No eval runs</option>`;
+    if (scoreState.selectedRunId) {
+      elements.scoreRunSelect.value = scoreState.selectedRunId;
+    }
+    if (!selectedRun && runs.length) {
+      scoreState.selectedRunId = String(runs[0]?.runId || "");
+      persistScoreSelection();
+      loadScoreRuns(scoreState.selectedRunId);
+      return;
+    }
+    const sessions = buildScoreSessions(selectedRun);
+    scoreState.sessions = sessions;
+    if (!scoreState.selectedSessionId || !sessions.some((session) => session.sessionId === scoreState.selectedSessionId)) {
+      scoreState.selectedSessionId = sessions[0]?.sessionId || "";
+      persistScoreSelection();
+    }
+    elements.scoreSessionSelect.innerHTML = sessions.map((session) => {
+      return `<option value="${escapeHtml(session.sessionId)}">${escapeHtml(session.label)}</option>`;
+    }).join("") || `<option value="">No comparable sessions</option>`;
+    if (scoreState.selectedSessionId) {
+      elements.scoreSessionSelect.value = scoreState.selectedSessionId;
+    }
+    elements.scoreRunMeta.textContent = renderScoreRunMeta(selectedRun, sessions);
+    renderCurrentScoreSession();
+    installMainWorkbenchPanes();
+  }
+
+  function renderCurrentScoreSession() {
+    if (!elements.scoreStatus || !elements.scoreCompareDetail) return;
+    const selectedSession = scoreState.sessions.find((session) => session.sessionId === scoreState.selectedSessionId) || scoreState.sessions[0] || null;
+    elements.scoreStatus.textContent = selectedSession
+      ? `Viewing ${selectedSession.caseId || "case"} / ${selectedSession.variantId || "variant"} / replicate ${selectedSession.replicate}.`
+      : "No Direct vs Summarizer judged pair was found in this run.";
+    elements.scoreCompareDetail.innerHTML = renderScoreSession(selectedSession);
+    installMainWorkbenchPanes();
+  }
+
+  function persistScoreSelection() {
+    try {
+      window.localStorage.setItem("replacementShell.scoreRunId", scoreState.selectedRunId || "");
+      window.localStorage.setItem("replacementShell.scoreSessionId", scoreState.selectedSessionId || "");
+    } catch (_) {}
+  }
+
+  async function loadScoreRuns(runId) {
+    if (!elements.scoreRunSelect) return;
+    const requestedRunId = String(runId || scoreState.selectedRunId || "").trim();
+    if (elements.scoreStatus) {
+      elements.scoreStatus.textContent = "Loading judged sessions...";
+    }
+    const query = requestedRunId ? `?runId=${encodeURIComponent(requestedRunId)}` : "";
+    const payload = await fetchJson(API.evalHistory + query);
+    scoreState.payload = payload || {};
+    scoreState.loaded = true;
+    scoreState.selectedRunId = String(payload?.selectedRunId || requestedRunId || "");
+    persistScoreSelection();
+    syncScoreSelectors(payload || {});
+  }
+
   navButtons.forEach((button) => {
     button.addEventListener("click", function () {
       const target = button.getAttribute("data-view-target");
@@ -519,6 +980,13 @@
       });
       if (target === "repo") {
         window.setTimeout(refreshActiveInspector, 40);
+      }
+      if (target === "scores" && !scoreState.loaded) {
+        loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
+          if (elements.scoreStatus) {
+            elements.scoreStatus.textContent = "Score sessions failed to load: " + String(error.message || error);
+          }
+        });
       }
     });
   });
@@ -617,6 +1085,39 @@
     });
   });
 
+  if (elements.scoreRefreshBtn) {
+    elements.scoreRefreshBtn.addEventListener("click", function () {
+      scoreState.loaded = false;
+      loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
+        if (elements.scoreStatus) {
+          elements.scoreStatus.textContent = "Score sessions failed to refresh: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.scoreRunSelect) {
+    elements.scoreRunSelect.addEventListener("change", function () {
+      scoreState.selectedRunId = String(elements.scoreRunSelect.value || "");
+      scoreState.selectedSessionId = "";
+      scoreState.loaded = false;
+      persistScoreSelection();
+      loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
+        if (elements.scoreStatus) {
+          elements.scoreStatus.textContent = "Score run failed to load: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.scoreSessionSelect) {
+    elements.scoreSessionSelect.addEventListener("change", function () {
+      scoreState.selectedSessionId = String(elements.scoreSessionSelect.value || "");
+      persistScoreSelection();
+      renderCurrentScoreSession();
+    });
+  }
+
   installMainWorkbenchPanes();
   window.addEventListener("pointermove", onMainWorkbenchPaneMove);
   window.addEventListener("pointerup", endMainWorkbenchPaneDrag);
@@ -632,6 +1133,10 @@
   } catch (_) {
     setInspectorMode("repo");
   }
+  try {
+    scoreState.selectedRunId = window.localStorage.getItem("replacementShell.scoreRunId") || "";
+    scoreState.selectedSessionId = window.localStorage.getItem("replacementShell.scoreSessionId") || "";
+  } catch (_) {}
   loadState({ hydrate: true }).catch(function (error) {
     elements.draftState.textContent = "Load failed: " + String(error.message || error);
   });

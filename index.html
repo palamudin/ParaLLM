@@ -6,7 +6,7 @@
   <title>ParaLLM</title>
   <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
-  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260501-003" />
+  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260501-004" />
   <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
   <link rel="stylesheet" href="assets/repo-review.css?v=20260501-003" />
 </head>
@@ -642,26 +642,51 @@
             </div>
           </div>
 
-          <div class="replacement-grid replacement-grid-three">
-            <section class="replacement-surface replacement-surface-winner">
-              <div class="replacement-surface-head">
-                <h4>Para</h4>
-                <span class="replacement-pill replacement-pill-success">Best final answer</span>
+          <section class="replacement-surface replacement-score-controls">
+            <div class="replacement-surface-head">
+              <div>
+                <div class="replacement-surface-kicker">Judged sessions</div>
+                <h4>Run selector</h4>
               </div>
-            </section>
+              <button type="button" id="scoreRefreshBtn" class="btn btn-outline-light btn-sm">Refresh</button>
+            </div>
+            <div class="replacement-score-select-grid">
+              <label class="replacement-field" for="scoreRunSelect">
+                <span>Run</span>
+                <select id="scoreRunSelect" class="form-select form-select-sm"></select>
+              </label>
+              <label class="replacement-field" for="scoreSessionSelect">
+                <span>Session viewed</span>
+                <select id="scoreSessionSelect" class="form-select form-select-sm"></select>
+              </label>
+            </div>
+            <div id="scoreRunMeta" class="replacement-inline-note">Loading judged sessions...</div>
+          </section>
 
-            <section class="replacement-surface replacement-surface-runner">
-              <div class="replacement-surface-head">
-                <h4>Direct</h4>
-                <span class="replacement-pill replacement-pill-warn">Best tactical detail</span>
-              </div>
-            </section>
+          <div id="scoreStatus" class="replacement-inline-note">Pick a run and session to compare Direct and Summarizer judge outputs.</div>
 
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
-                <h4>Judge</h4>
-              </div>
-            </section>
+          <div id="scoreCompareDetail" class="replacement-score-detail">
+            <div class="replacement-grid replacement-grid-three">
+              <section class="replacement-surface replacement-surface-winner">
+                <div class="replacement-surface-head">
+                  <h4>Summarizer</h4>
+                  <span class="replacement-pill replacement-pill-success">To judge</span>
+                </div>
+              </section>
+
+              <section class="replacement-surface replacement-surface-runner">
+                <div class="replacement-surface-head">
+                  <h4>Direct</h4>
+                  <span class="replacement-pill replacement-pill-warn">To judge</span>
+                </div>
+              </section>
+
+              <section class="replacement-surface">
+                <div class="replacement-surface-head">
+                  <h4>Judge</h4>
+                </div>
+              </section>
+            </div>
           </div>
         </section>
 
@@ -722,6 +747,6 @@
 
   <script src="assets/repo-review.js?v=20260501-003"></script>
   <script src="assets/fractal-memory.js?v=20260501-003"></script>
-  <script src="assets/replacement-shell.js?v=20260501-003"></script>
+  <script src="assets/replacement-shell.js?v=20260501-004"></script>
 </body>
 </html>
