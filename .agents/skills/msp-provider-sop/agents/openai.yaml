@@ -1,0 +1,4 @@
+interface:
+  display_name: "MSP Provider SOP"
+  short_description: "MSP provider operations and incident rulebook"
+  default_prompt: "Use $msp-provider-sop to pressure-test an MSP incident response or service-change plan against provider operating rules."

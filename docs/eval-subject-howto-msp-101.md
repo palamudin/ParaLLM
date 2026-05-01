@@ -10,7 +10,12 @@ This note gives the judge/eval lanes a compact MSP operations baseline. It is no
 - NCSC, Using MSPs to administer cloud services: https://www.ncsc.gov.uk/blog-post/using-msps-to-administer-your-cloud-services
 - CISA AA22-131A, Protecting Against Cyber Threats to MSPs and Their Customers: https://www.cisa.gov/news-events/cybersecurity-advisories/aa22-131a
 - CISA, Risk Considerations for MSP Customers: https://www.cisa.gov/news-events/alerts/2021/09/03/cisa-insights-risk-considerations-managed-service-provider-customers
+- CISA, Risk Considerations for Managed Service Provider Customers PDF: https://www.cisa.gov/sites/default/files/publications/cisa-insights_risk-considerations-for-msp-customers_508.pdf
+- NSA/CISA/MS-ISAC, Protecting Against Malicious Use of Remote Monitoring and Management Software: https://www.nsa.gov/Press-Room/Press-Releases-Statements/Press-Release-View/Article/3277084/nsa-cisa-and-ms-isac-release-guidance-for-securing-remote-monitoring-and-manage/
+- NCSC, Secure system administration: https://www.ncsc.gov.uk/collection/secure-system-administration
+- NCSC, Cloud security principle 12, Secure service administration: https://www.ncsc.gov.uk/collection/cloud/the-cloud-security-principles/principle-12-secure-service-administration
 - NIST SP 800-61 Rev. 3, Incident Response Recommendations and Considerations: https://csrc.nist.gov/pubs/sp/800/61/r3/final
+- Repo skill reference: `.agents/skills/msp-provider-sop/references/msp-provider-rulebook.md`
 
 ## MSP 101 Mental Model
 
@@ -23,6 +28,19 @@ Core systems in these evals:
 - Tenant: one customer environment. Tenant boundaries matter for privacy, contracts, compliance, and trust.
 - Control plane: the MSP-managed platform that can reach many customer systems. If it is suspected compromised, do not treat it as trusted truth or a trusted control surface until evidence is preserved and risk is bounded.
 - Per-customer ownership: each affected customer needs its own incident owner, ticket/record, scope, decisions, and communications. A separate internal major incident record coordinates the whole MSP response.
+
+## Provider SOP Overlay
+
+The MSP provider rulebook for advisor lanes is stored in `.agents/skills/msp-provider-sop/`. Treat it as the deeper operational layer behind this compact how-to.
+
+Provider rules that should shape judging and answering:
+
+- Tenant separation is a hard boundary: one internal major incident record may coordinate the full response, but each customer needs its own record, evidence set, approvals, impact notes, and communication path.
+- A suspected MSP control plane becomes evidence, not truth. RMM, PSA, backup portals, cloud delegation, identity, remote access, and vendor plugin consoles should be corroborated with independent logs or endpoint/network evidence before they drive cleanup.
+- Privileged access must be attributable: named accounts, MFA, least privilege, just-in-time or just-enough access where possible, no cross-customer credential reuse, and audit trails tied to tickets or change records.
+- Disruptive action needs gates: evidence captured or emergency exception recorded, blast-radius confidence, business impact, customer-owner approval where required, senior authority, rollback path, and monitoring.
+- Communications must be tenant-specific. Internal leadership can know cross-tenant scope; customers should receive only their relevant facts, uncertainty, actions, approvals needed, and next update time.
+- Temporary exceptions must expire and be monitored: firewall openings, MFA bypasses, emergency access, broad scripts, credential changes, and service workarounds need owner, expiry, rollback, and after-action cleanup.
 
 ## Judge Standard
 
