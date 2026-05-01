@@ -16,9 +16,9 @@ The preferred path is:
 1. keep the current shell working
 2. stop deepening its nesting
 3. build a replacement shell against the rules in:
-   - [frontend-foundation.md](C:/xampp/htdocs/loop/docs/frontend-foundation.md)
-   - [replacement-shell-spec.md](C:/xampp/htdocs/loop/docs/replacement-shell-spec.md)
-   - [docs/references/design_sources.csv](C:/xampp/htdocs/loop/docs/references/design_sources.csv)
+   - [frontend-foundation.md](frontend-foundation.md)
+   - [replacement-shell-spec.md](replacement-shell-spec.md)
+   - [docs/references/design_sources.csv](references/design_sources.csv)
 
 ## Core Layout Rule
 

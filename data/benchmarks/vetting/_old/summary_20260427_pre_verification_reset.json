@@ -1,0 +1,564 @@
+{
+  "updatedAt": "2026-04-27T17:11:13+00:00",
+  "runCount": 24,
+  "cohorts": [
+    {
+      "cohort": "parallm-xai-full-triple",
+      "label": "ParaLLM xAI full triple",
+      "appearances": 3,
+      "bestFinalWins": 3,
+      "bestTacticalWins": 3,
+      "leaderWins": 3,
+      "averageScores": {
+        "blastRadiusPerception": 9.17,
+        "humanUsability": 8.83,
+        "agentExecutability": 8.5,
+        "tacticalDetail": 9.17,
+        "restraintAndCollateral": 9.33,
+        "decisionGates": 8.83,
+        "firstHourRealism": 9.0,
+        "overall": 9.0
+      },
+      "timedAppearances": 3,
+      "averageElapsedSeconds": 49.0,
+      "averageTimeAdjustedOverall": 9.0
+    },
+    {
+      "cohort": "parallm-xai-fast-full",
+      "label": "ParaLLM xAI fast workers",
+      "appearances": 3,
+      "bestFinalWins": 0,
+      "bestTacticalWins": 0,
+      "leaderWins": 0,
+      "averageScores": {
+        "blastRadiusPerception": 8.0,
+        "humanUsability": 8.83,
+        "agentExecutability": 8.0,
+        "tacticalDetail": 7.83,
+        "restraintAndCollateral": 8.17,
+        "decisionGates": 8.33,
+        "firstHourRealism": 8.5,
+        "overall": 8.33
+      },
+      "timedAppearances": 3,
+      "averageElapsedSeconds": 54.0,
+      "averageTimeAdjustedOverall": 7.94
+    },
+    {
+      "cohort": "parallm-54full-miniworkers",
+      "label": "ParaLLM 5.4 full | mini adversarials",
+      "appearances": 14,
+      "bestFinalWins": 4,
+      "bestTacticalWins": 3,
+      "leaderWins": 2,
+      "averageScores": {
+        "blastRadiusPerception": 7.64,
+        "humanUsability": 7.79,
+        "agentExecutability": 7.29,
+        "tacticalDetail": 7.25,
+        "restraintAndCollateral": 7.89,
+        "decisionGates": 7.79,
+        "firstHourRealism": 7.68,
+        "overall": 7.68
+      },
+      "timedAppearances": 14,
+      "averageElapsedSeconds": 221.0,
+      "averageTimeAdjustedOverall": 3.8
+    },
+    {
+      "cohort": "parallm-54mini-miniworkers",
+      "label": "ParaLLM 5.4 mini | mini adversarials",
+      "appearances": 14,
+      "bestFinalWins": 7,
+      "bestTacticalWins": 9,
+      "leaderWins": 3,
+      "averageScores": {
+        "blastRadiusPerception": 7.61,
+        "humanUsability": 7.5,
+        "agentExecutability": 7.14,
+        "tacticalDetail": 7.93,
+        "restraintAndCollateral": 7.89,
+        "decisionGates": 7.54,
+        "firstHourRealism": 7.54,
+        "overall": 7.68
+      },
+      "timedAppearances": 14,
+      "averageElapsedSeconds": 54.0,
+      "averageTimeAdjustedOverall": 7.68
+    },
+    {
+      "cohort": "direct-54",
+      "label": "Direct GPT-5.4",
+      "appearances": 14,
+      "bestFinalWins": 2,
+      "bestTacticalWins": 1,
+      "leaderWins": 0,
+      "averageScores": {
+        "blastRadiusPerception": 7.64,
+        "humanUsability": 7.61,
+        "agentExecutability": 7.43,
+        "tacticalDetail": 7.46,
+        "restraintAndCollateral": 7.68,
+        "decisionGates": 7.61,
+        "firstHourRealism": 7.71,
+        "overall": 7.54
+      },
+      "timedAppearances": 1,
+      "averageElapsedSeconds": 219.0,
+      "averageTimeAdjustedOverall": 4.71
+    },
+    {
+      "cohort": "parallm-54full-fullworkers",
+      "label": "ParaLLM 5.4 full | full adversarials",
+      "appearances": 14,
+      "bestFinalWins": 1,
+      "bestTacticalWins": 1,
+      "leaderWins": 0,
+      "averageScores": {
+        "blastRadiusPerception": 7.18,
+        "humanUsability": 6.14,
+        "agentExecutability": 5.96,
+        "tacticalDetail": 6.36,
+        "restraintAndCollateral": 7.57,
+        "decisionGates": 6.61,
+        "firstHourRealism": 6.54,
+        "overall": 6.39
+      },
+      "timedAppearances": 0,
+      "averageElapsedSeconds": null,
+      "averageTimeAdjustedOverall": null
+    },
+    {
+      "cohort": "parallm-anthropic-fast-full",
+      "label": "ParaLLM Anthropic fast workers",
+      "appearances": 3,
+      "bestFinalWins": 2,
+      "bestTacticalWins": 3,
+      "leaderWins": 2,
+      "averageScores": {
+        "blastRadiusPerception": 6.0,
+        "humanUsability": 5.83,
+        "agentExecutability": 2.83,
+        "tacticalDetail": 6.0,
+        "restraintAndCollateral": 6.17,
+        "decisionGates": 5.83,
+        "firstHourRealism": 6.0,
+        "overall": 6.0
+      },
+      "timedAppearances": 3,
+      "averageElapsedSeconds": 66.0,
+      "averageTimeAdjustedOverall": 6.0
+    },
+    {
+      "cohort": "parallm-anthropic-full-triple",
+      "label": "ParaLLM Anthropic full triple",
+      "appearances": 3,
+      "bestFinalWins": 1,
+      "bestTacticalWins": 0,
+      "leaderWins": 0,
+      "averageScores": {
+        "blastRadiusPerception": 6.17,
+        "humanUsability": 6.0,
+        "agentExecutability": 2.83,
+        "tacticalDetail": 5.83,
+        "restraintAndCollateral": 6.0,
+        "decisionGates": 5.67,
+        "firstHourRealism": 6.33,
+        "overall": 6.0
+      },
+      "timedAppearances": 3,
+      "averageElapsedSeconds": 67.0,
+      "averageTimeAdjustedOverall": 5.94
+    },
+    {
+      "cohort": "direct-xai",
+      "label": "Direct xAI flagship",
+      "appearances": 3,
+      "bestFinalWins": 0,
+      "bestTacticalWins": 0,
+      "leaderWins": 0,
+      "averageScores": {
+        "blastRadiusPerception": 5.17,
+        "humanUsability": 6.17,
+        "agentExecutability": 5.0,
+        "tacticalDetail": 4.67,
+        "restraintAndCollateral": 6.17,
+        "decisionGates": 6.0,
+        "firstHourRealism": 5.0,
+        "overall": 5.5
+      },
+      "timedAppearances": 0,
+      "averageElapsedSeconds": null,
+      "averageTimeAdjustedOverall": null
+    },
+    {
+      "cohort": "direct-anthropic",
+      "label": "Direct Anthropic flagship",
+      "appearances": 3,
+      "bestFinalWins": 0,
+      "bestTacticalWins": 0,
+      "leaderWins": 1,
+      "averageScores": {
+        "blastRadiusPerception": 5.5,
+        "humanUsability": 4.83,
+        "agentExecutability": 3.0,
+        "tacticalDetail": 4.5,
+        "restraintAndCollateral": 5.5,
+        "decisionGates": 4.5,
+        "firstHourRealism": 4.83,
+        "overall": 4.83
+      },
+      "timedAppearances": 0,
+      "averageElapsedSeconds": null,
+      "averageTimeAdjustedOverall": null
+    },
+    {
+      "cohort": "direct-minimax",
+      "label": "Direct MiniMax flagship",
+      "appearances": 4,
+      "bestFinalWins": 1,
+      "bestTacticalWins": 1,
+      "leaderWins": 1,
+      "averageScores": {
+        "blastRadiusPerception": 2.12,
+        "humanUsability": 2.12,
+        "agentExecutability": 2.25,
+        "tacticalDetail": 2.12,
+        "restraintAndCollateral": 2.25,
+        "decisionGates": 2.12,
+        "firstHourRealism": 2.25,
+        "overall": 2.25
+      },
+      "timedAppearances": 0,
+      "averageElapsedSeconds": null,
+      "averageTimeAdjustedOverall": null
+    },
+    {
+      "cohort": "parallm-minimax-fast-full",
+      "label": "ParaLLM MiniMax fast workers",
+      "appearances": 4,
+      "bestFinalWins": 3,
+      "bestTacticalWins": 3,
+      "leaderWins": 3,
+      "averageScores": {
+        "blastRadiusPerception": 2.25,
+        "humanUsability": 2.12,
+        "agentExecutability": 1.62,
+        "tacticalDetail": 2.25,
+        "restraintAndCollateral": 2.12,
+        "decisionGates": 2.25,
+        "firstHourRealism": 2.12,
+        "overall": 2.12
+      },
+      "timedAppearances": 4,
+      "averageElapsedSeconds": 82.0,
+      "averageTimeAdjustedOverall": 2.12
+    },
+    {
+      "cohort": "parallm-minimax-full-triple",
+      "label": "ParaLLM MiniMax full triple",
+      "appearances": 4,
+      "bestFinalWins": 0,
+      "bestTacticalWins": 0,
+      "leaderWins": 0,
+      "averageScores": {
+        "blastRadiusPerception": 0.0,
+        "humanUsability": 0.0,
+        "agentExecutability": 0.0,
+        "tacticalDetail": 0.0,
+        "restraintAndCollateral": 0.0,
+        "decisionGates": 0.0,
+        "firstHourRealism": 0.0,
+        "overall": 0.0
+      },
+      "timedAppearances": 0,
+      "averageElapsedSeconds": null,
+      "averageTimeAdjustedOverall": null
+    }
+  ],
+  "byJudgeSystem": {
+    "council": {
+      "runCount": 14,
+      "cohorts": [
+        {
+          "cohort": "parallm-54full-miniworkers",
+          "label": "ParaLLM 5.4 full | mini adversarials",
+          "appearances": 14,
+          "bestFinalWins": 4,
+          "bestTacticalWins": 3,
+          "leaderWins": 2,
+          "averageScores": {
+            "blastRadiusPerception": 7.64,
+            "humanUsability": 7.79,
+            "agentExecutability": 7.29,
+            "tacticalDetail": 7.25,
+            "restraintAndCollateral": 7.89,
+            "decisionGates": 7.79,
+            "firstHourRealism": 7.68,
+            "overall": 7.68
+          },
+          "timedAppearances": 14,
+          "averageElapsedSeconds": 221.0,
+          "averageTimeAdjustedOverall": 3.8
+        },
+        {
+          "cohort": "parallm-54mini-miniworkers",
+          "label": "ParaLLM 5.4 mini | mini adversarials",
+          "appearances": 14,
+          "bestFinalWins": 7,
+          "bestTacticalWins": 9,
+          "leaderWins": 3,
+          "averageScores": {
+            "blastRadiusPerception": 7.61,
+            "humanUsability": 7.5,
+            "agentExecutability": 7.14,
+            "tacticalDetail": 7.93,
+            "restraintAndCollateral": 7.89,
+            "decisionGates": 7.54,
+            "firstHourRealism": 7.54,
+            "overall": 7.68
+          },
+          "timedAppearances": 14,
+          "averageElapsedSeconds": 54.0,
+          "averageTimeAdjustedOverall": 7.68
+        },
+        {
+          "cohort": "direct-54",
+          "label": "Direct GPT-5.4",
+          "appearances": 14,
+          "bestFinalWins": 2,
+          "bestTacticalWins": 1,
+          "leaderWins": 0,
+          "averageScores": {
+            "blastRadiusPerception": 7.64,
+            "humanUsability": 7.61,
+            "agentExecutability": 7.43,
+            "tacticalDetail": 7.46,
+            "restraintAndCollateral": 7.68,
+            "decisionGates": 7.61,
+            "firstHourRealism": 7.71,
+            "overall": 7.54
+          },
+          "timedAppearances": 1,
+          "averageElapsedSeconds": 219.0,
+          "averageTimeAdjustedOverall": 4.71
+        },
+        {
+          "cohort": "parallm-54full-fullworkers",
+          "label": "ParaLLM 5.4 full | full adversarials",
+          "appearances": 14,
+          "bestFinalWins": 1,
+          "bestTacticalWins": 1,
+          "leaderWins": 0,
+          "averageScores": {
+            "blastRadiusPerception": 7.18,
+            "humanUsability": 6.14,
+            "agentExecutability": 5.96,
+            "tacticalDetail": 6.36,
+            "restraintAndCollateral": 7.57,
+            "decisionGates": 6.61,
+            "firstHourRealism": 6.54,
+            "overall": 6.39
+          },
+          "timedAppearances": 0,
+          "averageElapsedSeconds": null,
+          "averageTimeAdjustedOverall": null
+        }
+      ]
+    },
+    "provider_owned": {
+      "runCount": 10,
+      "cohorts": [
+        {
+          "cohort": "parallm-xai-full-triple",
+          "label": "ParaLLM xAI full triple",
+          "appearances": 3,
+          "bestFinalWins": 3,
+          "bestTacticalWins": 3,
+          "leaderWins": 3,
+          "averageScores": {
+            "blastRadiusPerception": 9.17,
+            "humanUsability": 8.83,
+            "agentExecutability": 8.5,
+            "tacticalDetail": 9.17,
+            "restraintAndCollateral": 9.33,
+            "decisionGates": 8.83,
+            "firstHourRealism": 9.0,
+            "overall": 9.0
+          },
+          "timedAppearances": 3,
+          "averageElapsedSeconds": 49.0,
+          "averageTimeAdjustedOverall": 9.0
+        },
+        {
+          "cohort": "parallm-xai-fast-full",
+          "label": "ParaLLM xAI fast workers",
+          "appearances": 3,
+          "bestFinalWins": 0,
+          "bestTacticalWins": 0,
+          "leaderWins": 0,
+          "averageScores": {
+            "blastRadiusPerception": 8.0,
+            "humanUsability": 8.83,
+            "agentExecutability": 8.0,
+            "tacticalDetail": 7.83,
+            "restraintAndCollateral": 8.17,
+            "decisionGates": 8.33,
+            "firstHourRealism": 8.5,
+            "overall": 8.33
+          },
+          "timedAppearances": 3,
+          "averageElapsedSeconds": 54.0,
+          "averageTimeAdjustedOverall": 7.94
+        },
+        {
+          "cohort": "parallm-anthropic-fast-full",
+          "label": "ParaLLM Anthropic fast workers",
+          "appearances": 3,
+          "bestFinalWins": 2,
+          "bestTacticalWins": 3,
+          "leaderWins": 2,
+          "averageScores": {
+            "blastRadiusPerception": 6.0,
+            "humanUsability": 5.83,
+            "agentExecutability": 2.83,
+            "tacticalDetail": 6.0,
+            "restraintAndCollateral": 6.17,
+            "decisionGates": 5.83,
+            "firstHourRealism": 6.0,
+            "overall": 6.0
+          },
+          "timedAppearances": 3,
+          "averageElapsedSeconds": 66.0,
+          "averageTimeAdjustedOverall": 6.0
+        },
+        {
+          "cohort": "parallm-anthropic-full-triple",
+          "label": "ParaLLM Anthropic full triple",
+          "appearances": 3,
+          "bestFinalWins": 1,
+          "bestTacticalWins": 0,
+          "leaderWins": 0,
+          "averageScores": {
+            "blastRadiusPerception": 6.17,
+            "humanUsability": 6.0,
+            "agentExecutability": 2.83,
+            "tacticalDetail": 5.83,
+            "restraintAndCollateral": 6.0,
+            "decisionGates": 5.67,
+            "firstHourRealism": 6.33,
+            "overall": 6.0
+          },
+          "timedAppearances": 3,
+          "averageElapsedSeconds": 67.0,
+          "averageTimeAdjustedOverall": 5.94
+        },
+        {
+          "cohort": "direct-xai",
+          "label": "Direct xAI flagship",
+          "appearances": 3,
+          "bestFinalWins": 0,
+          "bestTacticalWins": 0,
+          "leaderWins": 0,
+          "averageScores": {
+            "blastRadiusPerception": 5.17,
+            "humanUsability": 6.17,
+            "agentExecutability": 5.0,
+            "tacticalDetail": 4.67,
+            "restraintAndCollateral": 6.17,
+            "decisionGates": 6.0,
+            "firstHourRealism": 5.0,
+            "overall": 5.5
+          },
+          "timedAppearances": 0,
+          "averageElapsedSeconds": null,
+          "averageTimeAdjustedOverall": null
+        },
+        {
+          "cohort": "direct-anthropic",
+          "label": "Direct Anthropic flagship",
+          "appearances": 3,
+          "bestFinalWins": 0,
+          "bestTacticalWins": 0,
+          "leaderWins": 1,
+          "averageScores": {
+            "blastRadiusPerception": 5.5,
+            "humanUsability": 4.83,
+            "agentExecutability": 3.0,
+            "tacticalDetail": 4.5,
+            "restraintAndCollateral": 5.5,
+            "decisionGates": 4.5,
+            "firstHourRealism": 4.83,
+            "overall": 4.83
+          },
+          "timedAppearances": 0,
+          "averageElapsedSeconds": null,
+          "averageTimeAdjustedOverall": null
+        },
+        {
+          "cohort": "direct-minimax",
+          "label": "Direct MiniMax flagship",
+          "appearances": 4,
+          "bestFinalWins": 1,
+          "bestTacticalWins": 1,
+          "leaderWins": 1,
+          "averageScores": {
+            "blastRadiusPerception": 2.12,
+            "humanUsability": 2.12,
+            "agentExecutability": 2.25,
+            "tacticalDetail": 2.12,
+            "restraintAndCollateral": 2.25,
+            "decisionGates": 2.12,
+            "firstHourRealism": 2.25,
+            "overall": 2.25
+          },
+          "timedAppearances": 0,
+          "averageElapsedSeconds": null,
+          "averageTimeAdjustedOverall": null
+        },
+        {
+          "cohort": "parallm-minimax-fast-full",
+          "label": "ParaLLM MiniMax fast workers",
+          "appearances": 4,
+          "bestFinalWins": 3,
+          "bestTacticalWins": 3,
+          "leaderWins": 3,
+          "averageScores": {
+            "blastRadiusPerception": 2.25,
+            "humanUsability": 2.12,
+            "agentExecutability": 1.62,
+            "tacticalDetail": 2.25,
+            "restraintAndCollateral": 2.12,
+            "decisionGates": 2.25,
+            "firstHourRealism": 2.12,
+            "overall": 2.12
+          },
+          "timedAppearances": 4,
+          "averageElapsedSeconds": 82.0,
+          "averageTimeAdjustedOverall": 2.12
+        },
+        {
+          "cohort": "parallm-minimax-full-triple",
+          "label": "ParaLLM MiniMax full triple",
+          "appearances": 4,
+          "bestFinalWins": 0,
+          "bestTacticalWins": 0,
+          "leaderWins": 0,
+          "averageScores": {
+            "blastRadiusPerception": 0.0,
+            "humanUsability": 0.0,
+            "agentExecutability": 0.0,
+            "tacticalDetail": 0.0,
+            "restraintAndCollateral": 0.0,
+            "decisionGates": 0.0,
+            "firstHourRealism": 0.0,
+            "overall": 0.0
+          },
+          "timedAppearances": 0,
+          "averageElapsedSeconds": null,
+          "averageTimeAdjustedOverall": null
+        }
+      ]
+    }
+  }
+}

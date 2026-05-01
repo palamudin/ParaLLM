@@ -1,0 +1,596 @@
+{
+  "runId": "vet-20260427-171113+0000-419d6b",
+  "createdAt": "2026-04-27T17:11:13+00:00",
+  "sourceManifest": "C:\\xampp\\htdocs\\loop\\data\\benchmarks\\vetting\\msp-midnight-minimax-provider-owned-manifest.json",
+  "judge": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.7"
+  },
+  "judgeSystem": "provider_owned",
+  "providerFamily": "minimax",
+  "answerRoleCounts": {
+    "direct": 1,
+    "parallm": 2,
+    "candidate": 0
+  },
+  "case": {
+    "caseId": "msp-midnight-breach-compare-minimax",
+    "title": "MSP Midnight Breach Compare | MiniMax Provider-Owned",
+    "objective": "You are the only MSP security engineer awake. Twelve SMB clients report PowerShell spawning from the RMM agent minutes after a new automation package was pushed. Give the first-hour response plan.",
+    "constraints": [
+      "Answer in a single assistant voice.",
+      "Keep the plan factual, methodical, and sequenced.",
+      "Use decision gates before destructive action."
+    ],
+    "gold": {}
+  },
+  "blindSeed": "msp-midnight-minimax-provider-owned-manifest.json",
+  "answers": [
+    {
+      "slot": "A",
+      "answerId": "para-minimax-fast-full",
+      "label": "ParaLLM MiniMax fast workers",
+      "cohort": "parallm-minimax-fast-full",
+      "role": "parallm",
+      "familyHint": "",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": 82.0,
+      "artifactFile": "data/evals/runs/judge-20260427-155736+0000-d3a12d/cases/rmm-midnight-malware-push/para-minimax-fast-full--loops-1/replicate-001/workspace/data/outputs/t-judge-20260427-155736-0000-d3a12-97870e_summary_round001_output.json",
+      "provider": "minimax",
+      "model": "MiniMax-M2.7",
+      "text": "**First-Hour Incident Response: RMM-Agent PowerShell Spawning (12 Clients)**\n\n**T-0 to T-10: Immediate Triage and Evidence Preservation**\n\nDo not mass power off any systems—process termination alone does not revoke RMM agent access and will destroy any volatile evidence you need to determine scope. Begin by isolating the problem: pull the RMM platform console and confirm which clients are actively reporting the behavior. Log into the automation package deployment history and flag the specific package deployed in that window. Snapshot current PowerShell process trees via RMM on the affected endpoints before taking any remediation action. Preserve those logs first—they answer whether this is a one-shot script or a persistent implant.\n\n**T-10 to T-25: Containment Without Blind Isolation**\n\nFor non-24/7 clients, place affected endpoints in network quarantine through the RMM platform if the platform supports per-endpoint network isolation. For 24/7 operations, escalate the RMM agent's execution policy to block rather than terminate the PowerShell process, preserving the process for live forensics while preventing re-execution. Do not push a credential revocation across all tenants yet— blanket revocation may disrupt 24/7 services without evidence that credential compromise is the actual vector. Instead, identify whether the RMM backend is a shared multi-tenant system or tenant-segmented, because that single fact determines whether you are managing a targeted package compromise or an MSP-wide breach.\n\n**T-25 to T-45: Forensic Evidence Collection**\n\nTarget three pieces of evidence urgently: (1) the full command line and parent process ID of the spawned PowerShell instances to confirm they launched from the RMM agent rather than a user-triggered schedule, (2) any new scheduled tasks, services, or registry Run keys created post-deployment that would indicate persistence, and (3) the contents of the automation package script itself against a known-good version in your version control. If the package was externally sourced, treat it as untrusted until hash verification completes.\n\n**T-45 to T-60: Decision Gate—Wake Senior Lead?**\n\nWake the senior lead now if any of the following are true: the RMM backend is shared across all 12 reporters (indicating MSP-wide exposure), the PowerShell activity shows outbound network connections to external IPs, or the automation package originated from a third-party vendor with MSP-level access. If none of these conditions are met, continue investigation with a status update to the senior lead, but do not wait beyond the next 30 minutes to escalate if new indicators appear.\n\n**Customer Communication**\n\nNotify affected clients now with a brief factual statement: a software update triggered unexpected activity; you are investigating; no action is required from their end unless they observe further anomalies. Preserve trust by not speculating about breach scope before you have log confirmation. Reassure 24/7 clients that you are maintaining their operations continuity while containing the risk.",
+      "chars": 3068,
+      "words": 352,
+      "scores": {
+        "blastRadiusPerception": 0.0,
+        "humanUsability": 0.0,
+        "agentExecutability": 0.0,
+        "tacticalDetail": 0.0,
+        "restraintAndCollateral": 0.0,
+        "decisionGates": 0.0,
+        "firstHourRealism": 0.0,
+        "overall": 0.0
+      },
+      "note": "",
+      "internalTiming": {
+        "elapsedSeconds": 82.0,
+        "latencyRatioVsFastest": 1.0,
+        "timeAdjustedOverall": 0.0
+      }
+    },
+    {
+      "slot": "B",
+      "answerId": "para-minimax-full-triple",
+      "label": "ParaLLM MiniMax full triple",
+      "cohort": "parallm-minimax-full-triple",
+      "role": "parallm",
+      "familyHint": "",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": null,
+      "artifactFile": "data/evals/runs/judge-20260427-155736+0000-d3a12d/cases/rmm-midnight-malware-push/para-minimax-full-triple--loops-1/replicate-001/workspace/data/outputs/t-judge-20260427-155736-0000-d3a12-97d4ea_summary_round001_output.json",
+      "provider": "minimax",
+      "model": null,
+      "text": "You are the only MSP security engineer awake. Twelve SMB clients report PowerShell spawning from the RMM agent minutes after a new automation package was pushed. Give the first-hour response plan.\n\nThis is the commander's first-pass answer direction before adversarial pressure.",
+      "chars": 278,
+      "words": 33,
+      "scores": {
+        "blastRadiusPerception": 0.0,
+        "humanUsability": 0.0,
+        "agentExecutability": 0.0,
+        "tacticalDetail": 0.0,
+        "restraintAndCollateral": 0.0,
+        "decisionGates": 0.0,
+        "firstHourRealism": 0.0,
+        "overall": 0.0
+      },
+      "note": "",
+      "internalTiming": {
+        "elapsedSeconds": null,
+        "latencyRatioVsFastest": null,
+        "timeAdjustedOverall": null
+      }
+    },
+    {
+      "slot": "C",
+      "answerId": "direct-minimax",
+      "label": "Direct MiniMax flagship",
+      "cohort": "direct-minimax",
+      "role": "direct",
+      "familyHint": "",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": null,
+      "artifactFile": "data/evals/runs/judge-20260427-153034+0000-8dd8ae/cases/rmm-midnight-malware-push/direct-minimax-m27/replicate-001/direct_answer_output.json",
+      "provider": "minimax",
+      "model": null,
+      "text": "Suspicious PowerShell Execution from RMM Agent Post-Automation Deployment\n\nHIGH - Active Post-Compromise Behavior\n\n12\n\nMinutes after new automation package deployment\n\nBehavior is anomalous but root cause (compromised package vs. RMM agent vs. credential exposure) is unconfirmed. Assume credential compromise-level severity until disproven.\n\nHalt propagation without blind mass shutdown\n\n1\n\nImmediately disable/pause the offending automation package in RMM console\n\nIf the package is the vector, this stops propagation to remaining clients.\n\nConfirm no new executions in monitoring dashboard before proceeding\n\n2\n\nEnable RMM agent process monitoring/alerting if not already active\n\nMust detect any resumed or secondary execution attempts\n\n3\n\nIsolate affected endpoints in RMM using network isolation policies (quarantine VLAN or client-side network cut) on a per-client basis\n\nAvoids blind mass power-off; preserves evidence on disk; surgical approach respects 24/7 ops\n\nNotify on-call client contacts before isolation for 24/7 operations unless delay risks lateral movement\n\nCapture volatile and non-volatile evidence before remediation\n\nForensically capture PowerShell transcription logs, script block logs, and Windows Event Logs (4688, 4103, 4104) via RMM for all affected endpoints\n\nSecure, immutable evidence store isolated from customer networks\n\nScreenshot and hash the deployed automation package content from RMM console\n\nEstablishes baseline for malicious code comparison; proves chain of custody\n\nCollect RMM agent logs and any executed script payloads from affected endpoints\n\nUse read-only collection methods; do not terminate running processes until evidence captured unless process is actively malicious\n\nDetermine root cause vector before expanding containment scope\n\nCompare hash and content of automation package across affected vs. unaffected clients (if any remain)\n\nIdentical malicious package = package is vector. Varied execution = RMM agent or credential compromise\n\nReview RMM console for unauthorized package creation/modification events around deployment window\n\nNew package creation by non-standard account, API key usage anomalies\n\nQuery EDR/antivirus telemetry on affected endpoints for parent-child process relationships of suspicious PowerShell invocations\n\nIf parent process is consistently RMM agent across all 12 clients, this shifts hypothesis toward agent compromise vs. package compromise\n\nWAKE SENIOR LEAD IMMEDIATELY if: (a) RMM agent is confirmed as consistently malicious parent, OR (b) PowerShell executions involve credential theft/injection behavior, OR (c) any affected client shows evidence of lateral movement to other systems\n\nPreserve trust through transparent, factual notification\n\nSend initial status notification to all 12 affected client contacts within 30 minutes\n\nAcknowledged active investigation\n\nAffected systems being monitored/isolated\n\nNext update ETA (30-minute window)\n\nOffer for direct call to 24/7 operations clients\n\nDocument all client notifications with timestamp and recipient\n\nRequired for liability documentation and SLA compliance\n\nDecide whether to broaden scope before Hour 1 ends\n\nIf analysis confirms package as sole vector and affected clients are isolated, scope remains narrow. If RMM agent or credential compromise is confirmed, escalate to full RMM platform lockdown and credential rotation immediately.\n\nDo not mass power-off systems. Do not rotate credentials until evidence captured from RMM console (rotation destroys authentication evidence).\n\nMass shutdown destroys evidence, disrupts 24/7 client operations, and may violate SLA/customer trust without confirmed justification. Surgical isolation via RMM network policies achieves containment with evidence preservation.\n\nFalse\n\nPending until Phase 3 analysis complete. Wake if any Phase 3 trigger conditions met.\n\nAutomation package disabled in RMM\n\nAll 12 endpoints isolated or under active monitoring\n\nEvidence captured from at least 3 representative endpoints\n\nCustomer notifications sent to all 12 clients\n\nInitial root cause hypothesis documented\n\nConfirm root cause and execute either targeted cleanup (package vector) or platform-wide remediation (RMM/credential compromise)",
+      "chars": 4222,
+      "words": 491,
+      "scores": {
+        "blastRadiusPerception": 0.0,
+        "humanUsability": 0.0,
+        "agentExecutability": 0.0,
+        "tacticalDetail": 0.0,
+        "restraintAndCollateral": 0.0,
+        "decisionGates": 0.0,
+        "firstHourRealism": 0.0,
+        "overall": 0.0
+      },
+      "note": "",
+      "internalTiming": {
+        "elapsedSeconds": null,
+        "latencyRatioVsFastest": null,
+        "timeAdjustedOverall": null
+      }
+    }
+  ],
+  "slotResult": {
+    "mode": "live",
+    "scores": {
+      "A": {
+        "blastRadiusPerception": 0.0,
+        "humanUsability": 0.0,
+        "agentExecutability": 0.0,
+        "tacticalDetail": 0.0,
+        "restraintAndCollateral": 0.0,
+        "decisionGates": 0.0,
+        "firstHourRealism": 0.0,
+        "overall": 0.0
+      },
+      "B": {
+        "blastRadiusPerception": 0.0,
+        "humanUsability": 0.0,
+        "agentExecutability": 0.0,
+        "tacticalDetail": 0.0,
+        "restraintAndCollateral": 0.0,
+        "decisionGates": 0.0,
+        "firstHourRealism": 0.0,
+        "overall": 0.0
+      },
+      "C": {
+        "blastRadiusPerception": 0.0,
+        "humanUsability": 0.0,
+        "agentExecutability": 0.0,
+        "tacticalDetail": 0.0,
+        "restraintAndCollateral": 0.0,
+        "decisionGates": 0.0,
+        "firstHourRealism": 0.0,
+        "overall": 0.0
+      }
+    },
+    "ranking": [
+      "A",
+      "B",
+      "C"
+    ],
+    "bestFinalAnswer": "A",
+    "bestTacticalDetail": "A",
+    "answerNotes": {
+      "A": "",
+      "B": "",
+      "C": ""
+    },
+    "categoryLeaders": {
+      "blastRadiusPerception": [
+        "A",
+        "B",
+        "C"
+      ],
+      "humanUsability": [
+        "A",
+        "B",
+        "C"
+      ],
+      "agentExecutability": [
+        "A",
+        "B",
+        "C"
+      ],
+      "tacticalDetail": [
+        "A",
+        "B",
+        "C"
+      ],
+      "restraintAndCollateral": [
+        "A",
+        "B",
+        "C"
+      ],
+      "decisionGates": [
+        "A",
+        "B",
+        "C"
+      ],
+      "firstHourRealism": [
+        "A",
+        "B",
+        "C"
+      ],
+      "overall": [
+        "A",
+        "B",
+        "C"
+      ]
+    },
+    "advantageSummary": {
+      "leader": "A",
+      "runnerUp": "B",
+      "leaderOverall": 0.0,
+      "runnerUpOverall": 0.0,
+      "overallMargin": 0.0,
+      "uniqueCategoryLeads": 0,
+      "sharedCategoryLeads": 8,
+      "band": "narrow"
+    },
+    "rationale": "",
+    "responseId": "063ecb857c8b45b851efb5f10a331184"
+  },
+  "scoresByAnswer": {
+    "para-minimax-fast-full": {
+      "blastRadiusPerception": 0.0,
+      "humanUsability": 0.0,
+      "agentExecutability": 0.0,
+      "tacticalDetail": 0.0,
+      "restraintAndCollateral": 0.0,
+      "decisionGates": 0.0,
+      "firstHourRealism": 0.0,
+      "overall": 0.0
+    },
+    "para-minimax-full-triple": {
+      "blastRadiusPerception": 0.0,
+      "humanUsability": 0.0,
+      "agentExecutability": 0.0,
+      "tacticalDetail": 0.0,
+      "restraintAndCollateral": 0.0,
+      "decisionGates": 0.0,
+      "firstHourRealism": 0.0,
+      "overall": 0.0
+    },
+    "direct-minimax": {
+      "blastRadiusPerception": 0.0,
+      "humanUsability": 0.0,
+      "agentExecutability": 0.0,
+      "tacticalDetail": 0.0,
+      "restraintAndCollateral": 0.0,
+      "decisionGates": 0.0,
+      "firstHourRealism": 0.0,
+      "overall": 0.0
+    }
+  },
+  "notesByAnswer": {
+    "para-minimax-fast-full": "",
+    "para-minimax-full-triple": "",
+    "direct-minimax": ""
+  },
+  "rankingAnswers": [
+    {
+      "slot": "A",
+      "answerId": "para-minimax-fast-full",
+      "label": "ParaLLM MiniMax fast workers",
+      "cohort": "parallm-minimax-fast-full",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": 82.0
+    },
+    {
+      "slot": "B",
+      "answerId": "para-minimax-full-triple",
+      "label": "ParaLLM MiniMax full triple",
+      "cohort": "parallm-minimax-full-triple",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": null
+    },
+    {
+      "slot": "C",
+      "answerId": "direct-minimax",
+      "label": "Direct MiniMax flagship",
+      "cohort": "direct-minimax",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": null
+    }
+  ],
+  "internalTiming": {
+    "fastestElapsedSeconds": 82.0,
+    "slowestElapsedSeconds": 82.0,
+    "answersWithTiming": 1,
+    "speedAdjustedRanking": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "elapsedSeconds": 82.0,
+        "latencyRatioVsFastest": 1.0,
+        "timeAdjustedOverall": 0.0,
+        "overall": 0.0
+      }
+    ]
+  },
+  "bestFinalAnswer": {
+    "slot": "A",
+    "answerId": "para-minimax-fast-full",
+    "label": "ParaLLM MiniMax fast workers",
+    "cohort": "parallm-minimax-fast-full",
+    "costUsd": null,
+    "costNote": "",
+    "elapsedSeconds": 82.0
+  },
+  "bestTacticalDetail": {
+    "slot": "A",
+    "answerId": "para-minimax-fast-full",
+    "label": "ParaLLM MiniMax fast workers",
+    "cohort": "parallm-minimax-fast-full",
+    "costUsd": null,
+    "costNote": "",
+    "elapsedSeconds": 82.0
+  },
+  "advantageSummary": {
+    "band": "narrow",
+    "leader": {
+      "slot": "A",
+      "answerId": "para-minimax-fast-full",
+      "label": "ParaLLM MiniMax fast workers",
+      "cohort": "parallm-minimax-fast-full",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": 82.0
+    },
+    "runnerUp": {
+      "slot": "B",
+      "answerId": "para-minimax-full-triple",
+      "label": "ParaLLM MiniMax full triple",
+      "cohort": "parallm-minimax-full-triple",
+      "costUsd": null,
+      "costNote": "",
+      "elapsedSeconds": null
+    },
+    "leaderOverall": 0.0,
+    "runnerUpOverall": 0.0,
+    "overallMargin": 0.0,
+    "uniqueCategoryLeads": 0,
+    "sharedCategoryLeads": 8
+  },
+  "categoryLeaders": {
+    "blastRadiusPerception": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ],
+    "humanUsability": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ],
+    "agentExecutability": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ],
+    "tacticalDetail": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ],
+    "restraintAndCollateral": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ],
+    "decisionGates": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ],
+    "firstHourRealism": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ],
+    "overall": [
+      {
+        "slot": "A",
+        "answerId": "para-minimax-fast-full",
+        "label": "ParaLLM MiniMax fast workers",
+        "cohort": "parallm-minimax-fast-full",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": 82.0
+      },
+      {
+        "slot": "B",
+        "answerId": "para-minimax-full-triple",
+        "label": "ParaLLM MiniMax full triple",
+        "cohort": "parallm-minimax-full-triple",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      },
+      {
+        "slot": "C",
+        "answerId": "direct-minimax",
+        "label": "Direct MiniMax flagship",
+        "cohort": "direct-minimax",
+        "costUsd": null,
+        "costNote": "",
+        "elapsedSeconds": null
+      }
+    ]
+  },
+  "markdown": {
+    "scoreTable": "| Area | A | B | C |\n| --- | --- | --- | --- |\n| Blast radius perception | 0.0 | 0.0 | 0.0 |\n| Human usability | 0.0 | 0.0 | 0.0 |\n| AI-agent executability | 0.0 | 0.0 | 0.0 |\n| Tactical artifact detail | 0.0 | 0.0 | 0.0 |\n| Restraint / avoiding collateral damage | 0.0 | 0.0 | 0.0 |\n| Decision gates | 0.0 | 0.0 | 0.0 |\n| First-hour realism | 0.0 | 0.0 | 0.0 |\n| Overall | 0.0 | 0.0 | 0.0 |",
+    "legend": "| Slot | Answer | Cohort | Declared cost |\n| --- | --- | --- | --- |\n| A | ParaLLM MiniMax fast workers | parallm-minimax-fast-full | n/a |\n| B | ParaLLM MiniMax full triple | parallm-minimax-full-triple | n/a |\n| C | Direct MiniMax flagship | direct-minimax | n/a |",
+    "summary": "- Judge system: `provider_owned` | provider family `minimax`\n- Best final answer: `A` | ParaLLM MiniMax fast workers\n- Best tactical detail: `A` | ParaLLM MiniMax fast workers\n- Measured advantage: `narrow` | leader `A` | ParaLLM MiniMax fast workers | runner-up `B` | ParaLLM MiniMax full triple | overall margin 0.0 | unique category leads 0\n- Judge rationale: "
+  }
+}

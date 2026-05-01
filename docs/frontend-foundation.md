@@ -6,10 +6,10 @@ It exists to keep future UI changes grounded in primary documentation instead of
 
 Companion documents:
 
-- [frontend-control-alignment.md](C:/xampp/htdocs/loop/docs/frontend-control-alignment.md)
+- [frontend-control-alignment.md](frontend-control-alignment.md)
   - maps current controls to the design-source ladder
   - defines the flatter replacement shell we should build toward
-- [replacement-shell-spec.md](C:/xampp/htdocs/loop/docs/replacement-shell-spec.md)
+- [replacement-shell-spec.md](replacement-shell-spec.md)
   - locks the target view structure, visible-by-default sections, and build order
 
 ## Goal
@@ -80,7 +80,7 @@ The shell should be:
 
 The repo also carries a curated source pack at:
 
-- [docs/references/design_sources.csv](C:/xampp/htdocs/loop/docs/references/design_sources.csv)
+- [docs/references/design_sources.csv](references/design_sources.csv)
 
 Use it as a project-specific decision ladder.
 

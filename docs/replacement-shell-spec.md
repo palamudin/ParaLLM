@@ -4,8 +4,8 @@ This is the build contract for the replacement ParaLLM shell.
 
 It sits between:
 
-- [frontend-foundation.md](C:/xampp/htdocs/loop/docs/frontend-foundation.md)
-- [frontend-control-alignment.md](C:/xampp/htdocs/loop/docs/frontend-control-alignment.md)
+- [frontend-foundation.md](frontend-foundation.md)
+- [frontend-control-alignment.md](frontend-control-alignment.md)
 
 The purpose of this document is to lock:
 
