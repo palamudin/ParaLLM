@@ -8,9 +8,24 @@ The scaffold currently exposes these endpoints:
 
 - `GET /`
 - `GET /index.html`
+- `GET /index_old.html`
+- `GET /replacement-shell.html`
+- `GET /webviewindex.html`
 - `GET /health`
 - `GET /v1/system/topology`
 - `GET /v1/system/infrastructure`
+- `GET /v1/repo/graph`
+- `GET /v1/knowledgebase/graph`
+- `GET /v1/knowledgebase/status`
+- `POST /v1/knowledgebase/retain`
+- `GET /v1/knowledgebase/recall`
+- `POST /v1/knowledgebase/recall`
+- `POST /v1/knowledgebase/reflect`
+- `GET /v1/memory/graph`
+- `GET /v1/memory/status`
+- `POST /v1/memory/retain`
+- `GET /v1/memory/recall`
+- `POST /v1/memory/reflect`
 - `GET /v1/auth/status`
 - `POST /v1/auth/keys`
 - `GET /v1/state`
@@ -130,6 +145,8 @@ http://127.0.0.1:8787/v1/system/infrastructure
 - background target-dispatch queueing for commander, workers, commander-review, summarizer, and Answer Now
 - sync target execution for parity with the existing manual dispatch surface
 - Python-served shell defaults for same-origin `/v1/*` use
+- native optional knowledgebase layer with local `retain` / `recall` / `reflect` verbs, JSONL memory banks, and runtime-log fallback
+- optional knowledgebase recall injection for commander, worker, commander-review, summarizer, and Answer Now prompt packets; lane-scoped recall can degrade to shared/runtime readout instead of blocking dispatch
 - typed topology reporting for queue, metadata, artifacts, secrets, and runtime execution backends
 - selectable runtime execution backend:
   - embedded engine subprocess by default

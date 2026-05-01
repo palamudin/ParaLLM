@@ -1,0 +1,44 @@
+{
+  "armId": "direct-openai-mini-open",
+  "title": "Direct OpenAI Mini | Open Harness",
+  "description": "Single-thread OpenAI mini baseline with the same open detailed-answer policy as the critical MSP Para runs.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.5,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": []
+}

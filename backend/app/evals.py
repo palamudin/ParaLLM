@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from runtime.engine import (
     RuntimeErrorWithCode,
     compile_engine_graph,
+    default_judge_model_for_provider,
     default_ollama_timeout_profile,
     default_target_timeout_config,
     default_timeout_mode,
@@ -263,6 +264,16 @@ def _front_summarizer_harness(payload: Dict[str, Any]) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _front_direct_harness(payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw = payload.get("directHarness")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _front_worker_list(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw = payload.get("workers")
     if isinstance(raw, str) and raw.strip():
@@ -312,6 +323,7 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
             "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
             "summarizerHarness": _front_summarizer_harness(payload),
+            "directHarness": _front_direct_harness(payload),
             "reasoningEffort": str(payload.get("reasoningEffort") or "low").strip() or "low",
             "budget": _front_runtime_budget(payload),
             "research": _front_runtime_research(payload),
@@ -518,7 +530,7 @@ def _base_run_payload(
         "replicates": 1,
         "loopSweep": [1],
         "judgeProvider": normalize_provider_id(judge_provider, "openai"),
-        "judgeModel": str(judge_model or "gpt-5.4").strip() or "gpt-5.4",
+        "judgeModel": str(judge_model or default_judge_model_for_provider(judge_provider)).strip() or default_judge_model_for_provider(judge_provider),
         "judgeRuntime": dict(judge_runtime or {}),
         "status": "queued",
         "createdAt": storage.utc_now(),
@@ -543,7 +555,7 @@ def start_front_eval_run(payload: Dict[str, Any], root: Optional[Path] = None) -
         suite,
         [arm["armId"]],
         str(payload.get("judgeProvider") or "openai"),
-        str(payload.get("judgeModel") or "gpt-5.4"),
+        str(payload.get("judgeModel") or default_judge_model_for_provider(str(payload.get("judgeProvider") or "openai"))),
         "eval",
         _front_judge_runtime(payload),
     )
@@ -612,7 +624,7 @@ def start_front_judge_run(payload: Dict[str, Any], root: Optional[Path] = None) 
         suite,
         [arm["armId"] for arm in arms],
         str(payload.get("judgeProvider") or "openai"),
-        str(payload.get("judgeModel") or "gpt-5.4"),
+        str(payload.get("judgeModel") or default_judge_model_for_provider(str(payload.get("judgeProvider") or "openai"))),
         "judge",
         _front_judge_runtime(payload),
     )

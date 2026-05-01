@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Repo Webview Graph</title>
+  <link rel="stylesheet" href="assets/repo-review.css?v=20260501-003" />
+</head>
+<body class="repo-review-standalone-page">
+  <div class="repo-review-root repo-review-standalone">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <h1>Repo Inspector</h1>
+          <div class="subtitle">Para-readable map of the current codebase, hotspots, and review packet surface.</div>
+        </div>
+      </header>
+
+      <div class="repo-toolbar">
+        <div class="panel-tabs" role="group" aria-label="Repo panels">
+          <button class="panel-tab" type="button" data-repo-toggle="lens" aria-pressed="false">Lens</button>
+          <button class="panel-tab" type="button" data-repo-toggle="inspect" aria-pressed="false">Inspector</button>
+        </div>
+      </div>
+
+      <main class="layout">
+        <section id="stage" class="stage">
+          <canvas id="graphCanvas"></canvas>
+          <div class="overlay">
+            <div class="pill-row">
+              <div class="pill"><strong id="visibleNodeCount">0</strong> nodes</div>
+              <div class="pill"><strong id="visibleEdgeCount">0</strong> edges</div>
+              <div class="pill">zoom <strong id="zoomValue">100%</strong></div>
+              <div class="pill">fps <strong id="fpsValue">0</strong></div>
+            </div>
+            <div class="floating-actions">
+              <button id="fitBtn" type="button">Fit</button>
+              <button id="pauseBtn" type="button">Pause</button>
+            </div>
+          </div>
+          <div id="emptyState" class="empty">Loading graph...</div>
+        </section>
+
+        <div class="drawer-stack">
+          <aside class="panel panel-drawer" data-repo-panel="lens" hidden>
+            <div class="scroll">
+              <div class="drawer-grid drawer-grid-lens">
+                <details class="group-card" data-repo-detail="status">
+                  <summary>Status</summary>
+                  <div class="group-card-body">
+                    <div class="group-action-row">
+                      <button id="refreshBtn" class="primary" type="button">Refresh Repo</button>
+                    </div>
+                    <div id="status" class="status">Loading repo graph from /v1/repo/graph...</div>
+                  </div>
+                </details>
+
+                <details class="group-card" data-repo-detail="search">
+                  <summary>Search</summary>
+                  <div class="group-card-body">
+                    <div class="control">
+                      <label for="searchInput">Search function, file, module, signature</label>
+                      <input id="searchInput" type="text" placeholder="storage, dispatch, eval, render..." />
+                    </div>
+                  </div>
+                </details>
+
+                <details class="group-card" data-repo-detail="visibility">
+                  <summary>Visibility</summary>
+                  <div class="group-card-body">
+                    <div class="control">
+                      <label for="minDegreeRange">Minimum degree <span id="minDegreeValue">0</span></label>
+                      <input id="minDegreeRange" type="range" min="0" max="30" value="0" />
+                    </div>
+                    <div class="control">
+                      <label for="maxVisibleInput">Max visible nodes</label>
+                      <input id="maxVisibleInput" type="number" min="40" max="2400" value="850" />
+                    </div>
+                    <label class="check"><input id="showOrphansInput" type="checkbox" /> Show isolated functions</label>
+                    <label class="check"><input id="labelsInput" type="checkbox" checked /> Labels</label>
+                    <label class="check"><input id="ambiguousInput" type="checkbox" /> Include ambiguous edges on next scan</label>
+                  </div>
+                </details>
+
+                <details class="group-card" data-repo-detail="metrics">
+                  <summary>Metrics</summary>
+                  <div class="group-card-body">
+                    <div class="metric-grid">
+                      <div class="metric"><strong id="mFiles">0</strong><span>files scanned</span></div>
+                      <div class="metric"><strong id="mFunctions">0</strong><span>functions found</span></div>
+                      <div class="metric"><strong id="mEdges">0</strong><span>internal edges</span></div>
+                      <div class="metric"><strong id="mVisible">0</strong><span>visible nodes</span></div>
+                    </div>
+                  </div>
+                </details>
+
+                <details class="group-card group-card-wide" data-repo-detail="hotspots">
+                  <summary>Hotspots</summary>
+                  <div class="group-card-body">
+                    <div id="hotspotList" class="list"></div>
+                  </div>
+                </details>
+              </div>
+            </div>
+          </aside>
+
+          <aside class="panel panel-drawer" data-repo-panel="inspect" hidden>
+            <div class="scroll">
+              <div class="drawer-grid drawer-grid-inspect">
+                <details class="group-card group-card-wide" data-repo-detail="selected">
+                  <summary>Selected Node</summary>
+                  <div class="group-card-body">
+                    <div id="selectedPanel" class="status">Click a node or hotspot to inspect callers, callees, unresolved calls, and ambiguity.</div>
+                  </div>
+                </details>
+
+                <details class="group-card group-card-wide" data-repo-detail="packet">
+                  <summary>AI Packet</summary>
+                  <div class="group-card-body">
+                    <pre id="aiPacket" class="ai-packet">{}</pre>
+                  </div>
+                </details>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="assets/repo-review.js?v=20260501-003"></script>
+</body>
+</html>

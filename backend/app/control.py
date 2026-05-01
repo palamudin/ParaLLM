@@ -27,6 +27,7 @@ from runtime.engine import (
     default_ollama_base_url,
     default_ollama_timeout_profile,
     default_research_config,
+    default_direct_harness,
     default_summarizer_harness,
     default_timeout_mode,
     default_target_timeout_config,
@@ -156,6 +157,7 @@ def default_draft_state() -> Dict[str, Any]:
         "githubAllowedRepos": github_tools["repos"],
         "dynamicSpinupEnabled": dynamic_spinup["enabled"],
         "vettingEnabled": True,
+        "directHarness": default_direct_harness(),
         "summarizerHarness": default_summarizer_harness(),
         "loopRounds": loop["rounds"],
         "loopDelayMs": loop["delayMs"],
@@ -283,6 +285,10 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "githubAllowedRepos": feature_alignment["githubTools"]["repos"],
         "dynamicSpinupEnabled": dynamic_spinup["enabled"],
         "vettingEnabled": coerce_bool(current.get("vettingEnabled", default["vettingEnabled"]), bool(default["vettingEnabled"])),
+        "directHarness": normalize_harness_config(
+            current.get("directHarness", default["directHarness"]),
+            default_direct_harness()["concision"],
+        ),
         "summarizerHarness": normalize_harness_config(
             current.get("summarizerHarness", default["summarizerHarness"]),
             default_summarizer_harness()["concision"],
@@ -367,6 +373,10 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         "githubAllowedRepos": github_tools["repos"],
         "dynamicSpinupEnabled": dynamic_spinup["enabled"],
         "vettingEnabled": vetting["enabled"],
+        "directHarness": normalize_harness_config(
+            runtime.get("directHarness", default["directHarness"]),
+            default_direct_harness()["concision"],
+        ),
         "summarizerHarness": normalize_harness_config(
             summarizer.get("harness", default["summarizerHarness"]),
             default_summarizer_harness()["concision"],
@@ -706,7 +716,7 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
         "deprecated": topology.secret_backend == "local_file",
         "statusNote": secret_backend_status_note(topology) + " Provider groups can now independently use Local, Env, or DB-backed credentials.",
         "rotationPolicy": rotation_policy,
-        "isolationNote": "Provider pools stay isolated. OpenAI lanes never reuse Anthropic, xAI, or MiniMax keys.",
+        "isolationNote": "Provider pools stay isolated. OpenAI lanes never reuse DeepSeek, Anthropic, xAI, or MiniMax keys.",
         "termsWarning": "Cross-vendor orchestration can implicate provider ToS or acceptable-use rules. Review each vendor's terms before mixing providers in one workflow.",
     }
 
@@ -789,6 +799,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     existing_draft = normalize_draft_state(state.get("draft") if isinstance(state.get("draft"), dict) else {})
     constraints = _parse_json_like(payload.get("constraints"), existing_draft["constraints"])
     workers = _parse_json_like(payload.get("workers"), existing_draft["workers"])
+    direct_harness = _parse_json_like(payload.get("directHarness"), existing_draft["directHarness"])
     summarizer_harness = _parse_json_like(payload.get("summarizerHarness"), existing_draft["summarizerHarness"])
     budget_targets = _parse_json_like(payload.get("budgetTargets"), existing_draft["budgetTargets"])
     target_timeouts = _parse_json_like(payload.get("targetTimeouts"), existing_draft["targetTimeouts"])
@@ -832,6 +843,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "githubAllowedRepos": payload.get("githubAllowedRepos", existing_draft["githubAllowedRepos"]),
             "dynamicSpinupEnabled": payload.get("dynamicSpinupEnabled", existing_draft["dynamicSpinupEnabled"]),
             "vettingEnabled": payload.get("vettingEnabled", existing_draft["vettingEnabled"]),
+            "directHarness": direct_harness if isinstance(direct_harness, dict) else existing_draft["directHarness"],
             "summarizerHarness": summarizer_harness if isinstance(summarizer_harness, dict) else existing_draft["summarizerHarness"],
             "loopRounds": payload.get("loopRounds", existing_draft["loopRounds"]),
             "loopDelayMs": payload.get("loopDelayMs", existing_draft["loopDelayMs"]),
@@ -857,6 +869,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     session_context = str(payload.get("sessionContext") or "").strip()
     constraints = _parse_json_like(payload.get("constraints"), [])
     workers_input = _parse_json_like(payload.get("workers"), [])
+    direct_harness_input = _parse_json_like(payload.get("directHarness"), {})
     summarizer_harness_input = _parse_json_like(payload.get("summarizerHarness"), {})
     budget_targets_input = _parse_json_like(payload.get("budgetTargets"), {})
     target_timeouts_input = _parse_json_like(payload.get("targetTimeouts"), {})
@@ -963,6 +976,10 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "directHarness": normalize_harness_config(
+                direct_harness_input if isinstance(direct_harness_input, dict) else {},
+                default_direct_harness()["concision"],
+            ),
             "liveRunId": live_run_id,
             "ollamaBaseUrl": ollama_base_url,
             "timeoutMode": timeout_mode,

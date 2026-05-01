@@ -148,6 +148,7 @@ class ControlPlaneTests(unittest.TestCase):
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
+                "directHarness": '{"concision":"none","instruction":"Give the fullest factual baseline you can support."}',
                 "ollamaBaseUrl": "http://192.168.0.26:11434",
                 "targetTimeouts": '{"commander":95,"workerDefault":110,"workers":{"A":75},"commanderReview":205,"summarizer":215}',
                 "researchEnabled": "1",
@@ -177,6 +178,8 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["directBaselineMode"], "both")
         self.assertEqual(draft["directProvider"], "anthropic")
         self.assertEqual(draft["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(draft["directHarness"]["concision"], "none")
+        self.assertEqual(draft["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
         self.assertEqual(draft["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(draft["targetTimeouts"]["commander"], 95)
         self.assertEqual(draft["targetTimeouts"]["workerDefault"], 110)
@@ -218,6 +221,7 @@ class ControlPlaneTests(unittest.TestCase):
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
+                "directHarness": '{"concision":"expansive","instruction":"State the full factual path and all concrete gates."}',
                 "ollamaBaseUrl": "http://192.168.0.26:11434/api",
                 "targetTimeouts": '{"commander":105,"workerDefault":125,"workers":{"B":90},"commanderReview":225,"summarizer":245}',
                 "reasoningEffort": "medium",
@@ -243,6 +247,7 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
         self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["activeTask"]["runtime"]["directHarness"]["concision"], "expansive")
         self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["commander"], 105)
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workerDefault"], 125)

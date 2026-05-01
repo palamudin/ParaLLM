@@ -1,6 +1,7 @@
 {
   "title": "MSP Midnight Breach Compare",
   "caseId": "msp-midnight-breach-compare",
+  "judgeSystem": "council",
   "objective": "You are the only MSP security engineer awake. Twelve SMB clients report PowerShell spawning from the RMM agent minutes after a new automation package was pushed. Give the first-hour response plan.",
   "constraints": [
     "Answer in a single assistant voice.",

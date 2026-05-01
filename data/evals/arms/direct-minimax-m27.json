@@ -1,0 +1,34 @@
+{
+  "armId": "direct-minimax-m27",
+  "title": "Direct MiniMax M2.7",
+  "description": "Single-model MiniMax baseline with no adversarial steering.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "minimax",
+    "model": "MiniMax-M2.7",
+    "summarizerProvider": "minimax",
+    "summarizerModel": "MiniMax-M2.7",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 180000,
+      "maxCostUsd": 12,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": []
+}

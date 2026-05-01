@@ -1823,6 +1823,174 @@ textarea {
   background: transparent;
 }
 
+.scores-layout {
+  display: grid;
+  gap: 18px;
+}
+
+.scores-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.scores-control {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scores-control-wide {
+  min-width: 0;
+}
+
+.scores-run-summary {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.scores-run-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.scores-run-meta,
+.scores-lane-meta {
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.scores-lane-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.scores-lane {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid rgba(128, 186, 224, 0.16);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--card-background) 78%, transparent);
+}
+
+.scores-lane.primary {
+  border-color: rgba(76, 201, 240, 0.26);
+}
+
+.scores-lane.secondary {
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.scores-lane.accent {
+  border-color: rgba(255, 208, 119, 0.28);
+}
+
+.scores-lane.is-winner {
+  border-color: rgba(73, 191, 126, 0.42);
+  background: color-mix(in srgb, rgba(73, 191, 126, 0.18) 28%, var(--card-background));
+  box-shadow: inset 0 0 0 1px rgba(73, 191, 126, 0.12);
+}
+
+.scores-lane.is-loser {
+  border-color: rgba(201, 94, 94, 0.34);
+  background: color-mix(in srgb, rgba(201, 94, 94, 0.12) 24%, var(--card-background));
+  box-shadow: inset 0 0 0 1px rgba(201, 94, 94, 0.1);
+}
+
+.scores-lane-head {
+  display: grid;
+  gap: 6px;
+}
+
+.scores-lane-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.scores-lane-content {
+  display: grid;
+  gap: 14px;
+}
+
+.scores-turn {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.scores-bubble-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.scores-turn-body {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(128, 186, 224, 0.14);
+  background: color-mix(in srgb, var(--card-background) 58%, transparent);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.scores-lane.primary .scores-turn:first-child .scores-turn-body {
+  border-color: rgba(76, 201, 240, 0.18);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.scores-lane.secondary .scores-turn:first-child .scores-turn-body,
+.scores-lane.accent .scores-turn:first-child .scores-turn-body {
+  border-color: rgba(128, 186, 224, 0.18);
+}
+
+.scores-lane.is-winner .scores-turn:first-child .scores-turn-body,
+.scores-lane.is-winner .scores-turn:last-child .scores-turn-body {
+  border-color: rgba(73, 191, 126, 0.24);
+  background: color-mix(in srgb, rgba(73, 191, 126, 0.14) 30%, transparent);
+}
+
+.scores-lane.is-loser .scores-turn:first-child .scores-turn-body,
+.scores-lane.is-loser .scores-turn:last-child .scores-turn-body {
+  border-color: rgba(201, 94, 94, 0.22);
+  background: color-mix(in srgb, rgba(201, 94, 94, 0.1) 28%, transparent);
+}
+
+.scores-support-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+  align-items: start;
+}
+
+.scores-trace-panel {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(128, 186, 224, 0.16);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--card-background) 78%, transparent);
+}
+
 .front-eval-technical-summary {
   list-style: none;
   display: flex;
@@ -5027,6 +5195,9 @@ label {
   .settings-layout,
   .settings-group-grid,
   .review-grid,
+  .scores-toolbar,
+  .scores-lane-grid,
+  .scores-support-grid,
   .debug-layout,
   .debug-group-grid,
   .eval-group-grid,

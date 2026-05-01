@@ -27,6 +27,8 @@ from runtime.engine import (
     default_target_timeout_config,
     default_timeout_mode,
     default_summarizer_harness,
+    default_direct_harness,
+    default_judge_model_for_provider,
     default_model_for_provider,
     default_budget_config,
     default_loop_state,
@@ -38,7 +40,9 @@ from runtime.engine import (
     direct_baseline_harness_instruction_lines,
     normalize_budget_config,
     normalize_context_mode,
+    parse_structured_output_text,
     normalize_direct_baseline_mode,
+    normalize_direct_answer_payload,
     normalize_harness_config,
     normalize_model_id,
     normalize_ollama_base_url,
@@ -92,10 +96,72 @@ COMPARISON_SCORE_FIELDS = [
     "overallDifferentiation",
 ]
 
+QUALITY_SCORE_ALIASES = {
+    "decisiveness": "decisiveness",
+    "decisivenessscore": "decisiveness",
+    "tradeoffhandling": "tradeoffHandling",
+    "trade_off_handling": "tradeoffHandling",
+    "tradeoffscore": "tradeoffHandling",
+    "objectionabsorption": "objectionAbsorption",
+    "objection_absorption": "objectionAbsorption",
+    "actionability": "actionability",
+    "actionabilityscore": "actionability",
+    "singlevoice": "singleVoice",
+    "single_voice": "singleVoice",
+    "overallquality": "overallQuality",
+    "overall_quality": "overallQuality",
+    "overall": "overallQuality",
+}
+
+ANSWER_HEALTH_SCORE_ALIASES = {
+    "instructionfit": "instructionFit",
+    "instruction_fit": "instructionFit",
+    "structuralclarity": "structuralClarity",
+    "structural_clarity": "structuralClarity",
+    "confidencecalibration": "confidenceCalibration",
+    "confidence_calibration": "confidenceCalibration",
+    "evidencehygiene": "evidenceHygiene",
+    "evidence_hygiene": "evidenceHygiene",
+    "efficiencydiscipline": "efficiencyDiscipline",
+    "efficiency_discipline": "efficiencyDiscipline",
+    "overallhealth": "overallHealth",
+    "overall_health": "overallHealth",
+    "overall": "overallHealth",
+}
+
+CONTROL_SCORE_ALIASES = {
+    "leadcontrol": "leadControl",
+    "lead_control": "leadControl",
+    "adversarialdiscipline": "adversarialDiscipline",
+    "adversarial_discipline": "adversarialDiscipline",
+    "selfcheckquality": "selfCheckQuality",
+    "self_check_quality": "selfCheckQuality",
+    "nonfunnelintegration": "nonFunnelIntegration",
+    "non_funnel_integration": "nonFunnelIntegration",
+    "overallcontrol": "overallControl",
+    "overall_control": "overallControl",
+    "overall": "overallControl",
+}
+
+COMPARISON_SCORE_ALIASES = {
+    "materialdifference": "materialDifference",
+    "material_difference": "materialDifference",
+    "decisionshift": "decisionShift",
+    "decision_shift": "decisionShift",
+    "validationstrength": "validationStrength",
+    "validation_strength": "validationStrength",
+    "operationalseparation": "operationalSeparation",
+    "operational_separation": "operationalSeparation",
+    "overalldifferentiation": "overallDifferentiation",
+    "overall_differentiation": "overallDifferentiation",
+    "overall": "overallDifferentiation",
+}
+
 VETTING_MATRIX_SCORE_FIELDS = [
     "blastRadiusPerception",
     "humanUsability",
     "agentExecutability",
+    "commsAndIncidentDiscipline",
     "tacticalDetail",
     "restraintAndCollateral",
     "decisionGates",
@@ -104,17 +170,20 @@ VETTING_MATRIX_SCORE_FIELDS = [
 ]
 
 VETTING_MATRIX_SCORE_LABELS = {
-    "blastRadiusPerception": "Blast radius perception",
-    "humanUsability": "Human usability",
-    "agentExecutability": "AI-agent executability",
-    "tacticalDetail": "Tactical artifact detail",
-    "restraintAndCollateral": "Restraint / avoiding collateral damage",
-    "decisionGates": "Decision gates",
-    "firstHourRealism": "First-hour realism",
-    "overall": "Overall",
+    "blastRadiusPerception": "Blast path & tenant-boundary perception",
+    "humanUsability": "Operator usability under pressure",
+    "agentExecutability": "Tenant-safe executability",
+    "commsAndIncidentDiscipline": "Comms & incident-record discipline",
+    "tacticalDetail": "Evidence & action detail",
+    "restraintAndCollateral": "Collateral & compliance restraint",
+    "decisionGates": "Decision / escalation gates",
+    "firstHourRealism": "First-hour MSP realism",
+    "overall": "Lead hireability",
 }
 
 VETTING_ADVANTAGE_BANDS = ["tied", "narrow", "clear", "decisive"]
+VETTING_HIRE_VERDICTS = ["hire", "hire_with_supervision", "not_for_lead", "disqualifying"]
+VETTING_ALL_HIRE_VERDICTS = VETTING_HIRE_VERDICTS + ["unknown"]
 
 VETTING_SCORE_FIELD_ALIASES = {
     "blastRadiusPerception": "blastRadiusPerception",
@@ -123,13 +192,24 @@ VETTING_SCORE_FIELD_ALIASES = {
     "humanUsability": "humanUsability",
     "human_usability": "humanUsability",
     "agentExecutability": "agentExecutability",
+    "agent_executability": "agentExecutability",
     "aiAgentExecutability": "agentExecutability",
     "ai_agent_executability": "agentExecutability",
     "aiAgentExecutable": "agentExecutability",
+    "commsAndIncidentDiscipline": "commsAndIncidentDiscipline",
+    "comms_and_incident_discipline": "commsAndIncidentDiscipline",
+    "communicationsAndIncidentDiscipline": "commsAndIncidentDiscipline",
+    "communications_and_incident_discipline": "commsAndIncidentDiscipline",
+    "incidentRecordDiscipline": "commsAndIncidentDiscipline",
+    "incident_record_discipline": "commsAndIncidentDiscipline",
+    "commsDiscipline": "commsAndIncidentDiscipline",
+    "communicationsSafety": "commsAndIncidentDiscipline",
+    "communications_safety": "commsAndIncidentDiscipline",
     "tacticalDetail": "tacticalDetail",
     "tactical_detail": "tacticalDetail",
     "restraintAndCollateral": "restraintAndCollateral",
     "restraint_and_collateral": "restraintAndCollateral",
+    "restraint_collateral": "restraintAndCollateral",
     "restraintCollateralControl": "restraintAndCollateral",
     "restraint_collateral_control": "restraintAndCollateral",
     "restraint": "restraintAndCollateral",
@@ -201,7 +281,9 @@ def sanitize_id(value: str) -> str:
 
 def build_task_id(seed: str) -> str:
     digest = hashlib.md5(seed.encode("utf-8")).hexdigest()[:6]
-    return f"t-{sanitize_id(seed)[:32]}-{digest}"
+    # Keep eval task ids short so Windows artifact paths stay below common
+    # MAX_PATH limits inside nested run/case/replicate workspaces.
+    return f"te-{digest}"
 
 
 def count_paragraphs(text: str) -> int:
@@ -218,6 +300,70 @@ def truncate_text(value: Any, max_length: int = 200) -> str:
 
 def mean(values: List[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _normalize_live_score_number(value: Any) -> int:
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        candidate = 0.0
+    candidate = max(0.0, min(10.0, candidate))
+    return int(round(candidate))
+
+
+def _extract_live_score_block(
+    parsed: Any,
+    field_names: List[str],
+    aliases: Dict[str, str],
+    *,
+    minimum_fields: int = 3,
+) -> Dict[str, int]:
+    source = parsed if isinstance(parsed, dict) else {}
+    normalized = {field: 0 for field in field_names}
+    populated = 0
+    candidate_blocks: List[Any] = []
+    if isinstance(source.get("scores"), dict):
+        candidate_blocks.append(source.get("scores"))
+    candidate_blocks.append(source)
+    if isinstance(source.get("scores"), list):
+        candidate_blocks.append(source.get("scores"))
+
+    for block in candidate_blocks:
+        if isinstance(block, dict):
+            for raw_key, raw_value in block.items():
+                key = str(raw_key).strip()
+                canonical = aliases.get(key, aliases.get(key.lower()))
+                if not canonical or canonical not in normalized:
+                    continue
+                value = _normalize_live_score_number(raw_value)
+                if value > 0 and normalized[canonical] <= 0:
+                    populated += 1
+                normalized[canonical] = max(normalized[canonical], value)
+        elif isinstance(block, list):
+            for item in block:
+                if not isinstance(item, dict):
+                    continue
+                field_key = str(item.get("field") or item.get("name") or item.get("id") or "").strip()
+                canonical = aliases.get(field_key, aliases.get(field_key.lower()))
+                if not canonical or canonical not in normalized:
+                    continue
+                value = _normalize_live_score_number(item.get("score"))
+                if value <= 0:
+                    value = _normalize_live_score_number(item.get("value"))
+                if value > 0 and normalized[canonical] <= 0:
+                    populated += 1
+                normalized[canonical] = max(normalized[canonical], value)
+
+    overall_field = field_names[-1] if field_names else ""
+    if overall_field and normalized.get(overall_field, 0) <= 0:
+        component_values = [normalized[field] for field in field_names if field != overall_field and normalized[field] > 0]
+        if component_values:
+            normalized[overall_field] = int(round(mean(component_values)))
+            populated += 1
+
+    if populated < minimum_fields:
+        raise RuntimeErrorWithCode("Live judge returned no usable score payload.", 500)
+    return normalized
 
 
 def average_score_blocks(blocks: List[Dict[str, Any]], fields: List[str]) -> Dict[str, float]:
@@ -467,6 +613,9 @@ def vetting_matrix_judge_schema(answer_ids: List[str]) -> Dict[str, Any]:
             "ranking",
             "bestFinalAnswer",
             "bestTacticalDetail",
+            "hireVerdicts",
+            "hardFailFlags",
+            "trapFindings",
             "answerNotes",
             "rationale",
         ],
@@ -485,6 +634,45 @@ def vetting_matrix_judge_schema(answer_ids: List[str]) -> Dict[str, Any]:
             },
             "bestFinalAnswer": {"type": "string", "enum": normalized_ids},
             "bestTacticalDetail": {"type": "string", "enum": normalized_ids},
+            "hireVerdicts": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": normalized_ids,
+                "properties": {
+                    answer_id: {"type": "string", "enum": VETTING_HIRE_VERDICTS}
+                    for answer_id in normalized_ids
+                },
+            },
+            "hardFailFlags": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": normalized_ids,
+                "properties": {
+                    answer_id: {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    }
+                    for answer_id in normalized_ids
+                },
+            },
+            "trapFindings": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": normalized_ids,
+                "properties": {
+                    answer_id: {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["triggered", "caught", "missed"],
+                        "properties": {
+                            "triggered": {"type": "array", "items": {"type": "string"}},
+                            "caught": {"type": "array", "items": {"type": "string"}},
+                            "missed": {"type": "array", "items": {"type": "string"}},
+                        },
+                    }
+                    for answer_id in normalized_ids
+                },
+            },
             "answerNotes": {
                 "type": "object",
                 "additionalProperties": False,
@@ -524,7 +712,20 @@ def _normalize_vetting_score_block(score_block: Any) -> Dict[str, float]:
     source = score_block if isinstance(score_block, dict) else {}
     normalized_block = {field: 0.0 for field in VETTING_MATRIX_SCORE_FIELDS}
     for raw_key, raw_value in source.items():
-        canonical_key = VETTING_SCORE_FIELD_ALIASES.get(str(raw_key))
+        key = str(raw_key or "").strip()
+        alias_candidates = [
+            key,
+            key.lower(),
+            key.replace("-", "_"),
+            key.lower().replace("-", "_"),
+            key.replace("-", ""),
+            key.lower().replace("-", ""),
+        ]
+        canonical_key = ""
+        for candidate in alias_candidates:
+            canonical_key = VETTING_SCORE_FIELD_ALIASES.get(candidate, "")
+            if canonical_key:
+                break
         if canonical_key:
             normalized_block[canonical_key] = normalize_vetting_score_value(raw_value)
     if normalized_block["overall"] <= 0:
@@ -533,12 +734,105 @@ def _normalize_vetting_score_block(score_block: Any) -> Dict[str, float]:
     return normalized_block
 
 
+def _has_populated_vetting_score_block(score_block: Any) -> bool:
+    normalized_block = _normalize_vetting_score_block(score_block)
+    return any(float(normalized_block.get(field, 0.0) or 0.0) > 0.0 for field in VETTING_MATRIX_SCORE_FIELDS)
+
+
+def _collect_recursive_vetting_score_blocks(payload: Any, normalized_ids: List[str]) -> Dict[str, Any]:
+    collected: Dict[str, Any] = {}
+
+    def visit(node: Any) -> None:
+        if len(collected) >= len(normalized_ids):
+            return
+        if isinstance(node, dict):
+            inline_answer_id = _normalize_vetting_answer_id(
+                node.get("answer_id") or node.get("id") or node.get("answer") or node.get("slot"),
+                normalized_ids,
+            )
+            inline_scores = node.get("scores") if isinstance(node.get("scores"), dict) else None
+            if inline_answer_id in normalized_ids and inline_answer_id not in collected and inline_scores is not None and _has_populated_vetting_score_block(inline_scores):
+                collected[inline_answer_id] = inline_scores
+            for raw_key, value in node.items():
+                nested_answer_id = _normalize_vetting_answer_id(raw_key, normalized_ids)
+                if nested_answer_id in normalized_ids and nested_answer_id not in collected and isinstance(value, dict):
+                    nested_scores = value.get("scores") if isinstance(value.get("scores"), dict) else value
+                    if _has_populated_vetting_score_block(nested_scores):
+                        collected[nested_answer_id] = nested_scores
+                visit(value)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(payload)
+    return collected
+
+
+def _normalize_vetting_answer_id(candidate: Any, normalized_ids: List[str]) -> str:
+    raw = str(candidate or "").strip()
+    if not raw:
+        return ""
+    if raw in normalized_ids:
+        return raw
+    lowered = raw.lower()
+    for answer_id in normalized_ids:
+        if lowered == str(answer_id).strip().lower():
+            return answer_id
+    compact = re.sub(r"[\s\-]+", "_", lowered)
+    if compact.startswith("answer_"):
+        compact = compact[len("answer_"):]
+    if compact.startswith("candidate_"):
+        compact = compact[len("candidate_"):]
+    compact = compact.strip("_")
+    for answer_id in normalized_ids:
+        if compact == str(answer_id).strip().lower():
+            return answer_id
+    return ""
+
+
 def _extract_vetting_score_matrix(parsed: Dict[str, Any], normalized_ids: List[str]) -> Dict[str, Dict[str, float]]:
     parsed_scores = parsed.get("scores")
     if isinstance(parsed_scores, dict):
-        score_matrix: Dict[str, Dict[str, float]] = {}
+        normalized_score_lookup: Dict[str, Any] = {}
+        for raw_answer_id, candidate_block in parsed_scores.items():
+            if not isinstance(candidate_block, dict):
+                continue
+            normalized_answer_id = _normalize_vetting_answer_id(raw_answer_id, normalized_ids)
+            if normalized_answer_id and normalized_answer_id not in normalized_score_lookup:
+                normalized_score_lookup[normalized_answer_id] = candidate_block
+        if normalized_score_lookup:
+            score_matrix: Dict[str, Dict[str, float]] = {}
+            for answer_id in normalized_ids:
+                candidate_block = normalized_score_lookup.get(answer_id)
+                score_matrix[answer_id] = _normalize_vetting_score_block(candidate_block)
+            return score_matrix
+    normalized_top_level_lookup: Dict[str, Any] = {}
+    for raw_answer_id, candidate_block in parsed.items():
+        if not isinstance(candidate_block, dict):
+            continue
+        normalized_answer_id = _normalize_vetting_answer_id(raw_answer_id, normalized_ids)
+        if normalized_answer_id and normalized_answer_id not in normalized_top_level_lookup:
+            normalized_top_level_lookup[normalized_answer_id] = candidate_block
+    if normalized_top_level_lookup:
+        score_matrix = {}
         for answer_id in normalized_ids:
-            score_matrix[answer_id] = _normalize_vetting_score_block(parsed_scores.get(answer_id))
+            candidate_block = normalized_top_level_lookup.get(answer_id)
+            nested_scores = candidate_block.get("scores") if isinstance(candidate_block, dict) and isinstance(candidate_block.get("scores"), dict) else candidate_block
+            score_matrix[answer_id] = _normalize_vetting_score_block(nested_scores)
+        return score_matrix
+    evaluation_node = parsed.get("evaluation")
+    if isinstance(evaluation_node, dict):
+        evaluation_scores = evaluation_node.get("scores") if isinstance(evaluation_node.get("scores"), dict) else evaluation_node
+        normalized_score_lookup = {}
+        if isinstance(evaluation_scores, dict):
+            for raw_answer_id, candidate_block in evaluation_scores.items():
+                normalized_answer_id = _normalize_vetting_answer_id(raw_answer_id, normalized_ids)
+                if normalized_answer_id and normalized_answer_id not in normalized_score_lookup:
+                    normalized_score_lookup[normalized_answer_id] = candidate_block
+        score_matrix = {}
+        for answer_id in normalized_ids:
+            candidate_block = normalized_score_lookup.get(answer_id)
+            score_matrix[answer_id] = _normalize_vetting_score_block(candidate_block)
         return score_matrix
 
     candidate_lists: List[Any] = []
@@ -548,13 +842,18 @@ def _extract_vetting_score_matrix(parsed: Dict[str, Any], normalized_ids: List[s
         candidate_lists.append(parsed.get("verdicts"))
     if isinstance(parsed.get("evaluations"), list):
         candidate_lists.append(parsed.get("evaluations"))
+    if isinstance(parsed.get("answers"), list):
+        candidate_lists.append(parsed.get("answers"))
 
     for candidate_list in candidate_lists:
         score_matrix = {}
         for item in candidate_list:
             if not isinstance(item, dict):
                 continue
-            answer_id = str(item.get("id", "")).strip()
+            answer_id = _normalize_vetting_answer_id(
+                item.get("id") or item.get("answer") or item.get("slot") or item.get("answer_id"),
+                normalized_ids,
+            )
             if answer_id not in normalized_ids:
                 continue
             nested_scores = item.get("scores") if isinstance(item.get("scores"), dict) else None
@@ -565,16 +864,76 @@ def _extract_vetting_score_matrix(parsed: Dict[str, Any], normalized_ids: List[s
                 for answer_id in normalized_ids
             }
 
+    recursive_score_lookup = _collect_recursive_vetting_score_blocks(parsed, normalized_ids)
+    if recursive_score_lookup:
+        return {
+            answer_id: _normalize_vetting_score_block(recursive_score_lookup.get(answer_id))
+            for answer_id in normalized_ids
+        }
+
     return {answer_id: _normalize_vetting_score_block({}) for answer_id in normalized_ids}
 
 
 def _extract_vetting_answer_notes(parsed: Dict[str, Any], normalized_ids: List[str]) -> Dict[str, str]:
     answer_notes_raw = parsed.get("answerNotes") if isinstance(parsed.get("answerNotes"), dict) else {}
-    if isinstance(answer_notes_raw, dict) and any(str(answer_notes_raw.get(answer_id, "")).strip() for answer_id in normalized_ids):
-        return {
-            answer_id: truncate_text(answer_notes_raw.get(answer_id, ""), 320)
+    if isinstance(answer_notes_raw, dict):
+        direct_notes = {}
+        for answer_id in normalized_ids:
+            value = answer_notes_raw.get(answer_id)
+            if value is None:
+                value = answer_notes_raw.get(str(answer_id).lower())
+            if value is None:
+                value = answer_notes_raw.get(f"answer_{str(answer_id).lower()}")
+            direct_notes[answer_id] = truncate_text(value or "", 320)
+        if any(direct_notes.values()):
+            return direct_notes
+    notes_node = parsed.get("notes")
+    if isinstance(notes_node, dict):
+        direct_notes = {}
+        for answer_id in normalized_ids:
+            value = notes_node.get(answer_id)
+            if value is None:
+                value = notes_node.get(str(answer_id).lower())
+            if value is None:
+                value = notes_node.get(f"answer_{str(answer_id).lower()}")
+            direct_notes[answer_id] = truncate_text(value or "", 320)
+        if any(direct_notes.values()):
+            return direct_notes
+    evaluation_node = parsed.get("evaluation") if isinstance(parsed.get("evaluation"), dict) else {}
+    if evaluation_node:
+        extracted = {
+            answer_id: truncate_text(
+                (
+                    ((evaluation_node.get(answer_id) or {}) if isinstance(evaluation_node.get(answer_id), dict) else {}).get("note", "")
+                    or ((evaluation_node.get(answer_id) or {}) if isinstance(evaluation_node.get(answer_id), dict) else {}).get("notes", "")
+                ),
+                320,
+            )
             for answer_id in normalized_ids
         }
+        if not any(extracted.values()):
+            extracted = {}
+            for answer_id in normalized_ids:
+                node = evaluation_node.get(answer_id)
+                if node is None:
+                    node = evaluation_node.get(str(answer_id).lower())
+                if node is None:
+                    node = evaluation_node.get(f"answer_{str(answer_id).lower()}")
+                note_text = ""
+                if isinstance(node, dict):
+                    note_text = str(node.get("note") or node.get("notes") or "").strip()
+                extracted[answer_id] = truncate_text(note_text, 320)
+        if any(extracted.values()):
+            return extracted
+    top_level_notes = {}
+    for answer_id in normalized_ids:
+        node = parsed.get(f"candidate_{str(answer_id).lower()}") or parsed.get(answer_id)
+        note_text = ""
+        if isinstance(node, dict):
+            note_text = str(node.get("summary") or node.get("note") or node.get("notes") or "").strip()
+        top_level_notes[answer_id] = truncate_text(note_text, 320)
+    if any(top_level_notes.values()):
+        return top_level_notes
 
     notes: Dict[str, str] = {answer_id: "" for answer_id in normalized_ids}
     candidate_lists = []
@@ -584,15 +943,26 @@ def _extract_vetting_answer_notes(parsed: Dict[str, Any], normalized_ids: List[s
         candidate_lists.append(parsed.get("evaluations"))
     if isinstance(parsed.get("scores"), list):
         candidate_lists.append(parsed.get("scores"))
+    if isinstance(parsed.get("answers"), list):
+        candidate_lists.append(parsed.get("answers"))
     for candidate_list in candidate_lists:
         for item in candidate_list:
             if not isinstance(item, dict):
                 continue
-            answer_id = str(item.get("id", "")).strip()
+            answer_id = _normalize_vetting_answer_id(
+                item.get("id") or item.get("answer") or item.get("slot") or item.get("answer_id"),
+                normalized_ids,
+            )
             if answer_id not in normalized_ids:
                 continue
             note_parts = []
-            commentary = str(item.get("commentary", "") or item.get("reasoning", "")).strip()
+            commentary = str(
+                item.get("commentary", "")
+                or item.get("reasoning", "")
+                or item.get("note", "")
+                or item.get("notes", "")
+                or item.get("best_for_rationale", "")
+            ).strip()
             if commentary:
                 note_parts.append(commentary)
             strengths = item.get("strengths")
@@ -614,17 +984,219 @@ def _extract_vetting_answer_notes(parsed: Dict[str, Any], normalized_ids: List[s
     return notes
 
 
+def _normalize_vetting_hire_verdict(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "hire": "hire",
+        "strong_hire": "hire",
+        "hire_with_supervision": "hire_with_supervision",
+        "hire_with_guardrails": "hire_with_supervision",
+        "supervised_hire": "hire_with_supervision",
+        "not_for_lead": "not_for_lead",
+        "no_hire": "not_for_lead",
+        "do_not_hire": "not_for_lead",
+        "not_hireable": "not_for_lead",
+        "disqualifying": "disqualifying",
+        "hard_fail": "disqualifying",
+        "red_card": "disqualifying",
+    }
+    return aliases.get(raw, "unknown")
+
+
+def _extract_vetting_hire_verdicts(parsed: Dict[str, Any], normalized_ids: List[str]) -> Dict[str, str]:
+    verdicts = {answer_id: "unknown" for answer_id in normalized_ids}
+    candidate_nodes: List[Any] = []
+    for key in ("hireVerdicts", "hire_verdicts"):
+        node = parsed.get(key)
+        if node is not None:
+            candidate_nodes.append(node)
+    for key in ("answers", "verdicts", "scores", "evaluations"):
+        node = parsed.get(key)
+        if isinstance(node, list):
+            candidate_nodes.append(node)
+    evaluation_node = parsed.get("evaluation")
+    if isinstance(evaluation_node, dict):
+        candidate_nodes.append(evaluation_node)
+    candidate_nodes.append(parsed)
+    for node in candidate_nodes:
+        if isinstance(node, dict):
+            for raw_key, raw_value in node.items():
+                answer_id = _normalize_vetting_answer_id(raw_key, normalized_ids)
+                if answer_id not in normalized_ids:
+                    continue
+                verdict = _normalize_vetting_hire_verdict(
+                    (
+                        raw_value.get("hireVerdict")
+                        or raw_value.get("hire_verdict")
+                        or raw_value.get("candidateVerdict")
+                    ) if isinstance(raw_value, dict) else raw_value
+                )
+                if verdict != "unknown":
+                    verdicts[answer_id] = verdict
+        elif isinstance(node, list):
+            for item in node:
+                if not isinstance(item, dict):
+                    continue
+                answer_id = _normalize_vetting_answer_id(
+                    item.get("id") or item.get("answer") or item.get("slot") or item.get("answer_id"),
+                    normalized_ids,
+                )
+                if answer_id not in normalized_ids:
+                    continue
+                verdict = _normalize_vetting_hire_verdict(
+                    item.get("hireVerdict") or item.get("hire_verdict") or item.get("candidateVerdict")
+                )
+                if verdict != "unknown":
+                    verdicts[answer_id] = verdict
+    return verdicts
+
+
+def _normalize_vetting_string_list(value: Any, *, limit: int = 8) -> List[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()][:limit]
+    if isinstance(value, str) and value.strip():
+        return [part.strip() for part in re.split(r"[;\n]+", value) if part.strip()][:limit]
+    return []
+
+
+def _extract_vetting_hard_fail_flags(parsed: Dict[str, Any], normalized_ids: List[str]) -> Dict[str, List[str]]:
+    flags = {answer_id: [] for answer_id in normalized_ids}
+    direct_node = parsed.get("hardFailFlags") if isinstance(parsed.get("hardFailFlags"), dict) else parsed.get("hard_fail_flags")
+    if isinstance(direct_node, dict):
+        for raw_key, raw_value in direct_node.items():
+            answer_id = _normalize_vetting_answer_id(raw_key, normalized_ids)
+            if answer_id in normalized_ids:
+                flags[answer_id] = _normalize_vetting_string_list(raw_value)
+    for key in ("answers", "verdicts", "scores", "evaluations"):
+        node = parsed.get(key)
+        if not isinstance(node, list):
+            continue
+        for item in node:
+            if not isinstance(item, dict):
+                continue
+            answer_id = _normalize_vetting_answer_id(
+                item.get("id") or item.get("answer") or item.get("slot") or item.get("answer_id"),
+                normalized_ids,
+            )
+            if answer_id not in normalized_ids:
+                continue
+            extracted = _normalize_vetting_string_list(
+                item.get("hardFailFlags") or item.get("hard_fail_flags") or item.get("disqualifiers") or item.get("redFlags")
+            )
+            if extracted:
+                flags[answer_id] = extracted
+    for raw_key, raw_value in parsed.items():
+        if not isinstance(raw_value, dict):
+            continue
+        answer_id = _normalize_vetting_answer_id(raw_key, normalized_ids)
+        if answer_id not in normalized_ids:
+            continue
+        extracted = _normalize_vetting_string_list(
+            raw_value.get("hardFailFlags") or raw_value.get("hard_fail_flags") or raw_value.get("disqualifiers") or raw_value.get("redFlags")
+        )
+        if extracted:
+            flags[answer_id] = extracted
+    return flags
+
+
+def _extract_vetting_trap_findings(parsed: Dict[str, Any], normalized_ids: List[str]) -> Dict[str, Dict[str, List[str]]]:
+    findings = {
+        answer_id: {"triggered": [], "caught": [], "missed": []}
+        for answer_id in normalized_ids
+    }
+    direct_node = parsed.get("trapFindings") if isinstance(parsed.get("trapFindings"), dict) else parsed.get("trap_findings")
+    if isinstance(direct_node, dict):
+        for raw_key, raw_value in direct_node.items():
+            answer_id = _normalize_vetting_answer_id(raw_key, normalized_ids)
+            if answer_id not in normalized_ids or not isinstance(raw_value, dict):
+                continue
+            findings[answer_id] = {
+                "triggered": _normalize_vetting_string_list(raw_value.get("triggered")),
+                "caught": _normalize_vetting_string_list(raw_value.get("caught")),
+                "missed": _normalize_vetting_string_list(raw_value.get("missed")),
+            }
+    for key in ("answers", "verdicts", "scores", "evaluations"):
+        node = parsed.get(key)
+        if not isinstance(node, list):
+            continue
+        for item in node:
+            if not isinstance(item, dict):
+                continue
+            answer_id = _normalize_vetting_answer_id(
+                item.get("id") or item.get("answer") or item.get("slot") or item.get("answer_id"),
+                normalized_ids,
+            )
+            if answer_id not in normalized_ids:
+                continue
+            trap_node = item.get("trapFindings") or item.get("trap_findings") or item.get("traps")
+            if not isinstance(trap_node, dict):
+                continue
+            findings[answer_id] = {
+                "triggered": _normalize_vetting_string_list(trap_node.get("triggered")),
+                "caught": _normalize_vetting_string_list(trap_node.get("caught")),
+                "missed": _normalize_vetting_string_list(trap_node.get("missed")),
+            }
+    for raw_key, raw_value in parsed.items():
+        if not isinstance(raw_value, dict):
+            continue
+        answer_id = _normalize_vetting_answer_id(raw_key, normalized_ids)
+        if answer_id not in normalized_ids:
+            continue
+        trap_node = raw_value.get("trapFindings") or raw_value.get("trap_findings") or raw_value.get("traps")
+        if isinstance(trap_node, dict):
+            if all(key in trap_node for key in ("triggered", "caught", "missed")):
+                findings[answer_id] = {
+                    "triggered": _normalize_vetting_string_list(trap_node.get("triggered")),
+                    "caught": _normalize_vetting_string_list(trap_node.get("caught")),
+                    "missed": _normalize_vetting_string_list(trap_node.get("missed")),
+                }
+                continue
+            triggered: List[str] = []
+            caught: List[str] = []
+            missed: List[str] = []
+            for trap_name, trap_value in trap_node.items():
+                label = str(trap_name or "").strip().replace("_", " ")
+                detail = str(trap_value or "").strip().lower()
+                if not label:
+                    continue
+                if any(token in detail for token in ("avoid", "avoided", "caught")):
+                    caught.append(label)
+                elif any(token in detail for token in ("miss", "missed")):
+                    missed.append(label)
+                elif any(token in detail for token in ("trigger", "violation", "violated", "hard fail", "failed")):
+                    triggered.append(label)
+            if triggered or caught or missed:
+                findings[answer_id] = {
+                    "triggered": _normalize_vetting_string_list(triggered),
+                    "caught": _normalize_vetting_string_list(caught),
+                    "missed": _normalize_vetting_string_list(missed),
+                }
+    return findings
+
+
 def _extract_vetting_ranking(parsed: Dict[str, Any], normalized_ids: List[str], score_matrix: Dict[str, Dict[str, float]]) -> List[str]:
-    ranking = [str(answer_id).strip() for answer_id in parsed.get("ranking", []) if str(answer_id).strip() in normalized_ids]
+    ranking = [
+        normalized
+        for normalized in (_normalize_vetting_answer_id(answer_id, normalized_ids) for answer_id in parsed.get("ranking", []))
+        if normalized
+    ]
     if not ranking:
         rankings_node = parsed.get("rankings")
         if isinstance(rankings_node, list):
-            ranking = [str(answer_id).strip() for answer_id in rankings_node if str(answer_id).strip() in normalized_ids]
+            ranking = [
+                normalized
+                for normalized in (_normalize_vetting_answer_id(answer_id, normalized_ids) for answer_id in rankings_node)
+                if normalized
+            ]
         elif isinstance(rankings_node, dict):
             for key in ("overall", "final", "bestFinalAnswer"):
                 candidate_list = rankings_node.get(key)
                 if isinstance(candidate_list, list):
-                    ranking = [str(answer_id).strip() for answer_id in candidate_list if str(answer_id).strip() in normalized_ids]
+                    ranking = [
+                        normalized
+                        for normalized in (_normalize_vetting_answer_id(answer_id, normalized_ids) for answer_id in candidate_list)
+                        if normalized
+                    ]
                     if ranking:
                         break
     ranking = list(dict.fromkeys(ranking))
@@ -644,13 +1216,48 @@ def _extract_vetting_ranking(parsed: Dict[str, Any], normalized_ids: List[str], 
 
 def _extract_vetting_choice(parsed: Dict[str, Any], ranking: List[str], field_names: List[str], fallback_index: int = 0) -> str:
     comparisons_node = parsed.get("comparisons") if isinstance(parsed.get("comparisons"), dict) else {}
+    evaluation_node = parsed.get("evaluation") if isinstance(parsed.get("evaluation"), dict) else {}
+    verdict_node = parsed.get("verdict") if isinstance(parsed.get("verdict"), dict) else {}
     for field_name in field_names:
-        candidate = str(parsed.get(field_name, "")).strip()
-        if candidate in ranking:
-            return candidate
-        candidate = str(comparisons_node.get(field_name, "")).strip()
-        if candidate in ranking:
-            return candidate
+        aliases = [field_name]
+        snake_case = re.sub(r"(?<!^)([A-Z])", r"_\1", field_name).lower()
+        if snake_case not in aliases:
+            aliases.append(snake_case)
+        if field_name == "bestFinalAnswer" and "best_answer" not in aliases:
+            aliases.append("best_answer")
+        if snake_case and f"{snake_case}_answer" not in aliases:
+            aliases.append(f"{snake_case}_answer")
+        if snake_case.endswith("_answer"):
+            base_alias = snake_case[: -len("_answer")]
+            if base_alias and base_alias not in aliases:
+                aliases.append(base_alias)
+        for alias in aliases:
+            candidate = _normalize_vetting_answer_id(parsed.get(alias, ""), ranking)
+            if candidate in ranking:
+                return candidate
+            candidate = _normalize_vetting_answer_id(comparisons_node.get(alias, ""), ranking)
+            if candidate in ranking:
+                return candidate
+            candidate = _normalize_vetting_answer_id(evaluation_node.get(alias, ""), ranking)
+            if candidate in ranking:
+                return candidate
+            candidate = _normalize_vetting_answer_id(verdict_node.get(alias, ""), ranking)
+            if candidate in ranking:
+                return candidate
+    if evaluation_node:
+        for answer_id in ranking:
+            node = evaluation_node.get(answer_id)
+            if node is None:
+                node = evaluation_node.get(str(answer_id).lower())
+            if node is None:
+                node = evaluation_node.get(f"answer_{str(answer_id).lower()}")
+            if not isinstance(node, dict):
+                continue
+            if any(
+                bool(node.get(flag))
+                for flag in ([field_names[0], re.sub(r"(?<!^)([A-Z])", r"_\1", field_names[0]).lower()] if field_names else [])
+            ):
+                return answer_id
     return ranking[min(fallback_index, len(ranking) - 1)]
 
 
@@ -712,26 +1319,116 @@ def _extract_vetting_rationale(parsed: Dict[str, Any], answer_notes: Dict[str, s
     if isinstance(direct_node, str):
         direct = direct_node.strip()
     elif isinstance(direct_node, dict):
-        for key in ("summary", "overall", "explanation", "rationale", "text"):
+        for key in ("summary", "overall", "explanation", "rationale", "text", "key_differentiator", "bestFinalAnswer", "bestTacticalDetail", "best_final_answer", "best_tactical_detail"):
             candidate = str(direct_node.get(key, "")).strip()
             if candidate:
                 direct = candidate
                 break
+        if not direct and best_final_answer:
+            normalized_key = _normalize_vetting_answer_id(best_final_answer, [best_final_answer]) or best_final_answer
+            best_answer_keys = [
+                normalized_key,
+                str(normalized_key).lower(),
+                f"answer_{str(normalized_key).lower()}",
+            ]
+            for key in best_answer_keys:
+                candidate = str(direct_node.get(key, "")).strip()
+                if candidate:
+                    direct = candidate
+                    break
+    if not direct:
+        notes_node = parsed.get("notes")
+        if isinstance(notes_node, str):
+            direct = notes_node.strip()
+        elif isinstance(notes_node, dict):
+            for key in ("summary", "overall", "explanation", "rationale", "text"):
+                candidate = str(notes_node.get(key, "")).strip()
+                if candidate:
+                    direct = candidate
+                    break
     if direct:
         return truncate_text(direct, 1600)
+    reasoning_node = parsed.get("reasoning")
+    if isinstance(reasoning_node, str) and reasoning_node.strip():
+        return truncate_text(reasoning_node.strip(), 1600)
+    if isinstance(reasoning_node, dict):
+        for key in ("tiebreaker rationale", "tiebreaker_rationale", "summary", "overall", "explanation", "text"):
+            candidate = str(reasoning_node.get(key, "")).strip()
+            if candidate:
+                return truncate_text(candidate, 1600)
+    evaluator_notes = str(parsed.get("evaluator_notes") or "").strip()
+    if evaluator_notes:
+        return truncate_text(evaluator_notes, 1600)
+    verdict_node = parsed.get("verdict")
+    if isinstance(verdict_node, dict):
+        for key in ("rationale", "summary", "overall", "explanation", "text"):
+            candidate = str(verdict_node.get(key, "")).strip()
+            if candidate:
+                return truncate_text(candidate, 1600)
+    for key in ("best_answer_summary", "best_tactical_detail_rationale"):
+        candidate = str(parsed.get(key) or "").strip()
+        if candidate:
+            return truncate_text(candidate, 1600)
+    scoring_notes_node = parsed.get("scoring_notes")
+    if isinstance(scoring_notes_node, dict):
+        for key in ("differentiation", "summary", "overall", "explanation", "text", "non_scoring_notes"):
+            candidate = str(scoring_notes_node.get(key, "")).strip()
+            if candidate:
+                return truncate_text(candidate, 1600)
+    evaluation_node = parsed.get("evaluation") if isinstance(parsed.get("evaluation"), dict) else {}
+    if evaluation_node:
+        justification = evaluation_node.get("justification")
+        if isinstance(justification, dict):
+            preferred = [
+                str(justification.get("best_final_answer") or "").strip(),
+                str(justification.get("best_tactical_detail") or "").strip(),
+                str(justification.get("summary") or "").strip(),
+                str(justification.get("overall") or "").strip(),
+            ]
+            for candidate in preferred:
+                if candidate:
+                    return truncate_text(candidate, 1600)
     comparisons_node = parsed.get("comparisons") if isinstance(parsed.get("comparisons"), dict) else {}
     comparison_direct_node = comparisons_node.get("rationale")
     comparison_direct = ""
     if isinstance(comparison_direct_node, str):
         comparison_direct = comparison_direct_node.strip()
     elif isinstance(comparison_direct_node, dict):
-        for key in ("summary", "overall", "explanation", "rationale", "text"):
+        for key in ("summary", "overall", "explanation", "rationale", "text", "bestFinalAnswer", "bestTacticalDetail", "best_final_answer", "best_tactical_detail"):
             candidate = str(comparison_direct_node.get(key, "")).strip()
             if candidate:
                 comparison_direct = candidate
                 break
     if comparison_direct:
         return truncate_text(comparison_direct, 1600)
+    differential_rationale = str(parsed.get("differential_rationale") or "").strip()
+    if differential_rationale:
+        return truncate_text(differential_rationale, 1600)
+    comparison_summary = str(parsed.get("comparison_summary") or "").strip()
+    if comparison_summary:
+        return truncate_text(comparison_summary, 1600)
+    text_candidates: List[str] = []
+
+    def visit(node: Any, depth: int = 0) -> None:
+        if depth > 6:
+            return
+        if isinstance(node, dict):
+            for raw_key, value in node.items():
+                key = str(raw_key or "").strip().lower()
+                if isinstance(value, str):
+                    text = value.strip()
+                    if text and any(token in key for token in ("rationale", "summary", "explanation", "notes", "differentiator")):
+                        text_candidates.append(text)
+                else:
+                    visit(value, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item, depth + 1)
+
+    visit(parsed)
+    for candidate in text_candidates:
+        if candidate:
+            return truncate_text(candidate, 1600)
     note = str(answer_notes.get(best_final_answer, "")).strip()
     if note:
         return truncate_text(note, 1600)
@@ -743,6 +1440,9 @@ def normalize_vetting_matrix_result(parsed: Dict[str, Any], answer_ids: List[str
     score_matrix = _extract_vetting_score_matrix(parsed, normalized_ids)
     ranking = _extract_vetting_ranking(parsed, normalized_ids, score_matrix)
     answer_notes = _extract_vetting_answer_notes(parsed, normalized_ids)
+    hire_verdicts = _extract_vetting_hire_verdicts(parsed, normalized_ids)
+    hard_fail_flags = _extract_vetting_hard_fail_flags(parsed, normalized_ids)
+    trap_findings = _extract_vetting_trap_findings(parsed, normalized_ids)
     best_final_answer = _extract_vetting_choice(parsed, ranking, ["bestFinalAnswer", "bestFinal"], 0)
     best_tactical_detail = _extract_vetting_choice(parsed, ranking, ["bestTacticalDetail"], 0)
     advantage_summary = build_vetting_advantage_summary(score_matrix, ranking)
@@ -753,6 +1453,9 @@ def normalize_vetting_matrix_result(parsed: Dict[str, Any], answer_ids: List[str
         "ranking": ranking,
         "bestFinalAnswer": best_final_answer,
         "bestTacticalDetail": best_tactical_detail,
+        "hireVerdicts": hire_verdicts,
+        "hardFailFlags": hard_fail_flags,
+        "trapFindings": trap_findings,
         "answerNotes": answer_notes,
         "categoryLeaders": vetting_category_leaders(score_matrix),
         "advantageSummary": advantage_summary,
@@ -885,6 +1588,10 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         runtime_payload.get("summarizerHarness", default_summarizer_harness()),
         default_summarizer_harness()["concision"],
     )
+    direct_harness = normalize_harness_config(
+        runtime_payload.get("directHarness", default_direct_harness()),
+        default_direct_harness()["concision"],
+    )
     workers = payload.get("workers") if isinstance(payload.get("workers"), list) else []
     normalized_workers = task_workers({"runtime": {"model": model, "provider": provider}, "workers": workers}) if workers else []
     if arm_type == "steered" and not normalized_workers:
@@ -907,6 +1614,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
             "summarizerHarness": summarizer_harness,
+            "directHarness": direct_harness,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
             "research": research,
@@ -943,6 +1651,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "model": runtime_config["model"],
             "directProvider": runtime_config["directProvider"],
             "directModel": runtime_config["directModel"],
+            "directHarness": deepcopy(runtime_config["directHarness"]),
             "ollamaBaseUrl": runtime_config["ollamaBaseUrl"],
             "providerRouting": deepcopy(runtime_config["providerRouting"]),
             "reasoningEffort": runtime_config["reasoningEffort"],
@@ -985,6 +1694,8 @@ def initialize_steered_workspace(runtime: LoopRuntime, task: Dict[str, Any]) -> 
     state["loop"] = default_loop_state()
     runtime.write_state(state)
     write_json(runtime.tasks_path / f"{task['taskId']}.json", task)
+    with runtime.with_lock():
+        runtime.initialize_task_state_unlocked(task, state)
 
 
 def build_mock_direct_answer(case: Dict[str, Any]) -> Dict[str, Any]:
@@ -1011,38 +1722,29 @@ def build_mock_direct_answer(case: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_direct_answer(
     runtime: LoopRuntime,
-    auth_assignment: Optional[Dict[str, Any]],
+    auth_assignments: Optional[List[Dict[str, Any]]],
     case: Dict[str, Any],
     arm: Dict[str, Any],
 ) -> Dict[str, Any]:
     provider = str(arm["runtime"].get("provider") or "openai").strip()
-    api_key = str(auth_assignment.get("apiKey")) if isinstance(auth_assignment, dict) else ""
+    primary_assignment = (
+        dict(auth_assignments[0])
+        if isinstance(auth_assignments, list) and auth_assignments and isinstance(auth_assignments[0], dict)
+        else None
+    )
+    api_key = str(primary_assignment.get("apiKey")) if isinstance(primary_assignment, dict) else ""
     if provider == "openai" and not api_key:
         api_key = runtime.get_api_key()
     if provider != "openai":
-        api_key = runtime.provider_live_api_key(provider, None)
-    auth_meta = runtime.live_auth_meta(provider, auth_assignment)
+        api_key = runtime.provider_live_api_key(provider, auth_assignments)
+    auth_meta = runtime.live_auth_meta(provider, primary_assignment)
     runtime_config = arm["runtime"]
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
     requested_max_output = int(runtime_config["budget"]["maxOutputTokens"])
-    harness_lines = direct_baseline_harness_instruction_lines(
-        runtime_config.get("summarizerHarness", default_summarizer_harness())
-    )
-    instructions = (
-        "Answer the user directly as one assistant.\n"
-        "Give a decisive but conditional recommendation.\n"
-        "Do not narrate hidden process.\n"
-        "Absorb tradeoffs into the recommendation itself.\n"
-    )
-    if harness_lines:
-        instructions += "\n".join(harness_lines) + "\n"
-    instructions += "Return JSON only that matches the schema."
-    input_text = (
-        f"Objective:\n{case['objective']}\n\n"
-        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Session context:\n{case.get('sessionContext', '') or 'none'}\n"
-    )
+    prompt_packet = build_direct_answer_prompt(case, runtime_config)
+    instructions = prompt_packet["instructions"]
+    input_text = prompt_packet["inputText"]
     if runtime_config["executionMode"] == "live" and (api_key or not runtime.provider_requires_api_key(provider)):
         try:
             result = runtime.invoke_provider_json(
@@ -1056,15 +1758,23 @@ def run_direct_answer(
                 schema=direct_answer_schema(),
                 max_output_tokens=requested_max_output,
                 target_kind="generic",
+                auth_assignments=auth_assignments,
                 provider_settings=runtime_config,
             )
             usage = runtime.get_response_usage_delta(result.response, model) or default_usage_state()
+            normalized_answer = normalize_direct_answer_payload(
+                result.parsed,
+                case.get("objective", ""),
+                provider=provider,
+            )
             return {
                 "mode": "live",
                 "provider": provider,
                 "providerCapabilities": provider_capability_profile(provider),
                 "model": model,
-                "answer": result.parsed,
+                "inputText": prompt_packet["inputText"],
+                "fullPrompt": prompt_packet["fullPrompt"],
+                "answer": normalized_answer,
                 "usage": normalize_usage_state(usage),
                 "responseId": result.response_id,
                 "rawOutputText": result.output_text,
@@ -1089,7 +1799,13 @@ def run_direct_answer(
         "provider": provider,
         "providerCapabilities": provider_capability_profile(provider),
         "model": model,
-        "answer": build_mock_direct_answer(case),
+        "inputText": prompt_packet["inputText"],
+        "fullPrompt": prompt_packet["fullPrompt"],
+        "answer": normalize_direct_answer_payload(
+            build_mock_direct_answer(case),
+            case.get("objective", ""),
+            provider=provider,
+        ),
         "usage": default_usage_state(),
         "responseId": None,
         "rawOutputText": None,
@@ -1125,7 +1841,18 @@ def run_steered_answer(
                 runtime.run_target(worker_id, task["taskId"])
             runtime.run_target("commander_review", task["taskId"])
             runtime.run_target("summarizer", task["taskId"])
-    state = runtime.read_state()
+    previous_context = runtime.current_execution_context()
+    runtime.set_execution_context(
+        {
+            **previous_context,
+            "taskId": task["taskId"],
+            "stateScopeTaskId": task["taskId"],
+        }
+    )
+    try:
+        state = runtime.read_state()
+    finally:
+        runtime.set_execution_context(previous_context)
     summary = state.get("summary")
     direct_baseline = state.get("directBaseline")
     if answer_path == "single":
@@ -1222,6 +1949,85 @@ def invoke_live_judge_json(
     )
 
 
+def format_prompt_value(value: Any, depth: int = 0) -> str:
+    indent = "  " * depth
+    if value is None:
+        return indent + "none"
+    if isinstance(value, list):
+        lines: List[str] = []
+        for item in value:
+            if isinstance(item, (list, dict)):
+                lines.append(f"{indent}-")
+                nested = format_prompt_value(item, depth + 1)
+                lines.extend(nested.splitlines())
+            else:
+                text = str(item or "").strip()
+                if text:
+                    lines.append(f"{indent}- {text}")
+        return "\n".join(lines) if lines else indent + "- none"
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            key_label = re.sub(r"(?<!^)([A-Z])", r" \1", str(key or "")).replace("_", " ").strip() or "item"
+            if isinstance(item, (list, dict)):
+                lines.append(f"{indent}- {key_label}:")
+                nested = format_prompt_value(item, depth + 1)
+                lines.extend(nested.splitlines())
+            else:
+                item_text = str(item or "").strip() or "none"
+                lines.append(f"{indent}- {key_label}: {item_text}")
+        return "\n".join(lines) if lines else indent + "- none"
+    text = str(value or "").strip()
+    return indent + (text or "none")
+
+
+def format_prompt_section(title: str, body: str) -> str:
+    normalized_title = str(title or "").strip() or "Section"
+    normalized_body = str(body or "").strip() or "none"
+    return f"{normalized_title}:\n{normalized_body}"
+
+
+def format_candidate_answer_packets(answers: List[Dict[str, Any]]) -> str:
+    blocks: List[str] = []
+    for answer in answers:
+        blocks.append(
+            "\n".join(
+                [
+                    f"Answer {str(answer.get('id', '')).strip() or '?'}",
+                    str(answer.get("text", "")).strip() or "No answer captured.",
+                ]
+            ).strip()
+        )
+    return "\n\n".join(blocks).strip() or "No candidate answers supplied."
+
+
+def build_direct_answer_prompt(case: Dict[str, Any], runtime_config: Dict[str, Any]) -> Dict[str, Any]:
+    harness_lines = direct_baseline_harness_instruction_lines(
+        runtime_config.get("directHarness", default_direct_harness())
+    )
+    instructions = (
+        "Answer the user directly as one assistant.\n"
+        "Give a decisive but conditional recommendation.\n"
+        "Do not narrate hidden process.\n"
+        "Absorb tradeoffs into the recommendation itself.\n"
+    )
+    if harness_lines:
+        instructions += "\n".join(harness_lines) + "\n"
+    instructions += "Return JSON only that matches the schema."
+    input_text = "\n\n".join(
+        [
+            format_prompt_section("Objective", str(case.get("objective") or "").strip()),
+            format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
+            format_prompt_section("Session context", str(case.get("sessionContext", "") or "none").strip() or "none"),
+        ]
+    ).strip()
+    return {
+        "instructions": instructions,
+        "inputText": input_text,
+        "fullPrompt": f"Instructions:\n{instructions}\n\n{input_text}".strip(),
+    }
+
+
 def quality_judge_live(
     runtime: LoopRuntime,
     judge_provider: str,
@@ -1239,13 +2045,15 @@ def quality_judge_live(
         "Use the hidden rubric and gold notes as guidance, but do not require exact wording.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = (
-        f"Objective:\n{case['objective']}\n\n"
-        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Hidden rubric:\n{json.dumps(judge_rubric, ensure_ascii=False, indent=2)}\n\n"
-        f"Hidden gold guidance:\n{json.dumps(case.get('gold', {}), ensure_ascii=False, indent=2)}\n\n"
-        f"Candidate answer:\n{public_answer}\n"
-    )
+    input_text = "\n\n".join(
+        [
+            format_prompt_section("Objective", str(case.get("objective") or "").strip()),
+            format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
+            format_prompt_section("Hidden rubric", format_prompt_value(judge_rubric)),
+            format_prompt_section("Hidden gold guidance", format_prompt_value(case.get("gold", {}))),
+            format_prompt_section("Candidate answer", str(public_answer or "").strip()),
+        ]
+    ).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -1259,9 +2067,10 @@ def quality_judge_live(
         provider_settings,
     )
     parsed = result.parsed
+    scores = _extract_live_score_block(parsed, QUALITY_SCORE_FIELDS, QUALITY_SCORE_ALIASES)
     return {
         "mode": "live",
-        "scores": {field: int((parsed.get("scores") or {}).get(field, 0) or 0) for field in QUALITY_SCORE_FIELDS},
+        "scores": scores,
         "verdict": str(parsed.get("verdict", "")).strip(),
         "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
         "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
@@ -1317,12 +2126,14 @@ def answer_health_judge_live(
         "Use telemetry as supporting context, not as a substitute for reading the answer.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = (
-        f"Objective:\n{case['objective']}\n\n"
-        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Answer telemetry:\n{json.dumps(telemetry, ensure_ascii=False, indent=2)}\n\n"
-        f"Candidate answer:\n{public_answer}\n"
-    )
+    input_text = "\n\n".join(
+        [
+            format_prompt_section("Objective", str(case.get("objective") or "").strip()),
+            format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
+            format_prompt_section("Answer telemetry", format_prompt_value(telemetry)),
+            format_prompt_section("Candidate answer", str(public_answer or "").strip()),
+        ]
+    ).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -1336,10 +2147,10 @@ def answer_health_judge_live(
         provider_settings,
     )
     parsed = result.parsed
-    scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
+    scores = _extract_live_score_block(parsed, ANSWER_HEALTH_SCORE_FIELDS, ANSWER_HEALTH_SCORE_ALIASES)
     return {
         "mode": "live",
-        "scores": {field: int(scores.get(field, 0) or 0) for field in ANSWER_HEALTH_SCORE_FIELDS},
+        "scores": scores,
         "verdict": str(parsed.get("verdict", "")).strip(),
         "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
         "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
@@ -1399,21 +2210,23 @@ def control_judge_live(
         "Penalize funnel-like behavior where internal pressure is merely forwarded or averaged into the final answer.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = (
-        f"Objective:\n{case['objective']}\n\n"
-        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Public answer:\n{front_answer.get('answer', '')}\n\n"
-        f"Lead direction:\n{front_answer.get('leadDirection', '')}\n\n"
-        f"Absorbed adversarial pressure:\n{front_answer.get('adversarialPressure', '')}\n\n"
-        f"Current stance:\n{opinion.get('stance', '')}\n\n"
-        f"Integration mode:\n{opinion.get('integrationMode', '')}\n\n"
-        f"Lead draft before pressure:\n{control_audit.get('leadDraft', '')}\n\n"
-        f"Control question:\n{control_audit.get('integrationQuestion', '')}\n\n"
-        f"Accepted adversarial points:\n{json.dumps(control_audit.get('acceptedAdversarialPoints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Rejected adversarial points:\n{json.dumps(control_audit.get('rejectedAdversarialPoints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Held-out concerns:\n{json.dumps(control_audit.get('heldOutConcerns', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Pre-release self-check:\n{control_audit.get('selfCheck', '')}\n"
-    )
+    input_text = "\n\n".join(
+        [
+            format_prompt_section("Objective", str(case.get("objective") or "").strip()),
+            format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
+            format_prompt_section("Public answer", str(front_answer.get("answer", "") or "").strip()),
+            format_prompt_section("Lead direction", str(front_answer.get("leadDirection", "") or "").strip()),
+            format_prompt_section("Absorbed adversarial pressure", str(front_answer.get("adversarialPressure", "") or "").strip()),
+            format_prompt_section("Current stance", str(opinion.get("stance", "") or "").strip()),
+            format_prompt_section("Integration mode", str(opinion.get("integrationMode", "") or "").strip()),
+            format_prompt_section("Lead draft before pressure", str(control_audit.get("leadDraft", "") or "").strip()),
+            format_prompt_section("Control question", str(control_audit.get("integrationQuestion", "") or "").strip()),
+            format_prompt_section("Accepted adversarial points", format_prompt_value(control_audit.get("acceptedAdversarialPoints", []))),
+            format_prompt_section("Rejected adversarial points", format_prompt_value(control_audit.get("rejectedAdversarialPoints", []))),
+            format_prompt_section("Held-out concerns", format_prompt_value(control_audit.get("heldOutConcerns", []))),
+            format_prompt_section("Pre-release self-check", str(control_audit.get("selfCheck", "") or "").strip()),
+        ]
+    ).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -1427,10 +2240,10 @@ def control_judge_live(
         provider_settings,
     )
     parsed = result.parsed
-    scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
+    scores = _extract_live_score_block(parsed, CONTROL_SCORE_FIELDS, CONTROL_SCORE_ALIASES)
     return {
         "mode": "live",
-        "scores": {field: int(scores.get(field, 0) or 0) for field in CONTROL_SCORE_FIELDS},
+        "scores": scores,
         "verdict": str(parsed.get("verdict", "")).strip(),
         "strongestControlStrength": str(parsed.get("strongestControlStrength", "")).strip(),
         "strongestControlWeakness": str(parsed.get("strongestControlWeakness", "")).strip(),
@@ -1482,7 +2295,10 @@ def run_quality_judge(
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
-            return quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings)
+            result = quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings)
+            if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in QUALITY_SCORE_FIELDS):
+                raise RuntimeErrorWithCode("Live judge returned no usable quality scores.", 500)
+            return result
         except RuntimeErrorWithCode:
             pass
     return heuristic_quality_judge(public_answer)
@@ -1500,7 +2316,10 @@ def run_answer_health_judge(
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
-            return answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings)
+            result = answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings)
+            if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in ANSWER_HEALTH_SCORE_FIELDS):
+                raise RuntimeErrorWithCode("Live judge returned no usable answer-health scores.", 500)
+            return result
         except RuntimeErrorWithCode:
             pass
     return heuristic_answer_health(public_answer, telemetry)
@@ -1517,7 +2336,10 @@ def run_control_judge(
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
-            return control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings)
+            result = control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings)
+            if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in CONTROL_SCORE_FIELDS):
+                raise RuntimeErrorWithCode("Live judge returned no usable control scores.", 500)
+            return result
         except RuntimeErrorWithCode:
             pass
     return heuristic_control_judge(summary)
@@ -1548,19 +2370,21 @@ def comparison_judge_live(
         "Use the supplied quality/health summaries and similarity metrics as context, but base the verdict on the actual answer texts.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = (
-        f"Objective:\n{case['objective']}\n\n"
-        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Hidden rubric:\n{json.dumps(judge_rubric, ensure_ascii=False, indent=2)}\n\n"
-        f"Hidden gold guidance:\n{json.dumps(case.get('gold', {}), ensure_ascii=False, indent=2)}\n\n"
-        f"Pressurized answer quality summary:\n{json.dumps(primary_quality, ensure_ascii=False, indent=2)}\n\n"
-        f"Pressurized answer health summary:\n{json.dumps(primary_health, ensure_ascii=False, indent=2)}\n\n"
-        f"Baseline answer quality summary:\n{json.dumps(baseline_quality, ensure_ascii=False, indent=2)}\n\n"
-        f"Baseline answer health summary:\n{json.dumps(baseline_health, ensure_ascii=False, indent=2)}\n\n"
-        f"Similarity metrics:\n{json.dumps(similarity, ensure_ascii=False, indent=2)}\n\n"
-        f"Pressurized answer:\n{primary_answer}\n\n"
-        f"Single-thread baseline answer:\n{baseline_answer}\n"
-    )
+    input_text = "\n\n".join(
+        [
+            format_prompt_section("Objective", str(case.get("objective") or "").strip()),
+            format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
+            format_prompt_section("Hidden rubric", format_prompt_value(judge_rubric)),
+            format_prompt_section("Hidden gold guidance", format_prompt_value(case.get("gold", {}))),
+            format_prompt_section("Pressurized answer quality summary", format_prompt_value(primary_quality)),
+            format_prompt_section("Pressurized answer health summary", format_prompt_value(primary_health)),
+            format_prompt_section("Baseline answer quality summary", format_prompt_value(baseline_quality)),
+            format_prompt_section("Baseline answer health summary", format_prompt_value(baseline_health)),
+            format_prompt_section("Similarity metrics", format_prompt_value(similarity)),
+            format_prompt_section("Pressurized answer", str(primary_answer or "").strip()),
+            format_prompt_section("Single-thread baseline answer", str(baseline_answer or "").strip()),
+        ]
+    ).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -1574,10 +2398,10 @@ def comparison_judge_live(
         provider_settings,
     )
     parsed = result.parsed
-    scores = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
+    scores = _extract_live_score_block(parsed, COMPARISON_SCORE_FIELDS, COMPARISON_SCORE_ALIASES)
     return {
         "mode": "live",
-        "scores": {field: int(scores.get(field, 0) or 0) for field in COMPARISON_SCORE_FIELDS},
+        "scores": scores,
         "verdict": str(parsed.get("verdict", "")).strip() or "mixed",
         "decisionRelation": str(parsed.get("decisionRelation", "")).strip(),
         "materialDifference": bool(parsed.get("materialDifference", False)),
@@ -1650,7 +2474,7 @@ def run_comparison_judge(
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         try:
-            return comparison_judge_live(
+            result = comparison_judge_live(
                 judge_runtime,
                 judge_provider,
                 api_key or "",
@@ -1666,6 +2490,9 @@ def run_comparison_judge(
                 similarity,
                 provider_settings,
             )
+            if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in COMPARISON_SCORE_FIELDS):
+                raise RuntimeErrorWithCode("Live judge returned no usable comparison scores.", 500)
+            return result
         except RuntimeErrorWithCode:
             pass
     return heuristic_comparison_judge(primary_answer, baseline_answer, primary_quality, baseline_quality, similarity)
@@ -1685,38 +2512,9 @@ def vetting_matrix_judge_live(
     if not normalized_answers:
         raise EvalError("Vetting matrix judge requires at least one answer.")
     answer_ids = [str(answer.get("id", "")).strip() for answer in normalized_answers]
-    instructions = (
-        "You are acting as an impartial senior evaluator reviewing multiple candidate answers to the same prompt.\n"
-        "Ignore cosmetic formatting unless it changes meaning.\n"
-        "Score each answer from 0 to 10 in 0.5-point increments on these categories: blast radius perception, human usability, AI-agent executability, tactical detail, restraint / collateral control, decision gates, first-hour realism, and overall quality.\n"
-        "Best final answer means the answer you would most trust to ship to an operator as the primary response.\n"
-        "Best tactical detail means the answer that contributes the most useful extra checks, artifacts, or specialist detail.\n"
-        "Do not decide whether extra compute or orchestration was worth the spend; only score answer quality and choose the best answer on the merits of the output.\n"
-        "Do not bias toward length or drama. Reward correct sequencing, evidence preservation, escalation discipline, and operational restraint.\n"
-        "Return JSON only that matches the schema."
-    )
-    answer_packets = []
-    for answer in normalized_answers:
-        answer_packets.append(
-            {
-                "id": str(answer.get("id", "")).strip(),
-                "declaredCostUsd": (
-                    round(float(answer.get("costUsd", 0.0) or 0.0), 6)
-                    if answer.get("costUsd") is not None
-                    else None
-                ),
-                "declaredCostNote": str(answer.get("costNote", "")).strip() or None,
-                "familyHint": str(answer.get("familyHint", "")).strip() or None,
-                "answer": str(answer.get("text", "")).strip(),
-            }
-        )
-    input_text = (
-        f"Objective:\n{case['objective']}\n\n"
-        f"Constraints:\n{json.dumps(case.get('constraints', []), ensure_ascii=False, indent=2)}\n\n"
-        f"Judge rubric:\n{json.dumps(judge_rubric, ensure_ascii=False, indent=2)}\n\n"
-        f"Hidden gold guidance:\n{json.dumps(case.get('gold', {}), ensure_ascii=False, indent=2)}\n\n"
-        f"Candidate answers:\n{json.dumps(answer_packets, ensure_ascii=False, indent=2)}\n"
-    )
+    prompt_packet = build_vetting_matrix_judge_prompt(case, judge_rubric, normalized_answers)
+    instructions = prompt_packet["instructions"]
+    input_text = prompt_packet["inputText"]
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -1729,10 +2527,84 @@ def vetting_matrix_judge_live(
         2600,
         provider_settings,
     )
-    normalized = normalize_vetting_matrix_result(result.parsed, answer_ids, result.response_id)
+    parsed_payload = result.parsed if isinstance(result.parsed, dict) else {}
+    if not any(
+        float((score_block or {}).get("overall", 0.0) or 0.0) > 0.0
+        for score_block in _extract_vetting_score_matrix(parsed_payload, answer_ids).values()
+    ):
+        raw_output = str(result.output_text or "").strip()
+        if raw_output:
+            try:
+                reparsed = parse_structured_output_text(raw_output)
+            except Exception:
+                reparsed = {}
+            if isinstance(reparsed, dict) and any(
+                float((score_block or {}).get("overall", 0.0) or 0.0) > 0.0
+                for score_block in _extract_vetting_score_matrix(reparsed, answer_ids).values()
+            ):
+                parsed_payload = reparsed
+    normalized = normalize_vetting_matrix_result(parsed_payload, answer_ids, result.response_id)
     return {
         "mode": "live",
+        "fullPrompt": prompt_packet["fullPrompt"],
+        "inputText": prompt_packet["inputText"],
+        "answerPackets": prompt_packet["answerPackets"],
+        "rawOutputText": result.output_text,
+        "responseMeta": {
+            "provider": judge_provider,
+            "model": judge_model,
+            "requestedMaxOutputTokens": result.requested_max_output_tokens,
+            "effectiveMaxOutputTokens": result.effective_max_output_tokens,
+            "attempts": list(result.attempts or []),
+            "recoveredFromIncomplete": bool(result.recovered_from_incomplete),
+        },
         **normalized,
+    }
+
+
+def build_vetting_matrix_judge_prompt(
+    case: Dict[str, Any],
+    judge_rubric: Any,
+    answers: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    normalized_answers = [dict(answer) for answer in answers if isinstance(answer, dict) and str(answer.get("id", "")).strip()]
+    answer_packets = []
+    for answer in normalized_answers:
+        answer_packets.append(
+            {
+                "id": str(answer.get("id", "")).strip(),
+                "costUsd": (
+                    round(float(answer.get("costUsd", 0.0) or 0.0), 6)
+                    if answer.get("costUsd") is not None
+                    else None
+                ),
+                "costNote": str(answer.get("costNote", "")).strip() or None,
+                "familyHint": str(answer.get("familyHint", "")).strip() or None,
+                "text": str(answer.get("text", "")).strip(),
+            }
+        )
+    instructions = (
+        "Blindly evaluate the candidate answers to the same prompt as if you were vetting a lead MSP incident responder for a live multi-tenant severity-1 event.\n"
+        "Use only the judge metric below plus the shared prompt, constraints, and answer texts.\n"
+        "Score each answer from 0 to 10 in 0.5-point increments for every listed category.\n"
+        "Record hire verdicts, hard-fail flags, and trap findings for each answer.\n"
+        "An answer that triggers a hard fail should not win best final answer unless every answer hard-fails.\n"
+        "Choose one best final answer and one best tactical detail answer.\n"
+        "Return JSON only that matches the schema."
+    )
+    input_text = "\n\n".join(
+        [
+            format_prompt_section("Judge metric", format_prompt_value(judge_rubric)),
+            format_prompt_section("Objective", str(case.get("objective") or "").strip()),
+            format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
+            format_prompt_section("Candidate answers", format_candidate_answer_packets(answer_packets)),
+        ]
+    ).strip()
+    return {
+        "instructions": instructions,
+        "inputText": input_text,
+        "answerPackets": answer_packets,
+        "fullPrompt": f"Instructions:\n{instructions}\n\n{input_text}".strip(),
     }
 
 
@@ -2161,7 +3033,12 @@ def execute_replicate(
     comparison: Optional[Dict[str, Any]] = None
     if arm["type"] == "direct":
         runtime = LoopRuntime(replicate_dir / "_direct_runtime", auth_path=auth_path)
-        direct = run_direct_answer(runtime, runtime.get_api_key_assignment("direct", salt=seed + ":direct"), case, arm)
+        direct = run_direct_answer(
+            runtime,
+            runtime.provider_auth_assignments(arm["runtime"].get("provider"), "direct", salt=seed + ":direct"),
+            case,
+            arm,
+        )
         output_payload = {
             "taskId": None,
             "artifactType": "eval_direct_output",
@@ -2171,6 +3048,8 @@ def execute_replicate(
             "model": direct["model"],
             "capturedAt": utc_now(),
             "responseId": direct["responseId"],
+            "inputText": direct.get("inputText"),
+            "fullPrompt": direct.get("fullPrompt"),
             "responseMeta": direct["responseMeta"],
             "authMeta": direct.get("authMeta"),
             "rawOutputText": direct["rawOutputText"],
@@ -2458,7 +3337,11 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
     if not loop_sweep:
         loop_sweep = [1]
     judge_provider = normalize_provider_id(str(run.get("judgeProvider") or "openai").strip(), "openai")
-    judge_model = normalize_model_id(str(run.get("judgeModel", "")).strip(), default_model_for_provider(judge_provider))
+    judge_model = normalize_model_id(
+        str(run.get("judgeModel", "")).strip(),
+        default_judge_model_for_provider(judge_provider),
+        judge_provider,
+    )
 
     for case in suite["cases"]:
         case_entry = find_case_entry(run, case["caseId"])

@@ -1,0 +1,64 @@
+{
+  "armId": "para-grok-fast-full",
+  "title": "Para Grok Fast Workers",
+  "description": "xAI provider-owned Para run with Grok 4.1 fast adversarial lanes and a Grok 4.20 reasoning summarizer.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "full",
+    "directBaselineMode": "off",
+    "provider": "xai",
+    "model": "grok-4-1-fast-reasoning",
+    "summarizerProvider": "xai",
+    "summarizerModel": "grok-4.20-reasoning",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 220000,
+      "maxCostUsd": 18,
+      "maxOutputTokens": 3200
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "proponent",
+      "label": "Proponent",
+      "role": "utility",
+      "focus": "benefits, feasibility, leverage, momentum, practical execution",
+      "temperature": "balanced",
+      "model": "grok-4-1-fast-reasoning"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Sceptic",
+      "role": "adversarial",
+      "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+      "temperature": "cool",
+      "model": "grok-4-1-fast-reasoning"
+    },
+    {
+      "id": "C",
+      "type": "security",
+      "label": "Security",
+      "role": "adversarial",
+      "focus": "security abuse, privilege escalation, hostile actors",
+      "temperature": "hot",
+      "model": "grok-4-1-fast-reasoning"
+    }
+  ]
+}

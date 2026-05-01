@@ -31,6 +31,13 @@ const XAI_MODEL_CATALOG = {
   "grok-4.20": { label: "Grok 4.20" }
 };
 
+const DEEPSEEK_MODEL_CATALOG = {
+  "deepseek-v4-pro": { label: "DeepSeek V4 Pro" },
+  "deepseek-v4-flash": { label: "DeepSeek V4 Flash" },
+  "deepseek-chat": { label: "DeepSeek Chat (Legacy)" },
+  "deepseek-reasoner": { label: "DeepSeek Reasoner (Legacy)" }
+};
+
 const MINIMAX_MODEL_CATALOG = {
   "MiniMax-M2.7": { label: "MiniMax M2.7" },
   "MiniMax-M2.7-highspeed": { label: "MiniMax M2.7 Highspeed" },
@@ -42,13 +49,17 @@ const MINIMAX_MODEL_CATALOG = {
 };
 
 const PROVIDER_CATALOG = {
-  openai: { label: "OpenAI" },
-  anthropic: { label: "Anthropic" },
-  xai: { label: "xAI" },
-  minimax: { label: "MiniMax" },
-  ollama: { label: "Ollama" }
+  openai: { label: "OpenAI", status: "primary" },
+  deepseek: { label: "DeepSeek", status: "primary" },
+  anthropic: { label: "Anthropic", status: "primary" },
+  xai: { label: "xAI", status: "primary" },
+  minimax: { label: "MiniMax", status: "deferred" },
+  ollama: { label: "Ollama", status: "deferred_local" }
 };
-const PROVIDER_ORDER = Object.keys(PROVIDER_CATALOG);
+const ALL_PROVIDER_ORDER = Object.keys(PROVIDER_CATALOG);
+const PRIMARY_PROVIDER_ORDER = ALL_PROVIDER_ORDER.filter(function (providerId) {
+  return String(PROVIDER_CATALOG[providerId]?.status || "primary").trim().toLowerCase() === "primary";
+});
 const PROVIDER_CAPABILITY_CATALOG = {
   openai: {
     toolLoop: true,
@@ -59,6 +70,18 @@ const PROVIDER_CAPABILITY_CATALOG = {
     notes: [
       "Responses API path with built-in web search and audited tool loop.",
       "Estimated spend tracking is available."
+    ]
+  },
+  deepseek: {
+    toolLoop: true,
+    webSearch: false,
+    localFiles: true,
+    githubTools: true,
+    costTracking: false,
+    notes: [
+      "OpenAI-compatible chat-completions path is the default in this runtime.",
+      "Anthropic-compatible transport remains available as a fallback.",
+      "Built-in live web search is not wired here yet."
     ]
   },
   anthropic: {
@@ -90,7 +113,8 @@ const PROVIDER_CAPABILITY_CATALOG = {
     githubTools: true,
     costTracking: false,
     notes: [
-      "Anthropic-compatible MiniMax path for messages and client tools.",
+      "MiniMax is intentionally deferred from the primary hosted provider set until its review path is boring and repeatable.",
+      "OpenAI-compatible chat-completions is the active transport, with Anthropic-compatible fallback available only for targeted debugging.",
       "Built-in live web search is not wired here yet."
     ]
   },
@@ -114,6 +138,7 @@ const OLLAMA_MODEL_CATALOG = {
 };
 const PROVIDER_MODEL_CATALOG = {
   openai: MODEL_CATALOG,
+  deepseek: DEEPSEEK_MODEL_CATALOG,
   anthropic: ANTHROPIC_MODEL_CATALOG,
   xai: XAI_MODEL_CATALOG,
   minimax: MINIMAX_MODEL_CATALOG,
@@ -121,7 +146,16 @@ const PROVIDER_MODEL_CATALOG = {
 };
 const PROVIDER_DEFAULT_MODELS = {
   openai: "gpt-5-mini",
+  deepseek: "deepseek-v4-flash",
   anthropic: "claude-sonnet-4-6",
+  xai: "grok-4.20-reasoning",
+  minimax: "MiniMax-M2.7",
+  ollama: "qwen3"
+};
+const PROVIDER_DEFAULT_JUDGE_MODELS = {
+  openai: "gpt-5.4",
+  deepseek: "deepseek-v4-pro",
+  anthropic: "claude-opus-4-7",
   xai: "grok-4.20-reasoning",
   minimax: "MiniMax-M2.7",
   ollama: "qwen3"
@@ -215,10 +249,11 @@ function currentProviderRoutingSource(task, draft) {
 
 function defaultProviderInstanceStatus() {
   const providerGroups = {};
-  Object.keys(PROVIDER_CATALOG).forEach(function (providerId) {
+  ALL_PROVIDER_ORDER.forEach(function (providerId) {
     providerGroups[providerId] = {
       provider: providerId,
       label: PROVIDER_CATALOG[providerId]?.label || providerId,
+      status: providerStatus(providerId),
       writable: true,
       instanceCount: 0,
       instances: [],
@@ -227,7 +262,7 @@ function defaultProviderInstanceStatus() {
   });
   return {
     file: "providers.txt",
-    providerOrder: Object.keys(PROVIDER_CATALOG),
+    providerOrder: ALL_PROVIDER_ORDER.slice(),
     providerGroups: providerGroups,
     storage: "local_file",
     statusNote: ""
@@ -563,7 +598,7 @@ let latestAuthStatus = {
   defaultMode: "env",
   statusNote: "",
   rotationPolicy: null,
-  providerOrder: ["openai", "anthropic", "xai", "minimax"],
+  providerOrder: ALL_PROVIDER_ORDER.slice(),
   providerGroups: {},
   isolationNote: "",
   termsWarning: ""
@@ -598,10 +633,15 @@ let latestState = null;
 let latestHistoryState = null;
 let latestEvalHistory = null;
 let latestCanvasEvalHistory = { eval: null, judge: null };
+let latestScoresRuns = null;
+let lastScoresRenderedRunId = "";
 let sidebarCopyCollapseTargets = [];
 let selectedEvalRunId = localStorage.getItem("loopSelectedEvalRunId") || "";
 let selectedFrontEvalRunId = localStorage.getItem("loopSelectedFrontEvalRunId") || "";
 let selectedFrontJudgeRunId = localStorage.getItem("loopSelectedFrontJudgeRunId") || "";
+let selectedScoresProviderFamily = localStorage.getItem("loopSelectedScoresProviderFamily") || "";
+let selectedScoresRunId = localStorage.getItem("loopSelectedScoresRunId") || "";
+let selectedScoresParaAnswerId = localStorage.getItem("loopSelectedScoresParaAnswerId") || "";
 let frontEvalSelection = safeJsonParse(localStorage.getItem("loopFrontEvalSelection") || "{}", {
   suiteId: "msp-rmm-midnight-malware-push",
   caseId: "rmm-midnight-malware-push",
@@ -647,6 +687,7 @@ const API = {
   providerInstances: "/v1/providers/instances",
   evalArtifact: "/v1/evals/artifact",
   evalHistory: "/v1/evals/history",
+  scoreRuns: "/v1/scores/runs",
   frontLiveRuns: "/v1/front/live/runs",
   frontEvalRuns: "/v1/front/eval/runs",
   frontJudgeRuns: "/v1/front/judge/runs",
@@ -774,6 +815,19 @@ function formatElapsedDuration(startedAt) {
   const remainder = seconds % 60;
   if (minutes <= 0) return remainder + "s";
   return minutes + "m " + String(remainder).padStart(2, "0") + "s";
+}
+
+function formatTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return raw;
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 function escapeHtml(value) {
@@ -964,7 +1018,7 @@ function editableSummarizerSnapshot(summarizer, provider) {
     label: "Main thread",
     provider,
     model: normalizeSelectedModelForProvider(String(base.model || defaultModelForProvider(provider)), provider),
-    harness: normalizeHarnessConfig(base.harness, "balanced")
+    harness: normalizeHarnessConfig(base.harness, "none")
   });
 }
 
@@ -980,7 +1034,7 @@ function mergeWorkerEditorSummarizer(summarizer, override, provider) {
   const base = summarizer && typeof summarizer === "object" ? summarizer : {};
   const extra = override && typeof override === "object" ? override : {};
   const merged = Object.assign({}, base, extra);
-  merged.harness = mergeHarnessOverride(base.harness, extra.harness, "balanced");
+  merged.harness = mergeHarnessOverride(base.harness, extra.harness, "none");
   return editableSummarizerSnapshot(merged, provider);
 }
 
@@ -998,7 +1052,7 @@ function summarizerEditableSignature(summarizer) {
   return JSON.stringify({
     provider: String(summarizer?.provider || "openai"),
     model: String(summarizer?.model || ""),
-    harness: normalizeHarnessConfig(summarizer?.harness, "balanced")
+    harness: normalizeHarnessConfig(summarizer?.harness, "none")
   });
 }
 
@@ -1246,7 +1300,8 @@ function defaultDraftState() {
     githubAllowedRepos: [],
     dynamicSpinupEnabled: false,
     vettingEnabled: true,
-    summarizerHarness: { concision: "balanced", instruction: "" },
+    directHarness: { concision: "none", instruction: "Prefer the most detailed factual response the evidence supports. Be concrete, complete, and explicit about uncertainty." },
+    summarizerHarness: { concision: "none", instruction: "Prefer the most detailed factual response the evidence supports. Be concrete, complete, and explicit about uncertainty." },
     loopRounds: 3,
     loopDelayMs: 1000,
     workers: [
@@ -1933,6 +1988,11 @@ function normalizeProviderId(provider) {
   return PROVIDER_CATALOG[candidate] ? candidate : "openai";
 }
 
+function providerStatus(provider) {
+  const normalized = normalizeProviderId(provider);
+  return String(PROVIDER_CATALOG[normalized]?.status || "primary").trim().toLowerCase() || "primary";
+}
+
 function providerSupportsCustomModel(provider) {
   return normalizeProviderId(provider) !== "openai";
 }
@@ -1940,6 +2000,11 @@ function providerSupportsCustomModel(provider) {
 function defaultModelForProvider(provider) {
   const normalized = normalizeProviderId(provider);
   return PROVIDER_DEFAULT_MODELS[normalized] || PROVIDER_DEFAULT_MODELS.openai;
+}
+
+function defaultJudgeModelForProvider(provider) {
+  const normalized = normalizeProviderId(provider);
+  return PROVIDER_DEFAULT_JUDGE_MODELS[normalized] || defaultModelForProvider(normalized);
 }
 
 function providerModelCatalog(provider) {
@@ -1954,8 +2019,11 @@ function providerModelOrder(provider) {
 function providerCapabilities(provider) {
   const normalized = normalizeProviderId(provider);
   const raw = PROVIDER_CAPABILITY_CATALOG[normalized] || {};
+  const status = providerStatus(normalized);
   return {
     provider: normalized,
+    status: status,
+    primary: status === "primary",
     toolLoop: !!raw.toolLoop,
     webSearch: !!raw.webSearch,
     localFiles: !!raw.localFiles,
@@ -1983,6 +2051,19 @@ function normalizeSelectedModelForProvider(modelId, provider) {
   return defaultModelForProvider(normalizedProvider);
 }
 
+function normalizeSelectedJudgeModelForProvider(modelId, provider) {
+  const normalizedProvider = normalizeProviderId(provider);
+  const candidate = String(modelId || "").trim();
+  const catalog = providerModelCatalog(normalizedProvider);
+  if (candidate && catalog[candidate]) {
+    return candidate;
+  }
+  if (candidate && normalizedProvider === "ollama") {
+    return candidate;
+  }
+  return defaultJudgeModelForProvider(normalizedProvider);
+}
+
 function qualityProfileModelConfig(profileId, provider) {
   const normalizedProvider = normalizeProviderId(provider);
   const defaults = {
@@ -1997,6 +2078,12 @@ function qualityProfileModelConfig(profileId, provider) {
       mid: { workerModel: "gpt-5-mini", summarizerModel: "gpt-5.4-mini" },
       high: { workerModel: "gpt-5.4-mini", summarizerModel: "gpt-5.4" },
       ultra: { workerModel: "gpt-5.4", summarizerModel: "gpt-5.4" }
+    },
+    deepseek: {
+      low: { workerModel: "deepseek-v4-flash", summarizerModel: "deepseek-v4-flash" },
+      mid: { workerModel: "deepseek-v4-flash", summarizerModel: "deepseek-v4-pro" },
+      high: { workerModel: "deepseek-v4-pro", summarizerModel: "deepseek-v4-pro" },
+      ultra: { workerModel: "deepseek-v4-pro", summarizerModel: "deepseek-v4-pro" }
     },
     anthropic: {
       low: { workerModel: "claude-3-5-haiku-latest", summarizerModel: "claude-3-5-haiku-latest" },
@@ -2026,11 +2113,29 @@ function qualityProfileModelConfig(profileId, provider) {
   return (providerModels[normalizedProvider] && providerModels[normalizedProvider][profileId]) || defaults[profileId] || defaults.low;
 }
 
+function providerOptionOrder(selectedValue) {
+  const selectedProvider = normalizeProviderId(selectedValue);
+  const order = PRIMARY_PROVIDER_ORDER.slice();
+  if (selectedProvider && !order.includes(selectedProvider) && PROVIDER_CATALOG[selectedProvider]) {
+    order.push(selectedProvider);
+  }
+  return order;
+}
+
+function providerOptionLabel(providerId) {
+  const normalized = normalizeProviderId(providerId);
+  const label = PROVIDER_CATALOG[normalized]?.label || String(providerId || "Provider");
+  const status = providerStatus(normalized);
+  if (status === "deferred") return label + " (deferred)";
+  if (status === "deferred_local") return label + " (local later)";
+  return label;
+}
+
 function buildProviderOptions(selectedValue) {
   const selectedProvider = normalizeProviderId(selectedValue);
-  return PROVIDER_ORDER.map(function (id) {
+  return providerOptionOrder(selectedProvider).map(function (id) {
     const selected = id === selectedProvider ? " selected" : "";
-    return `<option value="${id}"${selected}>${PROVIDER_CATALOG[id].label}</option>`;
+    return `<option value="${id}"${selected}>${providerOptionLabel(id)}</option>`;
   }).join("");
 }
 
@@ -3093,6 +3198,7 @@ function buildCommanderFormSource(task, draft) {
         JSON.stringify(safeDraft.githubAllowedRepos || []),
         safeDraft.dynamicSpinupEnabled ? 1 : 0,
         safeDraft.vettingEnabled === false ? 0 : 1,
+        JSON.stringify(safeDraft.directHarness || {}),
         JSON.stringify(safeDraft.summarizerHarness || {}),
         safeDraft.loopRounds ?? 3,
         safeDraft.loopDelayMs ?? 1000,
@@ -3140,6 +3246,7 @@ function buildCommanderFormSource(task, draft) {
         JSON.stringify(task.runtime?.githubTools?.repos || []),
         task.runtime?.dynamicSpinup?.enabled ? 1 : 0,
         task.runtime?.vetting?.enabled === false ? 0 : 1,
+        JSON.stringify(task.runtime?.directHarness || {}),
         JSON.stringify(task.summarizer?.harness || {}),
         task.preferredLoop?.rounds ?? 3,
         task.preferredLoop?.delayMs ?? 1000,
@@ -3179,7 +3286,8 @@ function buildCommanderFormSource(task, draft) {
         githubAllowedRepos: task.runtime?.githubTools?.repos || [],
         dynamicSpinupEnabled: task.runtime?.dynamicSpinup?.enabled ? true : false,
         vettingEnabled: task.runtime?.vetting?.enabled === false ? false : true,
-        summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "balanced"),
+        directHarness: normalizeHarnessConfig(task.runtime?.directHarness || defaultDraftState().directHarness, "none"),
+        summarizerHarness: normalizeHarnessConfig(task.summarizer?.harness, "none"),
         loopRounds: task.preferredLoop?.rounds ?? 3,
         loopDelayMs: task.preferredLoop?.delayMs ?? 1000,
         workers: task.workers || []
@@ -3233,6 +3341,12 @@ function applyCommanderForm(values) {
   $("#model").val(workerModel);
   $("#summarizerModel").val(summarizerModel);
   $("#directModel").val(directModel);
+  const directHarness = normalizeHarnessConfig(safe.directHarness || defaultDraftState().directHarness, "none");
+  const summarizerHarness = normalizeHarnessConfig(safe.summarizerHarness || defaultDraftState().summarizerHarness, "none");
+  $("#directHarnessProfile").val(directHarness.concision || "none");
+  $("#directHarnessInstruction").val(directHarness.instruction || "");
+  $("#summarizerHarnessProfile").val(summarizerHarness.concision || "none");
+  $("#summarizerHarnessInstruction").val(summarizerHarness.instruction || "");
   $("#reasoningEffort").val(safe.reasoningEffort || "low");
   $("#maxCostUsd").val(safe.maxCostUsd ?? DEFAULT_RUNTIME_BUDGET.maxCostUsd);
   $("#loopRounds").val(safe.loopRounds ?? 3);
@@ -3281,6 +3395,14 @@ function collectCommanderPayload() {
     summarizerModel: $("#summarizerModel").val(),
     directProvider: $("#directProvider").val(),
     directModel: $("#directModel").val(),
+    directHarness: normalizeHarnessConfig({
+      concision: $("#directHarnessProfile").val(),
+      instruction: $("#directHarnessInstruction").val()
+    }, "none"),
+    summarizerHarness: normalizeHarnessConfig({
+      concision: $("#summarizerHarnessProfile").val(),
+      instruction: $("#summarizerHarnessInstruction").val()
+    }, "none"),
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
     providerRouting: collectProviderRoutingSelection(),
     timeoutMode: normalizeTimeoutMode($("#ollamaTimeoutMode").val()),
@@ -3335,7 +3457,7 @@ function stagedSummarizerSource(draft, task) {
     label: "Main thread",
     provider: String(draft?.summarizerProvider || task?.summarizer?.provider || task?.runtime?.provider || fallback.summarizerProvider || fallback.provider),
     model: String(draft?.summarizerModel || task?.summarizer?.model || task?.runtime?.model || fallback.summarizerModel || fallback.model),
-    harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "balanced")
+    harness: normalizeHarnessConfig(draft?.summarizerHarness || task?.summarizer?.harness || fallback.summarizerHarness, "none")
   };
 }
 
@@ -3369,13 +3491,14 @@ function buildDraftSavePayload(options = {}) {
     : {
         provider: String(payload.summarizerProvider || fallbackSummarizer.provider || payload.provider || "openai"),
         model: String(payload.summarizerModel || payload.model || fallbackSummarizer.model || ""),
-        harness: visibleSummarizer?.harness || fallbackSummarizer.harness
+        harness: payload.summarizerHarness || visibleSummarizer?.harness || fallbackSummarizer.harness
       };
   payload.constraints = JSON.stringify(payload.constraints);
   payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
   payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
-  payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "balanced"));
+  payload.directHarness = JSON.stringify(normalizeHarnessConfig(payload.directHarness, "none"));
+  payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "none"));
   payload.providerRouting = JSON.stringify(normalizeProviderRoutingConfig(payload.providerRouting));
   payload.timeoutMode = normalizeTimeoutMode(payload.timeoutMode);
   payload.ollamaTimeoutProfile = JSON.stringify(normalizeOllamaTimeoutProfile(payload.ollamaTimeoutProfile));
@@ -3395,9 +3518,10 @@ function buildFrontCanvasRuntimePayload() {
     model: String(base.model || ""),
     summarizerProvider: String(summarizerConfig?.provider || base.summarizerProvider || base.provider || "openai"),
     summarizerModel: String(summarizerConfig?.model || base.summarizerModel || base.model || ""),
-    summarizerHarness: normalizeHarnessConfig(summarizerConfig?.harness, "balanced"),
+    summarizerHarness: normalizeHarnessConfig(summarizerConfig?.harness || base.summarizerHarness, "none"),
     directProvider: String(base.directProvider || base.provider || "openai"),
     directModel: String(base.directModel || base.model || ""),
+    directHarness: normalizeHarnessConfig(base.directHarness, "none"),
     ollamaBaseUrl: normalizeOllamaBaseUrl(base.ollamaBaseUrl),
     providerRouting: normalizeProviderRoutingConfig(base.providerRouting),
     timeoutMode: normalizeTimeoutMode(base.timeoutMode),
@@ -5415,7 +5539,7 @@ function renderAuthPoolPreview() {
 function renderAuthStatus(data) {
   const providerOrder = Array.isArray(data?.providerOrder) && data.providerOrder.length
     ? data.providerOrder.map(function (providerId) { return String(providerId || "").trim().toLowerCase(); }).filter(Boolean)
-    : ["openai", "anthropic", "xai", "minimax"];
+    : ALL_PROVIDER_ORDER.slice();
   const rawGroups = data?.providerGroups && typeof data.providerGroups === "object" ? data.providerGroups : {};
   const providerGroups = {};
   providerOrder.forEach(function (providerId) {
@@ -5489,7 +5613,7 @@ function refreshAuth() {
         defaultMode: "env",
         statusNote: "",
         rotationPolicy: null,
-        providerOrder: ["openai", "anthropic", "xai", "minimax"],
+        providerOrder: ALL_PROVIDER_ORDER.slice(),
         providerGroups: {},
         isolationNote: "",
         termsWarning: ""
@@ -6101,12 +6225,12 @@ function renderFrontCanvasCatalogs() {
   populateStaticProviderSelect("#frontEvalJudgeProvider", frontEvalSelection.judgeProvider);
   populateStaticModelSelect(
     "#frontEvalJudgeModel",
-    normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider),
+    normalizeSelectedJudgeModelForProvider(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider),
     frontEvalSelection.judgeProvider
   );
   $("#frontEvalJudgeProvider").val(frontEvalSelection.judgeProvider);
   $("#frontEvalJudgeModel").val(
-    normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider)
+    normalizeSelectedJudgeModelForProvider(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider)
   );
   persistFrontEvalSelection();
 
@@ -6125,12 +6249,12 @@ function renderFrontCanvasCatalogs() {
   populateStaticProviderSelect("#frontJudgeProvider", frontJudgeSelection.judgeProvider);
   populateStaticModelSelect(
     "#frontJudgeModel",
-    normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider),
+    normalizeSelectedJudgeModelForProvider(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider),
     frontJudgeSelection.judgeProvider
   );
   $("#frontJudgeProvider").val(frontJudgeSelection.judgeProvider);
   $("#frontJudgeModel").val(
-    normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider)
+    normalizeSelectedJudgeModelForProvider(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider)
   );
   $("#frontJudgeReplicates").val(Number(frontJudgeSelection.replicates || 1));
   $("#frontJudgeLoopSweep").val(String(frontJudgeSelection.loopSweep || "1"));
@@ -6863,7 +6987,7 @@ function buildWorkerControlFields(worker, isActive) {
 }
 
 function buildSummarizerControlFields(summarizer, isActive) {
-  const harness = normalizeHarnessConfig(summarizer?.harness, "balanced");
+  const harness = normalizeHarnessConfig(summarizer?.harness, "none");
   const provider = normalizeProviderId($("#summarizerProvider").val() || summarizer?.provider || summarizerProviderSource(latestState?.activeTask || null, latestState?.draft || null));
   const $body = $("<div>").addClass("worker-editor-grid");
 
@@ -6926,7 +7050,7 @@ function renderWorkerEditorModal() {
   } else {
     const summarizer = visibleSummarizerSource(draft, task);
     $title.text("Main thread");
-    $meta.text("Lead voice | " + harnessConcisionLabel(summarizer.harness, "balanced") + " | " + modelLabel(summarizer.model, summarizer.provider));
+    $meta.text("Lead voice | " + harnessConcisionLabel(summarizer.harness, "none") + " | " + modelLabel(summarizer.model, summarizer.provider));
     $body.append(buildSummarizerControlFields(summarizer, isActive));
   }
   syncWorkerEditorModalVisibility();
@@ -6970,7 +7094,7 @@ function syncWorkerEditorOverrideFromModalFields() {
     setWorkerEditorSummarizerOverride({
       model: String($("#workerEditorBody .summarizer-model-draft").val() || ""),
         harness: {
-        concision: String($("#workerEditorBody .summarizer-harness-profile").val() || "balanced"),
+        concision: String($("#workerEditorBody .summarizer-harness-profile").val() || "none"),
         instruction: String($("#workerEditorBody .summarizer-harness-instruction").val() || "").trim()
       }
     });
@@ -7357,7 +7481,7 @@ function buildWorkerControlCard(worker, isActive, status) {
 }
 
 function buildSummarizerControlCard(summarizer, isActive, status) {
-  const harness = normalizeHarnessConfig(summarizer?.harness, "balanced");
+  const harness = normalizeHarnessConfig(summarizer?.harness, "none");
   const $card = $("<div>")
     .addClass("workercontrol workercontrol-modal-card summarizer-control-card " + statusClassName(status))
     .attr("data-position-id", "summarizer");
@@ -7372,7 +7496,7 @@ function buildSummarizerControlCard(summarizer, isActive, status) {
   $summaryMain.append($("<div>").addClass("workercontrol-title").text("Main thread"));
   $summaryMain.append(
     $("<div>").addClass("workercontrol-meta").text(
-      "Lead voice | " + harnessConcisionLabel(harness, "balanced") + " | " + modelLabel(summarizer?.model || "gpt-5-mini", summarizer?.provider)
+      "Lead voice | " + harnessConcisionLabel(harness, "none") + " | " + modelLabel(summarizer?.model || "gpt-5-mini", summarizer?.provider)
     )
   );
   $summary.append($summaryMain);
@@ -8336,6 +8460,287 @@ function renderFrontEvalPane(options) {
   `;
 }
 
+function persistScoresRunSelection() {
+  localStorage.setItem("loopSelectedScoresRunId", selectedScoresRunId || "");
+}
+
+function persistScoresProviderSelection() {
+  localStorage.setItem("loopSelectedScoresProviderFamily", selectedScoresProviderFamily || "");
+}
+
+function persistScoresParaSelection() {
+  localStorage.setItem("loopSelectedScoresParaAnswerId", selectedScoresParaAnswerId || "");
+}
+
+function defaultScoresParaAnswerIdForRun(run) {
+  const lanes = run?.lanes && typeof run.lanes === "object" ? run.lanes : {};
+  const options = Array.isArray(lanes.paraOptions) ? lanes.paraOptions : [];
+  const preferred = String(lanes.defaultParaAnswerId || "").trim();
+  if (preferred && options.some(function (entry) { return String(entry?.answerId || "") === preferred; })) {
+    return preferred;
+  }
+  return String(options[0]?.answerId || "").trim();
+}
+
+function selectedScoresParaLane(run) {
+  const lanes = run?.lanes && typeof run.lanes === "object" ? run.lanes : {};
+  const options = Array.isArray(lanes.paraOptions) ? lanes.paraOptions : [];
+  const selectedId = String(selectedScoresParaAnswerId || "").trim();
+  const selected = options.find(function (entry) {
+    return String(entry?.answerId || "") === selectedId;
+  });
+  return selected || options[0] || null;
+}
+
+function renderScoresRunMeta(run) {
+  if (!run) {
+    return "Pick a judged run to inspect prompt and output shape.";
+  }
+  const answerProviders = Array.isArray(run?.answerProviders) ? run.answerProviders.filter(Boolean) : [];
+  const bits = [
+    String(run.judgeSystem || "").trim(),
+    providerLabel(run?.judge?.provider || run?.providerFamily || ""),
+    modelLabel(run?.judge?.model || "", run?.judge?.provider || run?.providerFamily || ""),
+    answerProviders.length ? ("answers " + answerProviders.map(function (provider) { return providerLabel(provider); }).join(", ")) : "",
+    run?.bestFinalAnswer?.label ? ("best final " + String(run.bestFinalAnswer.label || "")) : "",
+    run?.bestTacticalDetail?.label ? ("best tactical " + String(run.bestTacticalDetail.label || "")) : "",
+    run?.advantageSummary?.band ? ("advantage " + String(run.advantageSummary.band || "")) : ""
+  ].filter(Boolean);
+  return bits.join(" | ") || "Scored run loaded.";
+}
+
+function renderScoresLane(lane, tone, options = {}) {
+  if (!lane) {
+    return `<section class="scores-lane ${escapeHtml(tone || "")}"><div class="review-empty">No lane data available.</div></section>`;
+  }
+  const metaBits = (options.metaBits || []).filter(Boolean);
+  const laneOutcome = String(options.laneOutcome || "").trim().toLowerCase();
+  const outcomeClass = laneOutcome ? (" is-" + laneOutcome) : "";
+  return `
+    <section class="scores-lane ${escapeHtml((tone || "") + outcomeClass)}">
+      <div class="scores-lane-head">
+        <div class="scores-lane-title">${escapeHtml(options.title || lane.label || "Lane")}</div>
+        ${metaBits.length ? `<div class="scores-lane-meta">${escapeHtml(metaBits.join(" | "))}</div>` : ""}
+      </div>
+      <div class="scores-lane-content">
+        <div class="scores-turn">
+          <div class="scores-bubble-label">Prompt</div>
+          <div class="scores-turn-body">${escapeHtml(String(lane.promptText || "").trim() || "No prompt recorded.")}</div>
+        </div>
+        <div class="scores-turn">
+          <div class="scores-bubble-label">Response</div>
+          <div class="scores-turn-body">${escapeHtml(String(lane.responseText || "").trim() || "No response captured.")}</div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderScoresJudgeTrace(run) {
+  const trace = run?.judgeTrace && typeof run.judgeTrace === "object" ? run.judgeTrace : null;
+  if (!trace) return "";
+  const sections = [];
+  const rawResponse = String(trace.rawResponseText || "").trim();
+  const logText = String(trace.logText || "").trim();
+  if (rawResponse) {
+    sections.push(`
+      <div class="scores-turn">
+        <div class="scores-bubble-label">Judge raw response</div>
+        <div class="scores-turn-body">${escapeHtml(rawResponse)}</div>
+      </div>
+    `);
+  }
+  if (logText) {
+    sections.push(`
+      <div class="scores-turn">
+        <div class="scores-bubble-label">Judge log</div>
+        <div class="scores-turn-body">${escapeHtml(logText)}</div>
+      </div>
+    `);
+  }
+  if (!sections.length) return "";
+  const metaBits = [
+    trace?.responseId ? ("response " + String(trace.responseId || "")) : "",
+    trace?.sourceManifest ? "manifest recorded" : ""
+  ].filter(Boolean);
+  return `
+    <section class="scores-trace-panel">
+      <div class="scores-lane-head">
+        <div class="scores-lane-title">Judge trace</div>
+        ${metaBits.length ? `<div class="scores-lane-meta">${escapeHtml(metaBits.join(" | "))}</div>` : ""}
+      </div>
+      <div class="scores-lane-content">
+        ${sections.join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderScoresRunDetail(run) {
+  if (!run) {
+    return `<div class="review-empty">Pick a judged run to inspect the Para, Direct, and Judge lanes.</div>`;
+  }
+  const paraLane = selectedScoresParaLane(run);
+  const directLane = run?.lanes?.direct || null;
+  const judgeLane = run?.lanes?.judge || null;
+  const bestFinalAnswerId = String(run?.bestFinalAnswer?.answerId || "").trim();
+  const hasComparableWinner = !!bestFinalAnswerId && (
+    String(paraLane?.answerId || "").trim() === bestFinalAnswerId
+    || String(directLane?.answerId || "").trim() === bestFinalAnswerId
+  );
+  const paraOutcome = hasComparableWinner
+    ? (String(paraLane?.answerId || "").trim() === bestFinalAnswerId ? "winner" : "loser")
+    : "";
+  const directOutcome = hasComparableWinner
+    ? (String(directLane?.answerId || "").trim() === bestFinalAnswerId ? "winner" : "loser")
+    : "";
+  const summaryBits = [
+    Array.isArray(run?.answerProviders) && run.answerProviders.length
+      ? ("Answer pack: " + run.answerProviders.map(function (provider) { return providerLabel(provider); }).join(", "))
+      : "",
+    run?.bestFinalAnswer?.label ? ("Best final: " + String(run.bestFinalAnswer.label || "")) : "",
+    run?.bestTacticalDetail?.label ? ("Best tactical: " + String(run.bestTacticalDetail.label || "")) : "",
+    run?.advantageSummary?.band ? ("Measured advantage: " + String(run.advantageSummary.band || "")) : ""
+  ].filter(Boolean);
+  const paraMeta = [
+    providerLabel(paraLane?.provider || ""),
+    modelLabel(paraLane?.model || "", paraLane?.provider || ""),
+    paraLane?.overall != null ? ("overall " + Number(paraLane.overall).toFixed(1)) : "",
+    paraLane?.elapsedSeconds != null ? ("elapsed " + String(paraLane.elapsedSeconds) + "s") : ""
+  ].filter(Boolean);
+  const directMeta = [
+    providerLabel(directLane?.provider || ""),
+    modelLabel(directLane?.model || "", directLane?.provider || ""),
+    directLane?.overall != null ? ("overall " + Number(directLane.overall).toFixed(1)) : ""
+  ].filter(Boolean);
+  const judgeMeta = [
+    providerLabel(judgeLane?.provider || ""),
+    modelLabel(judgeLane?.model || "", judgeLane?.provider || ""),
+    String(run.judgeSystem || "").trim()
+  ].filter(Boolean);
+  return `
+    <div class="scores-run-summary">
+      <div class="scores-run-title">${escapeHtml(String(run.title || "Scored run"))}</div>
+      ${summaryBits.length ? `<div class="scores-run-meta">${escapeHtml(summaryBits.join(" | "))}</div>` : ""}
+    </div>
+    <div class="scores-lane-grid">
+      ${renderScoresLane(paraLane, "primary", {
+        title: "Para",
+        metaBits: paraMeta,
+        laneOutcome: paraOutcome
+      })}
+      ${renderScoresLane(directLane, "secondary", {
+        title: "Direct",
+        metaBits: directMeta,
+        laneOutcome: directOutcome
+      })}
+      ${renderScoresLane(judgeLane, "accent", {
+        title: "Judge",
+        metaBits: judgeMeta
+      })}
+    </div>
+    ${renderScoresJudgeTrace(run)}
+  `;
+}
+
+function syncScoresRunControls(payload) {
+  const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+  const $runSelect = $("#scoresRunSelect");
+  const $providerSelect = $("#scoresProviderSelect");
+  if (!$runSelect.length || !$providerSelect.length) return;
+  const providerFamilies = Array.from(new Set(
+    runs
+      .map(function (run) { return String(run?.judgeProvider || run?.providerFamily || "").trim(); })
+      .filter(Boolean)
+  ));
+  if (!selectedScoresProviderFamily || (selectedScoresProviderFamily !== "all" && providerFamilies.indexOf(selectedScoresProviderFamily) === -1)) {
+    selectedScoresProviderFamily = providerFamilies[0] || "all";
+    persistScoresProviderSelection();
+  }
+  const providerOptions = [`<option value="all">All providers</option>`].concat(
+    providerFamilies.map(function (family) {
+      return `<option value="${escapeHtml(family)}">${escapeHtml(providerLabel(family))}</option>`;
+    })
+  ).join("");
+  $providerSelect.html(providerOptions);
+  $providerSelect.val(selectedScoresProviderFamily || "all");
+  const filteredRuns = (selectedScoresProviderFamily && selectedScoresProviderFamily !== "all")
+    ? runs.filter(function (run) { return String(run?.judgeProvider || run?.providerFamily || "").trim() === selectedScoresProviderFamily; })
+    : runs.slice();
+  let effectiveRunId = String(payload?.selectedRunId || selectedScoresRunId || "").trim();
+  if (!effectiveRunId || !filteredRuns.some(function (run) { return String(run?.runId || "") === effectiveRunId; })) {
+    effectiveRunId = String(filteredRuns[0]?.runId || "").trim();
+  }
+  const selectedRun = payload?.selectedRun && typeof payload.selectedRun === "object" ? payload.selectedRun : null;
+  if (effectiveRunId && String(selectedRun?.runId || "") !== effectiveRunId) {
+    selectedScoresRunId = effectiveRunId;
+    persistScoresRunSelection();
+    refreshScoresRuns(effectiveRunId);
+    return;
+  }
+  const options = filteredRuns.map(function (run) {
+    const answerProviders = Array.isArray(run?.answerProviders) ? run.answerProviders.filter(Boolean) : [];
+    const labelBits = [
+      String(run.title || "Scored run"),
+      (run.judgeProvider || run.providerFamily) ? providerLabel(run.judgeProvider || run.providerFamily) : "",
+      answerProviders.length ? ("answers " + answerProviders.map(function (provider) { return providerLabel(provider); }).join(", ")) : "",
+      run.judgeSystem ? String(run.judgeSystem) : "",
+      run.createdAt ? formatTimestamp(run.createdAt) : ""
+    ].filter(Boolean);
+    return `<option value="${escapeHtml(String(run.runId || ""))}">${escapeHtml(labelBits.join(" | "))}</option>`;
+  }).join("");
+  $runSelect.html(options || `<option value="">No scored runs</option>`);
+  if (effectiveRunId) {
+    $runSelect.val(effectiveRunId);
+  }
+  $("#scoresRunMeta").text(renderScoresRunMeta(selectedRun));
+  const paraOptions = Array.isArray(selectedRun?.lanes?.paraOptions) ? selectedRun.lanes.paraOptions : [];
+  const defaultParaAnswerId = defaultScoresParaAnswerIdForRun(selectedRun);
+  const renderedRunId = String(selectedRun?.runId || "").trim();
+  const runChanged = !!renderedRunId && renderedRunId !== String(lastScoresRenderedRunId || "").trim();
+  if (runChanged) {
+    selectedScoresParaAnswerId = defaultParaAnswerId;
+    persistScoresParaSelection();
+  } else if (!selectedScoresParaAnswerId || !paraOptions.some(function (entry) { return String(entry?.answerId || "") === String(selectedScoresParaAnswerId || ""); })) {
+    selectedScoresParaAnswerId = defaultParaAnswerId;
+    persistScoresParaSelection();
+  }
+  const $paraSelect = $("#scoresParaSelect");
+  const paraMarkup = paraOptions.map(function (entry) {
+    const bits = [
+      String(entry?.label || "Para"),
+      entry?.overall != null ? ("overall " + Number(entry.overall).toFixed(1)) : "",
+      entry?.model ? modelLabel(entry.model, entry.provider || "") : ""
+    ].filter(Boolean);
+    return `<option value="${escapeHtml(String(entry?.answerId || ""))}">${escapeHtml(bits.join(" | "))}</option>`;
+  }).join("");
+  $paraSelect.html(paraMarkup || `<option value="">No Para variants</option>`);
+  if (selectedScoresParaAnswerId) {
+    $paraSelect.val(selectedScoresParaAnswerId);
+  }
+  $("#scoresRunDetail").html(renderScoresRunDetail(selectedRun));
+  lastScoresRenderedRunId = renderedRunId;
+}
+
+function refreshScoresRuns(runId) {
+  const effectiveRunId = String(runId || selectedScoresRunId || "").trim();
+  $.getJSON(apiRoute(API.scoreRuns), effectiveRunId ? { runId: effectiveRunId } : {})
+    .done(function (data) {
+      latestScoresRuns = data || {};
+      if (data?.selectedRunId) {
+        selectedScoresRunId = String(data.selectedRunId || "");
+        persistScoresRunSelection();
+      }
+      syncScoresRunControls(data || {});
+    })
+    .fail(function (xhr) {
+      latestScoresRuns = null;
+      $("#scoresRunMeta").text("Scores run load failed.");
+      $("#scoresRunDetail").html(`<div class="review-empty">Scores run load failed.</div>`);
+      showMessage("Scores run load failed: " + extractErrorMessage(xhr), true);
+    });
+}
+
 function renderFrontEvalTechnical(task, summary, directBaseline, workerState, loop, state, checkpoints) {
   const { pressurizedEntry, baselineEntry } = buildFrontEvalAnswerEntries(task, summary, directBaseline, state);
   const arbiter = state?.arbiter && typeof state.arbiter === "object" ? state.arbiter : null;
@@ -9154,6 +9559,14 @@ function applyCurrentRuntimeSettings(successText = "Current task runtime updated
     directBaselineMode: normalizeDirectBaselineMode($("#directBaselineMode").val()),
     directProvider: $("#directProvider").val(),
     directModel: $("#directModel").val(),
+    directHarness: JSON.stringify(normalizeHarnessConfig({
+      concision: $("#directHarnessProfile").val(),
+      instruction: $("#directHarnessInstruction").val()
+    }, "none")),
+    summarizerHarness: JSON.stringify(normalizeHarnessConfig({
+      concision: $("#summarizerHarnessProfile").val(),
+      instruction: $("#summarizerHarnessInstruction").val()
+    }, "none")),
     ollamaBaseUrl: normalizeOllamaBaseUrl($("#ollamaBaseUrl").val()),
     providerRouting: JSON.stringify(collectProviderRoutingSelection()),
     timeoutMode: normalizeTimeoutMode($("#ollamaTimeoutMode").val()),
@@ -9236,6 +9649,9 @@ function setActiveView(viewName) {
   localStorage.setItem("loopActiveView", normalized);
   $(".nav-btn").removeClass("active").filter(`[data-view="${normalized}"]`).addClass("active");
   $(".workspace-view").removeClass("active").filter(`[data-view="${normalized}"]`).addClass("active");
+  if (normalized === "scores" && !latestScoresRuns) {
+    refreshScoresRuns(selectedScoresRunId);
+  }
 }
 
 function normalizeFrontCanvas(value) {
@@ -9330,15 +9746,16 @@ $(function () {
   populateStaticProviderSelect("#frontJudgeProvider", normalizeProviderId(frontJudgeSelection.judgeProvider || "openai"));
   populateStaticModelSelect(
     "#frontEvalJudgeModel",
-    normalizeSelectedModelForProvider(frontEvalSelection.judgeModel || defaultModelForProvider(normalizeProviderId(frontEvalSelection.judgeProvider || "openai")), normalizeProviderId(frontEvalSelection.judgeProvider || "openai")),
+    normalizeSelectedJudgeModelForProvider(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(normalizeProviderId(frontEvalSelection.judgeProvider || "openai")), normalizeProviderId(frontEvalSelection.judgeProvider || "openai")),
     normalizeProviderId(frontEvalSelection.judgeProvider || "openai")
   );
   populateStaticModelSelect(
     "#frontJudgeModel",
-    normalizeSelectedModelForProvider(frontJudgeSelection.judgeModel || defaultModelForProvider(normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")), normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")),
+    normalizeSelectedJudgeModelForProvider(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")), normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")),
     normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")
   );
   refreshProviderInstances();
+  refreshScoresRuns(selectedScoresRunId);
   refreshState();
   setInterval(refreshState, 2000);
 
@@ -9557,27 +9974,27 @@ $(function () {
 
   $("#frontEvalJudgeProvider").on("change", function () {
     frontEvalSelection.judgeProvider = normalizeProviderId($(this).val() || "openai");
-    frontEvalSelection.judgeModel = normalizeSelectedModelForProvider($("#frontEvalJudgeModel").val(), frontEvalSelection.judgeProvider);
-    populateStaticModelSelect("#frontEvalJudgeModel", frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider), frontEvalSelection.judgeProvider);
-    $("#frontEvalJudgeModel").val(frontEvalSelection.judgeModel || defaultModelForProvider(frontEvalSelection.judgeProvider));
+    frontEvalSelection.judgeModel = defaultJudgeModelForProvider(frontEvalSelection.judgeProvider);
+    populateStaticModelSelect("#frontEvalJudgeModel", frontEvalSelection.judgeModel, frontEvalSelection.judgeProvider);
+    $("#frontEvalJudgeModel").val(frontEvalSelection.judgeModel);
     persistFrontEvalSelection();
   });
 
   $("#frontEvalJudgeModel").on("change", function () {
-    frontEvalSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), frontEvalSelection.judgeProvider || "openai");
+    frontEvalSelection.judgeModel = normalizeSelectedJudgeModelForProvider($(this).val(), frontEvalSelection.judgeProvider || "openai");
     persistFrontEvalSelection();
   });
 
   $("#frontJudgeProvider").on("change", function () {
     frontJudgeSelection.judgeProvider = normalizeProviderId($(this).val() || "openai");
-    frontJudgeSelection.judgeModel = normalizeSelectedModelForProvider($("#frontJudgeModel").val(), frontJudgeSelection.judgeProvider);
-    populateStaticModelSelect("#frontJudgeModel", frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider), frontJudgeSelection.judgeProvider);
-    $("#frontJudgeModel").val(frontJudgeSelection.judgeModel || defaultModelForProvider(frontJudgeSelection.judgeProvider));
+    frontJudgeSelection.judgeModel = defaultJudgeModelForProvider(frontJudgeSelection.judgeProvider);
+    populateStaticModelSelect("#frontJudgeModel", frontJudgeSelection.judgeModel, frontJudgeSelection.judgeProvider);
+    $("#frontJudgeModel").val(frontJudgeSelection.judgeModel);
     persistFrontJudgeSelection();
   });
 
   $("#frontJudgeModel").on("change", function () {
-    frontJudgeSelection.judgeModel = normalizeSelectedModelForProvider($(this).val(), frontJudgeSelection.judgeProvider || "openai");
+    frontJudgeSelection.judgeModel = normalizeSelectedJudgeModelForProvider($(this).val(), frontJudgeSelection.judgeProvider || "openai");
     persistFrontJudgeSelection();
   });
 
@@ -9591,12 +10008,42 @@ $(function () {
     persistFrontJudgeSelection();
   });
 
+  $("#scoresRunSelect").on("change", function () {
+    selectedScoresRunId = String($(this).val() || "");
+    selectedScoresParaAnswerId = "";
+    lastScoresRenderedRunId = "";
+    persistScoresRunSelection();
+    persistScoresParaSelection();
+    refreshScoresRuns(selectedScoresRunId);
+  });
+
+  $("#scoresProviderSelect").on("change", function () {
+    selectedScoresProviderFamily = String($(this).val() || "all");
+    selectedScoresRunId = "";
+    selectedScoresParaAnswerId = "";
+    lastScoresRenderedRunId = "";
+    persistScoresProviderSelection();
+    persistScoresRunSelection();
+    persistScoresParaSelection();
+    syncScoresRunControls(latestScoresRuns || {});
+  });
+
+  $("#scoresParaSelect").on("change", function () {
+    selectedScoresParaAnswerId = String($(this).val() || "");
+    persistScoresParaSelection();
+    syncScoresRunControls(latestScoresRuns || {});
+  });
+
+  $("#loadScoresRun").on("click", function () {
+    refreshScoresRuns(selectedScoresRunId);
+  });
+
   $("#runFrontEval").on("click", function () {
     const payload = Object.assign({}, buildFrontCanvasRuntimePayload(), {
       suiteId: String(frontEvalSelection.suiteId || ""),
       caseId: String(frontEvalSelection.caseId || ""),
       judgeProvider: String(frontEvalSelection.judgeProvider || "openai"),
-      judgeModel: String(frontEvalSelection.judgeModel || "gpt-5.4")
+      judgeModel: String(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(frontEvalSelection.judgeProvider || "openai"))
     });
     postJson(API.frontEvalRuns, payload, "Front eval queued", {
       manualDispatch: "Front eval",
@@ -9614,7 +10061,7 @@ $(function () {
       suiteIds: frontJudgeSelection.suiteIds || [],
       armIds: frontJudgeSelection.armIds || [],
       judgeProvider: String(frontJudgeSelection.judgeProvider || "openai"),
-      judgeModel: String(frontJudgeSelection.judgeModel || "gpt-5.4"),
+      judgeModel: String(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(frontJudgeSelection.judgeProvider || "openai")),
       replicates: Math.max(1, parseInt(frontJudgeSelection.replicates, 10) || 1),
       loopSweep: splitCommaList(frontJudgeSelection.loopSweep || "1")
     });
@@ -9716,7 +10163,7 @@ $(function () {
     queueDraftSave();
   });
 
-  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #ollamaBaseUrl, #ollamaTimeoutMode, #ollamaRoutingMode, #ollamaJudgeMode, #reasoningEffort, #maxCostUsd, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
+  $("#sessionContext, #objective, #constraints, #executionMode, #frontMode, #contextMode, #directBaselineMode, #model, #summarizerModel, #directModel, #directHarnessProfile, #directHarnessInstruction, #summarizerHarnessProfile, #summarizerHarnessInstruction, #ollamaBaseUrl, #ollamaTimeoutMode, #ollamaRoutingMode, #ollamaJudgeMode, #reasoningEffort, #maxCostUsd, #loopRounds, #loopDelayMs, #researchEnabled, #researchExternalWebAccess, #localFilesEnabled, #localFileRoots, #githubToolsEnabled, #githubAllowedRepos, #dynamicSpinupEnabled, #vettingEnabled, #researchDomains").on("input change", function () {
     syncDirectBaselineFields();
     syncOllamaBaseUrlField();
     formDirty = true;
@@ -9822,12 +10269,13 @@ $(function () {
       summarizerModel: summarizerConfig.model || payload.summarizerModel,
       directProvider: payload.directProvider || payload.provider,
       directModel: payload.directModel || payload.model,
+      directHarness: JSON.stringify(normalizeHarnessConfig(payload.directHarness, "none")),
       ollamaBaseUrl: payload.ollamaBaseUrl,
       providerRouting: normalizeProviderRoutingConfig(payload.providerRouting),
       timeoutMode: normalizeTimeoutMode(payload.timeoutMode),
       ollamaTimeoutProfile: JSON.stringify(normalizeOllamaTimeoutProfile(payload.ollamaTimeoutProfile)),
       targetTimeouts: JSON.stringify(storedTargetTimeoutsSource(latestState?.activeTask || null, latestState?.draft || null)),
-      summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "balanced")),
+      summarizerHarness: JSON.stringify(normalizeHarnessConfig(summarizerConfig.harness, "none")),
       reasoningEffort: payload.reasoningEffort,
       maxCostUsd: payload.maxCostUsd,
       loopRounds: payload.loopRounds,

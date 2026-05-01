@@ -7,6 +7,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from backend.app import model_capacities
 from runtime.engine import (
     DEFAULT_MODEL_ID,
     DEFAULT_PROVIDER_ID,
@@ -18,11 +19,13 @@ from runtime.engine import (
     default_engine_graph,
     default_engine_version,
     default_direct_baseline_mode,
+    default_direct_harness,
     default_front_mode,
     default_model_for_provider,
     default_ollama_base_url,
     default_ollama_timeout_profile,
     default_provider_routing_config,
+    default_summarizer_harness,
     default_timeout_mode,
     default_target_timeout_config,
     clamp_timeout_seconds,
@@ -36,6 +39,7 @@ from runtime.engine import (
     normalize_dynamic_spinup_config,
     normalize_front_mode,
     normalize_github_tool_config,
+    normalize_harness_config,
     normalize_model_id,
     normalize_ollama_base_url,
     normalize_provider_id,
@@ -268,6 +272,14 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     current_target_timeouts = normalize_target_timeout_config(
         runtime_config.get("targetTimeouts") if isinstance(runtime_config.get("targetTimeouts"), dict) else default_target_timeout_config()
     )
+    current_direct_harness = normalize_harness_config(
+        runtime_config.get("directHarness", default_direct_harness()),
+        default_direct_harness()["concision"],
+    )
+    current_summarizer_harness = normalize_harness_config(
+        ((active_task.get("summarizer") or {}) if isinstance(active_task.get("summarizer"), dict) else {}).get("harness", default_summarizer_harness()),
+        default_summarizer_harness()["concision"],
+    )
     provider = normalize_provider_id(str(payload.get("provider") or current_provider), current_provider)
     summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider") or current_summarizer_provider), provider)
     model = normalize_model_id(
@@ -300,6 +312,14 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     timeout_mode = normalize_timeout_mode(payload.get("timeoutMode", current_timeout_mode), current_timeout_mode)
     ollama_timeout_profile = normalize_ollama_timeout_profile(
         control._parse_json_like(payload.get("ollamaTimeoutProfile"), current_ollama_timeout_profile)
+    )
+    direct_harness = normalize_harness_config(
+        control._parse_json_like(payload.get("directHarness"), current_direct_harness),
+        default_direct_harness()["concision"],
+    )
+    summarizer_harness = normalize_harness_config(
+        control._parse_json_like(payload.get("summarizerHarness"), current_summarizer_harness),
+        default_summarizer_harness()["concision"],
     )
     target_timeouts_input = control._parse_json_like(payload.get("targetTimeouts"), current_target_timeouts)
     target_timeouts = normalize_target_timeout_config(
@@ -374,6 +394,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["directBaselineMode"] = direct_baseline_mode
         task_runtime["directProvider"] = direct_provider
         task_runtime["directModel"] = direct_model
+        task_runtime["directHarness"] = direct_harness
         task_runtime["ollamaBaseUrl"] = ollama_base_url
         task_runtime["timeoutMode"] = timeout_mode
         task_runtime["ollamaTimeoutProfile"] = ollama_timeout_profile
@@ -390,6 +411,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         summary = summarizer_config(task)
         summary["provider"] = summarizer_provider
         summary["model"] = summarizer_model
+        summary["harness"] = summarizer_harness
         task["summarizer"] = summary
         task_runtime["enginePlan"] = compile_engine_graph(engine_graph, task=task, runtime_config=task_runtime)
         state_next["activeTask"] = task
@@ -430,6 +452,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "githubAllowedRepos": github_tools["repos"],
                 "dynamicSpinupEnabled": dynamic_spinup["enabled"],
                 "vettingEnabled": vetting["enabled"],
+                "directHarness": direct_harness,
+                "summarizerHarness": summarizer_harness,
                 "loopRounds": preferred_loop["rounds"],
                 "loopDelayMs": preferred_loop["delayMs"],
                 "updatedAt": utc_now(),
@@ -456,6 +480,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "directHarness": direct_harness,
+            "summarizerHarness": summarizer_harness,
             "ollamaBaseUrl": ollama_base_url,
             "timeoutMode": timeout_mode,
             "ollamaTimeoutProfile": ollama_timeout_profile,
@@ -486,6 +512,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
         "directModel": direct_model,
+        "directHarness": direct_harness,
+        "summarizerHarness": summarizer_harness,
         "ollamaBaseUrl": ollama_base_url,
         "timeoutMode": timeout_mode,
         "ollamaTimeoutProfile": ollama_timeout_profile,
@@ -507,6 +535,41 @@ def _ollama_generate_url(base_url: str) -> str:
     if lowered.endswith("/api"):
         return normalized.rstrip("/") + "/generate"
     return normalized.rstrip("/") + "/api/generate"
+
+
+def _ollama_tags_url(base_url: str) -> str:
+    normalized = normalize_ollama_base_url(base_url)
+    lowered = normalized.rstrip("/").lower()
+    if lowered.endswith("/api"):
+        return normalized.rstrip("/") + "/tags"
+    return normalized.rstrip("/") + "/api/tags"
+
+
+def _normalize_ollama_tag_model(entry: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict):
+        return None
+    name = str(entry.get("name") or "").strip()
+    if not name:
+        return None
+    details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
+    family = str(details.get("family") or "").strip()
+    parameter_size = str(details.get("parameter_size") or "").strip()
+    quantization = str(details.get("quantization_level") or "").strip()
+    digest = str(entry.get("digest") or "").strip()
+    capacity = model_capacities.resolve_model_capacity("ollama", name)
+    return {
+        "name": name,
+        "model": name,
+        "digest": digest or None,
+        "sizeBytes": int(entry.get("size") or 0) if str(entry.get("size") or "").strip() else 0,
+        "modifiedAt": str(entry.get("modified_at") or "").strip() or None,
+        "format": str(details.get("format") or "").strip() or None,
+        "family": family or None,
+        "families": [str(item).strip() for item in (details.get("families") if isinstance(details.get("families"), list) else []) if str(item).strip()],
+        "parameterSize": parameter_size or None,
+        "quantizationLevel": quantization or None,
+        "capacity": capacity or None,
+    }
 
 
 def _build_task_from_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
@@ -535,6 +598,7 @@ def _build_task_from_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
                 default_model_for_provider(normalize_provider_id(normalized.get("directProvider"), provider)),
                 normalize_provider_id(normalized.get("directProvider"), provider),
             ),
+            "directHarness": normalize_harness_config(normalized.get("directHarness"), default_direct_harness()["concision"]),
             "ollamaBaseUrl": normalize_ollama_base_url(normalized.get("ollamaBaseUrl", default_ollama_base_url())),
             "timeoutMode": normalize_timeout_mode(normalized.get("timeoutMode", default_timeout_mode()), default_timeout_mode()),
             "ollamaTimeoutProfile": normalize_ollama_timeout_profile(normalized.get("ollamaTimeoutProfile", default_ollama_timeout_profile())),
@@ -543,6 +607,7 @@ def _build_task_from_draft(draft: Dict[str, Any]) -> Dict[str, Any]:
         "summarizer": {
             "provider": summarizer_provider,
             "model": normalize_model_id(normalized.get("summarizerModel"), default_model_for_provider(summarizer_provider), summarizer_provider),
+            "harness": normalize_harness_config(normalized.get("summarizerHarness"), default_summarizer_harness()["concision"]),
         },
         "workers": task_workers(
             {
@@ -737,6 +802,47 @@ def benchmark_ollama_timeouts(payload: Dict[str, Any], root: Optional[Path] = No
         "ollamaTimeoutProfile": profile,
         "targetTimeouts": derived_timeouts,
         "benchmarkedModels": unique_models,
+    }
+
+
+def check_ollama_models(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
+    runtime = _runtime(root)
+    state = storage.read_state_payload(storage.project_paths(runtime.root))
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    runtime_config = (active_task.get("runtime") if isinstance(active_task, dict) and isinstance(active_task.get("runtime"), dict) else {}) or {}
+    draft = control.normalize_draft_state(state.get("draft") if isinstance(state.get("draft"), dict) else {})
+    base_url = normalize_ollama_base_url(
+        payload.get(
+            "ollamaBaseUrl",
+            runtime_config.get("ollamaBaseUrl", draft.get("ollamaBaseUrl", default_ollama_base_url())),
+        )
+    )
+    request = urllib.request.Request(
+        _ollama_tags_url(base_url),
+        headers={"Content-Type": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as handle:
+            response = json.loads(handle.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeErrorWithCode(f"Ollama model check failed: {exc}", 502) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeErrorWithCode(f"Ollama model check failed: {exc}", 500) from exc
+
+    raw_models = response.get("models") if isinstance(response, dict) else []
+    models = []
+    for entry in raw_models if isinstance(raw_models, list) else []:
+        normalized = _normalize_ollama_tag_model(entry)
+        if normalized is not None:
+            models.append(normalized)
+    models.sort(key=lambda item: str(item.get("name") or "").lower())
+    return {
+        "message": "Ollama models retrieved.",
+        "ollamaBaseUrl": base_url,
+        "count": len(models),
+        "models": models,
+        "rawModelCount": len(raw_models) if isinstance(raw_models, list) else 0,
     }
 
 

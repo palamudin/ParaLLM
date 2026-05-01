@@ -383,14 +383,48 @@ class LoopJobTests(unittest.TestCase):
         self.assertIn("loop.execute.before_target.commander", str(ctx.exception))
         paths = storage.project_paths(self.root)
         updated_state = storage.read_state_payload(paths)
-        self.assertEqual(updated_state["loop"]["status"], "error")
-        self.assertIn("Loop error:", updated_state["loop"]["lastMessage"])
+        self.assertEqual(updated_state["loop"]["status"], "idle")
+        self.assertIn("Ready after blocker failure:", updated_state["loop"]["lastMessage"])
         self.assertIn("loop.execute.before_target.commander", updated_state["loop"]["lastMessage"])
+        self.assertIsNone(updated_state["commander"])
+        self.assertIsNone(updated_state["summary"])
 
         updated_job = storage.read_json_file(paths.jobs / f"{job['jobId']}.json")
         self.assertIsInstance(updated_job, dict)
         self.assertEqual(updated_job["status"], "error")
         self.assertIn("loop.execute.before_target.commander", str(updated_job.get("error")))
+
+    def test_restore_task_ready_state_clears_partial_runtime_surfaces(self) -> None:
+        runtime = jobs._runtime(self.root)
+        paths = storage.project_paths(self.root)
+        state = storage.read_state_payload(paths)
+        task = state["activeTask"]
+        state["commander"] = {"round": 1, "answerDraft": "old"}
+        state["commanderReview"] = {"round": 1, "courseDecision": "maintain"}
+        state["directBaseline"] = {"round": 1, "answer": {"answer": "baseline"}}
+        state["summary"] = {"round": 1, "frontAnswer": {"answer": "summary"}}
+        state["arbiter"] = {"comparison": {"verdict": "pressurized_advantage"}}
+        state["usage"] = {"totalTokens": 88}
+        state["loop"] = {
+            **storage.default_loop_state(),
+            "status": "error",
+            "lastMessage": "Loop error: stale",
+        }
+        paths.state.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        with runtime.with_lock():
+            runtime.initialize_task_state_unlocked(task, state)
+            restored = jobs._restore_task_ready_state_unlocked(runtime, str(task["taskId"]), "Ready after blocker failure: test")
+
+        self.assertTrue(restored)
+        refreshed = storage.read_task_state_payload(str(task["taskId"]), paths)
+        self.assertIsNone(refreshed["commander"])
+        self.assertIsNone(refreshed["commanderReview"])
+        self.assertIsNone(refreshed["directBaseline"])
+        self.assertIsNone(refreshed["summary"])
+        self.assertIsNone(refreshed["arbiter"])
+        self.assertEqual(refreshed["usage"]["totalTokens"], 0)
+        self.assertEqual(refreshed["loop"]["status"], "idle")
+        self.assertIn("Ready after blocker failure:", refreshed["loop"]["lastMessage"])
 
     def test_execute_loop_job_single_mode_only_runs_direct_baseline(self) -> None:
         paths = storage.project_paths(self.root)

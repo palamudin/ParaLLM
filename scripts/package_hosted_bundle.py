@@ -21,6 +21,7 @@ INCLUDE_PATHS = [
     "data/evals",
     "deploy",
     "index.html",
+    "index_old.html",
     "project.md",
     "runtime",
     "scripts",

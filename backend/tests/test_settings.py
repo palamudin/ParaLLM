@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -113,6 +114,8 @@ class SettingsTests(unittest.TestCase):
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
+                "directHarness": {"concision": "none", "instruction": "Give the fullest factual baseline you can support."},
+                "summarizerHarness": {"concision": "none", "instruction": "Prefer the most detailed factual response the evidence supports."},
                 "ollamaBaseUrl": "http://192.168.0.26:11434",
                 "providerRouting": {"ollama": {"selectionMode": "mix", "judgeMode": "prefer_distinct"}},
                 "targetTimeouts": {"commander": 100, "workerDefault": 120, "workers": {"A": 80}, "commanderReview": 230, "summarizer": 245},
@@ -146,6 +149,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["directBaselineMode"], "both")
         self.assertEqual(result["directProvider"], "anthropic")
         self.assertEqual(result["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(result["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
+        self.assertEqual(result["summarizerHarness"]["concision"], "none")
         self.assertEqual(result["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(result["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(result["targetTimeouts"]["commander"], 100)
@@ -164,6 +169,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
         self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["activeTask"]["runtime"]["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
         self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(state["activeTask"]["runtime"]["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["commander"], 100)
@@ -181,6 +187,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["draft"]["directBaselineMode"], "both")
         self.assertEqual(state["draft"]["directProvider"], "anthropic")
         self.assertEqual(state["draft"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["draft"]["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
         self.assertEqual(state["draft"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(state["draft"]["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(state["draft"]["targetTimeouts"]["commander"], 100)
@@ -234,6 +241,60 @@ class SettingsTests(unittest.TestCase):
         saved = json.loads((self.root / "providers.txt").read_text(encoding="utf-8"))
         self.assertEqual(len(saved["ollama"]), 2)
         self.assertEqual(saved["ollama"][0]["baseUrl"], "http://192.168.0.26:11434")
+
+    def test_check_ollama_models_returns_installed_models(self) -> None:
+        payload = {
+            "models": [
+                {
+                    "name": "qwen3:8b",
+                    "modified_at": "2026-04-29T12:00:00Z",
+                    "size": 5234567890,
+                    "digest": "sha256:qwen",
+                    "details": {
+                        "format": "gguf",
+                        "family": "qwen3",
+                        "families": ["qwen3"],
+                        "parameter_size": "8B",
+                        "quantization_level": "Q4_K_M",
+                    },
+                },
+                {
+                    "name": "gemma3:12b",
+                    "modified_at": "2026-04-29T12:05:00Z",
+                    "size": 7234567890,
+                    "digest": "sha256:gemma",
+                    "details": {
+                        "format": "gguf",
+                        "family": "gemma3",
+                        "families": ["gemma3"],
+                        "parameter_size": "12B",
+                        "quantization_level": "Q4_K_M",
+                    },
+                },
+            ]
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps(payload).encode("utf-8")
+        handle = mock.MagicMock()
+        handle.__enter__.return_value = response
+        handle.__exit__.return_value = False
+
+        with mock.patch("urllib.request.urlopen", return_value=handle):
+            result = settings.check_ollama_models({"ollamaBaseUrl": "http://127.0.0.1:11434"}, self.root)
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["models"][0]["name"], "gemma3:12b")
+        self.assertEqual(result["models"][1]["name"], "qwen3:8b")
+        self.assertEqual(result["models"][1]["family"], "qwen3")
+        self.assertEqual(result["models"][1]["parameterSize"], "8B")
+
+    def test_check_ollama_models_surfaces_connection_failure(self) -> None:
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+            with self.assertRaises(RuntimeErrorWithCode) as raised:
+                settings.check_ollama_models({"ollamaBaseUrl": "http://127.0.0.1:11434"}, self.root)
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("Ollama model check failed", str(raised.exception))
 
     def test_apply_runtime_settings_clears_stale_arbiter_score(self) -> None:
         paths = storage.project_paths(self.root)

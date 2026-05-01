@@ -1,0 +1,44 @@
+{
+  "armId": "direct-anthropic-sonnet-open",
+  "title": "Direct Anthropic Sonnet | Open Harness",
+  "description": "Single-thread Anthropic Sonnet baseline with the same open detailed-answer policy as the critical MSP Para runs.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "directProvider": "anthropic",
+    "directModel": "claude-sonnet-4-6",
+    "summarizerProvider": "anthropic",
+    "summarizerModel": "claude-sonnet-4-6",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 4,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": []
+}

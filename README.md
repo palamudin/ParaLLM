@@ -41,7 +41,8 @@ The current prototype is built to make that test inspectable:
 - Container-friendly secret backends via provider-isolated env keys or mounted secret files
 - Live multi-provider runtime:
   - OpenAI remains the full-featured hosted path
-  - Anthropic, xAI, and MiniMax are callable live runtime paths with provider-normalized structured parsing
+  - DeepSeek, Anthropic, and xAI are the current hosted-core secondary paths with provider-normalized structured parsing
+  - MiniMax remains wired but is intentionally deferred from the primary path until its review lane is boring and repeatable
   - Ollama works as a native structured-output path with operator-set endpoint routing for local, remote, or dockerized hosts
   - workers and summarizer can be assigned different providers
 - Reversible QA scripts for mock, live, and eval smoke tests
@@ -69,6 +70,7 @@ flowchart LR
 - All adversarial lanes should receive the same user objective.
 - Full user objective and current constraints stay shared across lanes; only background context routing is allowed to vary.
 - Session memory is background context, not authoritative truth.
+- Memory is optional infrastructure: durable recall can enrich lanes, but the runtime must always fall back to current state, steps, events, artifacts, and local runbooks.
 - Contradictions should remain visible in review artifacts.
 - Cost should be controlled, but not by starving the primary reasoning path of user context.
 
@@ -96,7 +98,8 @@ flowchart LR
 |-- runtime/                reasoning engine + eval runner
 |-- scripts/                QA harnesses and benchmarks
 |-- data/                   local state, checkpoints, outputs, jobs, evals
-|-- index.html              app shell
+|-- index.html              replacement app shell
+|-- index_old.html          legacy app shell fallback
 |-- project.md              running architecture notes / product log
 `-- README.md               repo front door
 ```
@@ -157,6 +160,8 @@ Current skill layers:
 - Runtime-selectable answer path: `Off` keeps the normal pressurized loop, `Single only` runs one direct baseline answer, and `Both compare` runs the direct baseline in parallel with the pressurized loop using its own provider/model lane
 - Runtime profiles now tune model mix, reasoning effort, auto-loop depth, and spend wall for `Low` / `Mid` / `High` / `Ultra`
 - OpenAI live runs now request server-side input autocompression, and oversized prompt packets are locally compacted before provider calls when needed
+- Native MSP knowledgebase endpoints now expose local `retain` / `recall` / `reflect` verbs with JSONL memory banks and a runtime-log fallback, so memory can bolt on without becoming a hard dependency
+- Live commander, worker, review, and summarizer dispatch now receive a compact optional MSP knowledgebase recall packet before forming their prompt; `runtime.knowledgebase.scope` can be `shared`, `lane`, `runtime`, `strict`, or `off`, with lane scope falling back to shared/runtime readout when its private trail is empty
 - Task/runtime-scoped Ollama base URL override so remote or dockerized Ollama hosts do not require a control-plane relaunch
 - Multi-endpoint Ollama provider pools via local `providers.txt`, with per-run routing modes `Single endpoint`, `Rotate by run`, and `Mix by lane`
 - Judge-aware Ollama endpoint preference so judge/eval lanes can `Prefer distinct endpoint` when another host is available
@@ -272,11 +277,13 @@ Milestone 5 is now started with a real first provider split:
   - local-model experimentation without OpenAI keys
   - local function-tool loop for file/GitHub tools
   - runtime `Ollama base URL` field can point at a remote or dockerized host instead of assuming `127.0.0.1`
-- `anthropic`, `xai`, `minimax`
-  - provider-native live adapters are wired now
-  - capability normalization depends on the provider path
+- `deepseek`, `anthropic`, `xai`
+  - hosted live adapters are working and are the main boring-path targets
+  - capability normalization still depends on the provider path
+- `minimax`
+  - adapter remains wired, but it is intentionally deferred from the primary runtime path until review/summarizer stability improves
 - auth/settings groundwork
-  - provider-grouped key storage now exists for `openai`, `anthropic`, `xai`, and `minimax`
+  - provider-grouped key storage now exists for `openai`, `deepseek`, `anthropic`, `xai`, and `minimax`
   - provider pools stay isolated; one vendor's lanes never reuse another vendor's key group
   - runtime/provider routing now switches the live call path as well as the key lane group
 
@@ -284,7 +291,8 @@ Current honest limitation:
 
 - Ollama is available as a live structured-output provider with local function tools, but it does **not** support hosted web-search research in this repo
 - workers currently inherit the global runtime provider, while the summarizer/lead-thread provider can be set separately
-- Anthropic, xAI, and MiniMax are live runtime paths now, but capability differences are normalized conservatively and will keep evolving as provider docs and model behavior change
+- OpenAI, DeepSeek, Anthropic, and xAI are the current hosted-core providers we are trying to keep boring front to back
+- MiniMax remains available for targeted debugging, but it is intentionally deferred from the primary path until its review/judge behavior stops needing hand-holding
 - eval arms, result artifacts, and the blind benchmark now carry provider identity so mixed-provider experiments can be inspected honestly in Review instead of being inferred from model names alone
 - Milestone 5 is not complete until more providers and richer capability normalization land
 - The next major systems milestone after provider work is cross-round contradiction memory, so unresolved lane disagreements can survive across rounds and trigger explicit re-examination instead of being implicitly reset after each summary pass
@@ -389,11 +397,11 @@ The artifact backend is now partially real too:
 The secret backend is now hosted-aware too:
 
 - local development now defaults to `LOOP_SECRET_BACKEND=env`
-- provide newline-delimited keys in `LOOP_OPENAI_API_KEYS`, `LOOP_ANTHROPIC_API_KEYS`, `LOOP_XAI_API_KEYS`, or `LOOP_MINIMAX_API_KEYS`
+- provide newline-delimited keys in `LOOP_OPENAI_API_KEYS`, `LOOP_DEEPSEEK_API_KEYS`, `LOOP_ANTHROPIC_API_KEYS`, `LOOP_XAI_API_KEYS`, or `LOOP_MINIMAX_API_KEYS`
 - or set `LOOP_SECRET_BACKEND=docker_secret`
 - or set `LOOP_SECRET_BACKEND=external` with `LOOP_SECRET_PROVIDER_URL`
 - and mount a newline-delimited key file at `LOOP_SECRET_FILE` such as `/run/secrets/openai_api_keys`
-  - sibling files like `/run/secrets/anthropic_api_keys`, `/run/secrets/xai_api_keys`, and `/run/secrets/minimax_api_keys` are used for those provider groups
+  - sibling files like `/run/secrets/deepseek_api_keys`, `/run/secrets/anthropic_api_keys`, `/run/secrets/xai_api_keys`, and `/run/secrets/minimax_api_keys` are used for those provider groups
 - `local_file` remains available only as an explicit transitional fallback
 - managed backends are now authoritative: if `env`, `docker_secret`, or `external` is empty or unreachable, live execution fails visibly instead of silently drifting into another secret source
 
@@ -579,6 +587,14 @@ Next milestone track:
 - `Canvas-Native Scheduling and Provider-Neutral Async Execution`
   - separate `live`, `eval`, and `judge` into first-class run lanes instead of one special live task plus isolated side systems
   - add a provider-neutral async scheduler that can dispatch multiple runnable jobs concurrently while leasing keys safely from each provider pool
+- `TradingAgents Review Imports`
+  - borrow the good discipline, not the boardroom cadence: ParaLLM should feel like an execution engine with live state, resumable work, and machine-readable events, not a sequential committee looking at a chart
+  - make every execution node schema-first, including commander, worker, review, summarizer, repo scan, UI graph query, and provider call outputs
+  - add checkpoint/resume boundaries per runnable job stage, with clear recovery state exposed to both humans and AI agents
+  - keep an append-only decision/event ledger so every run can be replayed, audited, summarized, and mined for follow-up work
+  - prefer deterministic parsers for ratings, status, classification, and artifact extraction; reserve LLM calls for judgment and synthesis
+  - cache expensive repo-intelligence layers separately: file inventory, parsed symbols, import/call graph, hotspots, AI readout, and rendered graph layout
+  - default dense visualizations to module lenses, selected-neighborhood views, and hotspot queues; keep the full supernova graph as an intentional inspect mode
 - `Authoritative Domain Knowledge Tools`
   - build retrieval-first specialist knowledge blocks with citations, provenance, and abstain behavior before considering any weight-training path
   - only escalate to fine-tuning or specialist pretraining if retrieval plus evals still cannot clear the quality bar honestly
@@ -640,80 +656,65 @@ The next serious tuning work is not more surface polish. It is:
 
 Blind external vetting snapshots are grouped by judge provider/model so cross-provider reads stay explicit. Public timing is intentionally omitted here; local benchmark artifacts still track latency and speed-adjusted scores while the sample size grows.
 
-### Judge: OpenAI `gpt-5.4`
+The published tables below are `Council judging` snapshots:
+- one answer pack
+- many judges
+- same blind answers scored by multiple provider families
 
-Scenario snapshot: `MSP Midnight Breach Bakeoff`
+The harness also supports `provider_owned` judging as a separate benchmark mode:
+- one provider family generates the Para variants
+- one direct baseline from that same provider family
+- the same provider family judges the pack
 
-| Variant | Overall | Current read |
-| --- | --- | --- |
-| `ParaLLM 5.4 full \| full adversarials` | `9.5` | Best final answer and best tactical detail |
-| `Direct GPT-5.4` | `9.0` | Strongest direct single-pass answer |
-| `ParaLLM 5.4 full \| mini adversarials` | `9.0` | Close third; restrained and shippable |
-| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Rich artifacts, but lighter on the main-line answer |
+That split still matters. `Council` tells us whether different model families independently prefer the pressured answer set. `provider_owned` tells us how each vendor's own reasoning stack evaluates its own Para-vs-direct contest.
 
-- Measured advantage: `clear` for `ParaLLM 5.4 full | full adversarials` over `Direct GPT-5.4` (`overall margin 0.5`, `4` unique category leads)
-- Current read: OpenAI preferred the heaviest ParaLLM path on this case, but the edge over direct stayed measurable rather than runaway.
+### Benchmark Reset
 
-### Judge: xAI `grok-4.20-reasoning`
+Published benchmark tables were retired on `2026-04-27` after the new uncropped `Scores` surface proved that some judged runs still contained fallback, placeholder, or incomplete Para outputs.
 
-Scenario snapshot: `MSP Midnight Breach Bakeoff`
+The old publication is preserved as a historical milestone here:
+- [BENCHMARK_SCORES_OLD.md](BENCHMARK_SCORES_OLD.md)
+- [archived summary rollup](data/benchmarks/vetting/_old/summary_20260427_pre_verification_reset.json)
+- [archived latest blind run snapshot](data/benchmarks/vetting/_old/latest_20260427_pre_verification_reset.json)
 
-| Variant | Overall | Current read |
-| --- | --- | --- |
-| `ParaLLM 5.4 mini \| mini adversarials` | `9.5` | Best final answer and best tactical detail |
-| `Direct GPT-5.4` | `8.5` | Runner-up; clean direct baseline |
-| `ParaLLM 5.4 full \| mini adversarials` | `8.5` | Tied on overall, but behind direct in the ranking |
-| `ParaLLM 5.4 full \| full adversarials` | `8.0` | Rich enough, but less sharp than the lighter options |
+Those archived tables are useful research signal, but they are no longer the canonical README benchmark claim.
 
-- Measured advantage: `decisive` for `ParaLLM 5.4 mini | mini adversarials` over `Direct GPT-5.4` (`overall margin 1.0`, `7` unique category leads)
-- Current read: xAI strongly preferred the lighter ParaLLM mini path and treated it as the most shippable operational answer in the set.
+### Score Regimes
 
-### Judge: Anthropic `claude-sonnet-4-6`
+Current score publication separates `constrained` and `unconstrained` runs.
 
-Scenario snapshot: `MSP Midnight Breach Bakeoff`
+The old tables are preserved as historical `constrained` tests: both Direct and Para were judged under answer-shaping constraints, and some retired runs predated the full live-output verification gate. They are useful research signal, but they are not directly comparable to the new unconstrained table.
 
-| Variant | Overall | Current read |
-| --- | --- | --- |
-| `ParaLLM 5.4 full \| mini adversarials` | `9.5` | Best final answer and best tactical detail |
-| `ParaLLM 5.4 mini \| mini adversarials` | `8.5` | Strong evidence discipline and tactical density |
-| `Direct GPT-5.4` | `8.5` | Tied runner-up; strong sequencing and realism |
-| `ParaLLM 5.4 full \| full adversarials` | `7.5` | Competent, but the least usable of the four under pressure |
+The active publication gate is:
+- `Para` must be fed from the final live summarizer output, not fallback, placeholder, or cropped internal state
+- `Direct` must be fed from the full direct live answer, not a shortened proxy
+- `Judge` must see complete uncropped payloads from both sides
+- runs with `mode != live`, placeholder text, or fallback artifacts do not qualify for README publication
+- future score tables should record both `constrained` and `unconstrained` regimes when both runs exist for the same scenario
 
-- Measured advantage: `decisive` for `ParaLLM 5.4 full | mini adversarials` over `ParaLLM 5.4 mini | mini adversarials` (`overall margin 1.0`, `7` unique category leads)
-- Current read: Anthropic preferred the tighter full-main-thread plus mini-adversarial package and scored it clearly above the rest.
+Latest verified unconstrained live run:
 
-### Judge: MiniMax `MiniMax-M2.7`
+| Field | Value |
+| --- | --- |
+| Run id | `judge-20260501-101010+0000-162d39` |
+| Date | `2026-05-01` |
+| Suite | `msp-rmm-midnight-malware-push-unconstrained` |
+| Scenario | MSP RMM PowerShell spike across 12 SMB clients, first-hour response |
+| Regime | `unconstrained` answer side; MSP incident-lead judge rubric still active |
+| Generation provider/model | `openai` / `gpt-5-mini` |
+| Judge provider/model | `openai` / `gpt-5.4` |
+| Replicates | `1` |
+| Error count | `0` |
+| Live/fallback status | live only; mock fallback excluded |
+| Total tokens / estimated cost | `28,453` / `$0.019291` |
 
-Scenario snapshot: `MSP Midnight Breach Bakeoff`
+| Arm | Deterministic | Quality overall | Health overall | Control overall | Verdict | Tokens / cost |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `direct-openai-mini-unconstrained` | `7/7` | `2` | `9` | `n/a` | Hard fail for MSP severity-1 lead role | `1,321` / `$0.002406` |
+| `para-openai-mini-unconstrained-double--loops-1` | `7/7` | `8` | `8` | `8` | Pass | `27,132` / `$0.016885` |
 
-| Variant | Overall | Current read |
-| --- | --- | --- |
-| `ParaLLM 5.4 mini \| mini adversarials` | `9.5` | Best final answer and best tactical detail |
-| `Direct GPT-5.4` | `8.5` | Three-way runner-up tie led by direct in the ranking |
-| `ParaLLM 5.4 full \| full adversarials` | `8.5` | Tied runner-up; solid but not sharper than the mini path |
-| `ParaLLM 5.4 full \| mini adversarials` | `8.5` | Tied runner-up; competent but not differentiated enough |
+Run artifacts:
+- [direct score](data/evals/runs/judge-20260501-101010+0000-162d39/cases/rmm-midnight-malware-push-unconstrained/direct-openai-mini-unconstrained/replicate-001/score.json)
+- [Para score](data/evals/runs/judge-20260501-101010+0000-162d39/cases/rmm-midnight-malware-push-unconstrained/para-openai-mini-unconstrained-double--loops-1/replicate-001/score.json)
 
-- Measured advantage: `decisive` for `ParaLLM 5.4 mini | mini adversarials` over `Direct GPT-5.4` (`overall margin 1.0`, `8` unique category leads)
-- Current read: MiniMax sharply favored the lighter ParaLLM mini variant and treated the rest of the field as a clustered second tier.
-
-### Overall Cross-Provider Summary
-
-Judge-provider snapshots are still published separately above, but there are now enough comparable reads to show a simple cross-provider scoreboard based on measured answer quality alone.
-
-| Judge | Best final answer | Best tactical detail | Measured advantage |
-| --- | --- | --- | --- |
-| `OpenAI gpt-5.4` | `ParaLLM 5.4 full \| full adversarials` | `ParaLLM 5.4 full \| full adversarials` | `clear` over `Direct GPT-5.4` |
-| `xAI grok-4.20-reasoning` | `ParaLLM 5.4 mini \| mini adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `decisive` over `Direct GPT-5.4` |
-| `Anthropic claude-sonnet-4-6` | `ParaLLM 5.4 full \| mini adversarials` | `ParaLLM 5.4 full \| mini adversarials` | `decisive` over `ParaLLM 5.4 mini \| mini adversarials` |
-| `MiniMax MiniMax-M2.7` | `ParaLLM 5.4 mini \| mini adversarials` | `ParaLLM 5.4 mini \| mini adversarials` | `decisive` over `Direct GPT-5.4` |
-
-| Variant | Best final wins | Best tactical wins | Leader wins |
-| --- | --- | --- | --- |
-| `ParaLLM 5.4 mini \| mini adversarials` | `2` | `2` | `2` |
-| `ParaLLM 5.4 full \| mini adversarials` | `1` | `1` | `1` |
-| `ParaLLM 5.4 full \| full adversarials` | `1` | `1` | `1` |
-| `Direct GPT-5.4` | `0` | `0` | `0` |
-
-- Judge-provider snapshots published so far: `4`
-- Local blind vetting runs recorded so far: `13`
-- Benchmark artifacts: [summary.json](data/benchmarks/vetting/summary.json), [latest blind run](data/benchmarks/vetting/latest.json)
+Use [scripts/vetting_manifest.provider_owned.example.json](scripts/vetting_manifest.provider_owned.example.json) as the starting shape for fresh provider-family-native reruns, and keep the score tables split by constraint regime.

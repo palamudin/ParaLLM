@@ -1,0 +1,44 @@
+{
+  "armId": "direct-gpt54-open",
+  "title": "Direct GPT-5.4 | Open Harness",
+  "description": "Single-thread GPT-5.4 baseline with the same open detailed-answer policy as the Para critical MSP runs.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5.4",
+    "directProvider": "openai",
+    "directModel": "gpt-5.4",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5.4",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 8,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": []
+}

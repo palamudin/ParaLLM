@@ -6,10 +6,22 @@ import tempfile
 import urllib.error
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
+from backend.app import storage
 from backend.app.secrets import write_auth_backend_mode_override
-from runtime.engine import LoopRuntime, OpenAIResult, RuntimeErrorWithCode, read_api_key_pool
+from runtime.engine import (
+    LoopRuntime,
+    OpenAIResult,
+    RuntimeErrorWithCode,
+    coerce_confidence_value,
+    flatten_output_payload_text,
+    normalize_front_answer,
+    parse_structured_output_text,
+    provider_capability_profile,
+    read_api_key_pool,
+)
 
 
 class _FakeHTTPResponse:
@@ -29,6 +41,18 @@ class _FakeHTTPResponse:
 
 
 class RuntimeAuthTests(unittest.TestCase):
+    def test_provider_capability_profile_marks_minimax_deferred(self) -> None:
+        profile = provider_capability_profile("minimax")
+        self.assertEqual(profile["provider"], "minimax")
+        self.assertEqual(profile["status"], "deferred")
+        self.assertFalse(profile["primary"])
+
+    def test_provider_capability_profile_marks_deepseek_primary(self) -> None:
+        profile = provider_capability_profile("deepseek")
+        self.assertEqual(profile["provider"], "deepseek")
+        self.assertEqual(profile["status"], "primary")
+        self.assertTrue(profile["primary"])
+
     def _stub_openai_result(self, parsed: dict, max_output_tokens: int = 400) -> OpenAIResult:
         attempts = [int(max_output_tokens)] if int(max_output_tokens) > 0 else []
         return OpenAIResult(
@@ -49,6 +73,99 @@ class RuntimeAuthTests(unittest.TestCase):
             auth_assignment=None,
             auth_failover_history=[],
         )
+
+    def _build_summary_ready_fixture(self) -> tuple[dict, dict, dict, list[dict], dict, dict]:
+        task = {
+            "taskId": "task-1",
+            "objective": "Contain the incident without overreacting.",
+            "constraints": ["Keep user impact low.", "Document the decision path."],
+            "sessionContext": "Operations needs an answer before business hours.",
+            "workers": [
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5.4"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5.4"},
+            ],
+            "summarizer": {"provider": "openai", "model": "gpt-5-mini"},
+        }
+        commander_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Use the smallest responsible containment step first.",
+            "whyThisDirection": "It keeps service alive while reducing blast radius.",
+            "questionsForWorkers": [],
+            "pressurePoints": [],
+            "keepCourseIf": [],
+            "changeCourseIf": [],
+            "uncertainty": [],
+            "suggestedLaneTypes": [],
+            "suggestedLaneReason": "",
+            "constraintsSeen": ["Keep user impact low."],
+        }
+        commander_review_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "courseDecision": "maintain",
+            "stance": "Contain first, but prepare isolation if spread is confirmed.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Contain first, but prepare isolation if spread is confirmed.",
+            "whyThisDirection": "It balances caution with operator speed.",
+            "adoptedWorkerMoves": [],
+            "rejectedWorkerMoves": [],
+            "controlAudit": [],
+            "evidenceVerdicts": [],
+            "reviewTrace": [],
+            "dynamicLaneDecision": {"shouldSpawn": False, "rejectedLaneTypes": []},
+            "dynamicLaneResolution": {"spawned": False, "reason": "none"},
+        }
+        workers = task["workers"]
+        worker_state = {
+            "A": {
+                "workerId": "A",
+                "label": "Proponent",
+                "role": "utility",
+                "focus": "execution",
+                "step": 1,
+                "observation": "A reversible containment step is available.",
+                "benefits": ["Keeps core systems up."],
+                "detriments": ["Does not answer persistence immediately."],
+                "invalidatingCircumstances": ["If spread is already org-wide."],
+                "uncertainty": ["Unknown whether persistence is active."],
+                "evidenceLedger": [],
+                "evidenceGaps": [],
+            },
+            "B": {
+                "workerId": "B",
+                "label": "Sceptic",
+                "role": "adversarial",
+                "focus": "failure modes",
+                "step": 1,
+                "observation": "Waiting risks wider spread.",
+                "benefits": ["Higher certainty if isolated now."],
+                "detriments": ["Short-term user impact increases."],
+                "invalidatingCircumstances": ["If containment takes too long to apply."],
+                "uncertainty": ["Need EDR confirmation."],
+                "evidenceLedger": [],
+                "evidenceGaps": [],
+            },
+        }
+        runtime_config = {
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+            "executionMode": "live",
+            "contextMode": "weighted",
+            "localFiles": {"enabled": False},
+            "githubTools": {"enabled": False},
+            "requestTimeoutSeconds": 180,
+        }
+        return task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, runtime_config
+
+    def test_coerce_confidence_value_accepts_string_bands(self) -> None:
+        self.assertEqual(coerce_confidence_value("high"), 0.85)
+        self.assertEqual(coerce_confidence_value("medium"), 0.6)
+        self.assertEqual(coerce_confidence_value("low"), 0.35)
 
     def test_read_api_key_pool_uses_env_backend_when_configured(self) -> None:
         missing_path = Path(tempfile.gettempdir()) / "parallm-missing-auth.txt"
@@ -752,7 +869,7 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(runtime.get_response_output_text(result.response), result.output_text)
         self.assertEqual(seen_urls, ["https://api.anthropic.com/v1/messages"])
 
-    def test_invoke_provider_json_supports_minimax_wrapper_flattening(self) -> None:
+    def test_invoke_provider_json_supports_minimax_openai_compat_wrapper_flattening(self) -> None:
         schema = {
             "type": "object",
             "additionalProperties": False,
@@ -762,13 +879,28 @@ class RuntimeAuthTests(unittest.TestCase):
             },
         }
         payload = {
-            "id": "msg-min-1",
-            "stop_reason": "end_turn",
-            "content": [
-                {"type": "tool_use", "name": "ignored_tool", "input": {"city": "Paris"}},
-                {"type": "text", "text": json.dumps({"answer": "MiniMax wrapper reply"})},
+            "id": "chatcmpl-min-1",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps({"answer": "MiniMax wrapper reply"}),
+                        "name": "MiniMax AI",
+                    },
+                }
             ],
-            "usage": {"input_tokens": 16, "output_tokens": 9},
+            "usage": {
+                "prompt_tokens": 16,
+                "completion_tokens": 9,
+                "total_tokens": 25,
+                "completion_tokens_details": {"reasoning_tokens": 4},
+            },
+            "base_resp": {
+                "status_code": 0,
+                "status_msg": "",
+            },
         }
         seen_urls: list[str] = []
 
@@ -794,7 +926,260 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(result.provider, "minimax")
         self.assertEqual(result.parsed, {"answer": "MiniMax wrapper reply"})
         self.assertEqual(result.output_text, json.dumps({"answer": "MiniMax wrapper reply"}))
+        self.assertEqual(seen_urls, ["https://api.minimax.io/v1/chat/completions"])
+        usage = runtime.get_response_usage_delta(result.response, "MiniMax-M2.7")
+        self.assertEqual(usage["inputTokens"], 16)
+        self.assertEqual(usage["outputTokens"], 9)
+        self.assertEqual(usage["reasoningTokens"], 4)
+
+    def test_invoke_provider_json_supports_deepseek_openai_compat_wrapper_flattening(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        payload = {
+            "id": "chatcmpl-deep-1",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps({"answer": "DeepSeek wrapper reply"}),
+                    },
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 18,
+                "completion_tokens": 11,
+                "total_tokens": 29,
+            },
+        }
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=1800):
+            seen_urls.append(str(request.full_url))
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = runtime.invoke_provider_json(
+                    provider="deepseek",
+                    api_key="deepseek-test-key",
+                    model="deepseek-v4-flash",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something useful.",
+                    schema_name="deepseek_test",
+                    schema=schema,
+                    target_kind="worker",
+                )
+
+        self.assertEqual(result.provider, "deepseek")
+        self.assertEqual(result.parsed, {"answer": "DeepSeek wrapper reply"})
+        self.assertEqual(result.output_text, json.dumps({"answer": "DeepSeek wrapper reply"}))
+        self.assertEqual(seen_urls, ["https://api.deepseek.com/chat/completions"])
+
+    def test_invoke_provider_json_supports_deepseek_anthropic_fallback_transport(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        payload = {
+            "id": "msg-deep-1",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "text", "text": json.dumps({"answer": "DeepSeek wrapper reply"})},
+            ],
+            "usage": {"input_tokens": 14, "output_tokens": 8},
+        }
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=1800):
+            seen_urls.append(str(request.full_url))
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+                mock.patch.dict("os.environ", {"LOOP_DEEPSEEK_TRANSPORT": "anthropic"}, clear=False),
+            ):
+                result = runtime.invoke_provider_json(
+                    provider="deepseek",
+                    api_key="deepseek-test-key",
+                    model="deepseek-v4-flash",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something useful.",
+                    schema_name="deepseek_test",
+                    schema=schema,
+                    target_kind="worker",
+                )
+
+        self.assertEqual(result.provider, "deepseek")
+        self.assertEqual(result.parsed, {"answer": "DeepSeek wrapper reply"})
+        self.assertEqual(result.output_text, json.dumps({"answer": "DeepSeek wrapper reply"}))
+        self.assertEqual(seen_urls, ["https://api.deepseek.com/anthropic/v1/messages"])
+
+    def test_invoke_provider_json_supports_minimax_anthropic_fallback_transport(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {
+                "answer": {"type": "string"},
+            },
+        }
+        payload = {
+            "id": "msg-min-1",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "text", "text": json.dumps({"answer": "MiniMax wrapper reply"})},
+            ],
+            "usage": {"input_tokens": 16, "output_tokens": 9},
+        }
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=1800):
+            seen_urls.append(str(request.full_url))
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+                mock.patch.dict("os.environ", {"LOOP_MINIMAX_TRANSPORT": "anthropic"}, clear=False),
+            ):
+                result = runtime.invoke_provider_json(
+                    provider="minimax",
+                    api_key="minimax-test-key",
+                    model="MiniMax-M2.7",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something useful.",
+                    schema_name="minimax_test",
+                    schema=schema,
+                    target_kind="worker",
+                )
+
+        self.assertEqual(result.provider, "minimax")
+        self.assertEqual(result.parsed, {"answer": "MiniMax wrapper reply"})
+        self.assertEqual(result.output_text, json.dumps({"answer": "MiniMax wrapper reply"}))
         self.assertEqual(seen_urls, ["https://api.minimax.io/anthropic/v1/messages"])
+
+    def test_invoke_provider_json_salvages_minimax_direct_answer_from_structured_plan_text(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer", "stance", "confidenceNote"],
+            "properties": {
+                "answer": {"type": "string"},
+                "stance": {"type": "string"},
+                "confidenceNote": {"type": "string"},
+            },
+        }
+        sample_path = Path(__file__).resolve().parents[2] / "responses" / "minimax_response.json"
+        sample_text = sample_path.read_text(encoding="utf-8")
+        payload = {
+            "id": "msg-min-salvage-1",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": sample_text,
+                    },
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 16,
+                "completion_tokens": 9,
+                "total_tokens": 25,
+            },
+            "base_resp": {
+                "status_code": 0,
+                "status_msg": "",
+            },
+        }
+
+        def fake_urlopen(request, timeout=1800):
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+                mock.patch(
+                    "runtime.engine.parse_structured_output_text",
+                    side_effect=RuntimeErrorWithCode("forced parse failure", 500),
+                ),
+            ):
+                result = runtime.invoke_provider_json(
+                    provider="minimax",
+                    api_key="minimax-test-key",
+                    model="MiniMax-M2.7",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Say something useful.",
+                    schema_name="eval_direct_answer",
+                    schema=schema,
+                    target_kind="generic",
+                )
+
+        self.assertEqual(result.provider, "minimax")
+        self.assertIn("## Immediate actions", result.parsed["answer"])
+        self.assertIn("Severity:", result.parsed["stance"])
+        self.assertIn("Rendered from MiniMax incident-response structure.", result.parsed["confidenceNote"])
+
+    def test_flatten_output_payload_text_prefers_shared_provider_normalizer(self) -> None:
+        payload = {
+            "provider": "minimax",
+            "rawOutputText": '{"incident_id":"INC-TEST","severity":"P1 - CRITICAL","current_status":"ACTIVE","control_plane_trust_status":"UNTRUSTED","first_hour_objectives":["Contain spread"],"immediate_actions_0_to_15_minutes":{"revoke_automation_package":{"action":"Suspend package","rationale":"Stop spread"},"short_term_actions_15_to_30_minutes":{"validate_package_revocation":{"action":"Confirm revoke"},"medium_term_actions_30_to_60_minutes":{"risk_acceptances_needed":{"overall_risk_posture":"Containment first"}}}}',
+            "frontAnswer": {"answer": "stale front answer"},
+        }
+        flattened = flatten_output_payload_text(payload, "direct_baseline_output")
+        self.assertIn("## Immediate actions (0-15 minutes)", flattened)
+        self.assertIn("Suspend package", flattened)
+        self.assertNotIn("stale front answer", flattened)
+
+    def test_parse_structured_output_text_repairs_literal_newlines_inside_json_strings(self) -> None:
+        payload = """{
+  "answer": "Line one
+Line two",
+  "confidenceNote": "Safe to continue"
+}"""
+        parsed = parse_structured_output_text(payload)
+        self.assertEqual(parsed["answer"], "Line one\nLine two")
+        self.assertEqual(parsed["confidenceNote"], "Safe to continue")
+
+    def test_parse_structured_output_text_strips_json_prefix_before_parse(self) -> None:
+        parsed = parse_structured_output_text('json\\n{"answer":"ok"}')
+        self.assertEqual(parsed, {"answer": "ok"})
+
+    def test_normalize_front_answer_falls_back_to_answer_draft_when_front_answer_missing(self) -> None:
+        normalized = normalize_front_answer(
+            {},
+            {
+                "answerDraft": "Use per-customer incident ownership and preserve control-plane evidence first.",
+                "vettingSummary": "Detailed fallback summary.",
+            },
+        )
+        self.assertEqual(
+            normalized["answer"],
+            "Use per-customer incident ownership and preserve control-plane evidence first.",
+        )
+        self.assertIn("Use per-customer incident ownership", normalized["stance"])
 
     def test_get_task_runtime_carries_context_mode_and_ollama_endpoint(self) -> None:
         task = {
@@ -885,13 +1270,13 @@ class RuntimeAuthTests(unittest.TestCase):
             "constraints": ["Keep production impact low.", "Document the decision path."],
             "sessionContext": "Customer is already nervous after a failed change window.",
             "workers": [
-                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5-mini"},
-                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5-mini"},
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5.4"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5.4"},
             ],
         }
         runtime_config = {
             "provider": "openai",
-            "model": "gpt-5-mini",
+            "model": "gpt-5.4",
             "reasoningEffort": "low",
             "maxOutputTokens": 400,
             "contextMode": "weighted",
@@ -937,13 +1322,13 @@ class RuntimeAuthTests(unittest.TestCase):
             "constraints": ["Keep user impact low."],
             "sessionContext": "The customer wants an answer before business hours.",
             "workers": [
-                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5-mini"},
-                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5-mini"},
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5.4"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5.4"},
             ],
         }
         runtime_config = {
             "provider": "openai",
-            "model": "gpt-5-mini",
+            "model": "gpt-5.4",
             "reasoningEffort": "low",
             "maxOutputTokens": 400,
             "contextMode": "weighted",
@@ -1025,6 +1410,133 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertIn("Task brief:", captured["input_text"])
         self.assertNotIn("Worker lineup:", captured["input_text"])
 
+    def test_commander_review_packet_uses_compact_binder_for_deepseek(self) -> None:
+        captured: dict[str, Any] = {}
+        task = {
+            "taskId": "task-1",
+            "objective": "Contain risk without overreacting.",
+            "constraints": ["Keep user impact low."],
+            "sessionContext": "The customer wants an answer before business hours.",
+            "workers": [
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "deepseek-v4-flash"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "deepseek-v4-flash"},
+            ],
+        }
+        runtime_config = {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+            "contextMode": "weighted",
+            "localFiles": {"enabled": False},
+            "githubTools": {"enabled": False},
+        }
+        workers = task["workers"]
+        commander_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Use the smallest responsible containment step first.",
+            "whyThisDirection": "It keeps service alive while reducing blast radius.",
+            "questionsForWorkers": [],
+            "pressurePoints": [],
+            "keepCourseIf": [],
+            "changeCourseIf": [],
+            "uncertainty": [],
+            "suggestedLaneTypes": [],
+            "suggestedLaneReason": "",
+            "constraintsSeen": ["Keep user impact low."],
+        }
+        prior_summary = {"taskId": "task-1", "round": 1, "recommendedNextAction": "Start with reversible containment."}
+        worker_state = {
+            "A": {
+                "workerId": "A",
+                "label": "Proponent",
+                "role": "utility",
+                "focus": "execution",
+                "step": 1,
+                "observation": "A narrow containment step keeps service usable.",
+                "benefits": ["Low blast radius."],
+                "detriments": ["May not stop all spread."],
+                "invalidatingCircumstances": ["If lateral movement is already active."],
+                "uncertainty": ["Scope of compromise is still incomplete."],
+                "evidenceLedger": [{"claim": "Containment is reversible.", "supportLevel": "supported", "note": "Rollback path is known.", "sourceUrls": []}],
+                "evidenceGaps": ["Need host-level confirmation."],
+            },
+            "B": {
+                "workerId": "B",
+                "label": "Sceptic",
+                "role": "adversarial",
+                "focus": "failure modes",
+                "step": 1,
+                "observation": "Waiting risks wider spread.",
+                "benefits": ["Higher certainty if isolated now."],
+                "detriments": ["Short-term user impact increases."],
+                "invalidatingCircumstances": ["If containment takes too long to apply."],
+                "uncertainty": ["Unknown whether persistence is active."],
+                "evidenceLedger": [{"claim": "Delay increases exposure.", "supportLevel": "mixed", "note": "Depends on current foothold.", "sourceUrls": []}],
+                "evidenceGaps": ["Need EDR confirmation."],
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            line_catalog = runtime.build_summary_line_catalog(worker_state, workers, max_items_per_worker=8)
+
+            def fake_invoke_provider_json(**kwargs):
+                captured["instructions"] = kwargs["instructions"]
+                captured["input_text"] = kwargs["input_text"]
+                captured["schema"] = kwargs["schema"]
+                parsed = runtime.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
+                return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                runtime.new_live_commander_review(
+                    api_key="sk-test",
+                    auth_assignments=None,
+                    task=task,
+                    commander_checkpoint=commander_checkpoint,
+                    prior_summary=prior_summary,
+                    workers=workers,
+                    worker_state=worker_state,
+                    runtime=runtime_config,
+                    line_catalog=line_catalog,
+                )
+
+        self.assertNotIn("Task brief:", captured["input_text"])
+        self.assertNotIn("Prior summary packet:", captured["input_text"])
+        self.assertNotIn("Known adversarial lane types:", captured["input_text"])
+        self.assertNotIn("Worker review line catalog:", captured["input_text"])
+        self.assertIn("Worker checkpoint digests:", captured["input_text"])
+        self.assertIn("answerDraft", captured["schema"]["required"])
+        self.assertIn("requiredDecisionGates", captured["schema"]["required"])
+        self.assertNotIn("controlAudit", captured["schema"]["required"])
+        self.assertNotIn("dynamicLaneDecision", captured["schema"]["required"])
+        self.assertIn("sourceWorkers", captured["schema"]["required"])
+
+    def test_parse_structured_output_text_repairs_relaxed_object_keys_and_trailing_commas(self) -> None:
+        payload = """DeepSeek reply
+
+{
+  taskId: "task-1",
+  round: 1,
+  leadDirection: "Contain first",
+  answerDraft: "Do the least destructive safe step first",
+  whyThisDirection: "It preserves service while reducing blast radius",
+  claimsToStrengthen: ["Preserve evidence",],
+  claimsToLimit: ["Do not trust the control plane blindly",],
+  requiredDecisionGates: ["Confirm scope before broad isolation",],
+  evidenceOrCommsRisks: ["Cross-tenant communication creates a second incident",],
+  remainingUncertainty: ["Need vendor confirmation",],
+}
+"""
+        parsed = parse_structured_output_text(payload)
+        self.assertEqual(parsed["taskId"], "task-1")
+        self.assertEqual(parsed["round"], 1)
+        self.assertEqual(parsed["leadDirection"], "Contain first")
+        self.assertEqual(parsed["claimsToStrengthen"], ["Preserve evidence"])
+
     def test_summarizer_packet_drops_worker_lineup_and_lane_catalog_list(self) -> None:
         captured: dict[str, str] = {}
         task = {
@@ -1033,13 +1545,13 @@ class RuntimeAuthTests(unittest.TestCase):
             "constraints": ["Keep user impact low."],
             "sessionContext": "The customer wants an answer before business hours.",
             "workers": [
-                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5-mini"},
-                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5-mini"},
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "gpt-5.4"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "gpt-5.4"},
             ],
         }
         runtime_config = {
             "provider": "openai",
-            "model": "gpt-5-mini",
+            "model": "gpt-5.4",
             "reasoningEffort": "low",
             "maxOutputTokens": 400,
             "contextMode": "weighted",
@@ -1156,9 +1668,279 @@ class RuntimeAuthTests(unittest.TestCase):
                     line_catalog=line_catalog,
                 )
 
-        self.assertIn("Task brief:", captured["input_text"])
+        self.assertIn("Rebound lead position from the internal pressure test:", captured["input_text"])
+        self.assertIn("Supporting evidence packet for review-facing fields only:", captured["input_text"])
         self.assertNotIn("Worker lineup:", captured["input_text"])
         self.assertNotIn("Known adversarial lane types:", captured["input_text"])
+
+    def test_summarizer_packet_uses_compact_binder_for_deepseek(self) -> None:
+        captured: dict[str, Any] = {}
+        task = {
+            "taskId": "task-1",
+            "objective": "Contain risk without overreacting.",
+            "constraints": ["Keep user impact low."],
+            "sessionContext": "The customer wants an answer before business hours.",
+            "workers": [
+                {"id": "A", "label": "Proponent", "role": "utility", "focus": "execution", "model": "deepseek-v4-flash"},
+                {"id": "B", "label": "Sceptic", "role": "adversarial", "focus": "failure modes", "model": "deepseek-v4-flash"},
+            ],
+        }
+        runtime_config = {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "reasoningEffort": "low",
+            "maxOutputTokens": 400,
+            "contextMode": "weighted",
+            "localFiles": {"enabled": False},
+            "githubTools": {"enabled": False},
+        }
+        workers = task["workers"]
+        commander_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Use the smallest responsible containment step first.",
+            "whyThisDirection": "It keeps service alive while reducing blast radius.",
+            "questionsForWorkers": [],
+            "pressurePoints": [],
+            "keepCourseIf": [],
+            "changeCourseIf": [],
+            "uncertainty": [],
+            "suggestedLaneTypes": [],
+            "suggestedLaneReason": "",
+            "constraintsSeen": ["Keep user impact low."],
+        }
+        commander_review_checkpoint = {
+            "taskId": "task-1",
+            "round": 1,
+            "stance": "Contain first, but prepare isolation if spread is confirmed.",
+            "leadDirection": "Use the smallest responsible containment step first.",
+            "answerDraft": "Start with the smallest reversible containment step, then escalate if telemetry confirms spread.",
+            "whyThisDirection": "It balances service continuity with containment speed.",
+            "controlAudit": {
+                "leadDraft": "Start with the smallest reversible containment step.",
+                "integrationQuestion": "Does the pressure materially change correctness or just sharpen guardrails?",
+                "courseDecision": "qualify",
+                "courseDecisionReason": "Pressure tightened the guardrails but did not reverse the direction.",
+                "contributionAssessments": [],
+                "acceptedAdversarialPoints": ["Escalate quickly if spread is confirmed."],
+                "rejectedAdversarialPoints": [],
+                "heldOutConcerns": [],
+                "selfCheck": "The revised draft still answers the user directly.",
+            },
+            "dynamicLaneDecision": {
+                "shouldSpawn": False,
+                "suggestedLaneTypes": [],
+                "reason": "",
+                "requiredPressure": "",
+                "temperature": "",
+                "instruction": "",
+            },
+            "remainingUncertainty": ["Need confirmation on host spread."],
+            "sourceWorkers": ["A", "B"],
+        }
+        worker_state = {
+            "A": {
+                "workerId": "A",
+                "label": "Proponent",
+                "role": "utility",
+                "focus": "execution",
+                "step": 1,
+                "observation": "A narrow containment step keeps service usable.",
+                "benefits": ["Low blast radius."],
+                "detriments": ["May not stop all spread."],
+                "invalidatingCircumstances": ["If lateral movement is already active."],
+                "uncertainty": ["Scope of compromise is still incomplete."],
+                "evidenceLedger": [{"claim": "Containment is reversible.", "supportLevel": "supported", "note": "Rollback path is known.", "sourceUrls": []}],
+                "evidenceGaps": ["Need host-level confirmation."],
+            },
+            "B": {
+                "workerId": "B",
+                "label": "Sceptic",
+                "role": "adversarial",
+                "focus": "failure modes",
+                "step": 1,
+                "observation": "Waiting risks wider spread.",
+                "benefits": ["Higher certainty if isolated now."],
+                "detriments": ["Short-term user impact increases."],
+                "invalidatingCircumstances": ["If containment takes too long to apply."],
+                "uncertainty": ["Unknown whether persistence is active."],
+                "evidenceLedger": [{"claim": "Delay increases exposure.", "supportLevel": "mixed", "note": "Depends on current foothold.", "sourceUrls": []}],
+                "evidenceGaps": ["Need EDR confirmation."],
+            },
+        }
+        vetting_config = {"enabled": True}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            line_catalog = runtime.build_summary_line_catalog(worker_state, workers, max_items_per_worker=10)
+
+            def fake_invoke_provider_json(**kwargs):
+                captured["instructions"] = kwargs["instructions"]
+                captured["input_text"] = kwargs["input_text"]
+                captured["schema"] = kwargs["schema"]
+                parsed = runtime.new_mock_summary(
+                    task,
+                    commander_checkpoint,
+                    commander_review_checkpoint,
+                    workers,
+                    worker_state,
+                    vetting_config,
+                    line_catalog,
+                )
+                return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                runtime.new_live_summary(
+                    api_key="sk-test",
+                    auth_assignments=None,
+                    task=task,
+                    commander_checkpoint=commander_checkpoint,
+                    commander_review_checkpoint=commander_review_checkpoint,
+                    workers=workers,
+                    worker_state=worker_state,
+                    runtime=runtime_config,
+                    vetting_config=vetting_config,
+                    line_catalog=line_catalog,
+                )
+
+        self.assertIn("Authoritative rebound lead binder:", captured["input_text"])
+        self.assertNotIn("Supporting evidence packet for review-facing fields only:", captured["input_text"])
+        self.assertNotIn("Worker checkpoint digests:", captured["input_text"])
+        self.assertNotIn("Worker review line catalog:", captured["input_text"])
+        self.assertNotIn("Lead draft before the final rewrite:", captured["input_text"])
+        self.assertNotIn("Repo agent context:", captured["instructions"])
+        self.assertIn("frontAnswer", captured["schema"]["required"])
+        self.assertIn("summarizerOpinion", captured["schema"]["required"])
+        self.assertNotIn("controlAudit", captured["schema"]["required"])
+        self.assertNotIn("reviewTrace", captured["schema"]["required"])
+
+    def test_review_binder_compacts_for_budgeted_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            binder, meta = runtime.compact_review_binder_for_model(
+                {
+                    "leadDirection": "L" * 1500,
+                    "answerDraft": "A" * 12000,
+                    "whyThisDirection": "W" * 2200,
+                    "claimsToStrengthen": ["S" * 900 for _ in range(6)],
+                    "claimsToLimit": ["L" * 900 for _ in range(6)],
+                    "requiredDecisionGates": ["G" * 900 for _ in range(6)],
+                    "evidenceOrCommsRisks": ["R" * 900 for _ in range(6)],
+                    "discardedPressure": ["D" * 900 for _ in range(6)],
+                    "remainingUncertainty": ["U" * 900 for _ in range(6)],
+                },
+                "deepseek",
+                "deepseek-v4-flash",
+            )
+
+        self.assertTrue(meta["reviewBinderCompacted"])
+        self.assertLessEqual(meta["reviewBinderEstimatedTokens"], meta["reviewBinderBudgetTokens"])
+        self.assertLessEqual(len(binder["answerDraft"]), 700)
+        self.assertLessEqual(len(binder["whyThisDirection"]), 240)
+
+    def test_run_summarizer_retries_live_call_before_succeeding(self) -> None:
+        task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, runtime_config = self._build_summary_ready_fixture()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            runtime.write_state(
+                {
+                    "activeTask": task,
+                    "commander": commander_checkpoint,
+                    "commanderReview": commander_review_checkpoint,
+                    "workers": worker_state,
+                }
+            )
+            line_catalog = runtime.build_summary_line_catalog(worker_state, workers, max_items_per_worker=10)
+            summary_payload = runtime.new_mock_summary(
+                task,
+                commander_checkpoint,
+                commander_review_checkpoint,
+                workers,
+                worker_state,
+                {"enabled": False},
+                line_catalog,
+            )
+            calls = {"count": 0}
+
+            def fake_new_live_summary(*args, **kwargs):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise RuntimeErrorWithCode("Model response JSON parse failed: bad json", 500)
+                return (
+                    summary_payload,
+                    "resp-summary",
+                    {"status": "completed", "usage": {}},
+                    {
+                        "requestedMaxOutputTokens": 400,
+                        "effectiveMaxOutputTokens": 400,
+                        "attempts": [400],
+                        "recoveredFromIncomplete": False,
+                        "inputText": "Objective:\nSynthetic summary input",
+                        "fullPrompt": "Instructions:\nSynthetic summary prompt",
+                    },
+                )
+
+            with (
+                mock.patch.object(runtime, "get_task_runtime", return_value=runtime_config),
+                mock.patch.object(runtime, "provider_live_api_key", return_value="sk-test"),
+                mock.patch.object(runtime, "new_live_summary", side_effect=fake_new_live_summary),
+            ):
+                result = runtime.run_summarizer()
+
+            self.assertEqual(result["target"], "summarizer")
+            self.assertEqual(calls["count"], 2)
+            state = runtime.read_state()
+            self.assertEqual(state["summary"]["frontAnswer"]["answer"], summary_payload["frontAnswer"]["answer"])
+            paths = storage.project_paths(Path(tmpdir))
+            outputs = list(paths.outputs.glob("*summary_round001_output.json"))
+            self.assertTrue(outputs)
+            payload = json.loads(outputs[0].read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "live")
+            self.assertEqual(payload["inputText"], "Objective:\nSynthetic summary input")
+            self.assertEqual(payload["fullPrompt"], "Instructions:\nSynthetic summary prompt")
+            steps_text = paths.steps.read_text(encoding="utf-8")
+            self.assertIn("Live API call failed; retrying live call.", steps_text)
+            self.assertNotIn("falling back to mock", steps_text)
+
+    def test_run_summarizer_raises_after_retry_exhaustion_without_mock(self) -> None:
+        task, commander_checkpoint, commander_review_checkpoint, _workers, worker_state, runtime_config = self._build_summary_ready_fixture()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            runtime.write_state(
+                {
+                    "activeTask": task,
+                    "commander": commander_checkpoint,
+                    "commanderReview": commander_review_checkpoint,
+                    "workers": worker_state,
+                }
+            )
+            calls = {"count": 0}
+
+            def fake_new_live_summary(*args, **kwargs):
+                calls["count"] += 1
+                raise RuntimeErrorWithCode("Model response JSON parse failed: still bad", 500)
+
+            with (
+                mock.patch.object(runtime, "get_task_runtime", return_value=runtime_config),
+                mock.patch.object(runtime, "provider_live_api_key", return_value="sk-test"),
+                mock.patch.object(runtime, "new_live_summary", side_effect=fake_new_live_summary),
+            ):
+                with self.assertRaises(RuntimeErrorWithCode) as ctx:
+                    runtime.run_summarizer()
+
+            self.assertIn("Live run failed for summarizer", str(ctx.exception))
+            self.assertEqual(calls["count"], 2)
+            state = runtime.read_state()
+            self.assertIsNone(state["summary"])
+            paths = storage.project_paths(Path(tmpdir))
+            self.assertEqual(list(paths.outputs.glob("*summary_round001_output.json")), [])
+            steps_text = paths.steps.read_text(encoding="utf-8")
+            self.assertIn("Live API call failed after retries; no mock fallback was used.", steps_text)
+            self.assertNotIn("falling back to mock", steps_text)
 
     def test_full_workers_mode_controls_worker_packet_scope(self) -> None:
         task = {
@@ -1288,9 +2070,9 @@ class RuntimeAuthTests(unittest.TestCase):
                     direct_runtime=runtime_config,
                 )
 
-        self.assertIn("structured, methodical, factual operator response", captured["instructions"])
-        self.assertIn("Use crisp sections for recommendation, reasoning, and next steps.", captured["instructions"])
-        self.assertIn("up to 7 compact paragraphs is acceptable", captured["instructions"])
+        self.assertIn("Give a decisive but conditional recommendation.", captured["instructions"])
+        self.assertIn("Prefer the most detailed factual response the evidence supports.", captured["instructions"])
+        self.assertNotIn("up to 7 compact paragraphs is acceptable", captured["instructions"])
 
     def test_direct_baseline_can_run_with_no_harness(self) -> None:
         captured: dict[str, str] = {}

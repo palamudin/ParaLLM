@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from . import artifacts, metadata
 from .config import deployment_topology
+from .provider_responses import extract_normalized_provider_answer, parse_embedded_json_value
 
 
 LOCK_STALE_SECONDS = 45
@@ -60,6 +61,14 @@ def project_paths(root: Optional[Path] = None) -> Paths:
         events=data / "events.jsonl",
         steps=data / "steps.jsonl",
     )
+
+
+def benchmark_vetting_root(paths: Paths) -> Path:
+    return paths.data / "benchmarks" / "vetting"
+
+
+def benchmark_vetting_runs_dir(paths: Paths) -> Path:
+    return benchmark_vetting_root(paths) / "runs"
 
 
 def utc_now() -> str:
@@ -1739,4 +1748,617 @@ def read_eval_artifact(paths: Optional[Paths], run_id: str, artifact_id: str) ->
         "summary": entry.get("summary") if isinstance(entry.get("summary"), dict) else {},
         "policy": artifact_visibility_policy(),
         "content": content,
+    }
+
+
+def default_vetting_rubric_preview() -> Dict[str, Any]:
+    return {
+        "qualifier": "MSP Live Incident Lead Qualifier",
+        "mustDo": [
+            "Judge as if hiring a lead MSP incident responder for a live multi-tenant severity-1 event.",
+            "Reward tenant separation, evidence preservation, control-plane skepticism, and threshold-based escalation.",
+            "Require per-customer incident ownership, an internal major-incident record, and tenant-safe evidence-compatible communication.",
+            "Penalize polished answers that create cross-tenant exposure, evidence loss, or blind service disruption.",
+        ],
+        "hardFailRules": [
+            "Cross-tenant customer disclosure or shared customer-facing ticketing is disqualifying.",
+            "Missing per-customer incident ownership plus an internal major-incident record/decision log is disqualifying.",
+            "Blind trust in the suspected compromised RMM or PSA before preserving evidence is a hard fail.",
+            "Blind mass shutdown or destructive cleanup without gates is a hard fail.",
+        ],
+        "categories": {
+            "blastRadiusPerception": "Blast path, tenant-boundary, and control-plane perception.",
+            "humanUsability": "MSP operator usability under pressure.",
+            "agentExecutability": "Tenant-safe executability.",
+            "commsAndIncidentDiscipline": "Comms & incident-record discipline.",
+            "tacticalDetail": "Evidence and action detail.",
+            "restraintAndCollateral": "Collateral and compliance restraint.",
+            "decisionGates": "Decision and escalation gates.",
+            "firstHourRealism": "First-hour MSP realism.",
+            "overall": "Lead hireability.",
+        },
+        "awards": {
+            "bestFinalAnswer": "The safest, clearest, most hireable incident-lead answer.",
+            "bestTacticalDetail": "The answer with the strongest useful extra checks, artifacts, or control-plane cautions.",
+        },
+    }
+
+
+def read_score_run(paths: Optional[Paths], run_id: str) -> Dict[str, Any]:
+    paths = paths or project_paths()
+    target = benchmark_vetting_runs_dir(paths) / f"{run_id}.json"
+    payload = read_json_file(target)
+    if not isinstance(payload, dict):
+        raise FileNotFoundError("Score run not found.")
+    return payload
+
+
+def list_score_runs(paths: Optional[Paths]) -> List[Dict[str, Any]]:
+    paths = paths or project_paths()
+    runs_dir = benchmark_vetting_runs_dir(paths)
+    payloads: List[Dict[str, Any]] = []
+    if not runs_dir.exists():
+        return payloads
+    for path in runs_dir.glob("*.json"):
+        payload = read_json_file(path)
+        if not isinstance(payload, dict):
+            continue
+        payloads.append(payload)
+    payloads.sort(
+        key=lambda item: (
+            str(item.get("createdAt") or ""),
+            str(item.get("runId") or ""),
+        ),
+        reverse=True,
+    )
+    return payloads
+
+
+def read_project_json_file(paths: Paths, relative_or_absolute_path: str) -> Optional[Dict[str, Any]]:
+    raw = str(relative_or_absolute_path or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (paths.root / raw).resolve()
+    else:
+        candidate = candidate.resolve()
+    try:
+        candidate.relative_to(paths.root.resolve())
+    except ValueError:
+        return None
+    return read_json_file(candidate)
+
+
+def read_eval_arm_manifest(paths: Paths, answer_id: str) -> Optional[Dict[str, Any]]:
+    target = paths.eval_arms / f"{str(answer_id or '').strip()}.json"
+    return read_json_file(target)
+
+
+def score_overall_value(answer: Dict[str, Any]) -> Optional[float]:
+    scores = answer.get("scores") if isinstance(answer.get("scores"), dict) else {}
+    value = scores.get("overall") if isinstance(scores, dict) else None
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def score_run_judge_provider(run: Dict[str, Any]) -> Optional[str]:
+    judge = run.get("judge") if isinstance(run.get("judge"), dict) else {}
+    provider = str(judge.get("provider") or run.get("providerFamily") or "").strip()
+    return provider or None
+
+
+def build_scores_run_preview(run: Dict[str, Any]) -> Dict[str, Any]:
+    judge = run.get("judge") if isinstance(run.get("judge"), dict) else {}
+    answers = run.get("answers") if isinstance(run.get("answers"), list) else []
+    answer_providers = sorted(
+        {
+            str(answer.get("provider") or "").strip()
+            for answer in answers
+            if isinstance(answer, dict) and str(answer.get("provider") or "").strip()
+        }
+    )
+    return {
+        "runId": str(run.get("runId") or "").strip(),
+        "createdAt": str(run.get("createdAt") or "").strip(),
+        "title": str(((run.get("case") or {}) if isinstance(run.get("case"), dict) else {}).get("title") or "").strip() or "Scored run",
+        "judgeSystem": str(run.get("judgeSystem") or "").strip() or "council",
+        "providerFamily": str(run.get("providerFamily") or "").strip() or None,
+        "judgeProvider": score_run_judge_provider(run),
+        "judgeModel": str(judge.get("model") or "").strip() or None,
+        "answerProviders": answer_providers,
+        "bestFinalAnswer": str(((run.get("bestFinalAnswer") or {}) if isinstance(run.get("bestFinalAnswer"), dict) else {}).get("label") or "").strip() or None,
+        "bestTacticalDetail": str(((run.get("bestTacticalDetail") or {}) if isinstance(run.get("bestTacticalDetail"), dict) else {}).get("label") or "").strip() or None,
+        "measuredAdvantage": str(((run.get("advantageSummary") or {}) if isinstance(run.get("advantageSummary"), dict) else {}).get("band") or "").strip() or None,
+        "answerCount": len(run.get("answers") or []) if isinstance(run.get("answers"), list) else 0,
+    }
+
+
+def extract_meaningful_answer_text(payload: Any) -> str:
+    if isinstance(payload, dict):
+        output_value = payload.get("output")
+        if isinstance(output_value, dict):
+            nested = extract_meaningful_answer_text(output_value)
+            if nested:
+                return nested
+        if isinstance(output_value, str) and output_value.strip():
+            nested_output = extract_meaningful_answer_text(output_value.strip())
+            if nested_output:
+                return nested_output
+        front_answer = payload.get("frontAnswer")
+        if isinstance(front_answer, dict):
+            nested = extract_meaningful_answer_text(front_answer)
+            if nested:
+                return nested
+        answer_value = payload.get("answer")
+        if isinstance(answer_value, dict):
+            nested = extract_meaningful_answer_text(answer_value)
+            if nested:
+                return nested
+        if isinstance(answer_value, str) and answer_value.strip():
+            nested_answer = extract_meaningful_answer_text(answer_value.strip())
+            if nested_answer:
+                return nested_answer
+            return answer_value.strip()
+        flattened_output = payload.get("flattenedOutputText")
+        if isinstance(flattened_output, str) and flattened_output.strip():
+            return flattened_output.strip()
+        provider = str(payload.get("provider") or "").strip()
+        raw_output = payload.get("rawOutputText")
+        if isinstance(raw_output, str) and raw_output.strip():
+            normalized = extract_normalized_provider_answer(provider, raw_output)
+            if normalized:
+                return normalized
+            decoded_raw = parse_embedded_json_value(raw_output)
+            if decoded_raw is not None:
+                nested = extract_meaningful_answer_text(decoded_raw)
+                if nested:
+                    return nested
+            return raw_output.strip()
+    if isinstance(payload, str):
+        raw = payload.strip()
+        decoded_raw = parse_embedded_json_value(raw)
+        if decoded_raw is not None:
+            nested = extract_meaningful_answer_text(decoded_raw)
+            if nested:
+                return nested
+        return raw
+    return ""
+
+
+def extract_canonical_prompt_text(payload: Any) -> str:
+    if isinstance(payload, dict):
+        input_text = payload.get("inputText")
+        if isinstance(input_text, str) and input_text.strip():
+            return input_text.strip()
+        full_prompt = payload.get("fullPrompt")
+        if isinstance(full_prompt, str) and full_prompt.strip():
+            full_prompt_text = full_prompt.strip()
+            for marker in ("\n\nObjective:", "\n\nPrompt:", "\n\nCandidate answers:"):
+                marker_index = full_prompt_text.find(marker)
+                if marker_index >= 0:
+                    return full_prompt_text[marker_index + 2 :].strip()
+            return full_prompt_text
+        output_value = payload.get("output")
+        if isinstance(output_value, dict):
+            nested = extract_canonical_prompt_text(output_value)
+            if nested:
+                return nested
+    return ""
+
+
+def missing_canonical_prompt_message() -> str:
+    return "Canonical provider prompt was not recorded for this run. Rerun on the current runtime to inspect the exact prompt."
+
+
+def hydrate_score_answer(paths: Paths, answer: Dict[str, Any]) -> Dict[str, Any]:
+    hydrated = dict(answer)
+    artifact_file = str(answer.get("artifactFile") or "").strip()
+    if artifact_file:
+        artifact_payload = read_project_json_file(paths, artifact_file)
+        if isinstance(artifact_payload, dict):
+            hydrated["_artifactPayload"] = artifact_payload
+            extracted = extract_meaningful_answer_text(artifact_payload)
+            if extracted:
+                hydrated["text"] = extracted
+            if not str(hydrated.get("provider") or "").strip():
+                hydrated["provider"] = str(artifact_payload.get("provider") or "").strip() or hydrated.get("provider")
+            if not str(hydrated.get("model") or "").strip():
+                hydrated["model"] = str(artifact_payload.get("model") or "").strip() or hydrated.get("model")
+    return hydrated
+
+
+def format_preview_heading(label: str, value: str) -> str:
+    normalized_label = str(label or "").strip()
+    normalized_value = str(value or "").strip()
+    if not normalized_value:
+        return ""
+    return f"{normalized_label}:\n{normalized_value}"
+
+
+def format_preview_bullets(values: Any) -> str:
+    if isinstance(values, list):
+        lines = [f"- {str(item).strip()}" for item in values if str(item or "").strip()]
+        return "\n".join(lines) if lines else "- none"
+    if isinstance(values, dict):
+        lines: List[str] = []
+        for key, value in values.items():
+            key_label = re.sub(r"(?<!^)([A-Z])", r" \1", str(key or "")).replace("_", " ").strip() or "item"
+            if isinstance(value, list):
+                rendered = format_preview_bullets(value)
+                lines.append(f"- {key_label}:")
+                lines.extend([f"  {line}" for line in rendered.splitlines()])
+            elif isinstance(value, dict):
+                rendered = format_preview_bullets(value)
+                lines.append(f"- {key_label}:")
+                lines.extend([f"  {line}" for line in rendered.splitlines()])
+            else:
+                lines.append(f"- {key_label}: {str(value or '').strip() or 'none'}")
+        return "\n".join(lines) if lines else "- none"
+    normalized = str(values or "").strip()
+    return normalized or "none"
+
+
+def build_shared_question_prompt(case: Dict[str, Any]) -> str:
+    return "\n\n".join(
+        [
+            format_preview_heading("Objective", str(case.get("objective") or "").strip()),
+            format_preview_heading("Constraints", format_preview_bullets(case.get("constraints", []))),
+            format_preview_heading("Session context", str(case.get("sessionContext", "") or "none").strip() or "none"),
+        ]
+    ).strip()
+
+
+def build_direct_answer_prompt_preview(case: Dict[str, Any], runtime_config: Dict[str, Any]) -> str:
+    return build_shared_question_prompt(case)
+
+
+def build_vetting_matrix_judge_prompt_preview(
+    case: Dict[str, Any],
+    judge_rubric: Any,
+    answers: List[Dict[str, Any]],
+) -> str:
+    instructions = (
+        "Blindly evaluate the candidate answers to the same prompt as if vetting a lead MSP incident responder for a live multi-tenant severity-1 event.\n"
+        "Use only the judge metric below plus the shared prompt, constraints, and answer texts.\n"
+        "Score each answer from 0 to 10 in 0.5-point increments for every listed category.\n"
+        "Record hire verdicts, hard-fail flags, and trap findings for each answer.\n"
+        "An answer that triggers a hard fail should not win best final answer unless every answer hard-fails.\n"
+        "Choose one best final answer and one best tactical detail answer.\n"
+        "Return JSON only that matches the schema."
+    )
+    answer_blocks: List[str] = []
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue
+        answer_blocks.append(
+            "\n".join(
+                [
+                    f"Answer {str(answer.get('id', '')).strip() or '?'}",
+                    str(answer.get("text", "")).strip() or "No answer captured.",
+                ]
+            ).strip()
+        )
+    input_text = "\n\n".join(
+        [
+            format_preview_heading("Judge metric", format_preview_bullets(judge_rubric)),
+            format_preview_heading("Objective", str(case.get("objective") or "").strip()),
+            format_preview_heading("Constraints", format_preview_bullets(case.get("constraints", []))),
+            format_preview_heading("Candidate answers", "\n\n".join(answer_blocks) if answer_blocks else "No candidate answers supplied."),
+        ]
+    ).strip()
+    return f"Instructions:\n{instructions}\n\n{input_text}".strip()
+
+
+def build_direct_lane_prompt(case: Dict[str, Any], arm_manifest: Optional[Dict[str, Any]]) -> str:
+    runtime_config = (
+        (arm_manifest.get("runtime") if isinstance(arm_manifest, dict) and isinstance(arm_manifest.get("runtime"), dict) else {})
+        or {}
+    )
+    return build_direct_answer_prompt_preview(case, runtime_config)
+
+
+def build_para_lane_prompt(case: Dict[str, Any], arm_manifest: Optional[Dict[str, Any]]) -> str:
+    arm_manifest = arm_manifest if isinstance(arm_manifest, dict) else {}
+    arm_bits = "\n".join(
+        [
+            line
+            for line in [
+                str(arm_manifest.get("title") or "").strip(),
+                str(arm_manifest.get("description") or "").strip(),
+            ]
+            if line
+        ]
+    ).strip()
+    prompt = build_shared_question_prompt(case)
+    if not arm_bits:
+        return prompt
+    return "\n\n".join([prompt, format_preview_heading("Para path", arm_bits)]).strip()
+
+
+def build_judge_lane_prompt(run: Dict[str, Any], source_manifest: Optional[Dict[str, Any]]) -> str:
+    case = run.get("case") if isinstance(run.get("case"), dict) else {}
+    answers = run.get("answers") if isinstance(run.get("answers"), list) else []
+    judge_rubric = (
+        source_manifest.get("judgeRubric")
+        if isinstance(source_manifest, dict) and isinstance(source_manifest.get("judgeRubric"), dict)
+        else default_vetting_rubric_preview()
+    )
+    slotted_answers = []
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue
+        slotted_answers.append(
+            {
+                "id": str(answer.get("slot") or answer.get("answerId") or "").strip(),
+                "text": str(answer.get("text") or "").strip(),
+                "costUsd": answer.get("costUsd"),
+                "costNote": answer.get("costNote"),
+                "familyHint": answer.get("familyHint"),
+            }
+        )
+    return build_vetting_matrix_judge_prompt_preview(case, judge_rubric, slotted_answers)
+
+
+def build_judge_lane_response(run: Dict[str, Any]) -> str:
+    best_final = run.get("bestFinalAnswer") if isinstance(run.get("bestFinalAnswer"), dict) else {}
+    best_tactical = run.get("bestTacticalDetail") if isinstance(run.get("bestTacticalDetail"), dict) else {}
+    advantage = run.get("advantageSummary") if isinstance(run.get("advantageSummary"), dict) else {}
+    answers = run.get("answers") if isinstance(run.get("answers"), list) else []
+    score_packets: Dict[str, Any] = {}
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue
+        score_packets[str(answer.get("label") or answer.get("slot") or "").strip() or "answer"] = (
+            answer.get("scores") if isinstance(answer.get("scores"), dict) else {}
+        )
+    lines = [
+        f"Best final answer: {str(best_final.get('label') or best_final.get('slot') or 'n/a').strip()}",
+        f"Best tactical detail: {str(best_tactical.get('label') or best_tactical.get('slot') or 'n/a').strip()}",
+    ]
+    hire_verdict = str(best_final.get("hireVerdict") or "").strip()
+    if hire_verdict:
+        lines.append(f"Hire verdict: {hire_verdict}")
+    hard_fail_flags = best_final.get("hardFailFlags") if isinstance(best_final.get("hardFailFlags"), list) else []
+    if hard_fail_flags:
+        lines.append("Hard fail flags: " + "; ".join([str(item).strip() for item in hard_fail_flags if str(item).strip()]))
+    band = str(advantage.get("band") or "").strip()
+    if band:
+        leader = ((advantage.get("leader") or {}) if isinstance(advantage.get("leader"), dict) else {})
+        runner_up = ((advantage.get("runnerUp") or {}) if isinstance(advantage.get("runnerUp"), dict) else {})
+        lines.append(
+            "Measured advantage: "
+            + band
+            + " | leader "
+            + (str(leader.get("label") or leader.get("slot") or "n/a").strip())
+            + " | runner-up "
+            + (str(runner_up.get("label") or runner_up.get("slot") or "n/a").strip())
+        )
+    rationale = str(run.get("rationale") or "").strip()
+    if rationale:
+        lines.extend(["", "Judge rationale:", rationale])
+    return "\n".join([line for line in lines if line is not None]).strip()
+
+
+def build_scores_judge_trace_text(run: Dict[str, Any], answers: List[Dict[str, Any]]) -> str:
+    judge = run.get("judge") if isinstance(run.get("judge"), dict) else {}
+    advantage = run.get("advantageSummary") if isinstance(run.get("advantageSummary"), dict) else {}
+    ranking = run.get("rankingAnswers") if isinstance(run.get("rankingAnswers"), list) else []
+    lines: List[str] = []
+    lines.append(f"Judge system: {str(run.get('judgeSystem') or 'council').strip() or 'council'}")
+    provider = str(judge.get("provider") or run.get("providerFamily") or "").strip()
+    if provider:
+        lines.append(f"Judge provider: {provider}")
+    model = str(judge.get("model") or "").strip()
+    if model:
+        lines.append(f"Judge model: {model}")
+    response_id = ""
+    slot_result = run.get("slotResult") if isinstance(run.get("slotResult"), dict) else {}
+    response_id = str(slot_result.get("responseId") or "").strip()
+    if not response_id:
+        trace = run.get("judgeTrace") if isinstance(run.get("judgeTrace"), dict) else {}
+        response_id = str(trace.get("responseId") or "").strip()
+    if response_id:
+        lines.append(f"Response id: {response_id}")
+    source_manifest = str(run.get("sourceManifest") or "").strip()
+    if source_manifest:
+        lines.append(f"Source manifest: {source_manifest}")
+    if answers:
+        lines.extend(["", "Blind slot mapping:"])
+        for answer in answers:
+            if not isinstance(answer, dict):
+                continue
+            slot = str(answer.get("slot") or "").strip() or "?"
+            label = str(answer.get("label") or answer.get("answerId") or "").strip() or "answer"
+            lines.append(f"- {slot}: {label}")
+    if ranking:
+        lines.extend(["", "Ranking:"])
+        for index, answer in enumerate(ranking, start=1):
+            if not isinstance(answer, dict):
+                continue
+            label = str(answer.get("label") or answer.get("slot") or "answer").strip()
+            hire_verdict = str(answer.get("hireVerdict") or "").strip()
+            verdict_suffix = f" | {hire_verdict}" if hire_verdict else ""
+            lines.append(f"{index}. {label}{verdict_suffix}")
+            hard_fail_flags = answer.get("hardFailFlags") if isinstance(answer.get("hardFailFlags"), list) else []
+            if hard_fail_flags:
+                lines.append("   hard fails: " + "; ".join([str(item).strip() for item in hard_fail_flags if str(item).strip()]))
+    band = str(advantage.get("band") or "").strip()
+    if band:
+        leader = advantage.get("leader") if isinstance(advantage.get("leader"), dict) else {}
+        runner_up = advantage.get("runnerUp") if isinstance(advantage.get("runnerUp"), dict) else {}
+        lines.extend(
+            [
+                "",
+                "Measured advantage:",
+                f"- band: {band}",
+                f"- leader: {str(leader.get('label') or leader.get('slot') or 'n/a').strip()}",
+                f"- runner-up: {str(runner_up.get('label') or runner_up.get('slot') or 'n/a').strip()}",
+            ]
+        )
+    markdown = run.get("markdown") if isinstance(run.get("markdown"), dict) else {}
+    summary = str(markdown.get("summary") or "").strip()
+    if summary:
+        lines.extend(["", "Judge summary:", summary])
+    score_table = str(markdown.get("scoreTable") or "").strip()
+    if score_table:
+        lines.extend(["", "Score table:", score_table])
+    legend = str(markdown.get("legend") or "").strip()
+    if legend:
+        lines.extend(["", "Legend:", legend])
+    return "\n".join([line for line in lines if line is not None]).strip()
+
+
+def build_scores_answer_lane(
+    paths: Paths,
+    case: Dict[str, Any],
+    answer: Dict[str, Any],
+    arm_manifest: Optional[Dict[str, Any]],
+    *,
+    lane_key: str,
+) -> Dict[str, Any]:
+    runtime_config = arm_manifest.get("runtime") if isinstance(arm_manifest, dict) and isinstance(arm_manifest.get("runtime"), dict) else {}
+    hydrated_answer = hydrate_score_answer(paths, answer)
+    artifact_payload = hydrated_answer.get("_artifactPayload") if isinstance(hydrated_answer.get("_artifactPayload"), dict) else None
+    prompt_text = build_shared_question_prompt(case)
+    if not prompt_text:
+        prompt_text = extract_canonical_prompt_text(artifact_payload)
+    if not prompt_text:
+        if lane_key == "direct":
+            prompt_text = build_direct_lane_prompt(case, arm_manifest)
+        else:
+            prompt_text = build_shared_question_prompt(case)
+    response_text = extract_meaningful_answer_text(artifact_payload) if isinstance(artifact_payload, dict) else ""
+    if not response_text:
+        response_text = str(hydrated_answer.get("text") or "").strip()
+    return {
+        "laneKey": lane_key,
+        "answerId": str(hydrated_answer.get("answerId") or "").strip() or None,
+        "label": str(hydrated_answer.get("label") or "").strip() or lane_key.title(),
+        "role": str(hydrated_answer.get("role") or "").strip() or None,
+        "provider": str(hydrated_answer.get("provider") or runtime_config.get("provider") or "").strip() or None,
+        "model": str(hydrated_answer.get("model") or runtime_config.get("model") or runtime_config.get("summarizerModel") or "").strip() or None,
+        "overall": score_overall_value(hydrated_answer),
+        "artifactFile": str(hydrated_answer.get("artifactFile") or "").strip() or None,
+        "cohort": str(hydrated_answer.get("cohort") or "").strip() or None,
+        "elapsedSeconds": hydrated_answer.get("elapsedSeconds"),
+        "promptText": prompt_text or missing_canonical_prompt_message(),
+        "responseText": response_text or "No response captured.",
+    }
+
+
+def score_answer_is_para_candidate(answer: Dict[str, Any]) -> bool:
+    role = str((answer or {}).get("role") or "").strip().lower()
+    if role == "direct":
+        return False
+    return True
+
+
+def build_scores_run_detail(paths: Paths, run: Dict[str, Any]) -> Dict[str, Any]:
+    source_manifest = read_project_json_file(paths, str(run.get("sourceManifest") or ""))
+    case = run.get("case") if isinstance(run.get("case"), dict) else {}
+    judge = run.get("judge") if isinstance(run.get("judge"), dict) else {}
+    judge_trace = run.get("judgeTrace") if isinstance(run.get("judgeTrace"), dict) else {}
+    slot_result = run.get("slotResult") if isinstance(run.get("slotResult"), dict) else {}
+    answers = [hydrate_score_answer(paths, dict(answer)) for answer in (run.get("answers") or []) if isinstance(answer, dict)]
+    answer_providers = sorted(
+        {
+            str(answer.get("provider") or "").strip()
+            for answer in answers
+            if isinstance(answer, dict) and str(answer.get("provider") or "").strip()
+        }
+    )
+    para_answers = [answer for answer in answers if score_answer_is_para_candidate(answer)]
+    direct_answer = next((answer for answer in answers if str(answer.get("role") or "").strip() == "direct"), None)
+    para_lanes = []
+    for answer in para_answers:
+        arm_manifest = read_eval_arm_manifest(paths, str(answer.get("answerId") or ""))
+        para_lanes.append(build_scores_answer_lane(paths, case, answer, arm_manifest, lane_key="para"))
+    para_lanes.sort(
+        key=lambda item: (
+            -float(item.get("overall")) if item.get("overall") is not None else 999.0,
+            str(item.get("label") or ""),
+        )
+    )
+    best_final = run.get("bestFinalAnswer") if isinstance(run.get("bestFinalAnswer"), dict) else {}
+    default_para_answer_id = None
+    if score_answer_is_para_candidate(best_final):
+        default_para_answer_id = str(best_final.get("answerId") or "").strip() or None
+    if not default_para_answer_id and para_lanes:
+        default_para_answer_id = str(para_lanes[0].get("answerId") or "").strip() or None
+    direct_lane = None
+    if isinstance(direct_answer, dict):
+        direct_arm_manifest = read_eval_arm_manifest(paths, str(direct_answer.get("answerId") or ""))
+        direct_lane = build_scores_answer_lane(paths, case, direct_answer, direct_arm_manifest, lane_key="direct")
+    judge_prompt = (
+        str((slot_result.get("fullPrompt") if isinstance(slot_result, dict) else None) or "").strip()
+        or str(judge_trace.get("fullPrompt") or "").strip()
+        or missing_canonical_prompt_message()
+    )
+    judge_lane = {
+        "laneKey": "judge",
+        "label": "Blind judge",
+        "provider": score_run_judge_provider(run),
+        "model": str(judge.get("model") or "").strip() or None,
+        "promptText": judge_prompt,
+        "responseText": build_judge_lane_response(run),
+    }
+    markdown = run.get("markdown") if isinstance(run.get("markdown"), dict) else {}
+    return {
+        "runId": str(run.get("runId") or "").strip(),
+        "createdAt": str(run.get("createdAt") or "").strip(),
+        "title": str(case.get("title") or "").strip() or "Scored run",
+        "judgeSystem": str(run.get("judgeSystem") or "").strip() or "council",
+        "providerFamily": str(run.get("providerFamily") or "").strip() or None,
+        "judge": {
+            "provider": score_run_judge_provider(run),
+            "model": str(judge.get("model") or "").strip() or None,
+        },
+        "answerProviders": answer_providers,
+        "case": case,
+        "bestFinalAnswer": best_final,
+        "bestTacticalDetail": run.get("bestTacticalDetail") if isinstance(run.get("bestTacticalDetail"), dict) else {},
+        "advantageSummary": run.get("advantageSummary") if isinstance(run.get("advantageSummary"), dict) else {},
+        "judgeTrace": {
+            "responseId": str((slot_result.get("responseId") if isinstance(slot_result, dict) else None) or judge_trace.get("responseId") or "").strip() or None,
+            "fullPrompt": judge_prompt,
+            "rawResponseText": str(judge_trace.get("rawOutputText") or "").strip() or None,
+            "logText": build_scores_judge_trace_text(run, answers),
+            "sourceManifest": str(run.get("sourceManifest") or "").strip() or None,
+        },
+        "markdown": {
+            "summary": str(markdown.get("summary") or "").strip(),
+            "scoreTable": str(markdown.get("scoreTable") or "").strip(),
+            "legend": str(markdown.get("legend") or "").strip(),
+        },
+        "lanes": {
+            "defaultParaAnswerId": default_para_answer_id,
+            "paraOptions": para_lanes,
+            "direct": direct_lane,
+            "judge": judge_lane,
+        },
+    }
+
+
+def build_scores_runs_payload(paths: Optional[Paths] = None, selected_run_id: str = "") -> Dict[str, Any]:
+    paths = paths or project_paths()
+    run_payloads = list_score_runs(paths)
+    runs = [build_scores_run_preview(run) for run in run_payloads]
+    selected_run: Optional[Dict[str, Any]] = None
+    selected_source: Optional[Dict[str, Any]] = None
+    for run in run_payloads:
+        if selected_run_id and str(run.get("runId") or "") == selected_run_id:
+            selected_source = run
+            break
+    if selected_source is None and run_payloads:
+        selected_source = run_payloads[0]
+        selected_run_id = str(selected_source.get("runId") or "")
+    if isinstance(selected_source, dict):
+        selected_run = build_scores_run_detail(paths, selected_source)
+    return {
+        "runs": runs,
+        "selectedRunId": selected_run_id or None,
+        "selectedRun": selected_run,
     }

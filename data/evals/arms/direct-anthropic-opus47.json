@@ -1,0 +1,34 @@
+{
+  "armId": "direct-anthropic-opus47",
+  "title": "Direct Claude Opus 4.7",
+  "description": "Single-model Anthropic baseline with no adversarial steering.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "anthropic",
+    "model": "claude-opus-4-7",
+    "summarizerProvider": "anthropic",
+    "summarizerModel": "claude-opus-4-7",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 180000,
+      "maxCostUsd": 14,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": []
+}

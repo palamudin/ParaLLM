@@ -13,7 +13,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - helpful runtime error
 
 from runtime.engine import RuntimeErrorWithCode
 
-from . import config, control, dispatch, evals, infrastructure, jobs, sessions, settings, storage
+from . import config, control, dispatch, evals, infrastructure, jobs, knowledgebase, memory_graph, repo_graph, sessions, settings, storage
 
 
 async def request_payload(request: Request) -> dict[str, object]:
@@ -28,6 +28,27 @@ async def request_payload(request: Request) -> dict[str, object]:
 def python_shell_html(root: Path) -> str:
     index_path = root / "index.html"
     return index_path.read_text(encoding="utf-8")
+
+
+def legacy_shell_html(root: Path) -> str:
+    index_path = root / "index_old.html"
+    if not index_path.is_file():
+        raise FileNotFoundError("index_old.html not found.")
+    return index_path.read_text(encoding="utf-8")
+
+
+def replacement_shell_html(root: Path) -> str:
+    replacement_path = root / "replacement-shell.html"
+    if not replacement_path.is_file():
+        raise FileNotFoundError("replacement-shell.html not found.")
+    return replacement_path.read_text(encoding="utf-8")
+
+
+def repo_webview_html(root: Path) -> str:
+    webview_path = root / "webviewindex.html"
+    if not webview_path.is_file():
+        raise FileNotFoundError("webviewindex.html not found.")
+    return webview_path.read_text(encoding="utf-8")
 
 
 def create_app(root: Path | None = None) -> FastAPI:
@@ -46,6 +67,27 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/index.html", response_class=HTMLResponse)
     def app_shell_index() -> HTMLResponse:
         return HTMLResponse(python_shell_html(paths.root))
+
+    @app.get("/index_old.html", response_class=HTMLResponse)
+    def legacy_shell_index() -> HTMLResponse:
+        try:
+            return HTMLResponse(legacy_shell_html(paths.root))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/replacement-shell.html", response_class=HTMLResponse)
+    def replacement_shell_index() -> HTMLResponse:
+        try:
+            return HTMLResponse(replacement_shell_html(paths.root))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/webviewindex.html", response_class=HTMLResponse)
+    def repo_webview_shell() -> HTMLResponse:
+        try:
+            return HTMLResponse(repo_webview_html(paths.root))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -72,6 +114,161 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/v1/system/infrastructure")
     def get_infrastructure() -> JSONResponse:
         return JSONResponse(infrastructure.infrastructure_status(paths.root))
+
+    @app.get("/v1/repo/graph")
+    def get_repo_graph(
+        maxNodes: int = 1600,
+        maxFiles: int = 5000,
+        maxFileBytes: int = 900000,
+        includeAmbiguous: bool = False,
+    ) -> JSONResponse:
+        return JSONResponse(
+            repo_graph.build_repo_graph(
+                paths.root,
+                max_nodes=maxNodes,
+                max_files=maxFiles,
+                max_file_bytes=maxFileBytes,
+                include_ambiguous=includeAmbiguous,
+            )
+        )
+
+    @app.get("/v1/knowledgebase/graph")
+    def get_knowledgebase_graph(
+        maxEvents: int = 30,
+        maxSteps: int = 30,
+        maxArtifacts: int = 24,
+        includeRepo: bool = False,
+        maxRepoNodes: int = 220,
+        maxRepoFiles: int = 2500,
+        maxFileBytes: int = 500000,
+    ) -> JSONResponse:
+        return JSONResponse(
+            memory_graph.build_memory_graph(
+                paths.root,
+                max_events=maxEvents,
+                max_steps=maxSteps,
+                max_artifacts=maxArtifacts,
+                include_repo=includeRepo,
+                max_repo_nodes=maxRepoNodes,
+                max_repo_files=maxRepoFiles,
+                max_file_bytes=maxFileBytes,
+            )
+        )
+
+    @app.get("/v1/knowledgebase/status")
+    def get_knowledgebase_status() -> JSONResponse:
+        return JSONResponse(knowledgebase.status(paths.root))
+
+    @app.post("/v1/knowledgebase/retain")
+    async def post_knowledgebase_retain(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        return JSONResponse(knowledgebase.retain(paths.root, payload))
+
+    @app.get("/v1/knowledgebase/recall")
+    def get_knowledgebase_recall(
+        query: str = "",
+        bankId: str = "",
+        maxRecords: int = 12,
+        maxTokens: int = 2048,
+        tags: str = "",
+        tagsMatch: str = "any",
+        types: str = "",
+        includeRuntime: bool = True,
+        includePersistent: bool = True,
+    ) -> JSONResponse:
+        return JSONResponse(
+            knowledgebase.recall(
+                paths.root,
+                query=query,
+                bank_id=bankId,
+                max_records=maxRecords,
+                max_tokens=maxTokens,
+                tags=knowledgebase.parse_tags(tags),
+                tags_match=tagsMatch,
+                types=knowledgebase.parse_types(types),
+                include_runtime=includeRuntime,
+                include_persistent=includePersistent,
+            )
+        )
+
+    @app.post("/v1/knowledgebase/recall")
+    async def post_knowledgebase_recall(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        return JSONResponse(
+            knowledgebase.recall(
+                paths.root,
+                query=str(payload.get("query") or payload.get("prompt") or ""),
+                bank_id=str(payload.get("bankId") or payload.get("bank_id") or ""),
+                max_records=int(payload.get("maxRecords") or payload.get("max_records") or 12),
+                max_tokens=int(payload.get("maxTokens") or payload.get("max_tokens") or 2048),
+                tags=knowledgebase.parse_tags(payload.get("tags")),
+                tags_match=str(payload.get("tagsMatch") or payload.get("tags_match") or "any"),
+                types=knowledgebase.parse_types(payload.get("types")),
+                include_runtime=knowledgebase.coerce_bool(payload.get("includeRuntime"), True),
+                include_persistent=knowledgebase.coerce_bool(payload.get("includePersistent"), True),
+            )
+        )
+
+    @app.post("/v1/knowledgebase/reflect")
+    async def post_knowledgebase_reflect(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        return JSONResponse(knowledgebase.reflect(paths.root, payload))
+
+    @app.get("/v1/memory/graph")
+    def get_memory_graph_legacy(
+        maxEvents: int = 30,
+        maxSteps: int = 30,
+        maxArtifacts: int = 24,
+        includeRepo: bool = False,
+        maxRepoNodes: int = 220,
+        maxRepoFiles: int = 2500,
+        maxFileBytes: int = 500000,
+    ) -> JSONResponse:
+        return get_knowledgebase_graph(
+            maxEvents=maxEvents,
+            maxSteps=maxSteps,
+            maxArtifacts=maxArtifacts,
+            includeRepo=includeRepo,
+            maxRepoNodes=maxRepoNodes,
+            maxRepoFiles=maxRepoFiles,
+            maxFileBytes=maxFileBytes,
+        )
+
+    @app.get("/v1/memory/status")
+    def get_memory_status_legacy() -> JSONResponse:
+        return get_knowledgebase_status()
+
+    @app.post("/v1/memory/retain")
+    async def post_memory_retain_legacy(request: Request) -> JSONResponse:
+        return await post_knowledgebase_retain(request)
+
+    @app.get("/v1/memory/recall")
+    def get_memory_recall_legacy(
+        query: str = "",
+        bankId: str = "",
+        maxRecords: int = 12,
+        maxTokens: int = 2048,
+        tags: str = "",
+        tagsMatch: str = "any",
+        types: str = "",
+        includeRuntime: bool = True,
+        includePersistent: bool = True,
+    ) -> JSONResponse:
+        return get_knowledgebase_recall(
+            query=query,
+            bankId=bankId,
+            maxRecords=maxRecords,
+            maxTokens=maxTokens,
+            tags=tags,
+            tagsMatch=tagsMatch,
+            types=types,
+            includeRuntime=includeRuntime,
+            includePersistent=includePersistent,
+        )
+
+    @app.post("/v1/memory/reflect")
+    async def post_memory_reflect_legacy(request: Request) -> JSONResponse:
+        return await post_knowledgebase_reflect(request)
 
     @app.get("/v1/auth/status")
     def get_auth_status() -> JSONResponse:
@@ -149,6 +346,10 @@ def create_app(root: Path | None = None) -> FastAPI:
         if str(canvas or "").strip().lower() == "live":
             evals.sync_front_live_runs(paths.root)
         return JSONResponse(storage.build_eval_history_payload(paths, selected_run_id=runId.strip(), canvas=canvas.strip()))
+
+    @app.get("/v1/scores/runs")
+    def get_scores_runs(runId: str = "") -> JSONResponse:
+        return JSONResponse(storage.build_scores_runs_payload(paths, selected_run_id=runId.strip()))
 
     @app.get("/v1/evals/artifacts/{run_id}/{artifact_id}")
     def get_eval_artifact(run_id: str, artifact_id: str) -> JSONResponse:
@@ -270,6 +471,15 @@ def create_app(root: Path | None = None) -> FastAPI:
         payload = await request_payload(request)
         try:
             result = settings.benchmark_ollama_timeouts(payload, paths.root)
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/runtime/ollama/models")
+    async def post_runtime_ollama_models(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = settings.check_ollama_models(payload, paths.root)
         except RuntimeErrorWithCode as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)

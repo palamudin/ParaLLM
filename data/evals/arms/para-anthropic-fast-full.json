@@ -1,0 +1,64 @@
+{
+  "armId": "para-anthropic-fast-full",
+  "title": "Para Claude Fast Workers",
+  "description": "Anthropic provider-owned Para run with Claude Sonnet 4.6 adversarial lanes and a Claude Opus 4.7 summarizer.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "full",
+    "directBaselineMode": "off",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "summarizerProvider": "anthropic",
+    "summarizerModel": "claude-opus-4-7",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 240000,
+      "maxCostUsd": 24,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "proponent",
+      "label": "Proponent",
+      "role": "utility",
+      "focus": "benefits, feasibility, leverage, momentum, practical execution",
+      "temperature": "balanced",
+      "model": "claude-sonnet-4-6"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Sceptic",
+      "role": "adversarial",
+      "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+      "temperature": "cool",
+      "model": "claude-sonnet-4-6"
+    },
+    {
+      "id": "C",
+      "type": "security",
+      "label": "Security",
+      "role": "adversarial",
+      "focus": "security abuse, privilege escalation, hostile actors",
+      "temperature": "hot",
+      "model": "claude-sonnet-4-6"
+    }
+  ]
+}

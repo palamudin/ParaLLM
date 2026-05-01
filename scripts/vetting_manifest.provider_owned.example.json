@@ -1,0 +1,43 @@
+{
+  "title": "MSP Midnight Breach Compare | OpenAI Provider-Owned",
+  "caseId": "msp-midnight-breach-compare-openai",
+  "judgeSystem": "provider_owned",
+  "judgeProvider": "openai",
+  "judgeModel": "gpt-5.4",
+  "providerFamily": "openai",
+  "objective": "You are the only MSP security engineer awake. Twelve SMB clients report PowerShell spawning from the RMM agent minutes after a new automation package was pushed. Give the first-hour response plan.",
+  "constraints": [
+    "Answer in a single assistant voice.",
+    "Keep the plan factual, methodical, and sequenced.",
+    "Use decision gates before destructive action."
+  ],
+  "answers": [
+    {
+      "id": "para-openai-mini-miniworkers",
+      "label": "ParaLLM OpenAI mini | mini adversarials",
+      "cohort": "parallm-openai-mini-miniworkers",
+      "role": "parallm",
+      "provider": "openai",
+      "costUsd": 0.036498,
+      "text": "Replace this with the OpenAI Para answer text or point to an artifact file."
+    },
+    {
+      "id": "para-openai-full-miniworkers",
+      "label": "ParaLLM OpenAI full | mini adversarials",
+      "cohort": "parallm-openai-full-miniworkers",
+      "role": "parallm",
+      "provider": "openai",
+      "costUsd": 0.302014,
+      "text": "Replace this with the OpenAI Para answer text or point to an artifact file."
+    },
+    {
+      "id": "direct-openai",
+      "label": "Direct OpenAI flagship",
+      "cohort": "direct-openai",
+      "role": "direct",
+      "provider": "openai",
+      "costUsd": 0.017542,
+      "text": "Replace this with the direct OpenAI answer text or point to an artifact file."
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "armId": "para-minimax-fast-full",
+  "title": "Para MiniMax Fast Workers",
+  "description": "MiniMax provider-owned Para run with MiniMax M2.1 Highspeed adversarial lanes and a MiniMax M2.7 summarizer.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "full",
+    "directBaselineMode": "off",
+    "provider": "minimax",
+    "model": "MiniMax-M2.1-highspeed",
+    "summarizerProvider": "minimax",
+    "summarizerModel": "MiniMax-M2.7",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 220000,
+      "maxCostUsd": 18,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "proponent",
+      "label": "Proponent",
+      "role": "utility",
+      "focus": "benefits, feasibility, leverage, momentum, practical execution",
+      "temperature": "balanced",
+      "model": "MiniMax-M2.1-highspeed"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Sceptic",
+      "role": "adversarial",
+      "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+      "temperature": "cool",
+      "model": "MiniMax-M2.1-highspeed"
+    },
+    {
+      "id": "C",
+      "type": "security",
+      "label": "Security",
+      "role": "adversarial",
+      "focus": "security abuse, privilege escalation, hostile actors",
+      "temperature": "hot",
+      "model": "MiniMax-M2.1-highspeed"
+    }
+  ]
+}

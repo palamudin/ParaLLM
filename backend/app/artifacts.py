@@ -74,6 +74,9 @@ def write_json_artifact(root: Optional[Path], category: str, name: str, payload:
         target_dir = topology.data_root / str(category).strip().lower()
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / safe_name
+        # Re-assert the parent directory immediately before write so freshly
+        # initialized eval workspaces cannot trip over a missing category path.
+        target_path.parent.mkdir(parents=True, exist_ok=True)
         body = json.dumps(payload, indent=2, ensure_ascii=False)
         target_path.write_text(body, encoding="utf-8")
         stat = target_path.stat()

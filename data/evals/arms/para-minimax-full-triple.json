@@ -1,0 +1,79 @@
+{
+  "armId": "para-minimax-full-triple",
+  "title": "Para MiniMax M2.7 Triple",
+  "description": "MiniMax provider-owned Para run with three MiniMax M2.7 adversarial lanes and a MiniMax M2.7 summarizer.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "full",
+    "directBaselineMode": "off",
+    "provider": "minimax",
+    "model": "MiniMax-M2.7",
+    "summarizerProvider": "minimax",
+    "summarizerModel": "MiniMax-M2.7",
+    "summarizerHarness": {
+      "concision": "balanced",
+      "structure": true,
+      "factsFirst": true,
+      "counterposition": true,
+      "extraInstruction": "Be explicit, methodical, and factual. Separate assumptions from verified facts, and keep sequencing operational."
+    },
+    "reasoningEffort": "xhigh",
+    "targetTimeouts": {
+      "commander": 240,
+      "workerDefault": 300,
+      "commanderReview": 420,
+      "summarizer": 300,
+      "answerNow": 240,
+      "arbiter": 300
+    },
+    "budget": {
+      "maxTotalTokens": 260000,
+      "maxCostUsd": 22,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "proponent",
+      "label": "Proponent",
+      "role": "utility",
+      "focus": "benefits, feasibility, leverage, momentum, practical execution",
+      "temperature": "balanced",
+      "model": "MiniMax-M2.7"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Sceptic",
+      "role": "adversarial",
+      "focus": "failure modes, downside, hidden coupling, consequences, externalities",
+      "temperature": "cool",
+      "model": "MiniMax-M2.7"
+    },
+    {
+      "id": "C",
+      "type": "security",
+      "label": "Security",
+      "role": "adversarial",
+      "focus": "security abuse, privilege escalation, hostile actors",
+      "temperature": "hot",
+      "model": "MiniMax-M2.7"
+    }
+  ]
+}

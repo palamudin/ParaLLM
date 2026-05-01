@@ -15,8 +15,11 @@ data/task_states/
 data/jobs/
 data/locks/
 data/logs/
+data/old_logs/
 data/backend-live.log
 data/backend-live.err.log
+data/backend-*.log
+data/backend-*.err.log
 data/exports/
 data/*smoke_runtime/
 data/*.json
@@ -30,3 +33,4 @@ backend/app/__pycache__/
 backend/tests/__pycache__/
 *.pyc
 *.zip
+tmp/

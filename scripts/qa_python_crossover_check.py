@@ -233,9 +233,10 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
         status, body = request(backend_base + "/", timeout=10)
         if (
             status != 200
-            or "assets/app.js" not in body
-            or 'class="workspace-pill-row"' not in body
-            or 'id="headerTaskId"' not in body
+            or "assets/replacement-shell.js" not in body
+            or "Run contract" not in body
+            or "Math2Code" not in body
+            or 'href="/index_old.html"' not in body
             or 'id="headerApiMode"' in body
         ):
             raise QAError("The Python-served shell did not return the expected app HTML.")

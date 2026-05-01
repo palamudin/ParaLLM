@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -15,11 +17,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from backend.app import artifacts as artifact_store
+from backend.app import knowledgebase
 from backend.app import metadata as metadata_store
+from backend.app import model_capacities
+from backend.app import provider_responses
 from backend.app import storage
 from backend.app.config import deployment_topology
 from backend.app.secrets import (
@@ -69,12 +74,20 @@ XAI_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
     "grok-4.20": {"label": "Grok 4.20"},
 }
 
+DEEPSEEK_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "deepseek-v4-pro": {"label": "DeepSeek V4 Pro"},
+    "deepseek-v4-flash": {"label": "DeepSeek V4 Flash"},
+    "deepseek-chat": {"label": "DeepSeek Chat (Legacy)"},
+    "deepseek-reasoner": {"label": "DeepSeek Reasoner (Legacy)"},
+}
+
 PROVIDER_CATALOG: Dict[str, Dict[str, str]] = {
-    "openai": {"label": "OpenAI"},
-    "anthropic": {"label": "Anthropic"},
-    "xai": {"label": "xAI"},
-    "minimax": {"label": "MiniMax"},
-    "ollama": {"label": "Ollama"},
+    "openai": {"label": "OpenAI", "status": "primary"},
+    "deepseek": {"label": "DeepSeek", "status": "primary"},
+    "anthropic": {"label": "Anthropic", "status": "primary"},
+    "xai": {"label": "xAI", "status": "primary"},
+    "minimax": {"label": "MiniMax", "status": "deferred"},
+    "ollama": {"label": "Ollama", "status": "deferred_local"},
 }
 
 PROVIDER_CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -88,6 +101,19 @@ PROVIDER_CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
         "notes": [
             "Full live research and audited function-tool path.",
             "Estimated token and spend tracking are available.",
+        ],
+    },
+    "deepseek": {
+        "toolLoop": True,
+        "webSearch": False,
+        "localFiles": True,
+        "githubTools": True,
+        "costTracking": False,
+        "reasoningSummary": True,
+        "notes": [
+            "OpenAI-compatible chat-completions path is the default for DeepSeek in this runtime.",
+            "Anthropic-compatible transport remains available as a fallback when explicitly selected.",
+            "Client tool loops are supported, but built-in live web search is not wired here yet.",
         ],
     },
     "anthropic": {
@@ -122,7 +148,8 @@ PROVIDER_CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
         "costTracking": False,
         "reasoningSummary": True,
         "notes": [
-            "Anthropic-compatible compatibility path is used for MiniMax in this runtime.",
+            "MiniMax is intentionally deferred from the primary hosted provider set until its review path is boring and repeatable.",
+            "OpenAI-compatible chat-completions is the active transport, with Anthropic-compatible fallback available only for targeted debugging.",
             "Client tool loops are supported, but built-in live web search is not wired here yet.",
         ],
     },
@@ -159,6 +186,7 @@ MINIMAX_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
 
 PROVIDER_MODEL_CATALOG: Dict[str, Dict[str, Dict[str, Any]]] = {
     "openai": MODEL_CATALOG,
+    "deepseek": DEEPSEEK_MODEL_CATALOG,
     "anthropic": ANTHROPIC_MODEL_CATALOG,
     "xai": XAI_MODEL_CATALOG,
     "minimax": MINIMAX_MODEL_CATALOG,
@@ -167,7 +195,17 @@ PROVIDER_MODEL_CATALOG: Dict[str, Dict[str, Dict[str, Any]]] = {
 
 PROVIDER_DEFAULT_MODELS: Dict[str, str] = {
     "openai": "gpt-5-mini",
+    "deepseek": "deepseek-v4-flash",
     "anthropic": "claude-sonnet-4-20250514",
+    "xai": "grok-4.20-reasoning",
+    "minimax": "MiniMax-M2.7",
+    "ollama": "qwen3",
+}
+
+PROVIDER_DEFAULT_JUDGE_MODELS: Dict[str, str] = {
+    "openai": "gpt-5.4",
+    "deepseek": "deepseek-v4-pro",
+    "anthropic": "claude-opus-4-7",
     "xai": "grok-4.20-reasoning",
     "minimax": "MiniMax-M2.7",
     "ollama": "qwen3",
@@ -317,9 +355,23 @@ def provider_display_label(provider: Optional[str]) -> str:
     return auth_key_provider_label(normalized)
 
 
+def provider_status(provider: Optional[str]) -> str:
+    normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    catalog_entry = PROVIDER_CATALOG.get(normalized)
+    if isinstance(catalog_entry, dict):
+        status = str(catalog_entry.get("status") or "").strip().lower()
+        if status:
+            return status
+    return "primary"
+
+
+def provider_is_primary(provider: Optional[str]) -> bool:
+    return provider_status(provider) == "primary"
+
+
 def provider_supports_custom_model(provider: Optional[str]) -> bool:
     normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
-    return normalized in {"anthropic", "xai", "minimax", "ollama"}
+    return normalized in {"deepseek", "anthropic", "xai", "minimax", "ollama"}
 
 
 def strip_markdown_frontmatter(text: str) -> str:
@@ -401,8 +453,20 @@ def runtime_skill_names(provider: Optional[str], role: str, worker_type: Optiona
     return ordered
 
 
-def build_runtime_skill_context(provider: Optional[str], role: str, worker_type: Optional[str] = None) -> Dict[str, Any]:
+def build_runtime_skill_context(
+    provider: Optional[str],
+    role: str,
+    worker_type: Optional[str] = None,
+    compact: bool = False,
+) -> Dict[str, Any]:
     names = runtime_skill_names(provider, role, worker_type)
+    if compact:
+        compact_lines: List[str] = []
+        if names:
+            compact_lines.append(
+                "Apply these internal disciplines silently: " + ", ".join(names) + "."
+            )
+        return {"names": names, "prompt": "\n".join(compact_lines).strip()}
     sections: List[str] = []
     agent_context = load_agent_context()
     if agent_context:
@@ -415,6 +479,15 @@ def build_runtime_skill_context(provider: Optional[str], role: str, worker_type:
     if skill_sections:
         sections.append("Active skills:\n" + "\n\n".join(skill_sections))
     return {"names": names, "prompt": "\n\n".join(sections).strip()}
+
+
+def model_prefers_compact_context(provider: Optional[str], model: Optional[str]) -> bool:
+    normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    normalized_model = normalize_model_id(model, default_model_for_provider(normalized_provider), normalized_provider).lower()
+    if normalized_provider in {"deepseek", "minimax"}:
+        return True
+    compact_markers = ("mini", "nano", "flash", "highspeed")
+    return any(marker in normalized_model for marker in compact_markers)
 
 
 class RuntimeErrorWithCode(Exception):
@@ -469,6 +542,21 @@ def default_dynamic_spinup_config() -> Dict[str, Any]:
 
 def default_vetting_config() -> Dict[str, Any]:
     return {"enabled": False}
+
+
+def default_knowledgebase_config() -> Dict[str, Any]:
+    return {
+        "enabled": True,
+        "scope": "shared",
+        "bankId": "",
+        "maxRecords": 6,
+        "maxTokens": 900,
+        "includeRuntime": True,
+        "includePersistent": True,
+        "fallbackToShared": True,
+        "tags": [],
+        "tagsMatch": "any",
+    }
 
 
 def default_context_mode() -> str:
@@ -1444,6 +1532,13 @@ def default_model_for_provider(provider: Optional[str]) -> str:
     return str(PROVIDER_DEFAULT_MODELS.get(normalized) or DEFAULT_MODEL_ID)
 
 
+def default_judge_model_for_provider(provider: Optional[str]) -> str:
+    normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
+    if normalized == "ollama":
+        return str(os.getenv("LOOP_OLLAMA_DEFAULT_JUDGE_MODEL") or os.getenv("LOOP_OLLAMA_DEFAULT_MODEL") or PROVIDER_DEFAULT_JUDGE_MODELS.get("ollama") or DEFAULT_OLLAMA_MODEL_ID).strip() or DEFAULT_OLLAMA_MODEL_ID
+    return str(PROVIDER_DEFAULT_JUDGE_MODELS.get(normalized) or default_model_for_provider(normalized)).strip() or default_model_for_provider(normalized)
+
+
 def infer_provider_from_model_id(model: Optional[str]) -> Optional[str]:
     candidate = (model or "").strip()
     if not candidate:
@@ -1453,6 +1548,8 @@ def infer_provider_from_model_id(model: Optional[str]) -> Optional[str]:
             return provider_id
     if candidate.lower().startswith("claude-"):
         return "anthropic"
+    if candidate.lower().startswith("deepseek-"):
+        return "deepseek"
     if candidate.lower().startswith("grok-"):
         return "xai"
     if candidate.startswith("MiniMax-"):
@@ -1463,8 +1560,11 @@ def infer_provider_from_model_id(model: Optional[str]) -> Optional[str]:
 def provider_capability_profile(provider: Optional[str]) -> Dict[str, Any]:
     normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     raw = PROVIDER_CAPABILITY_CATALOG.get(normalized) or {}
+    status = provider_status(normalized)
     return {
         "provider": normalized,
+        "status": status,
+        "primary": status == "primary",
         "toolLoop": bool(raw.get("toolLoop", False)),
         "webSearch": bool(raw.get("webSearch", False)),
         "localFiles": bool(raw.get("localFiles", False)),
@@ -1666,6 +1766,7 @@ def provider_instance_pool_status(root: Path) -> Dict[str, Any]:
         provider_groups[provider_id] = {
             "provider": provider_id,
             "label": provider_display_label(provider_id),
+            "status": provider_status(provider_id),
             "writable": True,
             "instanceCount": len(instances),
             "instances": instances,
@@ -1937,6 +2038,41 @@ def normalize_vetting_config(config: Optional[Dict[str, Any]] = None) -> Dict[st
     return {"enabled": coerce_bool(config.get("enabled", default["enabled"]), default["enabled"])}
 
 
+def normalize_knowledgebase_scope(value: Any, fallback: str = "shared") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"off", "runtime", "shared", "lane", "strict"}:
+        return candidate
+    return fallback if fallback in {"off", "runtime", "shared", "lane", "strict"} else "shared"
+
+
+def normalize_knowledgebase_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or {}
+    default = default_knowledgebase_config()
+    scope = normalize_knowledgebase_scope(config.get("scope"), default["scope"])
+    enabled = coerce_bool(config.get("enabled", default["enabled"]), default["enabled"]) and scope != "off"
+    try:
+        max_records = int(config.get("maxRecords", config.get("max_records", default["maxRecords"])) or default["maxRecords"])
+    except (TypeError, ValueError):
+        max_records = int(default["maxRecords"])
+    try:
+        max_tokens = int(config.get("maxTokens", config.get("max_tokens", default["maxTokens"])) or default["maxTokens"])
+    except (TypeError, ValueError):
+        max_tokens = int(default["maxTokens"])
+    tags_match = "all" if str(config.get("tagsMatch", config.get("tags_match", default["tagsMatch"]))).strip().lower() == "all" else "any"
+    return {
+        "enabled": enabled,
+        "scope": scope,
+        "bankId": knowledgebase.safe_bank_id(config.get("bankId") or config.get("bank_id")) if str(config.get("bankId") or config.get("bank_id") or "").strip() else "",
+        "maxRecords": max(1, min(24, max_records)),
+        "maxTokens": max(256, min(8000, max_tokens)),
+        "includeRuntime": coerce_bool(config.get("includeRuntime", default["includeRuntime"]), default["includeRuntime"]),
+        "includePersistent": coerce_bool(config.get("includePersistent", default["includePersistent"]), default["includePersistent"]),
+        "fallbackToShared": coerce_bool(config.get("fallbackToShared", default["fallbackToShared"]), default["fallbackToShared"]),
+        "tags": knowledgebase.parse_tags(config.get("tags", default["tags"])),
+        "tagsMatch": tags_match,
+    }
+
+
 def context_mode_label(mode: Any) -> str:
     normalized = normalize_context_mode(mode)
     return "Full context" if normalized == "full" else "Weighted context"
@@ -1951,12 +2087,52 @@ def direct_baseline_mode_label(mode: Any) -> str:
     return "Off"
 
 
-def normalize_direct_answer_payload(payload: Any, objective: str = "") -> Dict[str, str]:
+def normalize_direct_answer_payload(payload: Any, objective: str = "", provider: Any = "") -> Dict[str, str]:
     current = payload if isinstance(payload, dict) else {}
     fallback_answer = str(objective or "").strip() or "No direct baseline answer was captured."
-    answer = str(current.get("answer", "") or "").strip() or fallback_answer
+    answer = str(current.get("answer", "") or "").strip()
+    if not answer:
+        recommendation = str(current.get("recommendation", "") or "").strip()
+        next_actions = current.get("nextActions")
+        next_action_lines: List[str] = []
+        if isinstance(next_actions, list):
+            for entry in next_actions:
+                text = str(entry or "").strip()
+                if text:
+                    next_action_lines.append(text)
+        if recommendation:
+            answer = recommendation
+            if next_action_lines:
+                answer += "\n\nNext actions:\n" + "\n".join(f"- {line}" for line in next_action_lines[:8])
+        else:
+            has_raw_provider_shape = any(
+                key in current
+                for key in (
+                    "rawOutputText",
+                    "rawProviderResponse",
+                    "rawResponse",
+                    "outputText",
+                    "responseText",
+                    "choices",
+                    "output",
+                    "message",
+                    "content",
+                    "completion",
+                )
+            )
+            normalized_answer = (
+                str(provider_responses.extract_normalized_provider_answer(provider, current) or "").strip()
+                if has_raw_provider_shape
+                else ""
+            )
+            answer = normalized_answer or flatten_output_payload_text(current, "direct_output")
+    answer = answer or fallback_answer
     stance = truncate_text(current.get("stance", ""), 260) or truncate_text(answer, 260) or "No explicit stance was captured."
-    confidence_note = truncate_text(current.get("confidenceNote", ""), 320) or "No confidence note was captured."
+    confidence_note = (
+        truncate_text(current.get("confidenceNote", ""), 320)
+        or truncate_text(current.get("confidence_note", ""), 320)
+        or "No confidence note was captured."
+    )
     return {
         "answer": answer,
         "stance": stance,
@@ -2040,7 +2216,17 @@ def default_worker_harness() -> Dict[str, str]:
 
 
 def default_summarizer_harness() -> Dict[str, str]:
-    return {"concision": "balanced", "instruction": ""}
+    return {
+        "concision": "none",
+        "instruction": "Prefer the most detailed factual response the evidence supports. Be concrete, complete, and explicit about uncertainty.",
+    }
+
+
+def default_direct_harness() -> Dict[str, str]:
+    return {
+        "concision": "none",
+        "instruction": "Prefer the most detailed factual response the evidence supports. Be concrete, complete, and explicit about uncertainty.",
+    }
 
 
 def normalize_harness_config(value: Any, fallback_concision: str = "tight") -> Dict[str, str]:
@@ -2252,6 +2438,29 @@ def truncate_text(value: Any, max_length: int = 320) -> str:
     return text[: max(0, max_length - 3)].rstrip() + "..."
 
 
+def coerce_confidence_value(value: Any) -> float:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"high", "strong", "confident"}:
+            return 0.85
+        if lowered in {"medium", "moderate", "mixed"}:
+            return 0.6
+        if lowered in {"low", "weak", "uncertain"}:
+            return 0.35
+        if lowered.endswith("%"):
+            try:
+                return max(0.0, min(1.0, float(lowered[:-1].strip()) / 100.0))
+            except ValueError:
+                return 0.0
+    try:
+        candidate = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if candidate > 1.0:
+        candidate = candidate / 100.0 if candidate <= 100.0 else 1.0
+    return max(0.0, min(1.0, candidate))
+
+
 def compact_text_middle(value: Any, max_length: int = 3200) -> str:
     text = str(value or "").strip()
     if len(text) <= max_length:
@@ -2441,7 +2650,7 @@ def summarizer_harness_instruction_lines(harness: Any) -> List[str]:
 
 
 def direct_baseline_harness_instruction_lines(harness: Any) -> List[str]:
-    config = normalize_harness_config(harness, default_summarizer_harness()["concision"])
+    config = normalize_harness_config(harness, default_direct_harness()["concision"])
     concision = config["concision"]
     if concision == "none":
         return [f"Extra harness instruction: {config['instruction']}"] if config["instruction"] else []
@@ -2592,6 +2801,7 @@ def build_legacy_front_answer(summary: Optional[Dict[str, Any]]) -> Dict[str, st
             conflict_topics.append(topic)
     recommended_next_action = truncate_text(summary.get("recommendedNextAction", ""), 260)
     confidence_note = truncate_text(summary.get("vettingSummary", ""), 240)
+    answer_draft = str(summary.get("answerDraft", "") or "").strip()
     paragraphs: List[str] = []
     if stable_findings:
         paragraphs.append(" ".join(stable_findings))
@@ -2599,13 +2809,46 @@ def build_legacy_front_answer(summary: Optional[Dict[str, Any]]) -> Dict[str, st
         paragraphs.append("Remaining disagreement: " + "; ".join(conflict_topics) + ".")
     if recommended_next_action:
         paragraphs.append("Next step: " + recommended_next_action)
-    stance = stable_findings[0] if stable_findings else (recommended_next_action or confidence_note)
-    answer = "\n\n".join(paragraphs).strip() or stance
+    stance = stable_findings[0] if stable_findings else (truncate_text(answer_draft, 260) or recommended_next_action or confidence_note)
+    answer = "\n\n".join(paragraphs).strip() or answer_draft or stance
     return {
         "answer": answer or "No adjudicated answer was captured.",
         "stance": stance or "No adjudicated stance was captured.",
         "confidenceNote": confidence_note,
     }
+
+
+_INTERNAL_PUBLIC_ANSWER_MARKER_PATTERNS = [
+    re.compile(r"\bworker [a-z]\b", re.IGNORECASE),
+    re.compile(r"\baccepted from worker [a-z]\b", re.IGNORECASE),
+    re.compile(r"\bguardrail from worker [a-z]\b", re.IGNORECASE),
+    re.compile(r"\bworker [a-z] pressure\b", re.IGNORECASE),
+]
+
+
+def find_internal_public_answer_markers(text: Any) -> List[str]:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return []
+    matches: List[str] = []
+    seen: Dict[str, bool] = {}
+    for pattern in _INTERNAL_PUBLIC_ANSWER_MARKER_PATTERNS:
+        for match in pattern.finditer(candidate):
+            marker = match.group(0).strip()
+            normalized = marker.lower()
+            if marker and normalized not in seen:
+                seen[normalized] = True
+                matches.append(marker)
+    return matches
+
+
+def assert_public_answer_free_of_internal_provenance(text: Any, target_kind: str = "answer") -> None:
+    markers = find_internal_public_answer_markers(text)
+    if markers:
+        raise RuntimeErrorWithCode(
+            f"Model response leaked internal provenance markers into the public {target_kind}: {', '.join(markers)}",
+            500,
+        )
 
 
 def normalize_front_answer(front_answer: Any, fallback_summary: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
@@ -2695,6 +2938,16 @@ def flatten_provider_text_fragments(value: Any, depth: int = 0, limit: int = 160
                 collected.append(fragment)
             if len(collected) >= limit:
                 return collected[:limit]
+    if not collected:
+        for key, candidate in value.items():
+            if key in direct_text_keys or key in container_keys or key == "type":
+                continue
+            fragments = flatten_provider_text_fragments(candidate, depth + 1, limit - len(collected))
+            for fragment in fragments:
+                if fragment and fragment not in collected:
+                    collected.append(fragment)
+                if len(collected) >= limit:
+                    return collected[:limit]
     return collected[:limit]
 
 
@@ -2708,29 +2961,162 @@ def join_flattened_provider_text(value: Any, separator: str = "\n\n") -> str:
     return separator.join(deduped).strip()
 
 
+def strip_structured_output_prefix(text: str) -> str:
+    raw = str(text or "").lstrip("\ufeff").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    for prefix in ("json\n", "json\r\n", "json:", "json -", "json only\n", "json only:\n"):
+        if lowered.startswith(prefix):
+            trimmed = raw[len(prefix):].strip()
+            if trimmed:
+                return trimmed
+    return raw
+
+
+def extract_balanced_json_object(text: str) -> str:
+    raw = str(text or "")
+    start = raw.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(raw)):
+        char = raw[index]
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                escape = True
+                continue
+            if char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start:index + 1].strip()
+    return ""
+
+
+def escape_json_string_control_chars(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    repaired: List[str] = []
+    in_string = False
+    escape = False
+    total = len(raw)
+    for index, char in enumerate(raw):
+        if in_string:
+            if escape:
+                repaired.append(char)
+                escape = False
+                continue
+            if char == "\\":
+                repaired.append(char)
+                escape = True
+                continue
+            if char == '"':
+                lookahead = ""
+                for probe in range(index + 1, total):
+                    candidate = raw[probe]
+                    if candidate.isspace():
+                        continue
+                    lookahead = candidate
+                    break
+                if lookahead in {"", ",", "}", "]", ":"}:
+                    repaired.append(char)
+                    in_string = False
+                else:
+                    repaired.append('\\"')
+                continue
+            if char == "\n":
+                repaired.append("\\n")
+                continue
+            if char == "\r":
+                repaired.append("\\r")
+                continue
+            if char == "\t":
+                repaired.append("\\t")
+                continue
+            if ord(char) < 0x20:
+                repaired.append(f"\\u{ord(char):04x}")
+                continue
+            repaired.append(char)
+            continue
+        repaired.append(char)
+        if char == '"':
+            in_string = True
+    return "".join(repaired)
+
+
+def normalize_relaxed_json_text(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    normalized = (
+        raw.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+    )
+    normalized = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)', r'\1"\2"\3', normalized)
+    normalized = re.sub(r",(\s*[}\]])", r"\1", normalized)
+    return normalized
+
+
+def parse_pythonish_object_text(text: str) -> Optional[Dict[str, Any]]:
+    candidate = normalize_relaxed_json_text(text)
+    if not candidate:
+        return None
+    pythonish = re.sub(r"\btrue\b", "True", candidate, flags=re.IGNORECASE)
+    pythonish = re.sub(r"\bfalse\b", "False", pythonish, flags=re.IGNORECASE)
+    pythonish = re.sub(r"\bnull\b", "None", pythonish, flags=re.IGNORECASE)
+    try:
+        parsed = ast.literal_eval(pythonish)
+    except (SyntaxError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def parse_structured_output_text(output_text: str) -> Dict[str, Any]:
-    raw = str(output_text or "").strip()
+    raw = strip_structured_output_prefix(output_text)
     if not raw:
         raise RuntimeErrorWithCode("Model response JSON parse failed: empty output.", 500)
     candidates: List[str] = [raw]
     fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE)
     for block in fenced_blocks:
-        cleaned = str(block or "").strip()
+        cleaned = strip_structured_output_prefix(block)
         if cleaned and cleaned not in candidates:
             candidates.append(cleaned)
-    first_object = raw.find("{")
-    last_object = raw.rfind("}")
-    if 0 <= first_object < last_object:
-        extracted = raw[first_object:last_object + 1].strip()
-        if extracted and extracted not in candidates:
-            candidates.append(extracted)
+    balanced_object = extract_balanced_json_object(raw)
+    if balanced_object and balanced_object not in candidates:
+        candidates.append(balanced_object)
+    for candidate in list(candidates):
+        repaired = escape_json_string_control_chars(candidate)
+        if repaired and repaired not in candidates:
+            candidates.append(repaired)
+        relaxed = normalize_relaxed_json_text(candidate)
+        if relaxed and relaxed not in candidates:
+            candidates.append(relaxed)
     last_error: Optional[json.JSONDecodeError] = None
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError as error:
             last_error = error
-            continue
+            parsed = parse_pythonish_object_text(candidate)
+            if parsed is None:
+                continue
         if not isinstance(parsed, dict):
             raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
         return parsed
@@ -2739,9 +3125,54 @@ def parse_structured_output_text(output_text: str) -> Dict[str, Any]:
     raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
 
 
+def schema_looks_like_direct_answer(schema: Any) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    required = schema.get("required")
+    if not isinstance(required, list):
+        return False
+    required_names = {str(item or "").strip() for item in required}
+    return {"answer", "stance", "confidenceNote"}.issubset(required_names)
+
+
+def salvage_direct_answer_payload(provider: Any, raw_output_text: Any) -> Optional[Dict[str, str]]:
+    normalized = provider_responses.normalize_provider_response(provider, raw_output_text)
+    answer = str(normalized.get("answer") or "").strip()
+    if not answer:
+        return None
+    stance = truncate_text(normalized.get("stance"), 260) or truncate_text(answer, 260) or "No explicit stance was captured."
+    confidence_note = (
+        truncate_text(normalized.get("confidenceNote"), 320)
+        or f"Recovered from {normalize_provider_id(provider, DEFAULT_PROVIDER_ID)} response normalization after schema drift."
+    )
+    return {
+        "answer": answer,
+        "stance": stance,
+        "confidenceNote": confidence_note,
+    }
+
+
 def flatten_output_payload_text(payload: Any, artifact_type: str = "") -> str:
     normalized_type = str(artifact_type or "").strip().lower()
     if isinstance(payload, dict):
+        provider = str(
+            payload.get("provider")
+            or payload.get("providerName")
+            or payload.get("providerHint")
+            or ""
+        ).strip()
+        raw_candidates = [
+            payload.get("rawOutputText"),
+            payload.get("rawProviderResponse"),
+            payload.get("rawResponse"),
+            payload.get("outputText"),
+            payload.get("responseText"),
+        ]
+        if provider:
+            for raw_candidate in raw_candidates:
+                normalized_answer = str(provider_responses.extract_normalized_provider_answer(provider, raw_candidate) or "").strip()
+                if normalized_answer:
+                    return normalized_answer
         front_answer = payload.get("frontAnswer")
         if isinstance(front_answer, dict):
             front_text = str(front_answer.get("answer", "") or "").strip()
@@ -2922,6 +3353,11 @@ def normalize_commander_review_checkpoint(
         "controlAudit": {},
         "dynamicLaneDecision": normalize_dynamic_lane_decision(None),
         "dynamicLaneResolution": normalize_dynamic_lane_resolution(None),
+        "claimsToStrengthen": [],
+        "claimsToLimit": [],
+        "requiredDecisionGates": [],
+        "evidenceOrCommsRisks": [],
+        "discardedPressure": [],
         "remainingUncertainty": limit_string_list(base_commander.get("uncertainty", []), 4, 220),
         "sourceWorkers": normalize_worker_id_list(fallback_workers or []),
     }
@@ -2944,6 +3380,11 @@ def normalize_commander_review_checkpoint(
         normalized["sourceWorkers"] = normalize_worker_id_list(checkpoint.get("sourceWorkers", fallback_workers or []))
         normalized["dynamicLaneDecision"] = normalize_dynamic_lane_decision(checkpoint.get("dynamicLaneDecision"))
         normalized["dynamicLaneResolution"] = normalize_dynamic_lane_resolution(checkpoint.get("dynamicLaneResolution"))
+        normalized["claimsToStrengthen"] = limit_string_list(checkpoint.get("claimsToStrengthen", []), 4, 220)
+        normalized["claimsToLimit"] = limit_string_list(checkpoint.get("claimsToLimit", []), 4, 220)
+        normalized["requiredDecisionGates"] = limit_string_list(checkpoint.get("requiredDecisionGates", []), 4, 220)
+        normalized["evidenceOrCommsRisks"] = limit_string_list(checkpoint.get("evidenceOrCommsRisks", []), 4, 220)
+        normalized["discardedPressure"] = limit_string_list(checkpoint.get("discardedPressure", []), 4, 220)
         normalized["controlAudit"] = normalize_control_audit(
             checkpoint.get("controlAudit"),
             {
@@ -4353,6 +4794,7 @@ class LoopRuntime:
             "githubTools": default_github_tool_config(),
             "dynamicSpinup": default_dynamic_spinup_config(),
             "vetting": default_vetting_config(),
+            "knowledgebase": default_knowledgebase_config(),
         }
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
         if task_runtime:
@@ -4395,6 +4837,9 @@ class LoopRuntime:
             runtime["githubTools"] = normalize_github_tool_config(task_runtime.get("githubTools") if isinstance(task_runtime.get("githubTools"), dict) else {})
             runtime["dynamicSpinup"] = normalize_dynamic_spinup_config(task_runtime.get("dynamicSpinup") if isinstance(task_runtime.get("dynamicSpinup"), dict) else {})
             runtime["vetting"] = normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
+            runtime["knowledgebase"] = normalize_knowledgebase_config(
+                task_runtime.get("knowledgebase") if isinstance(task_runtime.get("knowledgebase"), dict) else {}
+            )
         runtime["maxOutputTokens"] = self.get_budget_limits(task, budget_target)["maxOutputTokens"]
         runtime["requestTimeoutSeconds"] = self.get_request_timeout_seconds(task, budget_target)
         if provider_override:
@@ -4488,6 +4933,282 @@ class LoopRuntime:
     def get_vetting_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
         return normalize_vetting_config(task_runtime.get("vetting") if isinstance(task_runtime.get("vetting"), dict) else {})
+
+    def get_knowledgebase_config(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        return normalize_knowledgebase_config(task_runtime.get("knowledgebase") if isinstance(task_runtime.get("knowledgebase"), dict) else {})
+
+    def knowledgebase_route_tags(
+        self,
+        task: Dict[str, Any],
+        target: str,
+        *,
+        role: str = "",
+        session_id: str = "",
+        client_id: str = "",
+    ) -> List[str]:
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        task_id = str(task.get("taskId") or metadata.get("taskId") or "").strip()
+        lane_id = normalize_auth_target(target)
+        tags: List[str] = []
+
+        def add(prefix: str, value: Any) -> None:
+            normalized = knowledgebase.slug(value, "", 80)
+            if normalized:
+                tag = f"{prefix}:{normalized}"
+                if tag not in tags:
+                    tags.append(tag)
+
+        add("task", task_id)
+        add("lane", lane_id)
+        add("role", role)
+        add("session", session_id or task.get("sessionId") or metadata.get("sessionId"))
+        add("client", client_id or task.get("clientId") or metadata.get("clientId"))
+        return tags
+
+    def build_knowledgebase_recall_query(
+        self,
+        task: Dict[str, Any],
+        target: str,
+        *,
+        label: str = "",
+        role: str = "",
+        focus: str = "",
+        constraints: Optional[List[str]] = None,
+        prior_summary: Optional[Dict[str, Any]] = None,
+        commander_checkpoint: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        parts = [
+            str(task.get("objective") or ""),
+            str(task.get("sessionContext") or ""),
+            " ".join(limit_string_list(constraints or task.get("constraints", []), 8, 220)),
+            f"{normalize_auth_target(target)} {label} {role} {focus}",
+        ]
+        if isinstance(prior_summary, dict):
+            parts.extend(
+                [
+                    str(prior_summary.get("recommendedNextAction") or ""),
+                    str((prior_summary.get("frontAnswer") or {}).get("answer") if isinstance(prior_summary.get("frontAnswer"), dict) else ""),
+                    " ".join(limit_string_list(prior_summary.get("claimsNeedingVerification", []), 4, 180)),
+                ]
+            )
+        if isinstance(commander_checkpoint, dict):
+            parts.extend(
+                [
+                    str(commander_checkpoint.get("leadDirection") or ""),
+                    str(commander_checkpoint.get("answerDraft") or ""),
+                    " ".join(limit_string_list(commander_checkpoint.get("pressurePoints", []), 4, 180)),
+                ]
+            )
+        return truncate_text(" ".join(part for part in parts if str(part or "").strip()), 2200)
+
+    def build_knowledgebase_recall_packet(
+        self,
+        task: Dict[str, Any],
+        runtime: Optional[Dict[str, Any]],
+        target: str,
+        *,
+        label: str = "",
+        role: str = "",
+        focus: str = "",
+        round_number: Optional[int] = None,
+        constraints: Optional[List[str]] = None,
+        prior_summary: Optional[Dict[str, Any]] = None,
+        commander_checkpoint: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        runtime_config = runtime if isinstance(runtime, dict) else self.get_task_runtime(task)
+        config = normalize_knowledgebase_config(runtime_config.get("knowledgebase") if isinstance(runtime_config.get("knowledgebase"), dict) else {})
+        target_id = normalize_auth_target(target)
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        kb_runtime = runtime_config.get("knowledgebase") if isinstance(runtime_config.get("knowledgebase"), dict) else {}
+        session_id = str(kb_runtime.get("sessionId") or task.get("sessionId") or metadata.get("sessionId") or self.current_execution_context().get("sessionId") or "").strip()
+        client_id = str(kb_runtime.get("clientId") or task.get("clientId") or metadata.get("clientId") or self.current_execution_context().get("clientId") or "").strip()
+        route_tags = self.knowledgebase_route_tags(task, target_id, role=role, session_id=session_id, client_id=client_id)
+        query = self.build_knowledgebase_recall_query(
+            task,
+            target_id,
+            label=label,
+            role=role,
+            focus=focus,
+            constraints=constraints,
+            prior_summary=prior_summary,
+            commander_checkpoint=commander_checkpoint,
+        )
+        base_packet: Dict[str, Any] = {
+            "schemaVersion": knowledgebase.SCHEMA_VERSION,
+            "intent": "advisor_dispatch_recall",
+            "enabled": bool(config["enabled"]),
+            "available": True,
+            "coreDependency": False,
+            "target": target_id,
+            "route": {
+                "taskId": str(task.get("taskId") or ""),
+                "laneId": target_id,
+                "label": label or provider_trace_target_label(target_id),
+                "role": role,
+                "focus": focus,
+                "round": int(round_number or 0),
+                "sessionId": session_id,
+                "clientId": client_id,
+                "tags": route_tags,
+            },
+            "config": {
+                "scope": config["scope"],
+                "bankId": config["bankId"] or "all",
+                "maxRecords": config["maxRecords"],
+                "maxTokens": config["maxTokens"],
+                "includeRuntime": config["includeRuntime"],
+                "includePersistent": config["includePersistent"],
+                "fallbackToShared": config["fallbackToShared"],
+            },
+            "query": query,
+            "resultCount": 0,
+            "fallbackUsed": False,
+            "degraded": False,
+            "warnings": [],
+            "hits": [],
+            "aiPacket": {
+                "intent": "knowledgebase.recall",
+                "coreDependency": False,
+                "fallbackPolicy": "If durable memory is empty or unavailable, continue with current task context, runtime state, logs, artifacts, and live tool evidence.",
+                "selectedEvidenceIds": [],
+                "contextText": "",
+            },
+        }
+        if not config["enabled"]:
+            base_packet["available"] = False
+            base_packet["disabledReason"] = "runtime.knowledgebase is disabled or scoped off"
+            return base_packet
+
+        scope = str(config["scope"])
+        bank_id = "" if scope == "runtime" else str(config["bankId"] or "")
+        include_runtime = bool(config["includeRuntime"])
+        include_persistent = bool(config["includePersistent"]) and scope != "runtime"
+        filter_tags = list(config["tags"])
+        if scope in {"lane", "strict"}:
+            filter_tags.extend(tag for tag in route_tags if tag not in filter_tags)
+
+        try:
+            recall = knowledgebase.recall(
+                self.root,
+                query=query,
+                bank_id=bank_id,
+                max_records=int(config["maxRecords"]),
+                max_tokens=int(config["maxTokens"]),
+                tags=filter_tags,
+                tags_match=str(config["tagsMatch"]),
+                include_runtime=include_runtime,
+                include_persistent=include_persistent,
+            )
+            fallback_reason = ""
+            if (
+                scope == "lane"
+                and int(recall.get("resultCount") or 0) == 0
+                and bool(config["fallbackToShared"])
+            ):
+                recall = knowledgebase.recall(
+                    self.root,
+                    query=query,
+                    bank_id=bank_id,
+                    max_records=int(config["maxRecords"]),
+                    max_tokens=int(config["maxTokens"]),
+                    tags=list(config["tags"]),
+                    tags_match=str(config["tagsMatch"]),
+                    include_runtime=include_runtime,
+                    include_persistent=include_persistent,
+                )
+                fallback_reason = "lane_scope_empty_used_shared_recall"
+            base_packet.update(
+                {
+                    "resultCount": int(recall.get("resultCount") or 0),
+                    "totalCandidates": int(recall.get("totalCandidates") or 0),
+                    "fallbackUsed": bool(recall.get("fallbackUsed")),
+                    "degraded": bool(recall.get("degraded")) or bool(fallback_reason),
+                    "degradedReason": fallback_reason,
+                    "warnings": normalize_string_array_preserve_items(recall.get("warnings", []))[:12],
+                    "hits": recall.get("hits") if isinstance(recall.get("hits"), list) else [],
+                    "aiPacket": recall.get("aiPacket") if isinstance(recall.get("aiPacket"), dict) else base_packet["aiPacket"],
+                    "filters": {
+                        "tags": filter_tags,
+                        "tagsMatch": str(config["tagsMatch"]),
+                        "bankId": bank_id or "all",
+                    },
+                }
+            )
+        except Exception as exc:
+            base_packet.update(
+                {
+                    "available": False,
+                    "degraded": True,
+                    "error": f"{exc.__class__.__name__}: {truncate_text(str(exc), 260)}",
+                    "warnings": ["Knowledgebase recall failed; dispatch must continue from current task context."],
+                }
+            )
+        return base_packet
+
+    def project_knowledgebase_prompt_packet(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+        ai_packet = packet.get("aiPacket") if isinstance(packet.get("aiPacket"), dict) else {}
+        hits = packet.get("hits") if isinstance(packet.get("hits"), list) else []
+        return {
+            "schemaVersion": str(packet.get("schemaVersion") or knowledgebase.SCHEMA_VERSION),
+            "intent": str(packet.get("intent") or "advisor_dispatch_recall"),
+            "enabled": bool(packet.get("enabled")),
+            "available": bool(packet.get("available")),
+            "coreDependency": False,
+            "target": str(packet.get("target") or ""),
+            "route": packet.get("route") if isinstance(packet.get("route"), dict) else {},
+            "config": packet.get("config") if isinstance(packet.get("config"), dict) else {},
+            "filters": packet.get("filters") if isinstance(packet.get("filters"), dict) else {},
+            "resultCount": int(packet.get("resultCount") or 0),
+            "totalCandidates": int(packet.get("totalCandidates") or 0),
+            "fallbackUsed": bool(packet.get("fallbackUsed")),
+            "degraded": bool(packet.get("degraded")),
+            "degradedReason": str(packet.get("degradedReason") or ""),
+            "warnings": normalize_string_array_preserve_items(packet.get("warnings", []))[:8],
+            "selectedEvidenceIds": normalize_string_array_preserve_items(ai_packet.get("selectedEvidenceIds", []))[:12],
+            "contextText": truncate_text(ai_packet.get("contextText") or "", 3600),
+            "hits": [
+                {
+                    "id": str(hit.get("id") or ""),
+                    "title": truncate_text(hit.get("title") or "", 140),
+                    "type": str(hit.get("type") or ""),
+                    "source": str(hit.get("source") or ""),
+                    "sourceId": truncate_text(hit.get("sourceId") or "", 180),
+                    "summary": truncate_text(hit.get("summary") or hit.get("text") or "", 520),
+                    "score": hit.get("score"),
+                    "tags": normalize_string_array_preserve_items(hit.get("tags", []))[:12],
+                    "createdAt": str(hit.get("createdAt") or ""),
+                }
+                for hit in hits[:8]
+                if isinstance(hit, dict)
+            ],
+            "fallbackPolicy": str(ai_packet.get("fallbackPolicy") or "Memory is optional; current task context and inspected evidence win."),
+        }
+
+    def render_knowledgebase_prompt_block(self, packet: Dict[str, Any]) -> str:
+        projected = self.project_knowledgebase_prompt_packet(packet)
+        return (
+            "MSP knowledgebase recall (optional background, never a core dependency):\n"
+            + json.dumps(projected, ensure_ascii=False, indent=2)
+            + "\n\n"
+            "Memory handling rule: use this as supporting context only. Current user input, current constraints, live tool evidence, and inspected files override stale or conflicting memory.\n\n"
+        )
+
+    def knowledgebase_call_meta(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+        projected = self.project_knowledgebase_prompt_packet(packet)
+        return {
+            "enabled": projected["enabled"],
+            "available": projected["available"],
+            "coreDependency": False,
+            "scope": (projected.get("config") or {}).get("scope"),
+            "target": projected["target"],
+            "route": projected["route"],
+            "resultCount": projected["resultCount"],
+            "fallbackUsed": projected["fallbackUsed"],
+            "degraded": projected["degraded"],
+            "selectedEvidenceIds": projected["selectedEvidenceIds"],
+            "warnings": projected["warnings"],
+        }
 
     def get_model_pricing(self, model: str) -> Dict[str, Any]:
         inferred_provider = infer_provider_from_model_id(model) or DEFAULT_PROVIDER_ID
@@ -5181,13 +5902,19 @@ class LoopRuntime:
     def get_response_usage_delta(self, response: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
         usage = response.get("usage")
         if isinstance(usage, dict):
-            input_tokens = int(usage.get("input_tokens", 0) or 0)
-            output_tokens = int(usage.get("output_tokens", 0) or 0)
+            input_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
+            output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
             total_tokens = int(usage.get("total_tokens", 0) or 0)
             cached_input_tokens = int(((usage.get("input_tokens_details") or {}).get("cached_tokens", 0)) or 0)
             if cached_input_tokens <= 0:
                 cached_input_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
-            reasoning_tokens = int(((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0)) or 0)
+            reasoning_tokens = int(
+                (
+                    ((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0))
+                    or ((usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0))
+                    or 0
+                )
+            )
             billable_input_tokens = max(0, input_tokens - cached_input_tokens)
             web_search_calls = max(
                 len(self.get_web_search_call_items(response)),
@@ -5341,6 +6068,81 @@ class LoopRuntime:
             "provider_not_configured",
         )
         return not any(marker in message for marker in fatal_markers)
+
+    def live_retry_attempt_limit(self, target: str) -> int:
+        normalized = str(target or "").strip().lower()
+        if normalized == "answer_now":
+            return 2
+        if normalized in {"direct_baseline", "commander", "commander_review", "summarizer"}:
+            return 2
+        if len(normalized) == 1 and normalized.isalpha():
+            return 2
+        return 2
+
+    def should_retry_live_failure(self, error: RuntimeErrorWithCode) -> bool:
+        if str(error).startswith("Budget limit reached:"):
+            return False
+        return self.should_fallback_to_mock(error)
+
+    def execute_live_stage_with_retry(
+        self,
+        *,
+        stage: str,
+        target_label: str,
+        task_id: str,
+        model: str,
+        requested_max_output_tokens: int,
+        auth_meta: Optional[Dict[str, Any]],
+        call: Callable[[], Any],
+        extra_context: Optional[Dict[str, Any]] = None,
+        retry_message: str = "Live API call failed; retrying live call.",
+        exhausted_message: str = "Live API call failed after retries; no mock fallback was used.",
+    ) -> tuple[Any, int]:
+        attempts_allowed = max(1, int(self.live_retry_attempt_limit(target_label)))
+        extra = dict(extra_context or {})
+        for attempt_number in range(1, attempts_allowed + 1):
+            try:
+                return call(), attempt_number
+            except RuntimeErrorWithCode as error:
+                if str(error).startswith("Budget limit reached:"):
+                    raise
+                context = {
+                    "taskId": task_id,
+                    "target": target_label,
+                    "model": model,
+                    "requestedMaxOutputTokens": int(requested_max_output_tokens or 0),
+                    "attempt": attempt_number,
+                    "maxAttempts": attempts_allowed,
+                    "error": str(error),
+                    "auth": auth_meta,
+                    **extra,
+                }
+                if attempt_number < attempts_allowed and self.should_retry_live_failure(error):
+                    self.append_step(stage, retry_message, context)
+                    continue
+                self.append_step(stage, exhausted_message, context)
+                raise RuntimeErrorWithCode(f"Live run failed for {target_label}: {error}", error.status_code) from error
+
+    def raise_live_stage_missing_credentials(
+        self,
+        *,
+        stage: str,
+        target_label: str,
+        task_id: str,
+        auth_meta: Optional[Dict[str, Any]],
+        extra_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.append_step(
+            stage,
+            "No API key found for a live run; no mock fallback was used.",
+            {
+                "taskId": task_id,
+                "target": target_label,
+                "auth": auth_meta,
+                **dict(extra_context or {}),
+            },
+        )
+        raise RuntimeErrorWithCode(f"Live run failed for {target_label}: no API key found.", 503)
 
     def is_request_timeout_error(self, error: Exception) -> bool:
         if isinstance(error, (TimeoutError, socket.timeout)):
@@ -5715,13 +6517,57 @@ class LoopRuntime:
         base = str(os.getenv("LOOP_XAI_BASE_URL") or "https://api.x.ai/v1").strip() or "https://api.x.ai/v1"
         return base.rstrip("/") + "/responses"
 
+    def minimax_transport_mode(self, provider_settings: Optional[Dict[str, Any]] = None) -> str:
+        runtime_value = ""
+        if isinstance(provider_settings, dict):
+            runtime_value = str(provider_settings.get("minimaxTransport") or "").strip().lower()
+        env_value = str(os.getenv("LOOP_MINIMAX_TRANSPORT") or "").strip().lower()
+        selected = runtime_value or env_value or "openai"
+        if selected not in {"openai", "anthropic"}:
+            return "openai"
+        return selected
+
+    def deepseek_transport_mode(self, provider_settings: Optional[Dict[str, Any]] = None) -> str:
+        runtime_value = ""
+        if isinstance(provider_settings, dict):
+            runtime_value = str(provider_settings.get("deepseekTransport") or "").strip().lower()
+        env_value = str(os.getenv("LOOP_DEEPSEEK_TRANSPORT") or "").strip().lower()
+        selected = runtime_value or env_value or "openai"
+        if selected not in {"openai", "anthropic"}:
+            return "openai"
+        return selected
+
+    def minimax_openai_chat_url(self) -> str:
+        base = str(os.getenv("LOOP_MINIMAX_OPENAI_BASE_URL") or "https://api.minimax.io/v1").strip() or "https://api.minimax.io/v1"
+        normalized_base = base.rstrip("/")
+        if normalized_base.endswith("/chat/completions"):
+            return normalized_base
+        if normalized_base.endswith("/v1"):
+            return normalized_base + "/chat/completions"
+        return normalized_base + "/v1/chat/completions"
+
+    def deepseek_openai_chat_url(self) -> str:
+        base = str(os.getenv("LOOP_DEEPSEEK_OPENAI_BASE_URL") or "https://api.deepseek.com").strip() or "https://api.deepseek.com"
+        normalized_base = base.rstrip("/")
+        if normalized_base.endswith("/chat/completions"):
+            return normalized_base
+        return normalized_base + "/chat/completions"
+
     def anthropic_messages_url(self, provider: str = "anthropic") -> str:
         normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
         if normalized == "minimax":
             base = str(os.getenv("LOOP_MINIMAX_ANTHROPIC_BASE_URL") or "https://api.minimax.io/anthropic").strip()
+        elif normalized == "deepseek":
+            base = str(os.getenv("LOOP_DEEPSEEK_ANTHROPIC_BASE_URL") or "https://api.deepseek.com/anthropic").strip()
         else:
             base = str(os.getenv("LOOP_ANTHROPIC_BASE_URL") or "https://api.anthropic.com").strip()
-        base = base or ("https://api.minimax.io/anthropic" if normalized == "minimax" else "https://api.anthropic.com")
+        if normalized == "minimax":
+            fallback_base = "https://api.minimax.io/anthropic"
+        elif normalized == "deepseek":
+            fallback_base = "https://api.deepseek.com/anthropic"
+        else:
+            fallback_base = "https://api.anthropic.com"
+        base = base or fallback_base
         normalized_base = base.rstrip("/")
         if normalized_base.endswith("/v1/messages"):
             return normalized_base
@@ -5759,6 +6605,644 @@ class LoopRuntime:
             if normalized == "none":
                 return {"type": "none"}
         return None
+
+    def invoke_minimax_openai_json(
+        self,
+        api_key: str,
+        model: str,
+        reasoning_effort: str,
+        instructions: str,
+        input_text: str,
+        schema_name: str,
+        schema: Dict[str, Any],
+        max_output_tokens: int = 0,
+        target_kind: str = "generic",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
+        request_timeout_seconds: int = 1800,
+    ) -> OpenAIResult:
+        handlers = function_handlers if isinstance(function_handlers, dict) else {}
+        assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
+        if not assignment_candidates and str(api_key or "").strip():
+            assignment_candidates = [{"apiKey": str(api_key).strip()}]
+        if not assignment_candidates:
+            raise RuntimeErrorWithCode("No API key available for live model call.", 401)
+
+        normalized_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
+        unsupported_tool_types = sorted(
+            {
+                str(tool.get("type", "")).strip() or "unknown"
+                for tool in normalized_tools
+                if str(tool.get("type", "")).strip() != "function"
+            }
+        )
+        if unsupported_tool_types:
+            raise RuntimeErrorWithCode(
+                "provider_does_not_support: MiniMax OpenAI-compatible live mode only supports local function tools in this runtime"
+                + f" (unsupported: {', '.join(unsupported_tool_types)}).",
+                400,
+            )
+
+        auth_failover_history: List[Dict[str, Any]] = []
+        last_error: Optional[RuntimeErrorWithCode] = None
+        provider_trace = self.build_provider_trace_base("minimax", model, target_kind, request_timeout_seconds)
+
+        def report_trace(stage: str, **updates: Any) -> None:
+            provider_trace.update({key: value for key, value in updates.items() if value is not None})
+            provider_trace["stage"] = stage
+            provider_trace["stageLabel"] = PROVIDER_TRACE_STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+            self.update_provider_trace(provider_trace)
+
+        for assignment_index, assignment in enumerate(assignment_candidates):
+            current_api_key = str(assignment.get("apiKey", "")).strip()
+            if not current_api_key:
+                continue
+            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            recovered_from_incomplete = False
+
+            try:
+                for index, effective_tokens in enumerate(attempts):
+                    effective_instructions = (
+                        str(instructions or "").rstrip()
+                        + "\nReturn raw JSON text only."
+                        + "\nDo not use markdown fences."
+                        + "\nDo not add commentary before or after the JSON object."
+                        + "\nEscape every newline inside string values as \\\\n and every tab as \\\\t."
+                    ).strip()
+                    messages: List[Dict[str, Any]] = [
+                        {"role": "system", "content": effective_instructions},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Return JSON only that matches this schema exactly.\n\n"
+                                f"Schema name: {schema_name}\n"
+                                f"Schema:\n{json.dumps(schema, ensure_ascii=False)}\n\n"
+                                f"Input:\n{input_text}"
+                            ),
+                        },
+                    ]
+                    executed_tools: List[Dict[str, Any]] = []
+                    tool_turns = 0
+                    retry_attempt = False
+                    while True:
+                        transport_max_tokens = max(1, min(2048, int(effective_tokens or 0) if int(effective_tokens or 0) > 0 else 2048))
+                        body: Dict[str, Any] = {
+                            "model": model,
+                            "messages": messages,
+                            "stream": False,
+                            "max_completion_tokens": transport_max_tokens,
+                        }
+                        if normalized_tools:
+                            body["tools"] = normalized_tools
+                        if tool_choice is not None:
+                            body["tool_choice"] = tool_choice
+
+                        request = urllib.request.Request(
+                            self.minimax_openai_chat_url(),
+                            data=json.dumps(body).encode("utf-8"),
+                            headers={"Authorization": f"Bearer {current_api_key}", "Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        report_trace(
+                            "sending",
+                            requestCount=int(provider_trace.get("requestCount") or 0) + 1,
+                            attemptIndex=index + 1,
+                            effectiveMaxOutputTokens=transport_max_tokens,
+                            toolTurn=tool_turns,
+                            authKeySlot=int(assignment.get("keySlot", 0) or 0) if assignment.get("keySlot") is not None else None,
+                            authMasked=str(assignment.get("masked", "")).strip() or None,
+                            requestUrl=request.full_url,
+                            sentAt=utc_now(),
+                        )
+                        try:
+                            with urllib.request.urlopen(request, timeout=request_timeout_seconds) as handle:
+                                header_map = self.provider_trace_header_map(handle)
+                                report_trace(
+                                    "headers",
+                                    headersAt=utc_now(),
+                                    httpStatus=getattr(handle, "status", None) or getattr(handle, "code", None) or 200,
+                                    **self.provider_trace_from_headers("minimax", header_map),
+                                )
+                                response = json.loads(handle.read().decode("utf-8"))
+                        except urllib.error.HTTPError as error:
+                            body_text = error.read().decode("utf-8", errors="replace")
+                            header_map = self.provider_trace_header_map(error)
+                            report_trace(
+                                "error",
+                                headersAt=utc_now(),
+                                completedAt=utc_now(),
+                                httpStatus=error.code,
+                                error=f"HTTP {error.code}",
+                                **self.provider_trace_from_headers("minimax", header_map),
+                            )
+                            raise RuntimeErrorWithCode(f"MiniMax API request failed: HTTP {error.code} | {body_text}", 500)
+                        except Exception as error:
+                            if self.is_request_timeout_error(error):
+                                report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
+                                raise RuntimeErrorWithCode(
+                                    f"MiniMax API request timed out after {request_timeout_seconds}s.",
+                                    504,
+                                )
+                            report_trace("error", completedAt=utc_now(), error=str(error))
+                            raise RuntimeErrorWithCode(f"MiniMax API request failed: {error}", 500)
+
+                        if isinstance(response.get("error"), dict):
+                            raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+                        base_resp = response.get("base_resp") if isinstance(response.get("base_resp"), dict) else {}
+                        status_code = int(base_resp.get("status_code", 0) or 0)
+                        status_msg = str(base_resp.get("status_msg", "") or "").strip()
+                        if status_code:
+                            detail = status_msg or f"MiniMax base_resp status_code={status_code}"
+                            raise RuntimeErrorWithCode(f"Model response error: {detail}", 500)
+
+                        choices = response.get("choices") if isinstance(response.get("choices"), list) else []
+                        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                        message_node = first_choice.get("message") if isinstance(first_choice.get("message"), dict) else {}
+                        finish_reason = str(first_choice.get("finish_reason", "") or "").strip().lower()
+
+                        tool_calls = []
+                        if handlers:
+                            for item in message_node.get("tool_calls") if isinstance(message_node.get("tool_calls"), list) else []:
+                                if not isinstance(item, dict):
+                                    continue
+                                function_node = item.get("function") if isinstance(item.get("function"), dict) else {}
+                                name = str(function_node.get("name", "")).strip()
+                                if name not in handlers:
+                                    continue
+                                tool_calls.append(item)
+
+                        if tool_calls:
+                            if tool_turns >= 8:
+                                raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
+                            assistant_message: Dict[str, Any] = {
+                                "role": "assistant",
+                                "content": str(message_node.get("content", "") or ""),
+                                "tool_calls": tool_calls,
+                            }
+                            messages.append(assistant_message)
+                            for item in tool_calls:
+                                function_node = item.get("function") if isinstance(item.get("function"), dict) else {}
+                                name = str(function_node.get("name", "")).strip()
+                                raw_arguments = function_node.get("arguments")
+                                arguments: Dict[str, Any] = {}
+                                if isinstance(raw_arguments, dict):
+                                    arguments = dict(raw_arguments)
+                                elif isinstance(raw_arguments, str) and raw_arguments.strip():
+                                    try:
+                                        decoded_arguments = json.loads(raw_arguments)
+                                    except json.JSONDecodeError:
+                                        decoded_arguments = None
+                                    if isinstance(decoded_arguments, dict):
+                                        arguments = decoded_arguments
+                                tool_output: Dict[str, Any]
+                                tool_audit: Dict[str, Any]
+                                try:
+                                    tool_output, tool_audit = handlers[name](arguments)
+                                except RuntimeErrorWithCode as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} failed: {truncate_text(str(error), 180)}",
+                                    }
+                                except Exception as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
+                                    }
+                                audit_entry = dict(tool_audit or {})
+                                audit_entry["name"] = name
+                                audit_entry["arguments"] = arguments
+                                if item.get("id"):
+                                    audit_entry["callId"] = str(item.get("id"))
+                                executed_tools.append(audit_entry)
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": str(item.get("id", "")),
+                                        "content": json.dumps(tool_output, ensure_ascii=False),
+                                    }
+                                )
+                            tool_turns += 1
+                            continue
+
+                        output_text = str(message_node.get("content", "") or "").strip() or self.get_response_output_text(response)
+                        if not output_text:
+                            if finish_reason == "length" and index < len(attempts) - 1:
+                                report_trace(
+                                    "retrying",
+                                    completedAt=utc_now(),
+                                    responseStatus=finish_reason or None,
+                                    providerResponseId=str(response.get("id", "")).strip() or None,
+                                )
+                                recovered_from_incomplete = True
+                                retry_attempt = True
+                                break
+                            raise RuntimeErrorWithCode("Model response did not include choices[0].message.content.", 500)
+
+                        try:
+                            parsed = parse_structured_output_text(output_text)
+                        except RuntimeErrorWithCode:
+                            salvaged = (
+                                salvage_direct_answer_payload("minimax", output_text)
+                                if schema_looks_like_direct_answer(schema)
+                                else None
+                            )
+                            if salvaged is not None:
+                                parsed = salvaged
+                            else:
+                                if finish_reason == "length" and index < len(attempts) - 1:
+                                    recovered_from_incomplete = True
+                                    retry_attempt = True
+                                    break
+                                raise
+
+                        return OpenAIResult(
+                            provider="minimax",
+                            parsed=parsed,
+                            response=response,
+                            response_id=str(response.get("id", "")),
+                            output_text=output_text,
+                            thinking_text=None,
+                            web_search_queries=[],
+                            web_search_sources=[],
+                            url_citations=[],
+                            requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                            effective_max_output_tokens=transport_max_tokens,
+                            attempts=attempts,
+                            recovered_from_incomplete=recovered_from_incomplete,
+                            executed_tools=executed_tools,
+                            auth_assignment=auth_assignment_meta(assignment),
+                            auth_failover_history=list(auth_failover_history),
+                            provider_trace=self.update_provider_trace(
+                                {
+                                    **provider_trace,
+                                    "stage": "completed",
+                                    "stageLabel": PROVIDER_TRACE_STAGE_LABELS["completed"],
+                                    "completedAt": utc_now(),
+                                    "providerResponseId": str(response.get("id", "")).strip() or None,
+                                    "responseStatus": finish_reason or "completed",
+                                    "toolTurn": tool_turns,
+                                    "localToolCallCount": len(executed_tools),
+                                }
+                            ),
+                        )
+
+                    if retry_attempt:
+                        continue
+
+            except RuntimeErrorWithCode as error:
+                last_error = error
+                if assignment_index < len(assignment_candidates) - 1 and self.is_auth_rotation_error(error):
+                    auth_failover_history.append(
+                        {
+                            "failedTarget": str(assignment.get("target", target_kind)),
+                            "failedKeySlot": int(assignment.get("keySlot", 0) or 0),
+                            "failedMasked": str(assignment.get("masked", "")),
+                            "error": str(error),
+                            "nextKeySlot": int(assignment_candidates[assignment_index + 1].get("keySlot", 0) or 0),
+                            "nextMasked": str(assignment_candidates[assignment_index + 1].get("masked", "")),
+                        }
+                    )
+                    continue
+                if auth_failover_history and self.is_auth_rotation_error(error):
+                    history_summary = self.summarize_auth_failover_history(auth_failover_history)
+                    raise RuntimeErrorWithCode(
+                        f"{error} | auth_failover_exhausted after {len(auth_failover_history) + 1} key attempts"
+                        + (f" | {history_summary}" if history_summary else ""),
+                        error.status_code,
+                    )
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeErrorWithCode("MiniMax response did not produce a usable structured output.", 500)
+
+    def invoke_deepseek_openai_json(
+        self,
+        api_key: str,
+        model: str,
+        reasoning_effort: str,
+        instructions: str,
+        input_text: str,
+        schema_name: str,
+        schema: Dict[str, Any],
+        max_output_tokens: int = 0,
+        target_kind: str = "generic",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
+        request_timeout_seconds: int = 1800,
+    ) -> OpenAIResult:
+        handlers = function_handlers if isinstance(function_handlers, dict) else {}
+        assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
+        if not assignment_candidates and str(api_key or "").strip():
+            assignment_candidates = [{"apiKey": str(api_key).strip()}]
+        if not assignment_candidates:
+            raise RuntimeErrorWithCode("No API key available for live model call.", 401)
+
+        normalized_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
+        unsupported_tool_types = sorted(
+            {
+                str(tool.get("type", "")).strip() or "unknown"
+                for tool in normalized_tools
+                if str(tool.get("type", "")).strip() != "function"
+            }
+        )
+        if unsupported_tool_types:
+            raise RuntimeErrorWithCode(
+                "provider_does_not_support: DeepSeek OpenAI-compatible live mode only supports local function tools in this runtime"
+                + f" (unsupported: {', '.join(unsupported_tool_types)}).",
+                400,
+            )
+
+        auth_failover_history: List[Dict[str, Any]] = []
+        last_error: Optional[RuntimeErrorWithCode] = None
+        provider_trace = self.build_provider_trace_base("deepseek", model, target_kind, request_timeout_seconds)
+
+        def report_trace(stage: str, **updates: Any) -> None:
+            provider_trace.update({key: value for key, value in updates.items() if value is not None})
+            provider_trace["stage"] = stage
+            provider_trace["stageLabel"] = PROVIDER_TRACE_STAGE_LABELS.get(stage, stage.replace("_", " ").title())
+            self.update_provider_trace(provider_trace)
+
+        for assignment_index, assignment in enumerate(assignment_candidates):
+            current_api_key = str(assignment.get("apiKey", "")).strip()
+            if not current_api_key:
+                continue
+            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            recovered_from_incomplete = False
+
+            try:
+                for index, effective_tokens in enumerate(attempts):
+                    effective_instructions = (
+                        str(instructions or "").rstrip()
+                        + "\nReturn raw JSON text only."
+                        + "\nDo not use markdown fences."
+                        + "\nDo not add commentary before or after the JSON object."
+                        + "\nEscape every newline inside string values as \\\\n and every tab as \\\\t."
+                    ).strip()
+                    messages: List[Dict[str, Any]] = [
+                        {"role": "system", "content": effective_instructions},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Return JSON only that matches this schema exactly.\n\n"
+                                f"Schema name: {schema_name}\n"
+                                f"Schema:\n{json.dumps(schema, ensure_ascii=False)}\n\n"
+                                f"Input:\n{input_text}"
+                            ),
+                        },
+                    ]
+                    executed_tools: List[Dict[str, Any]] = []
+                    tool_turns = 0
+                    retry_attempt = False
+                    while True:
+                        transport_max_tokens = max(1, min(4096, int(effective_tokens or 0) if int(effective_tokens or 0) > 0 else 2048))
+                        body: Dict[str, Any] = {
+                            "model": model,
+                            "messages": messages,
+                            "stream": False,
+                            "max_tokens": transport_max_tokens,
+                        }
+                        if str(reasoning_effort or "").strip():
+                            body["reasoning_effort"] = str(reasoning_effort).strip()
+                        if normalized_tools:
+                            body["tools"] = normalized_tools
+                        else:
+                            body["response_format"] = {"type": "json_object"}
+                        if tool_choice is not None:
+                            body["tool_choice"] = tool_choice
+
+                        request = urllib.request.Request(
+                            self.deepseek_openai_chat_url(),
+                            data=json.dumps(body).encode("utf-8"),
+                            headers={"Authorization": f"Bearer {current_api_key}", "Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        report_trace(
+                            "sending",
+                            requestCount=int(provider_trace.get("requestCount") or 0) + 1,
+                            attemptIndex=index + 1,
+                            effectiveMaxOutputTokens=transport_max_tokens,
+                            toolTurn=tool_turns,
+                            authKeySlot=int(assignment.get("keySlot", 0) or 0) if assignment.get("keySlot") is not None else None,
+                            authMasked=str(assignment.get("masked", "")).strip() or None,
+                            requestUrl=request.full_url,
+                            sentAt=utc_now(),
+                        )
+                        try:
+                            with urllib.request.urlopen(request, timeout=request_timeout_seconds) as handle:
+                                header_map = self.provider_trace_header_map(handle)
+                                report_trace(
+                                    "headers",
+                                    headersAt=utc_now(),
+                                    httpStatus=getattr(handle, "status", None) or getattr(handle, "code", None) or 200,
+                                    **self.provider_trace_from_headers("deepseek", header_map),
+                                )
+                                response = json.loads(handle.read().decode("utf-8"))
+                        except urllib.error.HTTPError as error:
+                            body_text = error.read().decode("utf-8", errors="replace")
+                            header_map = self.provider_trace_header_map(error)
+                            report_trace(
+                                "error",
+                                headersAt=utc_now(),
+                                completedAt=utc_now(),
+                                httpStatus=error.code,
+                                error=f"HTTP {error.code}",
+                                **self.provider_trace_from_headers("deepseek", header_map),
+                            )
+                            raise RuntimeErrorWithCode(f"DeepSeek API request failed: HTTP {error.code} | {body_text}", 500)
+                        except Exception as error:
+                            if self.is_request_timeout_error(error):
+                                report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
+                                raise RuntimeErrorWithCode(
+                                    f"DeepSeek API request timed out after {request_timeout_seconds}s.",
+                                    504,
+                                )
+                            report_trace("error", completedAt=utc_now(), error=str(error))
+                            raise RuntimeErrorWithCode(f"DeepSeek API request failed: {error}", 500)
+
+                        if isinstance(response.get("error"), dict):
+                            raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+
+                        choices = response.get("choices") if isinstance(response.get("choices"), list) else []
+                        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                        message_node = first_choice.get("message") if isinstance(first_choice.get("message"), dict) else {}
+                        finish_reason = str(first_choice.get("finish_reason", "") or "").strip().lower()
+
+                        tool_calls = []
+                        if handlers:
+                            for item in message_node.get("tool_calls") if isinstance(message_node.get("tool_calls"), list) else []:
+                                if not isinstance(item, dict):
+                                    continue
+                                function_node = item.get("function") if isinstance(item.get("function"), dict) else {}
+                                name = str(function_node.get("name", "")).strip()
+                                if name not in handlers:
+                                    continue
+                                tool_calls.append(item)
+
+                        if tool_calls:
+                            if tool_turns >= 8:
+                                raise RuntimeErrorWithCode("Model exceeded the allowed local tool turn count.", 500)
+                            assistant_message: Dict[str, Any] = {
+                                "role": "assistant",
+                                "content": str(message_node.get("content", "") or ""),
+                                "tool_calls": tool_calls,
+                            }
+                            messages.append(assistant_message)
+                            for item in tool_calls:
+                                function_node = item.get("function") if isinstance(item.get("function"), dict) else {}
+                                name = str(function_node.get("name", "")).strip()
+                                raw_arguments = function_node.get("arguments")
+                                arguments: Dict[str, Any] = {}
+                                if isinstance(raw_arguments, dict):
+                                    arguments = dict(raw_arguments)
+                                elif isinstance(raw_arguments, str) and raw_arguments.strip():
+                                    try:
+                                        decoded_arguments = json.loads(raw_arguments)
+                                    except json.JSONDecodeError:
+                                        decoded_arguments = None
+                                    if isinstance(decoded_arguments, dict):
+                                        arguments = decoded_arguments
+                                tool_output: Dict[str, Any]
+                                tool_audit: Dict[str, Any]
+                                try:
+                                    tool_output, tool_audit = handlers[name](arguments)
+                                except RuntimeErrorWithCode as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} failed: {truncate_text(str(error), 180)}",
+                                    }
+                                except Exception as error:
+                                    tool_output = {"ok": False, "error": str(error)}
+                                    tool_audit = {
+                                        "name": name,
+                                        "path": str(arguments.get("path", ".")),
+                                        "sources": [],
+                                        "error": str(error),
+                                        "summary": f"{name} crashed: {truncate_text(str(error), 180)}",
+                                    }
+                                audit_entry = dict(tool_audit or {})
+                                audit_entry["name"] = name
+                                audit_entry["arguments"] = arguments
+                                if item.get("id"):
+                                    audit_entry["callId"] = str(item.get("id"))
+                                executed_tools.append(audit_entry)
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": str(item.get("id", "")),
+                                        "content": json.dumps(tool_output, ensure_ascii=False),
+                                    }
+                                )
+                            tool_turns += 1
+                            continue
+
+                        output_text = str(message_node.get("content", "") or "").strip() or self.get_response_output_text(response)
+                        if not output_text:
+                            if finish_reason == "length" and index < len(attempts) - 1:
+                                report_trace(
+                                    "retrying",
+                                    completedAt=utc_now(),
+                                    responseStatus=finish_reason or None,
+                                    providerResponseId=str(response.get("id", "")).strip() or None,
+                                )
+                                recovered_from_incomplete = True
+                                retry_attempt = True
+                                break
+                            raise RuntimeErrorWithCode("Model response did not include choices[0].message.content.", 500)
+
+                        try:
+                            parsed = parse_structured_output_text(output_text)
+                        except RuntimeErrorWithCode:
+                            salvaged = (
+                                salvage_direct_answer_payload("deepseek", output_text)
+                                if schema_looks_like_direct_answer(schema)
+                                else None
+                            )
+                            if salvaged is not None:
+                                parsed = salvaged
+                            else:
+                                if finish_reason == "length" and index < len(attempts) - 1:
+                                    recovered_from_incomplete = True
+                                    retry_attempt = True
+                                    break
+                                raise
+
+                        return OpenAIResult(
+                            provider="deepseek",
+                            parsed=parsed,
+                            response=response,
+                            response_id=str(response.get("id", "")),
+                            output_text=output_text,
+                            thinking_text=None,
+                            web_search_queries=[],
+                            web_search_sources=[],
+                            url_citations=[],
+                            requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+                            effective_max_output_tokens=transport_max_tokens,
+                            attempts=attempts,
+                            recovered_from_incomplete=recovered_from_incomplete,
+                            executed_tools=executed_tools,
+                            auth_assignment=auth_assignment_meta(assignment),
+                            auth_failover_history=list(auth_failover_history),
+                            provider_trace=self.update_provider_trace(
+                                {
+                                    **provider_trace,
+                                    "stage": "completed",
+                                    "stageLabel": PROVIDER_TRACE_STAGE_LABELS["completed"],
+                                    "completedAt": utc_now(),
+                                    "providerResponseId": str(response.get("id", "")).strip() or None,
+                                    "responseStatus": finish_reason or "completed",
+                                    "toolTurn": tool_turns,
+                                    "localToolCallCount": len(executed_tools),
+                                }
+                            ),
+                        )
+
+                    if retry_attempt:
+                        continue
+
+            except RuntimeErrorWithCode as error:
+                last_error = error
+                if assignment_index < len(assignment_candidates) - 1 and self.is_auth_rotation_error(error):
+                    auth_failover_history.append(
+                        {
+                            "failedTarget": str(assignment.get("target", target_kind)),
+                            "failedKeySlot": int(assignment.get("keySlot", 0) or 0),
+                            "failedMasked": str(assignment.get("masked", "")),
+                            "error": str(error),
+                            "nextKeySlot": int(assignment_candidates[assignment_index + 1].get("keySlot", 0) or 0),
+                            "nextMasked": str(assignment_candidates[assignment_index + 1].get("masked", "")),
+                        }
+                    )
+                    continue
+                if auth_failover_history and self.is_auth_rotation_error(error):
+                    history_summary = self.summarize_auth_failover_history(auth_failover_history)
+                    raise RuntimeErrorWithCode(
+                        f"{error} | auth_failover_exhausted after {len(auth_failover_history) + 1} key attempts"
+                        + (f" | {history_summary}" if history_summary else ""),
+                        error.status_code,
+                    )
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeErrorWithCode("DeepSeek response did not produce a usable structured output.", 500)
 
     def convert_function_tools_to_ollama(self, tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         converted: List[Dict[str, Any]] = []
@@ -6173,11 +7657,20 @@ class LoopRuntime:
                     retry_attempt = False
 
                     while True:
+                        effective_instructions = instructions
+                        if normalized_provider == "minimax":
+                            effective_instructions = (
+                                str(instructions or "").rstrip()
+                                + "\nReturn raw JSON text only."
+                                + "\nDo not use markdown fences."
+                                + "\nDo not add commentary before or after the JSON object."
+                                + "\nEscape every newline inside string values as \\\\n and every tab as \\\\t."
+                            ).strip()
                         transport_max_tokens = effective_tokens if effective_tokens > 0 else 8192
                         body: Dict[str, Any] = {
                             "model": model,
                             "max_tokens": transport_max_tokens,
-                            "system": instructions,
+                            "system": effective_instructions,
                             "messages": messages,
                         }
                         if messages_tools:
@@ -6335,11 +7828,19 @@ class LoopRuntime:
                         try:
                             parsed = parse_structured_output_text(output_text)
                         except RuntimeErrorWithCode:
-                            if stop_reason == "max_tokens" and index < len(attempts) - 1:
-                                recovered_from_incomplete = True
-                                retry_attempt = True
-                                break
-                            raise
+                            salvaged = (
+                                salvage_direct_answer_payload(normalized_provider, output_text)
+                                if schema_looks_like_direct_answer(schema)
+                                else None
+                            )
+                            if salvaged is not None:
+                                parsed = salvaged
+                            else:
+                                if stop_reason == "max_tokens" and index < len(attempts) - 1:
+                                    recovered_from_incomplete = True
+                                    retry_attempt = True
+                                    break
+                                raise
 
                         return OpenAIResult(
                             provider=normalized_provider,
@@ -6708,7 +8209,79 @@ class LoopRuntime:
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
             )
-        if normalized_provider in {"anthropic", "minimax"}:
+        if normalized_provider == "deepseek":
+            if include:
+                include = None
+            deepseek_transport = self.deepseek_transport_mode(provider_settings if isinstance(provider_settings, dict) else None)
+            if deepseek_transport == "anthropic":
+                return self.invoke_anthropic_messages_json(
+                    provider=normalized_provider,
+                    api_key=api_key,
+                    model=model,
+                    instructions=instructions,
+                    input_text=input_text,
+                    schema=schema,
+                    max_output_tokens=max_output_tokens,
+                    target_kind=target_kind,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    function_handlers=function_handlers,
+                    auth_assignments=auth_assignments,
+                    request_timeout_seconds=request_timeout_seconds,
+                )
+            return self.invoke_deepseek_openai_json(
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                instructions=instructions,
+                input_text=input_text,
+                schema_name=schema_name,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                target_kind=target_kind,
+                tools=tools,
+                tool_choice=tool_choice,
+                function_handlers=function_handlers,
+                auth_assignments=auth_assignments,
+                request_timeout_seconds=request_timeout_seconds,
+            )
+        if normalized_provider == "minimax":
+            if include:
+                include = None
+            minimax_transport = self.minimax_transport_mode(provider_settings if isinstance(provider_settings, dict) else None)
+            if minimax_transport == "anthropic":
+                return self.invoke_anthropic_messages_json(
+                    provider=normalized_provider,
+                    api_key=api_key,
+                    model=model,
+                    instructions=instructions,
+                    input_text=input_text,
+                    schema=schema,
+                    max_output_tokens=max_output_tokens,
+                    target_kind=target_kind,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    function_handlers=function_handlers,
+                    auth_assignments=auth_assignments,
+                    request_timeout_seconds=request_timeout_seconds,
+                )
+            return self.invoke_minimax_openai_json(
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                instructions=instructions,
+                input_text=input_text,
+                schema_name=schema_name,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                target_kind=target_kind,
+                tools=tools,
+                tool_choice=tool_choice,
+                function_handlers=function_handlers,
+                auth_assignments=auth_assignments,
+                request_timeout_seconds=request_timeout_seconds,
+            )
+        if normalized_provider == "anthropic":
             if include:
                 include = None
             return self.invoke_anthropic_messages_json(
@@ -7133,6 +8706,17 @@ class LoopRuntime:
         task_brief = self.project_task_for_adjudication(task)
         local_file_config = normalize_local_file_tool_config(runtime.get("localFiles") if isinstance(runtime.get("localFiles"), dict) else {})
         github_tool_config = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
+        knowledgebase_packet = self.build_knowledgebase_recall_packet(
+            task,
+            runtime,
+            "commander",
+            label="Commander",
+            role="lead",
+            focus="first-pass answer direction",
+            round_number=round_number,
+            constraints=constraints,
+            prior_summary=prior_summary,
+        )
         tools: List[Dict[str, Any]] = []
         function_handlers: Dict[str, Any] = {}
         if local_file_config["enabled"]:
@@ -7207,6 +8791,7 @@ class LoopRuntime:
             )
             + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
             + f"Prior adjudicated summary (background only):\n{summary_text}\n\n"
+            + self.render_knowledgebase_prompt_block(knowledgebase_packet)
             + self.build_full_context_block(
                 main_thread_context_mode,
                 [
@@ -7252,10 +8837,52 @@ class LoopRuntime:
             "localFileSources": parsed["localFileSources"],
             "githubToolCalls": parsed["githubToolCalls"],
             "githubSources": parsed["githubSources"],
+            "knowledgebaseRecall": self.knowledgebase_call_meta(knowledgebase_packet),
         }
         return parsed, result.response_id, result.response, call_meta
 
     def commander_review_schema(self) -> Dict[str, Any]:
+        return self.commander_review_schema_for_mode(compact=False)
+
+    def provider_prefers_compact_commander_review(self, provider: Optional[str], model: Optional[str]) -> bool:
+        return model_prefers_compact_context(provider, model)
+
+    def commander_review_schema_for_mode(self, compact: bool = False) -> Dict[str, Any]:
+        if compact:
+            return {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "taskId",
+                    "round",
+                    "stance",
+                    "leadDirection",
+                    "answerDraft",
+                    "whyThisDirection",
+                    "claimsToStrengthen",
+                    "claimsToLimit",
+                    "requiredDecisionGates",
+                    "evidenceOrCommsRisks",
+                    "discardedPressure",
+                    "remainingUncertainty",
+                    "sourceWorkers",
+                ],
+                "properties": {
+                    "taskId": {"type": "string"},
+                    "round": {"type": "integer"},
+                    "stance": {"type": "string"},
+                    "leadDirection": {"type": "string"},
+                    "answerDraft": {"type": "string"},
+                    "whyThisDirection": {"type": "string"},
+                    "claimsToStrengthen": {"type": "array", "items": {"type": "string"}},
+                    "claimsToLimit": {"type": "array", "items": {"type": "string"}},
+                    "requiredDecisionGates": {"type": "array", "items": {"type": "string"}},
+                    "evidenceOrCommsRisks": {"type": "array", "items": {"type": "string"}},
+                    "discardedPressure": {"type": "array", "items": {"type": "string"}},
+                    "remainingUncertainty": {"type": "array", "items": {"type": "string"}},
+                    "sourceWorkers": {"type": "array", "items": {"type": "string"}},
+                },
+            }
         return {
             "type": "object",
             "additionalProperties": False,
@@ -7268,6 +8895,11 @@ class LoopRuntime:
                 "whyThisDirection",
                 "controlAudit",
                 "dynamicLaneDecision",
+                "claimsToStrengthen",
+                "claimsToLimit",
+                "requiredDecisionGates",
+                "evidenceOrCommsRisks",
+                "discardedPressure",
                 "remainingUncertainty",
                 "sourceWorkers",
             ],
@@ -7299,6 +8931,11 @@ class LoopRuntime:
                         "instruction": {"type": "string"},
                     },
                 },
+                "claimsToStrengthen": {"type": "array", "items": {"type": "string"}},
+                "claimsToLimit": {"type": "array", "items": {"type": "string"}},
+                "requiredDecisionGates": {"type": "array", "items": {"type": "string"}},
+                "evidenceOrCommsRisks": {"type": "array", "items": {"type": "string"}},
+                "discardedPressure": {"type": "array", "items": {"type": "string"}},
                 "remainingUncertainty": {"type": "array", "items": {"type": "string"}},
                 "sourceWorkers": {"type": "array", "items": {"type": "string"}},
             },
@@ -7316,6 +8953,8 @@ class LoopRuntime:
         source_workers = [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)]
         strongest_points: List[str] = []
         held_out: List[str] = []
+        decision_gates: List[str] = []
+        evidence_or_comms_risks: List[str] = []
         for worker in workers:
             checkpoint = self.project_worker_checkpoint_for_summary(worker_state.get(worker["id"]))
             if checkpoint is None:
@@ -7329,8 +8968,17 @@ class LoopRuntime:
                 strongest_points.append(f"{worker['label']}: {challenge[0]}")
             if checkpoint.get("requestToPeer"):
                 held_out.append(str(checkpoint.get("requestToPeer")))
+            for item in limit_string_list(checkpoint.get("invalidatingCircumstances", []), 1, 180):
+                decision_gates.append(item)
+            for item in (
+                limit_string_list(checkpoint.get("evidenceGaps", []), 1, 180)
+                + limit_string_list(checkpoint.get("uncertainty", []), 1, 180)
+            ):
+                evidence_or_comms_risks.append(item)
         strongest_points = strongest_points[:3]
         held_out = limit_string_list(held_out, 3, 220)
+        decision_gates = limit_string_list(decision_gates, 3, 220)
+        evidence_or_comms_risks = limit_string_list(evidence_or_comms_risks, 3, 220)
         answer_draft = truncate_text(commander_projection.get("answerDraft", ""), 1600)
         lead_direction = truncate_text(commander_projection.get("leadDirection", ""), 260)
         return normalize_commander_review_checkpoint(
@@ -7370,6 +9018,11 @@ class LoopRuntime:
                     "temperature": "",
                     "instruction": "",
                 },
+                "claimsToStrengthen": strongest_points,
+                "claimsToLimit": held_out,
+                "requiredDecisionGates": decision_gates,
+                "evidenceOrCommsRisks": evidence_or_comms_risks,
+                "discardedPressure": [],
                 "remainingUncertainty": limit_string_list(commander_projection.get("uncertainty", []), 3, 220),
                 "sourceWorkers": source_workers,
             },
@@ -7393,7 +9046,8 @@ class LoopRuntime:
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         review_config = commander_review_config(task)
         harness_lines = summarizer_harness_instruction_lines(review_config.get("harness"))
-        skill_context = build_runtime_skill_context(runtime["provider"], "commander_review")
+        compact_review = self.provider_prefers_compact_commander_review(runtime["provider"], runtime["model"])
+        skill_context = build_runtime_skill_context(runtime["provider"], "commander_review", compact=compact_review)
         worker_context_mode = normalize_context_mode(runtime.get("contextMode"))
         main_thread_context_mode = "full"
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
@@ -7404,67 +9058,122 @@ class LoopRuntime:
         task_brief = self.project_task_for_adjudication(task)
         lane_type_catalog = normalize_lane_type_list(list(WORKER_TYPE_CATALOG.keys()), False, 12)
         source_workers = [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)]
-        instructions = (
-            "You are the commander_review stage in a sparse multi-lane reasoning loop.\n"
-            "The commander already produced a first-pass direction. The workers have now pressure-tested it.\n"
-            "Your job is to decide whether the lead thread should maintain, qualify, redirect, or reverse before any public answer is written.\n"
-            "This is the authoritative lead-thread reevaluation for the round.\n"
-            "Read the full current user input, the original commander draft, and the worker checkpoints.\n"
-            "Do not write the final public answer yet. Produce the revised lead answer that the summarizer will later present cleanly.\n"
-            "Use stance, leadDirection, answerDraft, and whyThisDirection for the revised lead position after adversarial pressure.\n"
-            "Use controlAudit to show that the lead thread explicitly judged the value of each strong adversarial contribution instead of submitting to it.\n"
-            "Default to maintain when objections only add evidence, conditions, or guardrails.\n"
-            "Use qualify when the lead stays on course but needs narrower scope, stronger conditions, or sharper caveats.\n"
-            "Use redirect when the destination changes while still serving the user's core goal.\n"
-            "Use reverse only when the current lead answer would now be materially wrong, unsafe, or misleading.\n"
-            "Indecisive drift is worse than a clear qualified answer when reversal is not justified.\n"
-            "Use dynamicLaneDecision only when the current roster still lacks one materially missing adversarial lens for the NEXT round.\n"
-            "dynamicLaneDecision.suggestedLaneTypes may contain up to 2 known adversarial lane types from the catalog.\n"
-            "dynamicLaneDecision.requiredPressure should name the unresolved uncertainty or pressure that the next lane must attack.\n"
-            "dynamicLaneDecision.temperature may be cool, balanced, or hot when the next lane needs a deliberate reasoning style.\n"
-            "dynamicLaneDecision.instruction should be one short lane-specific harness instruction for that spawned worker.\n"
-            "Leave shouldSpawn false when the current roster already covers the relevant pressure.\n"
-            "remainingUncertainty should capture what still stays unresolved after this reevaluation.\n"
-            "sourceWorkers should list the workers whose checkpoints materially informed the reevaluation.\n"
-            + (
-                "Main-thread full context is active. Read the fuller background packet below during reevaluation, but Objective and current Constraints still win on conflicts.\n"
+        knowledgebase_packet = self.build_knowledgebase_recall_packet(
+            task,
+            runtime,
+            "commander_review",
+            label="Commander Review",
+            role="lead_review",
+            focus="pressure-filtered lead decision",
+            round_number=round_number,
+            constraints=constraints,
+            prior_summary=prior_summary,
+            commander_checkpoint=commander_checkpoint,
+        )
+        if compact_review:
+            instructions = (
+                "You have just completed an internal pressure test on the lead thread's first-pass answer.\n"
+                "The commander already produced a first-pass direction. The workers have now pressure-tested it.\n"
+                "Do not write the final public answer yet.\n"
+                "Produce only the compact lead-thread binder that the summarizer should think from after pressure.\n"
+                "Treat this stage as a pressure filter and cohesive binder, not as a debate recap.\n"
+                "leadDirection should state the surviving answer direction after pressure.\n"
+                "answerDraft should be the revised lead draft after pressure.\n"
+                "whyThisDirection should explain briefly why that direction still holds.\n"
+                "claimsToStrengthen should hold the 1 to 4 ideas that must survive more clearly or more forcefully.\n"
+                "claimsToLimit should hold the 1 to 4 claims that must stay narrower, more conditional, or less confident.\n"
+                "requiredDecisionGates should hold the explicit gates the final answer must retain before disruptive action.\n"
+                "evidenceOrCommsRisks should hold the evidence-handling, tenant-boundary, or communication risks that must stay visible.\n"
+                "remainingUncertainty should hold what still stays unresolved after reevaluation.\n"
+                "If you include stance, make it one short sentence. If you include sourceWorkers, list only workers that materially changed the lead.\n"
+                "Default to maintain when objections only add evidence, conditions, or guardrails.\n"
+                "Use qualify when the lead stays on course but needs narrower scope, stronger conditions, or sharper caveats.\n"
+                "Use redirect when the destination changes while still serving the user's core goal.\n"
+                "Use reverse only when the current lead answer would now be materially wrong, unsafe, or misleading.\n"
+                "Indecisive drift is worse than a clear qualified answer when reversal is not justified.\n"
+                "Do not mention workers, lanes, or hidden process in answerDraft.\n"
+                + "\n".join(harness_lines)
+                + skill_context["prompt"]
+                + "\nReturn JSON only that matches the schema exactly."
+            )
+            input_text = (
+                f"Current incident request:\n{task.get('objective', '')}\n\n"
+                f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
+                f"Background context:\n{session_context or 'none'}\n\n"
+                + self.render_knowledgebase_prompt_block(knowledgebase_packet)
+                + f"Initial commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
+                + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}"
+            )
+        else:
+            instructions = (
+                "You have just completed an internal pressure test on the lead thread's first-pass answer.\n"
+                "The commander already produced a first-pass direction. The workers have now pressure-tested it.\n"
+                "Your job is to decide whether the lead thread should maintain, qualify, redirect, or reverse before any public answer is written.\n"
+                "This is the authoritative lead-thread reevaluation for the round.\n"
+                "Read the full current user input, the original commander draft, and the worker checkpoints.\n"
+                "Do not write the final public answer yet. Produce the revised lead answer that the summarizer will later present cleanly.\n"
+                "Use stance, leadDirection, answerDraft, and whyThisDirection for the revised lead position after adversarial pressure.\n"
+                "Treat this stage as a pressure filter and cohesive binder, not as a debate recap.\n"
+                "Use claimsToStrengthen for the 1 to 4 ideas that should survive into the final answer more clearly or more forcefully.\n"
+                "Use claimsToLimit for the 1 to 4 claims that should stay narrower, more conditional, or less confident after pressure.\n"
+                "Use requiredDecisionGates for the explicit gates the final answer must retain before taking disruptive action.\n"
+                "Use evidenceOrCommsRisks for the evidence-handling, tenant-boundary, or communication risks that must stay visible.\n"
+                "Use discardedPressure for objections or lane pressure that sounded loud but should not shape the final answer.\n"
+                "These binder fields are what the summarizer should think from before it looks at any raw worker detail.\n"
+                "Use controlAudit to show that the lead thread explicitly judged the value of each strong adversarial contribution instead of submitting to it.\n"
+                "Default to maintain when objections only add evidence, conditions, or guardrails.\n"
+                "Use qualify when the lead stays on course but needs narrower scope, stronger conditions, or sharper caveats.\n"
+                "Use redirect when the destination changes while still serving the user's core goal.\n"
+                "Use reverse only when the current lead answer would now be materially wrong, unsafe, or misleading.\n"
+                "Indecisive drift is worse than a clear qualified answer when reversal is not justified.\n"
+                "Use dynamicLaneDecision only when the current roster still lacks one materially missing adversarial lens for the NEXT round.\n"
+                "dynamicLaneDecision.suggestedLaneTypes may contain up to 2 known adversarial lane types from the catalog.\n"
+                "dynamicLaneDecision.requiredPressure should name the unresolved uncertainty or pressure that the next lane must attack.\n"
+                "dynamicLaneDecision.temperature may be cool, balanced, or hot when the next lane needs a deliberate reasoning style.\n"
+                "dynamicLaneDecision.instruction should be one short lane-specific harness instruction for that spawned worker.\n"
+                "Leave shouldSpawn false when the current roster already covers the relevant pressure.\n"
+                "remainingUncertainty should capture what still stays unresolved after this reevaluation.\n"
+                "sourceWorkers should list the workers whose checkpoints materially informed the reevaluation.\n"
                 + (
-                    "Workers for this task are set to Light Workers mode, so lane prompts were intentionally lighter than the full packet.\n"
-                    if worker_context_mode == "weighted"
-                    else
-                    "Workers for this task are set to Full Workers mode, so lane prompts also received the fuller background packet.\n"
+                    "Main-thread full context is active. Read the fuller background packet below during reevaluation, but Objective and current Constraints still win on conflicts.\n"
+                    + (
+                        "Workers for this task are set to Light Workers mode, so lane prompts were intentionally lighter than the full packet.\n"
+                        if worker_context_mode == "weighted"
+                        else
+                        "Workers for this task are set to Full Workers mode, so lane prompts also received the fuller background packet.\n"
+                    )
                 )
+                + "\n".join(harness_lines)
+                + skill_context["prompt"]
+                + "\nReturn JSON only that matches the schema exactly."
             )
-            + "\n".join(harness_lines)
-            + skill_context["prompt"]
-            + "\nReturn JSON only that matches the schema exactly."
-        )
-        input_text = (
-            f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
-            f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
-            + self.build_context_weight_block(
-                worker_context_mode,
-                [
-                    ("objective", "primary"),
-                    ("constraints", "high"),
-                    ("commander draft", "high"),
-                    ("worker checkpoints", "high"),
-                    ("session context", "low"),
-                ],
+            input_text = (
+                f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
+                f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
+                + self.build_context_weight_block(
+                    worker_context_mode,
+                    [
+                        ("objective", "primary"),
+                        ("constraints", "high"),
+                        ("commander draft", "high"),
+                        ("worker checkpoints", "high"),
+                        ("session context", "low"),
+                    ],
+                )
+                + self.build_full_context_block(
+                    main_thread_context_mode,
+                    [
+                        ("Task brief", json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)),
+                        ("Prior summary packet", json.dumps(self.project_prior_summary_for_worker(prior_summary), ensure_ascii=False, indent=2)),
+                    ],
+                )
+                + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
+                + self.render_knowledgebase_prompt_block(knowledgebase_packet)
+                + f"Initial commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
+                + f"Known adversarial lane types:\n{json.dumps(lane_type_catalog, ensure_ascii=False, indent=2)}\n\n"
+                + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
+                + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
             )
-            + self.build_full_context_block(
-                main_thread_context_mode,
-                [
-                    ("Task brief", json.dumps(self.project_task_for_summary(task), ensure_ascii=False, indent=2)),
-                    ("Prior summary packet", json.dumps(self.project_prior_summary_for_worker(prior_summary), ensure_ascii=False, indent=2)),
-                ],
-            )
-            + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
-            + f"Initial commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
-            + f"Known adversarial lane types:\n{json.dumps(lane_type_catalog, ensure_ascii=False, indent=2)}\n\n"
-            + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
-            + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
-        )
         input_text = self.maybe_compact_prompt_text(input_text, runtime, "commander_review")
         provider_settings = self.resolve_provider_settings(
             task,
@@ -7482,7 +9191,7 @@ class LoopRuntime:
             instructions=instructions,
             input_text=input_text,
             schema_name="loop_commander_review",
-            schema=self.commander_review_schema(),
+            schema=self.commander_review_schema_for_mode(compact_review),
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="commander_review",
             auth_assignments=auth_assignments,
@@ -7495,15 +9204,23 @@ class LoopRuntime:
             commander_checkpoint,
             source_workers,
         )
+        prompt_metrics = self.prompt_observability_metrics(instructions, input_text, runtime, "commander_review")
         call_meta = {
             "requestedMaxOutputTokens": result.requested_max_output_tokens,
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "inputText": input_text,
+            "fullPrompt": f"Instructions:\n{instructions}\n\n{input_text}".strip(),
+            "reviewMode": "compact_binder" if compact_review else "full_review",
+            "lineCatalogIncluded": not compact_review,
+            "schemaRequiredFields": list(self.commander_review_schema_for_mode(compact_review).get("required", [])),
             "skills": skill_context["names"],
             "providerTrace": result.provider_trace,
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
+            "knowledgebaseRecall": self.knowledgebase_call_meta(knowledgebase_packet),
+            **prompt_metrics,
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -7726,6 +9443,18 @@ class LoopRuntime:
         skill_context = build_runtime_skill_context(runtime["provider"], "worker", worker.get("type"))
         local_file_config = normalize_local_file_tool_config(runtime.get("localFiles") if isinstance(runtime.get("localFiles"), dict) else {})
         github_tool_config = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
+        knowledgebase_packet = self.build_knowledgebase_recall_packet(
+            task,
+            runtime,
+            worker["id"],
+            label=worker["label"],
+            role=worker["role"],
+            focus=worker["focus"],
+            round_number=step_number,
+            constraints=constraints,
+            prior_summary=prior_summary,
+            commander_checkpoint=commander_checkpoint,
+        )
         instructions = (
             f"You are {worker['label']} in a sparse multi-lane reasoning loop.\n"
             f"Worker type: {worker.get('type', 'custom')}.\n"
@@ -7788,6 +9517,7 @@ class LoopRuntime:
             )
             + f"Session context:\n{session_context or 'none'}\n\n"
             + f"Constraints:\n{chr(10).join(constraints)}\n\n"
+            + self.render_knowledgebase_prompt_block(knowledgebase_packet)
             + f"Worker roster:\n{json.dumps(task_workers(task, step_number), ensure_ascii=False, indent=2)}\n\n"
             + f"Research policy:\n{research_description}\n"
             + f"externalWebAccess: {research_config['externalWebAccess']}\n"
@@ -7883,6 +9613,7 @@ class LoopRuntime:
             "localFileSources": parsed["localFileSources"],
             "githubToolCalls": parsed["githubToolCalls"],
             "githubSources": parsed["githubSources"],
+            "knowledgebaseRecall": self.knowledgebase_call_meta(knowledgebase_packet),
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -7913,6 +9644,7 @@ class LoopRuntime:
                 "githubTools": self.get_github_tool_config(task),
                 "dynamicSpinup": self.get_dynamic_spinup_config(task),
                 "vetting": self.get_vetting_config(task),
+                "knowledgebase": self.get_knowledgebase_config(task),
             },
         }
 
@@ -7987,6 +9719,11 @@ class LoopRuntime:
             "leadDirection": truncate_text(checkpoint.get("leadDirection", ""), 260),
             "answerDraft": truncate_text(checkpoint.get("answerDraft", ""), 900),
             "whyThisDirection": truncate_text(checkpoint.get("whyThisDirection", ""), 320),
+            "claimsToStrengthen": limit_string_list(checkpoint.get("claimsToStrengthen", []), 4, 220),
+            "claimsToLimit": limit_string_list(checkpoint.get("claimsToLimit", []), 4, 220),
+            "requiredDecisionGates": limit_string_list(checkpoint.get("requiredDecisionGates", []), 4, 220),
+            "evidenceOrCommsRisks": limit_string_list(checkpoint.get("evidenceOrCommsRisks", []), 4, 220),
+            "discardedPressure": limit_string_list(checkpoint.get("discardedPressure", []), 4, 220),
             "controlAudit": normalize_control_audit(checkpoint.get("controlAudit"), {
                 "frontAnswer": {
                     "answer": checkpoint.get("answerDraft", ""),
@@ -8008,6 +9745,36 @@ class LoopRuntime:
             "remainingUncertainty": limit_string_list(checkpoint.get("remainingUncertainty", []), 4, 220),
             "sourceWorkers": normalize_worker_id_list(checkpoint.get("sourceWorkers", [])),
         }
+
+    def project_commander_review_binder_for_summary(
+        self,
+        commander_review: Optional[Dict[str, Any]],
+        fallback_task: Optional[Dict[str, Any]] = None,
+        fallback_round: int = 1,
+        fallback_commander: Optional[Dict[str, Any]] = None,
+        fallback_workers: Optional[List[str]] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        projection = self.project_commander_review_for_summary(
+            commander_review,
+            fallback_task,
+            fallback_round,
+            fallback_commander,
+            fallback_workers,
+        )
+        binder = {
+            "leadDirection": truncate_text(projection.get("leadDirection", ""), 260),
+            "answerDraft": truncate_text(projection.get("answerDraft", ""), 900),
+            "whyThisDirection": truncate_text(projection.get("whyThisDirection", ""), 320),
+            "claimsToStrengthen": limit_string_list(projection.get("claimsToStrengthen", []), 4, 220),
+            "claimsToLimit": limit_string_list(projection.get("claimsToLimit", []), 4, 220),
+            "requiredDecisionGates": limit_string_list(projection.get("requiredDecisionGates", []), 4, 220),
+            "evidenceOrCommsRisks": limit_string_list(projection.get("evidenceOrCommsRisks", []), 4, 220),
+            "discardedPressure": limit_string_list(projection.get("discardedPressure", []), 4, 220),
+            "remainingUncertainty": limit_string_list(projection.get("remainingUncertainty", []), 4, 220),
+        }
+        return self.compact_review_binder_for_model(binder, provider, model)
 
     def project_prior_summary_for_worker(self, prior_summary: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if not isinstance(prior_summary, dict):
@@ -8110,6 +9877,98 @@ class LoopRuntime:
             return compacted
         return note + compact_text_middle("\n\n".join(compacted_sections), max(600, soft_limit - len(note)))
 
+    def prompt_observability_metrics(
+        self,
+        instructions: str,
+        input_text: str,
+        runtime: Optional[Dict[str, Any]],
+        target_kind: str,
+    ) -> Dict[str, Any]:
+        instructions_text = str(instructions or "")
+        input_payload = str(input_text or "")
+        full_prompt = f"Instructions:\n{instructions_text}\n\n{input_payload}".strip()
+        provider = runtime.get("provider") if isinstance(runtime, dict) else DEFAULT_PROVIDER_ID
+        soft_limit = self.prompt_compaction_char_limit(provider, target_kind)
+        return {
+            "instructionsChars": len(instructions_text),
+            "inputTextChars": len(input_payload),
+            "fullPromptChars": len(full_prompt),
+            "softLimitChars": soft_limit,
+            "estimatedPromptTokens": max(1, math.ceil(len(full_prompt) / 4)),
+        }
+
+    def estimate_structured_payload_tokens(self, payload: Any) -> int:
+        try:
+            rendered = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            rendered = str(payload or "")
+        return max(1, math.ceil(len(rendered) / 4))
+
+    def compact_review_binder_for_model(
+        self,
+        binder: Dict[str, Any],
+        provider: Optional[str],
+        model: Optional[str],
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        current = dict(binder or {})
+        budget_tokens = model_capacities.inferred_prompt_budget_tokens(provider, model, "review_binder")
+        before_tokens = self.estimate_structured_payload_tokens(current)
+        compaction_applied = False
+
+        def keep_list(name: str, max_items: int, max_length: int) -> None:
+            current[name] = limit_string_list(current.get(name, []), max_items, max_length)
+
+        def keep_text(name: str, max_length: int) -> None:
+            current[name] = truncate_text(current.get(name, ""), max_length)
+
+        if before_tokens > budget_tokens:
+            compaction_applied = True
+            keep_text("leadDirection", 220)
+            keep_text("answerDraft", 700)
+            keep_text("whyThisDirection", 240)
+            for name in (
+                "claimsToStrengthen",
+                "claimsToLimit",
+                "requiredDecisionGates",
+                "evidenceOrCommsRisks",
+                "discardedPressure",
+                "remainingUncertainty",
+            ):
+                keep_list(name, 3, 180)
+
+        if self.estimate_structured_payload_tokens(current) > budget_tokens:
+            keep_text("answerDraft", 520)
+            keep_text("whyThisDirection", 200)
+            for name in (
+                "claimsToStrengthen",
+                "claimsToLimit",
+                "requiredDecisionGates",
+                "evidenceOrCommsRisks",
+                "remainingUncertainty",
+            ):
+                keep_list(name, 2, 140)
+            keep_list("discardedPressure", 1, 140)
+
+        if self.estimate_structured_payload_tokens(current) > budget_tokens:
+            current.pop("discardedPressure", None)
+            current["claimsToStrengthen"] = []
+            current["claimsToLimit"] = []
+            keep_text("answerDraft", 360)
+            keep_text("whyThisDirection", 160)
+            keep_list("requiredDecisionGates", 2, 120)
+            keep_list("evidenceOrCommsRisks", 2, 120)
+            keep_list("remainingUncertainty", 2, 120)
+
+        after_tokens = self.estimate_structured_payload_tokens(current)
+        return current, {
+            "reviewBinderBudgetTokens": budget_tokens,
+            "reviewBinderEstimatedTokens": after_tokens,
+            "reviewBinderInitialTokens": before_tokens,
+            "reviewBinderCompacted": compaction_applied or after_tokens < before_tokens,
+            "modelContextWindowTokens": int((model_capacities.resolve_model_capacity(provider, model) or {}).get("contextWindowTokens", 0) or 0),
+            "modelMaxOutputTokens": int((model_capacities.resolve_model_capacity(provider, model) or {}).get("maxOutputTokens", 0) or 0),
+        }
+
     def project_worker_roster_for_summary(self, workers: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         return [
             {
@@ -8164,7 +10023,7 @@ class LoopRuntime:
             "githubToolCalls": normalize_local_tool_calls(checkpoint.get("githubToolCalls", []))[:6],
             "evidenceLedger": ledger,
             "evidenceGaps": limit_string_list(checkpoint.get("evidenceGaps", []), 6, 180),
-            "confidence": float(checkpoint.get("confidence", 0.0) or 0.0),
+            "confidence": coerce_confidence_value(checkpoint.get("confidence", 0.0)),
             "requestToPeer": truncate_text(checkpoint.get("requestToPeer", ""), 220),
             "requestTargets": normalize_worker_id_list(checkpoint.get("requestTargets", [])),
             "sharedMemorySeen": checkpoint.get("sharedMemorySeen") if isinstance(checkpoint.get("sharedMemorySeen"), dict) else {},
@@ -8210,7 +10069,7 @@ class LoopRuntime:
             "reversalConditions": limit_string_list(checkpoint.get("reversalConditions", []), 2, 160),
             "evidenceGaps": limit_string_list(checkpoint.get("evidenceGaps", []), 3, 160),
             "evidenceLedger": ledger,
-            "confidence": float(checkpoint.get("confidence", 0.0) or 0.0),
+            "confidence": coerce_confidence_value(checkpoint.get("confidence", 0.0)),
             "requestToPeer": truncate_text(checkpoint.get("requestToPeer", ""), 180),
         }
 
@@ -8495,6 +10354,43 @@ class LoopRuntime:
         }
 
     def summary_schema(self) -> Dict[str, Any]:
+        return self.summary_schema_for_mode(compact=False)
+
+    def summary_schema_for_mode(self, compact: bool = False) -> Dict[str, Any]:
+        if compact:
+            return {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["taskId", "round", "frontAnswer", "summarizerOpinion", "sourceWorkers"],
+                "properties": {
+                    "taskId": {"type": "string"},
+                    "round": {"type": "integer"},
+                    "frontAnswer": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["answer", "stance", "leadDirection", "adversarialPressure", "confidenceNote"],
+                        "properties": {
+                            "answer": {"type": "string"},
+                            "stance": {"type": "string"},
+                            "leadDirection": {"type": "string"},
+                            "adversarialPressure": {"type": "string"},
+                            "confidenceNote": {"type": "string"},
+                        },
+                    },
+                    "summarizerOpinion": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["stance", "because", "uncertainty", "integrationMode"],
+                        "properties": {
+                            "stance": {"type": "string"},
+                            "because": {"type": "string"},
+                            "uncertainty": {"type": "string"},
+                            "integrationMode": {"type": "string"},
+                        },
+                    },
+                    "sourceWorkers": {"type": "array", "items": {"type": "string"}},
+                },
+            }
         return {
             "type": "object",
             "additionalProperties": False,
@@ -8698,7 +10594,6 @@ class LoopRuntime:
     ) -> tuple[Dict[str, Any], str, Dict[str, Any], Dict[str, Any]]:
         summary_config = summarizer_config(task)
         harness_lines = summarizer_harness_instruction_lines(summary_config.get("harness"))
-        skill_context = build_runtime_skill_context(runtime["provider"], "summarizer")
         worker_context_mode = normalize_context_mode(runtime.get("contextMode"))
         constraints = limit_string_list(task.get("constraints", []), 24, 400)
         session_context = str(task.get("sessionContext", "")).strip()
@@ -8710,126 +10605,175 @@ class LoopRuntime:
             commander_checkpoint,
             [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)],
         )
+        commander_review_binder, binder_meta = self.project_commander_review_binder_for_summary(
+            commander_review_checkpoint,
+            task,
+            int(commander_projection.get("round", 0) or 1),
+            commander_checkpoint,
+            [worker["id"] for worker in workers if isinstance(worker_state.get(worker["id"]), dict)],
+            runtime["provider"],
+            runtime["model"],
+        )
         task_brief = self.project_task_for_adjudication(task)
         worker_projection = self.project_worker_state_for_adjudication(worker_state, workers)
         pending_workers = normalize_worker_id_list(pending_workers or [])
+        knowledgebase_packet = self.build_knowledgebase_recall_packet(
+            task,
+            runtime,
+            "answer_now" if partial_mode else "summarizer",
+            label="Answer Now" if partial_mode else "Summarizer",
+            role="final_answer",
+            focus="final user-facing synthesis",
+            round_number=int(commander_projection.get("round", 0) or 1),
+            constraints=constraints,
+            commander_checkpoint=commander_checkpoint,
+        )
         has_commander_review = isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) > 0
-        instructions = (
-            "You are the summarizer in a sparse multi-lane reasoning loop.\n"
-            "Merge all worker checkpoints into a structured adjudication.\n"
-            "Act as the evidence vetter for the shared memory.\n"
-            "Preserve disagreements and conditional truths.\n"
-            "Do not erase contradictions.\n"
-            "Judge worker claims using the evidence they provide.\n"
-            "Form an opinion from the worker evidence and arguments instead of narrating the process.\n"
-            "Treat the public answer as a lead thought, not a consensus blend.\n"
-            "The lead thread stays in control at all times.\n"
-        )
-        instructions += (
-            "The supplied commander review is the authoritative lead-thread reevaluation for this round.\n"
-            "Preserve its controlAudit and dynamicLaneDecision in your output instead of making a fresh lane request.\n"
-            "Start from the supplied commander review answerDraft when forming the visible answer.\n"
-            "Let the public answer reflect that reevaluated course cleanly, without re-running the course decision from scratch.\n"
-            if has_commander_review
-            else
-            "Start from the supplied commander draft for this round unless the surviving objections justify changing it.\n"
-            "Write that commander-facing starting point into controlAudit.leadDraft.\n"
-            "Then question each strong adversarial contribution against one control question: does it improve correctness, scope, safety, or usefulness, or does it merely pull the answer off course?\n"
-            "Write that question into controlAudit.integrationQuestion.\n"
-            "After that check, make one explicit course decision for the visible answer: maintain, qualify, redirect, or reverse.\n"
-            "Default to maintain when objections only add support, evidence, or guardrails.\n"
-            "Use qualify when the answer stays on course but needs narrower scope, sharper conditions, or stronger caveats.\n"
-            "Use redirect when the answer's destination changes but the user's core goal still points the same way.\n"
-            "Use reverse only when adversarial pressure shows the original direction would be materially wrong, unsafe, or misleading.\n"
-            "Write that label into controlAudit.courseDecision and explain it in controlAudit.courseDecisionReason.\n"
-            "For the 1 to 4 strongest contributions, write controlAudit.contributionAssessments with contribution, value, effect, and reason.\n"
-            "Use value to judge how much the contribution improved the final answer: high, medium, low, or negative.\n"
-            "Use effect to judge whether the contribution supported, qualified, redirected, reversed, or should be rejected.\n"
-            "Only absorb adversarial pressure that survives that check.\n"
-            "Put accepted pressure into controlAudit.acceptedAdversarialPoints.\n"
-            "Put rejected or downgraded pressure into controlAudit.rejectedAdversarialPoints.\n"
-            "Put concerns you are keeping visible but not letting dominate the answer into controlAudit.heldOutConcerns.\n"
-            "Before you finalize frontAnswer.answer, compare the final wording against your own lead draft and the user's actual request.\n"
-            "Write that last self-audit into controlAudit.selfCheck.\n"
-        )
-        instructions += (
-            "Use adversarial pressure to improve the answer, not to speak directly through it.\n"
-            "Do not let the summarizer behave like a funnel that merely forwards or averages lane output.\n"
-            "frontAnswer.answer must read like a normal single-assistant reply to the user.\n"
-            "frontAnswer.answer should feel more reasonable because it privately absorbed objections, not because it publicly recaps them.\n"
-            "Prefer a decisive but conditional answer over a timid laundry list of caveats.\n"
-            "Do not let the mere existence of objections trigger a course change.\n"
-            "Indecisive drift is worse than a clear qualified answer when the evidence does not justify reversal.\n"
-            "Do not mention workers, lanes, adversaries, or hidden process inside frontAnswer.answer unless the user explicitly asked for process detail.\n"
-            "frontAnswer.stance should capture your current view in one sentence.\n"
-            "frontAnswer.leadDirection should state the answer's leading direction before pressure-testing refined it.\n"
-            "frontAnswer.adversarialPressure should name the strongest internal objection that changed or constrained the answer.\n"
-            "summarizerOpinion is review-facing and may speak in the first person.\n"
-            "summarizerOpinion.integrationMode should explain how the strongest objections changed the lead direction.\n"
-            "controlAudit is review-facing and should show that the lead thread actively interrogated adversarial pressure instead of submitting to it.\n"
-            "reviewTrace is for review operations, not for the public answer.\n"
-        )
-        instructions += (
-            "Copy dynamicLaneDecision from the commander review unchanged unless the supplied value is malformed.\n"
-            if has_commander_review
-            else
-            "Use dynamicLaneDecision to decide whether the next round needs one additional adversarial lane.\n"
-            "Only set dynamicLaneDecision.shouldSpawn to true when a materially missing adversarial lens remains unresolved after the current round.\n"
-            "dynamicLaneDecision.suggestedLaneTypes may contain up to 2 adversarial lane types from the known catalog.\n"
-            "dynamicLaneDecision.requiredPressure should name the unresolved pressure the next lane must attack.\n"
-            "dynamicLaneDecision.temperature may be cool, balanced, or hot when the next lane needs a specific reasoning temperature.\n"
-            "dynamicLaneDecision.instruction should be one short harness instruction for the next spawned lane.\n"
-            "Prefer false when the current roster already covers the relevant pressure.\n"
-        )
-        instructions += (
-            "Every reviewTrace line ref must come from the supplied line catalog exactly as written.\n"
-            "Do not upgrade weak evidence into a supported fact.\n"
-            "Do not do new research.\n"
-            "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
-            + (
-                "Main-thread full context is active. Read the full task and worker packet below, but Objective and current Constraints still win on conflicts.\n"
+        compact_summary = has_commander_review and model_prefers_compact_context(runtime["provider"], runtime["model"])
+        skill_context = build_runtime_skill_context(runtime["provider"], "summarizer", compact=compact_summary)
+        if compact_summary:
+            instructions = (
+                "Use the commander review binder as the only authoritative state for this round.\n"
+                "Write one clean user-facing answer plus brief review-facing fields.\n"
+                "Do not mention workers, lanes, review, or hidden process.\n"
+                "Keep fields short, distinct, and non-repetitive.\n"
+                "Preserve real uncertainty, but do not turn the answer into a hedge pile.\n"
+            )
+            if partial_mode:
+                instructions += (
+                    "This is a partial summary request. Make the confidence note and uncertainty say plainly that some checkpoints are still missing.\n"
+                )
+            instructions += "\n".join(harness_lines)
+            if skill_context["prompt"]:
+                instructions += "\n" + skill_context["prompt"]
+            instructions += "\nReturn JSON only that matches the schema exactly."
+            input_text = (
+                f"Current incident request:\n{task.get('objective', '')}\n\n"
+                f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
+                f"Background context:\n{session_context or 'none'}\n\n"
+                + self.render_knowledgebase_prompt_block(knowledgebase_packet)
+                + f"Authoritative rebound lead binder:\n{json.dumps(commander_review_binder, ensure_ascii=False, indent=2)}"
+            )
+            if partial_mode:
+                input_text += (
+                    "\n\n"
+                    f"Partial summary mode:\n{partial_mode}\n\n"
+                    f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}"
+                )
+        else:
+            instructions = (
+                "You have just completed a rigorous internal pressure test on a lead answer draft.\n"
+                "The commander review has already rebound that pressure into a revised lead position.\n"
+                "Your task now is to produce the single best final answer from that rebound state while still completing the review-facing evidence fields.\n"
+                "Treat the commander review binder as the primary integration packet.\n"
+                "Treat raw worker checkpoint detail as background evidence for review-facing fields, not as the thing that speaks directly to the user.\n"
+                "The public answer should feel like one coherent mind speaking after a hard internal stress test, not like a debate recap or committee merge.\n"
+                "Act as the evidence vetter for shared memory.\n"
+                "Preserve disagreements, conditional truths, and real uncertainty.\n"
+                "Do not erase contradictions.\n"
+                "Judge worker claims using the evidence they provide.\n"
+                "The lead thread stays in control at all times.\n"
+            )
+            instructions += (
+                "The supplied commander review is the authoritative lead-thread reevaluation for this round.\n"
+                "Preserve its controlAudit and dynamicLaneDecision in your output instead of making a fresh lane request.\n"
+                "Start from the supplied commander review answerDraft when forming the visible answer.\n"
+                "Let the public answer reflect that reevaluated course cleanly, without re-running the course decision from scratch.\n"
+                "Use claimsToStrengthen, claimsToLimit, requiredDecisionGates, evidenceOrCommsRisks, discardedPressure, and remainingUncertainty as the main binder that links adversarial pressure to the final answer.\n"
+                if has_commander_review
+                else
+                "Start from the supplied commander draft for this round unless the surviving objections justify changing it.\n"
+                "Write that commander-facing starting point into controlAudit.leadDraft.\n"
+                "Then question each strong adversarial contribution against one control question: does it improve correctness, scope, safety, or usefulness, or does it merely pull the answer off course?\n"
+                "Write that question into controlAudit.integrationQuestion.\n"
+                "After that check, make one explicit course decision for the visible answer: maintain, qualify, redirect, or reverse.\n"
+                "Default to maintain when objections only add support, evidence, or guardrails.\n"
+                "Use qualify when the answer stays on course but needs narrower scope, sharper conditions, or stronger caveats.\n"
+                "Use redirect when the answer's destination changes but the user's core goal still points the same way.\n"
+                "Use reverse only when adversarial pressure shows the original direction would be materially wrong, unsafe, or misleading.\n"
+                "Write that label into controlAudit.courseDecision and explain it in controlAudit.courseDecisionReason.\n"
+                "For the 1 to 4 strongest contributions, write controlAudit.contributionAssessments with contribution, value, effect, and reason.\n"
+                "Use value to judge how much the contribution improved the final answer: high, medium, low, or negative.\n"
+                "Use effect to judge whether the contribution supported, qualified, redirected, reversed, or should be rejected.\n"
+                "Only absorb adversarial pressure that survives that check.\n"
+                "Put accepted pressure into controlAudit.acceptedAdversarialPoints.\n"
+                "Put rejected or downgraded pressure into controlAudit.rejectedAdversarialPoints.\n"
+                "Put concerns you are keeping visible but not letting dominate the answer into controlAudit.heldOutConcerns.\n"
+                "Before you finalize frontAnswer.answer, compare the final wording against your own lead draft and the user's actual request.\n"
+                "Write that last self-audit into controlAudit.selfCheck.\n"
+            )
+            instructions += (
+                "Use adversarial pressure to improve the answer, not to speak directly through it.\n"
+                "Do not let the summarizer behave like a funnel that merely forwards or averages lane output.\n"
+                "frontAnswer.answer must read like a normal single-assistant reply to the user.\n"
+                "frontAnswer.answer should feel more reasonable because it privately absorbed objections, not because it publicly recaps them.\n"
+                "Rewrite surviving pressure into your own natural language before it reaches frontAnswer.answer.\n"
+                "Do not reuse worker wording or review wording verbatim when a cleaner phrasing would preserve the same meaning.\n"
+                "Prefer a decisive but conditional answer over a timid laundry list of caveats.\n"
+                "Do not let the mere existence of objections trigger a course change.\n"
+                "Indecisive drift is worse than a clear qualified answer when the evidence does not justify reversal.\n"
+                "Do not mention workers, lanes, adversaries, or hidden process inside frontAnswer.answer unless the user explicitly asked for process detail.\n"
+                "Do not use literal provenance markers such as Worker A, Worker B, accepted from Worker A, guardrail from Worker B, or similar internal labels inside frontAnswer.answer.\n"
+                "If a private objection materially changed the answer, translate that into plain user-facing reasoning without naming the internal source.\n"
+                "frontAnswer.stance should capture your current view in one sentence.\n"
+                "frontAnswer.leadDirection should state the answer's leading direction before pressure-testing refined it.\n"
+                "frontAnswer.adversarialPressure should name the strongest internal objection that changed or constrained the answer.\n"
+                "summarizerOpinion is review-facing and may speak in the first person.\n"
+                "summarizerOpinion.integrationMode should explain how the strongest objections changed the lead direction.\n"
+                "controlAudit is review-facing and should show that the lead thread actively interrogated adversarial pressure instead of submitting to it.\n"
+                "reviewTrace is for review operations, not for the public answer.\n"
+            )
+            instructions += (
+                "Copy dynamicLaneDecision from the commander review unchanged unless the supplied value is malformed.\n"
+                if has_commander_review
+                else
+                "Use dynamicLaneDecision to decide whether the next round needs one additional adversarial lane.\n"
+                "Only set dynamicLaneDecision.shouldSpawn to true when a materially missing adversarial lens remains unresolved after the current round.\n"
+                "dynamicLaneDecision.suggestedLaneTypes may contain up to 2 adversarial lane types from the known catalog.\n"
+                "dynamicLaneDecision.requiredPressure should name the unresolved pressure the next lane must attack.\n"
+                "dynamicLaneDecision.temperature may be cool, balanced, or hot when the next lane needs a specific reasoning temperature.\n"
+                "dynamicLaneDecision.instruction should be one short harness instruction for the next spawned lane.\n"
+                "Prefer false when the current roster already covers the relevant pressure.\n"
+            )
+            instructions += (
+                "Every reviewTrace line ref must come from the supplied line catalog exactly as written.\n"
+                "Do not upgrade weak evidence into a supported fact.\n"
+                "Do not do new research.\n"
+                "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
                 + (
-                    "Workers for this task are set to Light Workers mode.\n"
-                    if worker_context_mode == "weighted"
-                    else
-                    "Workers for this task are set to Full Workers mode.\n"
+                    "Main-thread full context is active. Read the full task and worker packet below, but Objective and current Constraints still win on conflicts.\n"
+                    + (
+                        "Workers for this task are set to Light Workers mode.\n"
+                        if worker_context_mode == "weighted"
+                        else
+                        "Workers for this task are set to Full Workers mode.\n"
+                    )
                 )
             )
-        )
-        if partial_mode:
-            instructions += (
-                "This is a partial summary request.\n"
-                "Some worker checkpoints are still missing or still running.\n"
-                "Use only the currently available checkpoints.\n"
-                "The public answer should still be useful and decisive, but its confidence note must clearly reflect the missing evidence.\n"
+            if partial_mode:
+                instructions += (
+                    "This is a partial summary request.\n"
+                    "Some worker checkpoints are still missing or still running.\n"
+                    "Use only the currently available checkpoints.\n"
+                    "The public answer should still be useful and decisive, but its confidence note must clearly reflect the missing evidence.\n"
+                )
+            instructions += "\n".join(harness_lines)
+            instructions += skill_context["prompt"]
+            instructions += "\nReturn JSON only that matches the schema exactly."
+            input_text = (
+                f"Current incident request:\n{task.get('objective', '')}\n\n"
+                f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
+                f"Background context:\n{session_context or 'none'}\n\n"
+                + self.render_knowledgebase_prompt_block(knowledgebase_packet)
+                + f"Rebound lead position from the internal pressure test:\n{json.dumps(commander_review_binder, ensure_ascii=False, indent=2)}\n\n"
+                + f"Lead draft before the final rewrite:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
+                + f"Partial summary mode:\n{partial_mode}\n\n"
+                + f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}\n\n"
+                + f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
+                + "Supporting evidence packet for review-facing fields only:\n"
+                + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
+                + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
             )
-        instructions += "\n".join(harness_lines)
-        instructions += skill_context["prompt"]
-        instructions += "\nReturn JSON only that matches the schema exactly."
-        input_text = (
-            f"Authoritative current user input:\n{task.get('objective', '')}\n\n"
-            f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
-            + self.build_context_weight_block(
-                worker_context_mode,
-                [
-                    ("objective", "primary"),
-                    ("constraints", "high"),
-                    ("commander review", "high"),
-                    ("worker checkpoint digests", "high"),
-                    ("task brief", "high"),
-                    ("session context", "low"),
-                ],
-            )
-            + f"Carry-forward session context (background only, not authoritative):\n{session_context or 'none'}\n\n"
-            + f"Commander draft for this round:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
-            + f"Commander review for this round:\n{json.dumps(commander_review_projection, ensure_ascii=False, indent=2)}\n\n"
-            + f"Task brief:\n{json.dumps(task_brief, ensure_ascii=False, indent=2)}\n\n"
-            + f"Partial summary mode:\n{partial_mode}\n\n"
-            + f"Pending workers:\n{json.dumps(pending_workers, ensure_ascii=False, indent=2)}\n\n"
-            + f"Vetting enabled:\n{vetting_config['enabled']}\n\n"
-            + f"Worker checkpoint digests:\n{json.dumps(worker_projection, ensure_ascii=False, indent=2)}\n\n"
-            + f"Worker review line catalog:\n{json.dumps(line_catalog, ensure_ascii=False, indent=2)}"
-        )
         input_text = self.maybe_compact_prompt_text(input_text, runtime, "summarizer")
         provider_settings = self.resolve_provider_settings(
             task,
@@ -8847,13 +10791,15 @@ class LoopRuntime:
             instructions=instructions,
             input_text=input_text,
             schema_name="loop_summary_multi",
-            schema=self.summary_schema(),
+            schema=self.summary_schema_for_mode(compact_summary),
             max_output_tokens=int(runtime["maxOutputTokens"]),
             target_kind="summarizer",
             auth_assignments=auth_assignments,
             provider_settings=provider_settings,
         )
         parsed = dict(result.parsed)
+        if compact_summary:
+            parsed["taskId"] = str(parsed.get("taskId") or task.get("taskId") or "")
         authoritative_round = int(commander_review_projection.get("round", 0) or commander_projection.get("round", 0) or 0)
         if authoritative_round > 0:
             parsed["round"] = authoritative_round
@@ -8861,24 +10807,39 @@ class LoopRuntime:
             parsed["controlAudit"] = commander_review_projection.get("controlAudit", parsed.get("controlAudit"))
             parsed["dynamicLaneDecision"] = commander_review_projection.get("dynamicLaneDecision", parsed.get("dynamicLaneDecision"))
             parsed["dynamicLaneResolution"] = commander_review_projection.get("dynamicLaneResolution", parsed.get("dynamicLaneResolution"))
+            parsed["sourceWorkers"] = normalize_worker_id_list(parsed.get("sourceWorkers", [])) or commander_review_projection.get("sourceWorkers", [])
             front_answer = parsed.get("frontAnswer") if isinstance(parsed.get("frontAnswer"), dict) else {}
             if not str(front_answer.get("leadDirection", "")).strip():
                 front_answer["leadDirection"] = commander_review_projection.get("leadDirection", "")
             if not str(front_answer.get("stance", "")).strip():
                 front_answer["stance"] = commander_review_projection.get("stance", "")
             parsed["frontAnswer"] = front_answer
+        assert_public_answer_free_of_internal_provenance(
+            flatten_output_payload_text(parsed, "summary_output"),
+            "summary",
+        )
         parsed["evidenceVerdicts"] = normalize_evidence_verdicts(parsed.get("evidenceVerdicts", []))
         parsed["claimsNeedingVerification"] = normalize_string_array_preserve_items(parsed.get("claimsNeedingVerification", []))
         parsed["mergedAt"] = utc_now()
+        prompt_metrics = self.prompt_observability_metrics(instructions, input_text, runtime, "summarizer")
         call_meta = {
             "requestedMaxOutputTokens": result.requested_max_output_tokens,
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": result.attempts,
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "inputText": input_text,
+            "fullPrompt": f"Instructions:\n{instructions}\n\n{input_text}".strip(),
+            "summaryMode": "compact_binder" if compact_summary else "full_summary",
+            "lineCatalogIncluded": not compact_summary,
+            "workerEvidenceIncluded": not compact_summary,
+            "schemaRequiredFields": list(self.summary_schema_for_mode(compact_summary).get("required", [])),
             "skills": skill_context["names"],
             "providerTrace": result.provider_trace,
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
+            "knowledgebaseRecall": self.knowledgebase_call_meta(knowledgebase_packet),
+            **prompt_metrics,
+            **binder_meta,
         }
         return parsed, result.response_id, result.response, call_meta
 
@@ -9016,7 +10977,12 @@ class LoopRuntime:
         task: Dict[str, Any],
         direct_runtime: Dict[str, Any],
     ) -> tuple[Dict[str, str], Optional[str], Optional[Dict[str, Any]], Dict[str, Any]]:
-        harness_lines = direct_baseline_harness_instruction_lines(summarizer_config(task).get("harness"))
+        runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
+        direct_harness = normalize_harness_config(
+            runtime_config.get("directHarness", default_direct_harness()),
+            default_direct_harness()["concision"],
+        )
+        harness_lines = direct_baseline_harness_instruction_lines(direct_harness)
         instructions = (
             "Answer the user directly as one assistant.\n"
             "Give a decisive but conditional recommendation.\n"
@@ -9057,12 +11023,18 @@ class LoopRuntime:
             auth_assignments=auth_assignments,
             provider_settings=provider_settings,
         )
-        parsed = normalize_direct_answer_payload(result.parsed, str(task.get("objective") or ""))
+        parsed = normalize_direct_answer_payload(
+            result.parsed,
+            str(task.get("objective") or ""),
+            provider=direct_runtime["provider"],
+        )
         call_meta = {
             "requestedMaxOutputTokens": result.requested_max_output_tokens,
             "effectiveMaxOutputTokens": result.effective_max_output_tokens,
             "attempts": list(result.attempts),
             "recoveredFromIncomplete": result.recovered_from_incomplete,
+            "inputText": input_text,
+            "fullPrompt": f"Instructions:\n{instructions}\n\n{input_text}".strip(),
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
             "skills": normalize_string_array_preserve_items(getattr(result, "used_skills", [])),
@@ -9139,50 +11111,27 @@ class LoopRuntime:
         if direct_runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(direct_runtime["provider"], auth_assignments)
             if api_key or not self.provider_requires_api_key(direct_runtime["provider"]):
-                try:
-                    self.assert_budget_available("direct_baseline", task)
-                    baseline_answer, response_id, response, call_meta = self.new_live_direct_baseline(
+                self.assert_budget_available("direct_baseline", task)
+                (baseline_answer, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
+                    stage="direct_baseline",
+                    target_label="direct_baseline",
+                    task_id=str(task["taskId"]),
+                    model=direct_runtime["model"],
+                    requested_max_output_tokens=int(direct_runtime["maxOutputTokens"]),
+                    auth_meta=auth_meta,
+                    call=lambda: self.new_live_direct_baseline(
                         api_key,
                         auth_assignments,
                         task,
                         direct_runtime,
-                    )
-                    auth_meta = self.live_auth_meta(direct_runtime["provider"], call_meta.get("auth"))
-                    self.append_auth_failover_step("direct_baseline", str(task["taskId"]), direct_runtime["model"], call_meta, "direct_baseline")
-                    usage_snapshot = self.update_usage_tracking("direct_baseline", str(task["taskId"]), direct_runtime["model"], response_id, response)
-                    mode_used = "live"
-                except RuntimeErrorWithCode as error:
-                    if str(error).startswith("Budget limit reached:"):
-                        self.append_step(
-                            "budget",
-                            "Budget stopped the direct baseline before another live call.",
-                            {"taskId": task["taskId"], "model": direct_runtime["model"], "error": str(error), "auth": auth_meta},
-                        )
-                        raise
-                    if not self.should_fallback_to_mock(error):
-                        self.append_step(
-                            "direct_baseline",
-                            "Live API call failed and was not downgraded to mock.",
-                            {
-                                "taskId": task["taskId"],
-                                "model": direct_runtime["model"],
-                                "requestedMaxOutputTokens": int(direct_runtime["maxOutputTokens"]),
-                                "error": str(error),
-                                "auth": auth_meta,
-                            },
-                        )
-                        raise RuntimeErrorWithCode(f"Live run failed for direct baseline: {error}", error.status_code)
-                    self.append_step(
-                        "direct_baseline",
-                        "Live API call failed; falling back to mock.",
-                        {
-                            "taskId": task["taskId"],
-                            "model": direct_runtime["model"],
-                            "requestedMaxOutputTokens": int(direct_runtime["maxOutputTokens"]),
-                            "error": str(error),
-                            "auth": auth_meta,
-                        },
-                    )
+                    ),
+                )
+                call_meta = dict(call_meta or {})
+                call_meta["liveAttempts"] = int(live_attempts)
+                auth_meta = self.live_auth_meta(direct_runtime["provider"], call_meta.get("auth"))
+                self.append_auth_failover_step("direct_baseline", str(task["taskId"]), direct_runtime["model"], call_meta, "direct_baseline")
+                usage_snapshot = self.update_usage_tracking("direct_baseline", str(task["taskId"]), direct_runtime["model"], response_id, response)
+                mode_used = "live"
             else:
                 if self.provider_uses_api_key_pool(direct_runtime["provider"]):
                     self.raise_if_managed_secret_backend_unavailable(
@@ -9192,7 +11141,12 @@ class LoopRuntime:
                         "direct_baseline",
                         direct_runtime["provider"],
                     )
-                self.append_step("direct_baseline", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+                self.raise_live_stage_missing_credentials(
+                    stage="direct_baseline",
+                    target_label="direct_baseline",
+                    task_id=str(task["taskId"]),
+                    auth_meta=auth_meta,
+                )
         if baseline_answer is None:
             baseline_answer = self.new_mock_direct_baseline_answer(task)
         self.assert_execution_not_cancelled()
@@ -9217,7 +11171,11 @@ class LoopRuntime:
                 "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
             } if response else None,
             "authMeta": auth_meta,
-            "answer": normalize_direct_answer_payload(baseline_answer, str(task.get("objective") or "")),
+                "answer": normalize_direct_answer_payload(
+                    baseline_answer,
+                    str(task.get("objective") or ""),
+                    provider=direct_runtime["provider"],
+                ),
         }
 
         state = self.mutate_state(lambda current: {**current, "directBaseline": baseline})
@@ -9234,6 +11192,8 @@ class LoopRuntime:
             "round": 1,
             "capturedAt": baseline["capturedAt"],
             "responseId": response_id,
+            "inputText": str(call_meta.get("inputText") or "").strip() or None,
+            "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
             "flattenedOutputText": flatten_output_payload_text(baseline, "direct_baseline_output"),
             "responseMeta": baseline["responseMeta"],
@@ -9315,9 +11275,15 @@ class LoopRuntime:
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
             if api_key or not self.provider_requires_api_key(runtime["provider"]):
-                try:
-                    self.assert_budget_available("commander", task)
-                    checkpoint, response_id, response, call_meta = self.new_live_commander(
+                self.assert_budget_available("commander", task)
+                (checkpoint, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
+                    stage="commander",
+                    target_label="commander",
+                    task_id=str(task["taskId"]),
+                    model=runtime["model"],
+                    requested_max_output_tokens=int(runtime["maxOutputTokens"]),
+                    auth_meta=auth_meta,
+                    call=lambda: self.new_live_commander(
                         api_key,
                         auth_assignments,
                         task,
@@ -9325,47 +11291,23 @@ class LoopRuntime:
                         round_number,
                         constraints,
                         prior_summary,
-                    )
-                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
-                    self.append_auth_failover_step("commander", str(task["taskId"]), runtime["model"], call_meta, "commander")
-                    usage_snapshot = self.update_usage_tracking("commander", str(task["taskId"]), runtime["model"], response_id, response)
-                    mode_used = "live"
-                except RuntimeErrorWithCode as error:
-                    if str(error).startswith("Budget limit reached:"):
-                        self.append_step(
-                            "budget",
-                            "Budget stopped the commander before another live call.",
-                            {"taskId": task["taskId"], "model": runtime["model"], "error": str(error), "auth": auth_meta},
-                        )
-                        raise
-                    if not self.should_fallback_to_mock(error):
-                        self.append_step(
-                            "commander",
-                            "Live API call failed and was not downgraded to mock.",
-                            {
-                                "taskId": task["taskId"],
-                                "model": runtime["model"],
-                                "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                                "error": str(error),
-                                "auth": auth_meta,
-                            },
-                        )
-                        raise RuntimeErrorWithCode(f"Live run failed for commander: {error}", error.status_code)
-                    self.append_step(
-                        "commander",
-                        "Live API call failed; falling back to mock.",
-                        {
-                            "taskId": task["taskId"],
-                            "model": runtime["model"],
-                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                            "error": str(error),
-                            "auth": auth_meta,
-                        },
-                    )
+                    ),
+                )
+                call_meta = dict(call_meta or {})
+                call_meta["liveAttempts"] = int(live_attempts)
+                auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
+                self.append_auth_failover_step("commander", str(task["taskId"]), runtime["model"], call_meta, "commander")
+                usage_snapshot = self.update_usage_tracking("commander", str(task["taskId"]), runtime["model"], response_id, response)
+                mode_used = "live"
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
                     self.raise_if_managed_secret_backend_unavailable("commander", str(task["taskId"]), runtime["model"], "commander", runtime["provider"])
-                self.append_step("commander", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+                self.raise_live_stage_missing_credentials(
+                    stage="commander",
+                    target_label="commander",
+                    task_id=str(task["taskId"]),
+                    auth_meta=auth_meta,
+                )
         if checkpoint is None:
             checkpoint = self.new_mock_commander(task, runtime, round_number, constraints, prior_summary)
         checkpoint = normalize_commander_checkpoint(checkpoint, task, round_number)
@@ -9529,9 +11471,15 @@ class LoopRuntime:
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
             if api_key or not self.provider_requires_api_key(runtime["provider"]):
-                try:
-                    self.assert_budget_available("commander_review", task)
-                    checkpoint, response_id, response, call_meta = self.new_live_commander_review(
+                self.assert_budget_available("commander_review", task)
+                (checkpoint, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
+                    stage="commander_review",
+                    target_label="commander_review",
+                    task_id=str(task["taskId"]),
+                    model=runtime["model"],
+                    requested_max_output_tokens=int(runtime["maxOutputTokens"]),
+                    auth_meta=auth_meta,
+                    call=lambda: self.new_live_commander_review(
                         api_key,
                         auth_assignments,
                         task,
@@ -9541,47 +11489,23 @@ class LoopRuntime:
                         worker_state,
                         runtime,
                         line_catalog,
-                    )
-                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
-                    self.append_auth_failover_step("commander_review", str(task["taskId"]), runtime["model"], call_meta, "commander_review")
-                    usage_snapshot = self.update_usage_tracking("commander_review", str(task["taskId"]), runtime["model"], response_id, response)
-                    mode_used = "live"
-                except RuntimeErrorWithCode as error:
-                    if str(error).startswith("Budget limit reached:"):
-                        self.append_step(
-                            "budget",
-                            "Budget stopped commander review before another live call.",
-                            {"taskId": task["taskId"], "model": runtime["model"], "error": str(error), "auth": auth_meta},
-                        )
-                        raise
-                    if not self.should_fallback_to_mock(error):
-                        self.append_step(
-                            "commander_review",
-                            "Live API call failed and was not downgraded to mock.",
-                            {
-                                "taskId": task["taskId"],
-                                "model": runtime["model"],
-                                "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                                "error": str(error),
-                                "auth": auth_meta,
-                            },
-                        )
-                        raise RuntimeErrorWithCode(f"Live run failed for commander review: {error}", error.status_code)
-                    self.append_step(
-                        "commander_review",
-                        "Live API call failed; falling back to mock.",
-                        {
-                            "taskId": task["taskId"],
-                            "model": runtime["model"],
-                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                            "error": str(error),
-                            "auth": auth_meta,
-                        },
-                    )
+                    ),
+                )
+                call_meta = dict(call_meta or {})
+                call_meta["liveAttempts"] = int(live_attempts)
+                auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
+                self.append_auth_failover_step("commander_review", str(task["taskId"]), runtime["model"], call_meta, "commander_review")
+                usage_snapshot = self.update_usage_tracking("commander_review", str(task["taskId"]), runtime["model"], response_id, response)
+                mode_used = "live"
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
                     self.raise_if_managed_secret_backend_unavailable("commander_review", str(task["taskId"]), runtime["model"], "commander_review", runtime["provider"])
-                self.append_step("commander_review", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+                self.raise_live_stage_missing_credentials(
+                    stage="commander_review",
+                    target_label="commander_review",
+                    task_id=str(task["taskId"]),
+                    auth_meta=auth_meta,
+                )
         if checkpoint is None:
             checkpoint = self.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
         checkpoint = normalize_commander_review_checkpoint(
@@ -9632,6 +11556,8 @@ class LoopRuntime:
             "round": commander_round,
             "capturedAt": utc_now(),
             "responseId": response_id,
+            "inputText": str(call_meta.get("inputText") or "").strip() or None,
+            "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
             "flattenedOutputText": flatten_output_payload_text(checkpoint, "commander_review_output"),
             "responseMeta": {
@@ -9643,6 +11569,14 @@ class LoopRuntime:
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
                 "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
+                "reviewMode": str(call_meta.get("reviewMode", "")),
+                "lineCatalogIncluded": bool(call_meta.get("lineCatalogIncluded", False)),
+                "schemaRequiredFields": normalize_string_array_preserve_items(call_meta.get("schemaRequiredFields", [])),
+                "instructionsChars": int(call_meta.get("instructionsChars", 0) or 0),
+                "inputTextChars": int(call_meta.get("inputTextChars", 0) or 0),
+                "fullPromptChars": int(call_meta.get("fullPromptChars", 0) or 0),
+                "softLimitChars": int(call_meta.get("softLimitChars", 0) or 0),
+                "estimatedPromptTokens": int(call_meta.get("estimatedPromptTokens", 0) or 0),
                 "dynamicLaneDecision": dynamic_lane_decision,
                 "dynamicLaneResolution": dynamic_lane_resolution,
                 "spawnedWorkerId": spawned_worker["id"] if spawned_worker else None,
@@ -9785,9 +11719,15 @@ class LoopRuntime:
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
             if api_key or not self.provider_requires_api_key(runtime["provider"]):
-                try:
-                    self.assert_budget_available(worker_id, task)
-                    checkpoint, response_id, response, call_meta = self.new_live_checkpoint(
+                self.assert_budget_available(worker_id, task)
+                (checkpoint, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
+                    stage=f"worker_{worker_id}",
+                    target_label=worker_id,
+                    task_id=str(task["taskId"]),
+                    model=runtime["model"],
+                    requested_max_output_tokens=int(runtime["maxOutputTokens"]),
+                    auth_meta=auth_meta,
+                    call=lambda: self.new_live_checkpoint(
                         api_key,
                         auth_assignments,
                         task,
@@ -9800,54 +11740,24 @@ class LoopRuntime:
                         prior_summary,
                         prior_memory_version,
                         peer_messages,
-                    )
-                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
-                    self.append_auth_failover_step(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], call_meta, worker_id)
-                    usage_snapshot = self.update_usage_tracking(worker_id, str(task["taskId"]), runtime["model"], response_id, response)
-                    mode_used = "live"
-                except RuntimeErrorWithCode as error:
-                    if str(error).startswith("Budget limit reached:"):
-                        self.append_step(
-                            "budget",
-                            f"Budget stopped {worker['label']} before another live call.",
-                            {"taskId": task["taskId"], "workerId": worker_id, "model": runtime["model"], "error": str(error), "auth": auth_meta},
-                        )
-                        raise
-                    if not self.should_fallback_to_mock(error):
-                        self.append_step(
-                            f"worker_{worker_id}",
-                            "Live API call failed and was not downgraded to mock.",
-                            {
-                                "taskId": task["taskId"],
-                                "workerId": worker_id,
-                                "step": step_number,
-                                "model": runtime["model"],
-                                "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                                "error": str(error),
-                                "auth": auth_meta,
-                            },
-                        )
-                        raise RuntimeErrorWithCode(f"Live run failed for {worker['label']}: {error}", error.status_code)
-                    self.append_step(
-                        f"worker_{worker_id}",
-                        "Live API call failed; falling back to mock.",
-                        {
-                            "taskId": task["taskId"],
-                            "workerId": worker_id,
-                            "step": step_number,
-                            "model": runtime["model"],
-                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                            "error": str(error),
-                            "auth": auth_meta,
-                        },
-                    )
+                    ),
+                    extra_context={"workerId": worker_id, "step": step_number},
+                )
+                call_meta = dict(call_meta or {})
+                call_meta["liveAttempts"] = int(live_attempts)
+                auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
+                self.append_auth_failover_step(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], call_meta, worker_id)
+                usage_snapshot = self.update_usage_tracking(worker_id, str(task["taskId"]), runtime["model"], response_id, response)
+                mode_used = "live"
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
                     self.raise_if_managed_secret_backend_unavailable(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], worker_id, runtime["provider"])
-                self.append_step(
-                    f"worker_{worker_id}",
-                    "No API key found; falling back to mock.",
-                    {"taskId": task["taskId"], "workerId": worker_id, "step": step_number, "auth": auth_meta},
+                self.raise_live_stage_missing_credentials(
+                    stage=f"worker_{worker_id}",
+                    target_label=worker_id,
+                    task_id=str(task["taskId"]),
+                    auth_meta=auth_meta,
+                    extra_context={"workerId": worker_id, "step": step_number},
                 )
         if checkpoint is None:
             checkpoint = self.new_mock_checkpoint(task, worker, runtime, research_config, step_number, constraints, prior_summary, prior_memory_version, peer_messages)
@@ -10025,9 +11935,15 @@ class LoopRuntime:
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
             if api_key or not self.provider_requires_api_key(runtime["provider"]):
-                try:
-                    self.assert_budget_available("summarizer", task)
-                    summary, response_id, response, call_meta = self.new_live_summary(
+                self.assert_budget_available("summarizer", task)
+                (summary, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
+                    stage="summarizer",
+                    target_label="summarizer",
+                    task_id=str(task["taskId"]),
+                    model=runtime["model"],
+                    requested_max_output_tokens=int(runtime["maxOutputTokens"]),
+                    auth_meta=auth_meta,
+                    call=lambda: self.new_live_summary(
                         api_key,
                         auth_assignments,
                         task,
@@ -10038,47 +11954,23 @@ class LoopRuntime:
                         runtime,
                         vetting_config,
                         line_catalog,
-                    )
-                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
-                    self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "summarizer")
-                    usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
-                    mode_used = "live"
-                except RuntimeErrorWithCode as error:
-                    if str(error).startswith("Budget limit reached:"):
-                        self.append_step(
-                            "budget",
-                            "Budget stopped the summarizer before another live call.",
-                            {"taskId": task["taskId"], "model": runtime["model"], "error": str(error), "auth": auth_meta},
-                        )
-                        raise
-                    if not self.should_fallback_to_mock(error):
-                        self.append_step(
-                            "summarizer",
-                            "Live API call failed and was not downgraded to mock.",
-                            {
-                                "taskId": task["taskId"],
-                                "model": runtime["model"],
-                                "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                                "error": str(error),
-                                "auth": auth_meta,
-                            },
-                        )
-                        raise RuntimeErrorWithCode(f"Live run failed for summarizer: {error}", error.status_code)
-                    self.append_step(
-                        "summarizer",
-                        "Live API call failed; falling back to mock.",
-                        {
-                            "taskId": task["taskId"],
-                            "model": runtime["model"],
-                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                            "error": str(error),
-                            "auth": auth_meta,
-                        },
-                    )
+                    ),
+                )
+                call_meta = dict(call_meta or {})
+                call_meta["liveAttempts"] = int(live_attempts)
+                auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
+                self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "summarizer")
+                usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
+                mode_used = "live"
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
                     self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "summarizer", runtime["provider"])
-                self.append_step("summarizer", "No API key found; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+                self.raise_live_stage_missing_credentials(
+                    stage="summarizer",
+                    target_label="summarizer",
+                    task_id=str(task["taskId"]),
+                    auth_meta=auth_meta,
+                )
         if summary is None:
             summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
         summary = self.normalize_summary(summary, line_catalog)
@@ -10106,6 +11998,8 @@ class LoopRuntime:
             "round": int(summary.get("round", 0) or 0),
             "capturedAt": utc_now(),
             "responseId": response_id,
+            "inputText": str(call_meta.get("inputText") or "").strip() or None,
+            "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
             "flattenedOutputText": flatten_output_payload_text(summary, "summary_output"),
             "responseMeta": {
@@ -10117,6 +12011,21 @@ class LoopRuntime:
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
                 "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
+                "summaryMode": str(call_meta.get("summaryMode", "")),
+                "lineCatalogIncluded": bool(call_meta.get("lineCatalogIncluded", False)),
+                "workerEvidenceIncluded": bool(call_meta.get("workerEvidenceIncluded", False)),
+                "schemaRequiredFields": normalize_string_array_preserve_items(call_meta.get("schemaRequiredFields", [])),
+                "instructionsChars": int(call_meta.get("instructionsChars", 0) or 0),
+                "inputTextChars": int(call_meta.get("inputTextChars", 0) or 0),
+                "fullPromptChars": int(call_meta.get("fullPromptChars", 0) or 0),
+                "softLimitChars": int(call_meta.get("softLimitChars", 0) or 0),
+                "estimatedPromptTokens": int(call_meta.get("estimatedPromptTokens", 0) or 0),
+                "reviewBinderBudgetTokens": int(call_meta.get("reviewBinderBudgetTokens", 0) or 0),
+                "reviewBinderEstimatedTokens": int(call_meta.get("reviewBinderEstimatedTokens", 0) or 0),
+                "reviewBinderInitialTokens": int(call_meta.get("reviewBinderInitialTokens", 0) or 0),
+                "reviewBinderCompacted": bool(call_meta.get("reviewBinderCompacted", False)),
+                "modelContextWindowTokens": int(call_meta.get("modelContextWindowTokens", 0) or 0),
+                "modelMaxOutputTokens": int(call_meta.get("modelMaxOutputTokens", 0) or 0),
             } if response else None,
             "authMeta": auth_meta,
             "skills": normalize_string_array_preserve_items(call_meta.get("skills", [])),
@@ -10218,9 +12127,15 @@ class LoopRuntime:
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
             if api_key or not self.provider_requires_api_key(runtime["provider"]):
-                try:
-                    self.assert_budget_available("summarizer", task)
-                    summary, response_id, response, call_meta = self.new_live_summary(
+                self.assert_budget_available("summarizer", task)
+                (summary, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
+                    stage="summarizer",
+                    target_label="answer_now",
+                    task_id=str(task["taskId"]),
+                    model=runtime["model"],
+                    requested_max_output_tokens=int(runtime["maxOutputTokens"]),
+                    auth_meta=auth_meta,
+                    call=lambda: self.new_live_summary(
                         api_key,
                         auth_assignments,
                         task,
@@ -10233,37 +12148,27 @@ class LoopRuntime:
                         line_catalog,
                         partial_mode=True,
                         pending_workers=pending_workers,
-                    )
-                    auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
-                    self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "answer_now")
-                    usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
-                    mode_used = "live"
-                except RuntimeErrorWithCode as error:
-                    if str(error).startswith("Budget limit reached:"):
-                        self.append_step(
-                            "budget",
-                            "Budget stopped Answer Now before another live call.",
-                            {"taskId": task["taskId"], "model": runtime["model"], "error": str(error), "auth": auth_meta},
-                        )
-                        raise
-                    if not self.should_fallback_to_mock(error):
-                        raise RuntimeErrorWithCode(f"Live run failed for answer_now: {error}", error.status_code)
-                    self.append_step(
-                        "summarizer",
-                        "Live Answer Now call failed; falling back to mock.",
-                        {
-                            "taskId": task["taskId"],
-                            "model": runtime["model"],
-                            "reasoningEffort": runtime["reasoningEffort"],
-                            "requestedMaxOutputTokens": int(runtime["maxOutputTokens"]),
-                            "error": str(error),
-                            "auth": auth_meta,
-                        },
-                    )
+                    ),
+                    extra_context={"reasoningEffort": runtime["reasoningEffort"]},
+                    retry_message="Live Answer Now call failed; retrying live call.",
+                    exhausted_message="Live Answer Now call failed after retries; no mock fallback was used.",
+                )
+                call_meta = dict(call_meta or {})
+                call_meta["liveAttempts"] = int(live_attempts)
+                auth_meta = self.live_auth_meta(runtime["provider"], call_meta.get("auth"))
+                self.append_auth_failover_step("summarizer", str(task["taskId"]), runtime["model"], call_meta, "answer_now")
+                usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
+                mode_used = "live"
             else:
                 if self.provider_uses_api_key_pool(runtime["provider"]):
                     self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "answer_now", runtime["provider"])
-                self.append_step("summarizer", "No API key found for Answer Now; falling back to mock.", {"taskId": task["taskId"], "auth": auth_meta})
+                self.raise_live_stage_missing_credentials(
+                    stage="summarizer",
+                    target_label="answer_now",
+                    task_id=str(task["taskId"]),
+                    auth_meta=auth_meta,
+                    extra_context={"reasoningEffort": runtime["reasoningEffort"]},
+                )
         if summary is None:
             summary = self.new_mock_summary(
                 task,
@@ -10310,6 +12215,8 @@ class LoopRuntime:
             "round": int(summary.get("round", 0) or 0),
             "capturedAt": utc_now(),
             "responseId": response_id,
+            "inputText": str(call_meta.get("inputText") or "").strip() or None,
+            "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
             "flattenedOutputText": flatten_output_payload_text(summary, "summary_partial_output"),
             "responseMeta": {
@@ -10321,6 +12228,10 @@ class LoopRuntime:
                 "recoveredFromIncomplete": bool(call_meta.get("recoveredFromIncomplete", False)),
                 "partialSummary": True,
                 "providerTrace": self.normalize_provider_trace(call_meta.get("providerTrace")),
+                "summaryMode": str(call_meta.get("summaryMode", "")),
+                "lineCatalogIncluded": bool(call_meta.get("lineCatalogIncluded", False)),
+                "workerEvidenceIncluded": bool(call_meta.get("workerEvidenceIncluded", False)),
+                "schemaRequiredFields": normalize_string_array_preserve_items(call_meta.get("schemaRequiredFields", [])),
                 "pendingWorkers": pending_workers,
             } if response else None,
             "authMeta": auth_meta,

@@ -1,0 +1,65 @@
+{
+  "armId": "para-deepseek-v4flash-critical-double",
+  "title": "Para DeepSeek V4 Flash | Critical Structured | Two Adversarials",
+  "description": "DeepSeek V4 Flash Para run with two targeted adversarial lanes for MSP critical-incident pressure testing.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "weighted",
+    "directBaselineMode": "off",
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "directProvider": "deepseek",
+    "directModel": "deepseek-v4-flash",
+    "summarizerProvider": "deepseek",
+    "summarizerModel": "deepseek-v4-flash",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 2,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "sceptic",
+      "label": "Control-plane sceptic",
+      "role": "pressure-test the first-hour plan for management-plane trust, evidence loss, and unsafe remediation sequencing",
+      "focus": "find places where the plan trusts or uses a possibly compromised RMM or PSA too early or destroys evidence",
+      "temperature": "balanced",
+      "model": "deepseek-v4-flash"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Comms and governance sceptic",
+      "role": "pressure-test the plan for per-customer ticketing, major-incident discipline, compliance-safe communications, and operator management structure",
+      "focus": "find missing internal major incident tracking, per-customer ownership, and cross-tenant communication risks",
+      "temperature": "balanced",
+      "model": "deepseek-v4-flash"
+    }
+  ]
+}

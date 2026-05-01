@@ -1,0 +1,44 @@
+{
+  "armId": "direct-openai-mini-unconstrained",
+  "title": "Direct OpenAI Mini | Unconstrained",
+  "description": "Single-thread OpenAI mini baseline with no extra answer-side harness beyond the runtime direct-answer contract.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.5,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": ""
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": ""
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": []
+}

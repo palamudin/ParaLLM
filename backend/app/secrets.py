@@ -17,6 +17,12 @@ AUTH_KEY_PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "dockerSecretName": "openai_api_keys",
         "localFileName": "Auth.txt",
     },
+    "deepseek": {
+        "label": "DeepSeek",
+        "envVars": ["LOOP_DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEYS"],
+        "dockerSecretName": "deepseek_api_keys",
+        "localFileName": "Auth.deepseek.txt",
+    },
     "anthropic": {
         "label": "Anthropic",
         "envVars": ["LOOP_ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEYS"],
@@ -42,6 +48,7 @@ SAFE_SECRET_BACKENDS = {"env", "docker_secret", "external"}
 AUTH_BACKEND_MODES = {"local", "env", "db"}
 AUTH_LOCAL_FILE_PREFIXES: dict[str, str] = {
     "openai": "openai",
+    "deepseek": "deepseek",
     "anthropic": "ant",
     "xai": "xai",
     "minimax": "min",
@@ -49,6 +56,9 @@ AUTH_LOCAL_FILE_PREFIXES: dict[str, str] = {
 AUTH_LOCAL_FILE_PREFIX_ALIASES: dict[str, str] = {
     "openai": "openai",
     "oai": "openai",
+    "deepseek": "deepseek",
+    "deep": "deepseek",
+    "ds": "deepseek",
     "anthropic": "anthropic",
     "ant": "anthropic",
     "claude": "anthropic",

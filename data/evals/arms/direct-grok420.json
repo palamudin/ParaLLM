@@ -1,0 +1,34 @@
+{
+  "armId": "direct-grok420",
+  "title": "Direct Grok 4.20 Reasoning",
+  "description": "Single-model xAI baseline with no adversarial steering.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "xai",
+    "model": "grok-4.20-reasoning",
+    "summarizerProvider": "xai",
+    "summarizerModel": "grok-4.20-reasoning",
+    "reasoningEffort": "high",
+    "budget": {
+      "maxTotalTokens": 160000,
+      "maxCostUsd": 12,
+      "maxOutputTokens": 2600
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": []
+}

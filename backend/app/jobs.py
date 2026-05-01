@@ -1663,12 +1663,14 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
         cancellation_error = message == EXECUTION_CANCELLED_MESSAGE or _loop_job_cancelled_unlocked(runtime, job_id)
+        reset_to_ready = False
         if cancellation_error:
             final_status = "cancelled"
             final_message = "Cancelled by scheduler reset."
         else:
             final_status = "budget_exhausted" if message.startswith("Budget limit reached:") else "error"
             final_message = message if final_status == "budget_exhausted" else f"Loop error: {message}"
+            reset_to_ready = final_status == "error"
         usage_snapshot = _usage_snapshot(runtime)
         with runtime.with_lock():
             state = runtime.read_state_unlocked()
@@ -1718,6 +1720,12 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                     }
                 )
             )
+            if reset_to_ready:
+                _restore_task_ready_state_unlocked(
+                    runtime,
+                    task_id,
+                    f"Ready after blocker failure: {message}",
+                )
         if cancellation_error:
             runtime.append_step(
                 "autoloop",
@@ -1736,6 +1744,12 @@ def execute_loop_job(job_id: str, root: Optional[Path] = None, auth_path: Option
                     "error": message,
                 },
             )
+            if reset_to_ready:
+                runtime.append_step(
+                    "autoloop",
+                    "Cleared the live task shell after a blocker failure so the session is ready to rerun.",
+                    {"taskId": task_id, "jobId": job_id, "status": "idle", "error": message},
+                )
         _promote_next_queued_loop_job(runtime, task_id, job_id)
         _sync_live_run_record(runtime, task_id=task_id)
         runtime.clear_execution_context()
@@ -1819,6 +1833,55 @@ def _reset_task_loop_state_unlocked(runtime: LoopRuntime, task_id: str) -> bool:
         task_state["loop"] = storage.default_loop_state()
         runtime.write_state_unlocked(task_state)
         return True
+
+
+def _restore_task_ready_state_unlocked(runtime: LoopRuntime, task_id: str, last_message: str) -> bool:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return False
+    paths = storage.project_paths(runtime.root)
+    task_snapshot = storage.read_task_snapshot(normalized_task_id, paths)
+    with _task_state_context(runtime, normalized_task_id):
+        current = runtime.read_state_unlocked()
+        active_task = current.get("activeTask") if isinstance(current.get("activeTask"), dict) else None
+        source_task = task_snapshot if isinstance(task_snapshot, dict) else active_task
+        if not isinstance(source_task, dict):
+            return False
+        current["activeTask"] = source_task
+        current["draft"] = control.build_draft_from_task(source_task)
+        current["commander"] = None
+        current["commanderReview"] = None
+        current["workers"] = control._empty_worker_state_map(task_workers(source_task))
+        current["directBaseline"] = None
+        current["summary"] = None
+        current["arbiter"] = None
+        current["memoryVersion"] = int(current.get("memoryVersion") or 0) + 1
+        current["usage"] = storage.default_usage_state()
+        current["loop"] = storage.default_loop_state()
+        current["loop"]["lastMessage"] = str(last_message or "Ready.")
+        runtime.write_state_unlocked(current)
+    previous_context = runtime.current_execution_context()
+    try:
+        runtime.set_execution_context({})
+        global_state = runtime.read_state_unlocked()
+        global_active_task = global_state.get("activeTask") if isinstance(global_state.get("activeTask"), dict) else None
+        if isinstance(global_active_task, dict) and str(global_active_task.get("taskId") or "") == normalized_task_id:
+            global_state["activeTask"] = source_task
+            global_state["draft"] = control.build_draft_from_task(source_task)
+            global_state["commander"] = None
+            global_state["commanderReview"] = None
+            global_state["workers"] = control._empty_worker_state_map(task_workers(source_task))
+            global_state["directBaseline"] = None
+            global_state["summary"] = None
+            global_state["arbiter"] = None
+            global_state["memoryVersion"] = int(global_state.get("memoryVersion") or 0) + 1
+            global_state["usage"] = storage.default_usage_state()
+            global_state["loop"] = storage.default_loop_state()
+            global_state["loop"]["lastMessage"] = str(last_message or "Ready.")
+            runtime.write_state_unlocked(global_state)
+    finally:
+        runtime.set_execution_context(previous_context)
+    return True
 
 
 def _cancel_scheduler_jobs_unlocked(runtime: LoopRuntime) -> Dict[str, int]:

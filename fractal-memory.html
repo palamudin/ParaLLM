@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MSP Knowledgebase</title>
+  <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
+</head>
+<body class="fractal-memory-body">
+  <div class="fm-app" data-fractal-memory>
+    <header class="fm-topbar">
+      <div class="fm-brand">
+        <h1>MSP Knowledgebase</h1>
+        <span id="memoryStatus">knowledgebase ready</span>
+      </div>
+      <div class="fm-status-strip" aria-live="polite">
+        <span><strong id="nodeCount">0</strong> nodes</span>
+        <span><strong id="laneCount">0</strong> advisor lanes</span>
+        <span><strong id="trailCount">0</strong> trail marks</span>
+        <span>active <strong id="activeLaneName">Main</strong></span>
+      </div>
+    </header>
+
+    <main class="fm-shell">
+      <aside class="fm-lanes" aria-label="Advisor lanes">
+        <section class="fm-section">
+          <div class="fm-section-head">
+            <h2>Keys</h2>
+            <button id="resetBtn" type="button">Reset</button>
+          </div>
+          <div id="laneList" class="fm-lane-list"></div>
+        </section>
+
+        <section class="fm-section">
+          <h2>Add Lane</h2>
+          <label class="fm-field">
+            <span>Name</span>
+            <input id="laneNameInput" type="text" maxlength="28" placeholder="adversary-lane" />
+          </label>
+          <label class="fm-field">
+            <span>Viewpoint</span>
+            <select id="laneRoleInput">
+              <option value="sceptic">Sceptic</option>
+              <option value="builder">Builder</option>
+              <option value="operator">Operator</option>
+              <option value="security">Security</option>
+              <option value="user">User Advocate</option>
+              <option value="lead">Lead</option>
+            </select>
+          </label>
+          <div class="fm-action-row">
+            <button id="spawnBtn" type="button">Add Lane</button>
+            <button id="forkBtn" type="button">Duplicate Lane</button>
+          </div>
+        </section>
+      </aside>
+
+      <section class="fm-stage" aria-label="Knowledge map">
+        <canvas id="cortexCanvas"></canvas>
+        <div class="fm-stage-overlay">
+          <div class="fm-tool-row">
+            <button id="fitBtn" type="button">Fit</button>
+            <button id="focusBtn" type="button">Focus</button>
+            <button id="stepBtn" type="button">Step</button>
+            <button id="correlateBtn" type="button">Correlate</button>
+            <button id="hydrateBtn" type="button">Sync</button>
+            <button id="exportBtn" type="button">Export JSON</button>
+          </div>
+          <div class="fm-mini-status">
+            <span>selected <strong id="selectedNodeName">objective</strong></span>
+            <span>zoom <strong id="zoomValue">100%</strong></span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="fm-inspector" aria-label="Memory inspector">
+        <section class="fm-section">
+          <div class="fm-section-head">
+            <h2>Node</h2>
+            <span id="selectedNodeType" class="fm-badge">anchor</span>
+          </div>
+          <h3 id="selectedTitle">Active Objective</h3>
+          <p id="selectedSummary"></p>
+          <div id="selectedEvidence" class="fm-evidence"></div>
+        </section>
+
+        <section class="fm-section">
+          <h2>Doors</h2>
+          <div id="doorList" class="fm-door-list"></div>
+        </section>
+
+        <section class="fm-section">
+          <h2>Trail</h2>
+          <ol id="trailList" class="fm-trail-list"></ol>
+          <label class="fm-field">
+            <span>Private note</span>
+            <textarea id="laneNoteInput" rows="4" placeholder="lane-local stance, pressure, or unresolved thread"></textarea>
+          </label>
+        </section>
+
+        <section class="fm-section fm-ai-section">
+          <div class="fm-section-head">
+            <h2>AI Packet</h2>
+            <button id="copyPacketBtn" type="button">Copy</button>
+          </div>
+          <pre id="aiPacket" class="fm-ai-packet">{}</pre>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="assets/fractal-memory.js?v=20260501-003"></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+{
+  "armId": "para-openai-mini-unconstrained-double",
+  "title": "ParaLLM OpenAI Mini | Unconstrained | Two Adversarials",
+  "description": "OpenAI mini Para run with two targeted adversarial lanes and no extra answer-side style harness.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "weighted",
+    "directBaselineMode": "off",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.5,
+      "maxOutputTokens": 0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "maxRecords": 6,
+      "maxTokens": 900,
+      "includeRuntime": true,
+      "includePersistent": true
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": ""
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": ""
+    },
+    "requireLive": true,
+    "allowMockFallback": false
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "sceptic",
+      "label": "Control-plane sceptic",
+      "role": "pressure-test the first-hour plan for management-plane trust, evidence loss, and unsafe remediation sequencing",
+      "focus": "find places where the plan trusts or uses a possibly compromised RMM or PSA too early or destroys evidence",
+      "temperature": "balanced",
+      "model": "gpt-5-mini"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Comms and governance sceptic",
+      "role": "pressure-test the plan for per-customer ticketing, major-incident discipline, compliance-safe communications, and operator management structure",
+      "focus": "find missing internal major incident tracking, per-customer ownership, and cross-tenant communication risks",
+      "temperature": "balanced",
+      "model": "gpt-5-mini"
+    }
+  ]
+}

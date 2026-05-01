@@ -263,6 +263,28 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertTrue(payload["activeTask"]["executionHealth"]["degraded"])
         self.assertTrue(payload["activeTask"]["executionHealth"]["targets"]["commander"]["recoveredFromIncomplete"])
 
+    def test_build_vetting_matrix_judge_prompt_preview_stays_blind_to_rubric_and_gold(self) -> None:
+        preview = storage.build_vetting_matrix_judge_prompt_preview(
+            {
+                "objective": "Contain the blast path.",
+                "constraints": ["Use decision gates.", "Preserve evidence."],
+                "gold": {"priority": "safety-first"},
+            },
+            {"mustDo": ["Reward operational restraint."]},
+            [
+                {"id": "A", "text": "Direct answer text."},
+                {"id": "B", "text": "Para answer text."},
+            ],
+        )
+
+        self.assertIn("Candidate answers:", preview)
+        self.assertIn("Judge metric:", preview)
+        self.assertIn("Answer A", preview)
+        self.assertIn("Direct answer text.", preview)
+        self.assertNotIn("Judge rubric", preview)
+        self.assertNotIn("Hidden gold guidance", preview)
+        self.assertNotIn("safety-first", preview)
+
     def test_read_state_payload_keeps_degraded_target_after_later_clean_step(self) -> None:
         self.write_json(
             self.paths.state,
@@ -362,6 +384,147 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["loop"]["delayMs"], 0)
         self.assertTrue(payload["contractWarnings"])
         self.assertEqual(payload["activeTask"]["contractWarnings"], payload["contractWarnings"])
+
+    def test_build_scores_runs_payload_reconstructs_provider_owned_lanes(self) -> None:
+        bench_root = self.paths.data / "benchmarks" / "vetting"
+        runs_dir = bench_root / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        self.write_json(
+            self.paths.eval_arms / "para-demo.json",
+            {
+                "armId": "para-demo",
+                "title": "Para Demo",
+                "runtime": {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                    "summarizerProvider": "anthropic",
+                    "summarizerModel": "claude-opus-4-7",
+                    "contextMode": "full",
+                    "reasoningEffort": "high",
+                },
+                "workers": [
+                    {"id": "A", "label": "Proponent", "type": "proponent", "role": "utility", "focus": "leverage", "model": "claude-sonnet-4-6"}
+                ],
+            },
+        )
+        self.write_json(
+            self.paths.eval_arms / "direct-demo.json",
+            {
+                "armId": "direct-demo",
+                "title": "Direct Demo",
+                "runtime": {
+                    "provider": "anthropic",
+                    "model": "claude-opus-4-7",
+                    "summarizerHarness": "balanced",
+                },
+                "workers": [],
+            },
+        )
+        manifest_path = bench_root / "demo-manifest.json"
+        self.write_json(
+            manifest_path,
+            {
+                "title": "Demo scored run",
+                "judgeSystem": "provider_owned",
+                "judgeProvider": "anthropic",
+                "judgeModel": "claude-opus-4-7",
+                "providerFamily": "anthropic",
+                "objective": "Contain the blast path.",
+                "constraints": ["Use decision gates."],
+            },
+        )
+        self.write_json(
+            self.paths.outputs / "direct-demo-output.json",
+            {
+                "artifactType": "eval_direct_output",
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "inputText": "Direct prompt input",
+                "fullPrompt": "Instructions:\nDirect instructions\n\nDirect prompt input",
+                "rawOutputText": "{\"answer\":\"Direct answer text.\"}",
+                "output": {"answer": "Direct answer text.", "stance": "Direct stance.", "confidenceNote": "medium"},
+            },
+        )
+        self.write_json(
+            self.paths.outputs / "para-demo-output.json",
+            {
+                "artifactType": "summary_output",
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "inputText": "Para prompt input",
+                "fullPrompt": "Instructions:\nPara instructions\n\nPara prompt input",
+                "rawOutputText": "{\"frontAnswer\":{\"answer\":\"Para answer text.\"}}",
+                "output": {"frontAnswer": {"answer": "Para answer text."}},
+            },
+        )
+        self.write_json(
+            runs_dir / "vet-demo.json",
+            {
+                "runId": "vet-demo",
+                "createdAt": "2026-04-27T16:10:28+00:00",
+                "sourceManifest": str(manifest_path),
+                "judge": {"provider": "anthropic", "model": "claude-opus-4-7"},
+                "judgeSystem": "provider_owned",
+                "providerFamily": "anthropic",
+                "case": {
+                    "title": "Demo scored run",
+                    "objective": "Contain the blast path.",
+                    "constraints": ["Use decision gates."],
+                    "gold": {},
+                },
+                "answers": [
+                    {
+                        "slot": "A",
+                        "answerId": "direct-demo",
+                        "label": "Direct Demo",
+                        "role": "direct",
+                        "provider": "anthropic",
+                        "text": "Direct answer text.",
+                        "artifactFile": "data/outputs/direct-demo-output.json",
+                        "scores": {"overall": 8.0},
+                    },
+                    {
+                        "slot": "B",
+                        "answerId": "para-demo",
+                        "label": "Para Demo",
+                        "role": "parallm",
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-7",
+                        "text": "Para answer text.",
+                        "artifactFile": "data/outputs/para-demo-output.json",
+                        "scores": {"overall": 9.0},
+                    },
+                ],
+                "bestFinalAnswer": {"slot": "B", "answerId": "para-demo", "label": "Para Demo", "role": "parallm"},
+                "bestTacticalDetail": {"slot": "B", "answerId": "para-demo", "label": "Para Demo", "role": "parallm"},
+                "advantageSummary": {
+                    "band": "clear",
+                    "leader": {"slot": "B", "label": "Para Demo"},
+                    "runnerUp": {"slot": "A", "label": "Direct Demo"},
+                },
+                "markdown": {
+                    "summary": "- Best final answer: Para Demo",
+                    "scoreTable": "| Area | A | B |",
+                },
+            },
+        )
+
+        payload = storage.build_scores_runs_payload(self.paths, selected_run_id="vet-demo")
+
+        self.assertEqual(payload["runs"][0]["runId"], "vet-demo")
+        selected = payload["selectedRun"]
+        self.assertEqual(selected["judge"]["provider"], "anthropic")
+        self.assertEqual(selected["lanes"]["defaultParaAnswerId"], "para-demo")
+        self.assertEqual(
+            selected["lanes"]["paraOptions"][0]["promptText"],
+            "Objective:\nContain the blast path.\n\nConstraints:\n- Use decision gates.\n\nSession context:\nnone",
+        )
+        self.assertEqual(
+            selected["lanes"]["direct"]["promptText"],
+            "Objective:\nContain the blast path.\n\nConstraints:\n- Use decision gates.\n\nSession context:\nnone",
+        )
+        self.assertIn("Canonical provider prompt was not recorded", selected["lanes"]["judge"]["promptText"])
+        self.assertIn("Best final answer: Para Demo", selected["lanes"]["judge"]["responseText"])
 
     def test_project_paths_honors_loop_data_root_override(self) -> None:
         override = self.root / "shared-data"
@@ -940,6 +1103,161 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(artifact["summary"]["provider"], "ollama")
         self.assertFalse(artifact["summary"]["providerCapabilities"]["toolLoop"])
         self.assertEqual(artifact["summary"]["model"], "qwen3")
+
+    def test_build_scores_run_detail_rehydrates_meaningful_answer_from_artifact(self) -> None:
+        bench_root = self.paths.data / "benchmarks" / "vetting"
+        runs_dir = bench_root / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = bench_root / "demo-manifest.json"
+        self.write_json(
+            manifest_path,
+            {
+                "title": "Demo scored run",
+                "judgeSystem": "provider_owned",
+                "judgeProvider": "anthropic",
+                "judgeModel": "claude-opus-4-7",
+                "providerFamily": "anthropic",
+                "objective": "Contain the blast path.",
+                "constraints": ["Use decision gates."],
+            },
+        )
+        self.write_json(
+            self.paths.eval_arms / "para-demo.json",
+            {"armId": "para-demo", "runtime": {"provider": "anthropic", "model": "claude-sonnet-4-6", "summarizerModel": "claude-opus-4-7"}},
+        )
+        self.write_json(
+            self.paths.outputs / "para-demo-output.json",
+            {
+                "artifactType": "summary_output",
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "inputText": "Objective:\nContain the blast path.\n\nConstraints:\n- Use decision gates.",
+                "fullPrompt": "Instructions:\nStored prompt\n\nPrompt body",
+                "rawOutputText": "```json\n{\"frontAnswer\":{\"answer\":\"Wrapped stale answer.\"}}\n```",
+                "flattenedOutputText": "Flattened artifact answer.",
+                "output": {"frontAnswer": {"answer": "Artifact answer from the real final output."}},
+            },
+        )
+        run_payload = {
+            "runId": "vet-demo",
+            "createdAt": "2026-04-27T16:10:28+00:00",
+            "sourceManifest": str(manifest_path),
+            "judge": {"provider": "anthropic", "model": "claude-opus-4-7"},
+            "judgeSystem": "provider_owned",
+            "providerFamily": "anthropic",
+            "case": {"title": "Demo scored run", "objective": "Contain the blast path.", "constraints": ["Use decision gates."], "gold": {}},
+            "slotResult": {
+                "fullPrompt": "Instructions:\nJudge instructions\n\nCandidate answer:\nArtifact answer from the real final output.",
+            },
+            "answers": [
+                {
+                    "slot": "B",
+                    "answerId": "para-demo",
+                    "label": "Para Demo",
+                    "role": "parallm",
+                    "provider": "anthropic",
+                    "text": "Stale wrapper answer.",
+                    "artifactFile": "data/outputs/para-demo-output.json",
+                    "scores": {"overall": 9.0},
+                }
+            ],
+            "bestFinalAnswer": {"slot": "B", "answerId": "para-demo", "label": "Para Demo", "role": "parallm"},
+            "bestTacticalDetail": {"slot": "B", "answerId": "para-demo", "label": "Para Demo", "role": "parallm"},
+            "advantageSummary": {"band": "clear", "leader": {"slot": "B", "label": "Para Demo"}, "runnerUp": {"slot": "B", "label": "Para Demo"}},
+            "markdown": {"summary": "", "scoreTable": ""},
+        }
+
+        detail = storage.build_scores_run_detail(self.paths, run_payload)
+
+        self.assertEqual(detail["lanes"]["paraOptions"][0]["responseText"], "Artifact answer from the real final output.")
+        self.assertEqual(
+            detail["lanes"]["paraOptions"][0]["promptText"],
+            "Objective:\nContain the blast path.\n\nConstraints:\n- Use decision gates.\n\nSession context:\nnone",
+        )
+        self.assertIn("Artifact answer from the real final output.", detail["lanes"]["judge"]["promptText"])
+        self.assertNotIn("answers anthropic", detail["lanes"]["judge"]["promptText"])
+
+    def test_build_scores_run_detail_treats_provider_owned_candidate_as_para_lane(self) -> None:
+        bench_root = self.paths.data / "benchmarks" / "vetting"
+        manifest_path = bench_root / "provider-owned-manifest.json"
+        self.write_json(
+            manifest_path,
+            {
+                "title": "Provider owned run",
+                "judgeSystem": "provider_owned",
+                "judgeProvider": "openai",
+                "judgeModel": "gpt-5-mini",
+                "providerFamily": "openai",
+                "objective": "Contain the blast path.",
+                "constraints": ["Use decision gates."],
+            },
+        )
+        run_payload = {
+            "runId": "vet-provider-owned",
+            "createdAt": "2026-04-27T21:49:30+00:00",
+            "sourceManifest": str(manifest_path),
+            "judge": {"provider": "openai", "model": "gpt-5-mini"},
+            "judgeSystem": "provider_owned",
+            "providerFamily": "openai",
+            "case": {"title": "Provider owned run", "objective": "Contain the blast path.", "constraints": ["Use decision gates."], "gold": {}},
+            "answers": [
+                {
+                    "slot": "A",
+                    "answerId": "para-provider-owned",
+                    "label": "Para candidate",
+                    "role": "candidate",
+                    "provider": "openai",
+                    "text": "Para answer text.",
+                    "scores": {"overall": 8.0},
+                },
+                {
+                    "slot": "B",
+                    "answerId": "direct-provider-owned",
+                    "label": "Direct candidate",
+                    "role": "direct",
+                    "provider": "openai",
+                    "text": "Direct answer text.",
+                    "scores": {"overall": 9.0},
+                },
+            ],
+            "bestFinalAnswer": {"slot": "A", "answerId": "para-provider-owned", "label": "Para candidate", "role": "candidate"},
+            "bestTacticalDetail": {"slot": "A", "answerId": "para-provider-owned", "label": "Para candidate", "role": "candidate"},
+            "advantageSummary": {"band": "clear", "leader": {"slot": "A", "label": "Para candidate"}, "runnerUp": {"slot": "B", "label": "Direct candidate"}},
+            "markdown": {"summary": "", "scoreTable": ""},
+        }
+
+        detail = storage.build_scores_run_detail(self.paths, run_payload)
+
+        self.assertEqual(detail["lanes"]["defaultParaAnswerId"], "para-provider-owned")
+        self.assertEqual(len(detail["lanes"]["paraOptions"]), 1)
+        self.assertEqual(detail["lanes"]["paraOptions"][0]["answerId"], "para-provider-owned")
+
+    def test_build_scores_answer_lane_uses_clean_question_fallback_for_direct(self) -> None:
+        answer = {
+            "answerId": "direct-demo",
+            "label": "Direct Demo",
+            "role": "direct",
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "text": "Direct answer text.",
+            "scores": {"overall": 8.0},
+        }
+        case = {
+            "objective": "Contain the blast path.",
+            "constraints": ["Use decision gates."],
+            "sessionContext": "MSP overnight incident.",
+        }
+        lane = storage.build_scores_answer_lane(
+            self.paths,
+            case,
+            answer,
+            {"runtime": {"provider": "openai", "model": "gpt-5-mini"}},
+            lane_key="direct",
+        )
+
+        self.assertIn("Objective:\nContain the blast path.", lane["promptText"])
+        self.assertIn("- Use decision gates.", lane["promptText"])
+        self.assertEqual(lane["responseText"], "Direct answer text.")
 
 
 if __name__ == "__main__":
