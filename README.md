@@ -692,29 +692,28 @@ The active publication gate is:
 - runs with `mode != live`, placeholder text, or fallback artifacts do not qualify for README publication
 - future score tables should record both `constrained` and `unconstrained` regimes when both runs exist for the same scenario
 
-Latest verified unconstrained live run:
+Latest verified live stability runs are summarized in [2026-05-01 MSP RMM OpenAI Mini Stability Runs](docs/eval-results/2026-05-01-msp-rmm-openai-mini.md).
 
 | Field | Value |
 | --- | --- |
-| Run id | `judge-20260501-101010+0000-162d39` |
 | Date | `2026-05-01` |
-| Suite | `msp-rmm-midnight-malware-push-unconstrained` |
 | Scenario | MSP RMM PowerShell spike across 12 SMB clients, first-hour response |
-| Regime | `unconstrained` answer side; MSP incident-lead judge rubric still active |
 | Generation provider/model | `openai` / `gpt-5-mini` |
 | Judge provider/model | `openai` / `gpt-5.4` |
-| Replicates | `1` |
-| Error count | `0` |
+| Constrained run id | `judge-20260501-105629+0000-d6a1cc` |
+| Unconstrained run id | `judge-20260501-111907+0000-d5db95` |
+| Replicates | `5` per arm per regime |
+| Error count | `0` in both runs |
 | Live/fallback status | live only; mock fallback excluded |
-| Total tokens / estimated cost | `28,453` / `$0.019291` |
+| Total tokens / estimated cost | constrained `153,102` / `$0.105828`; unconstrained `138,904` / `$0.088030` |
 
-| Arm | Deterministic | Quality overall | Health overall | Control overall | Verdict | Tokens / cost |
-| --- | ---: | ---: | ---: | ---: | --- | ---: |
-| `direct-openai-mini-unconstrained` | `7/7` | `2` | `9` | `n/a` | Hard fail for MSP severity-1 lead role | `1,321` / `$0.002406` |
-| `para-openai-mini-unconstrained-double--loops-1` | `7/7` | `8` | `8` | `8` | Pass | `27,132` / `$0.016885` |
+| Regime | Arm | Deterministic | Quality mean | Quality sd | Quality min-max | Health mean | Control mean |
+| --- | --- | ---: | ---: | ---: | --- | ---: | ---: |
+| Constrained | `direct-openai-mini-open` | `5/5` | `3.60` | `1.36` | `2-6` | `8.20` | `n/a` |
+| Constrained | `para-openai-mini-critical-double--loops-1` | `5/5` | `7.20` | `1.72` | `4-9` | `8.80` | `7.20` |
+| Unconstrained | `direct-openai-mini-unconstrained` | `5/5` | `2.00` | `0.00` | `2-2` | `8.40` | `n/a` |
+| Unconstrained | `para-openai-mini-unconstrained-double--loops-1` | `5/5` | `6.60` | `1.36` | `4-8` | `8.20` | `6.40` |
 
-Run artifacts:
-- [direct score](data/evals/runs/judge-20260501-101010+0000-162d39/cases/rmm-midnight-malware-push-unconstrained/direct-openai-mini-unconstrained/replicate-001/score.json)
-- [Para score](data/evals/runs/judge-20260501-101010+0000-162d39/cases/rmm-midnight-malware-push-unconstrained/para-openai-mini-unconstrained-double--loops-1/replicate-001/score.json)
+Current read: Para won every quality replicate in both regimes, but the remaining failure target is control-plane sequencing. Some Para answers still allow too much use of the suspected RMM console before evidence export.
 
 Use [scripts/vetting_manifest.provider_owned.example.json](scripts/vetting_manifest.provider_owned.example.json) as the starting shape for fresh provider-family-native reruns, and keep the score tables split by constraint regime.
