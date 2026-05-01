@@ -1,39 +1,41 @@
 # ParaLLM
 
-![Status](https://img.shields.io/badge/status-prototype-orange)
+![Status](https://img.shields.io/badge/status-live%20orchestration%20system-22c55e)
 ![Platform](https://img.shields.io/badge/platform-local%20%2B%20Docker-0ea5e9)
 ![UI](https://img.shields.io/badge/UI-Bootstrap%205-7952b3)
 ![Runtime](https://img.shields.io/badge/runtime-Python%20control%20plane-3776ab)
 ![Reasoning](https://img.shields.io/badge/reasoning-adversarial%20lane%20stack-22c55e)
 
-Local-first adversarial reasoning workspace for testing whether structured disagreement can improve final answers.
+Local-first orchestration system for parallel reasoning: adversarial review, repo intelligence, knowledgebase recall, provider arms, structured scheduling, and live evaluation in one operator loop.
 
-Instead of asking one model for one pass, ParaLLM runs a lead thread plus adversarial lanes, preserves disagreement at checkpoints, and lets the final answer be shaped by pressure rather than narrated as a debate recap.
+Instead of asking one model for one pass, ParaLLM runs a lead thread plus adversarial lanes, preserves disagreement at checkpoints, and lets the final answer be shaped by pressure, evidence, runtime memory, and judgeable execution traces.
 
-Need a reusable project blurb, launch post, or demo talk track? See [PROMO.md](PROMO.md).
+Need a reusable project blurb, launch post, or briefing track? See [PROMO.md](PROMO.md).
 
 ## Why This Exists
 
-Most "multi-agent" demos are really just wrappers around extra API calls. This project is trying to answer a harder question:
+Most "multi-agent" showcases are wrappers around extra API calls. ParaLLM is built around a harder operational question:
 
-> Can a lead answer become meaningfully more grounded, more calibrated, or more robust when it is pressured by structured adversarial viewpoints before it reaches the user?
+> Can a lead answer become meaningfully more grounded, more calibrated, and more operationally reliable when it is pressured by structured adversarial viewpoints before it reaches the user?
 
-The current prototype is built to make that test inspectable:
+The system makes that test inspectable and repeatable through:
 
 - a normal-looking front chat
 - a review surface with internal traces, line refs, and artifacts
+- a repo inspector that maps code structure, hotspots, and AI-readable review packets
+- an optional MSP knowledgebase with durable recall plus runtime-log fallback
 - an isolated eval workspace for blind direct-vs-steered comparisons
-- explicit cost controls, loop controls, and runtime profiles
+- strict schemas, provider-normalized responses, and cost/runtime controls
 
 ## What It Does
 
-- `V1` is now the confirmed production-like pipeline: `commander -> workers -> commander review -> summarizer`
-- `V2` is the modular engine track: a configurable topology scaffold that will inherit packet, role, and gating choices without destabilizing V1
+- Confirmed execution pipeline: `commander -> workers -> commander review -> summarizer`
+- Modular topology surface for routing, provider lanes, runtime settings, and review state
 - Chat-first workflow where `Send` creates a task and starts the configured loop
-- Commander-first runtime evolving toward: `commander -> workers -> commander review -> summarizer`
 - Dynamic adversarial worker roster starting from `Proponent` and `Sceptic`
 - Summarizer-guided dynamic adversarial lane spin-up for the next round when a missing viewpoint survives review
 - Review-only control audit showing accepted, rejected, and held-out objections
+- Self-analytical repo graph and knowledgebase graph views designed for both human operators and AI agents
 - Isolated eval subsystem for side-by-side benchmark runs
 - Read-only local file tools for commander and worker lanes with allow-root policy and audit logs
 - Read-only GitHub repo tools for commander and worker lanes with owner/repo allowlist and audit logs
@@ -49,7 +51,7 @@ The current prototype is built to make that test inspectable:
 
 ## Architecture
 
-Current confirmed `V1` data path:
+Current confirmed execution path:
 
 ```mermaid
 flowchart LR
@@ -83,7 +85,7 @@ flowchart LR
 | Self-host packaging | Docker Compose Python stack |
 | Frontend | HTML, jQuery, local Bootstrap 5.3, custom CSS |
 | Storage | Local JSON / JSONL artifacts |
-| Model path | OpenAI Responses API + native Ollama `/api/chat` |
+| Model path | OpenAI Responses, Anthropic Messages, xAI/OpenAI-compatible Responses, DeepSeek, MiniMax, native Ollama `/api/chat` |
 | QA | Python harnesses + JS syntax check |
 
 ## Project Layout
@@ -147,6 +149,9 @@ Current skill layers:
 - Compact runtime profile controls on the front dash
 - Collapsible admin-style sidebar
 - Review workspace for trace/artifact inspection
+- Replacement app shell with repo inspector and MSP knowledgebase views
+- Drag/resizable graph workspaces for code and memory inspection
+- AI-readable packets for repo graph, knowledgebase graph, selected nodes, and review surfaces
 - Eval workspace for isolated benchmark runs
 - Settings surface for key-pool and runtime management
 
@@ -162,6 +167,8 @@ Current skill layers:
 - OpenAI live runs now request server-side input autocompression, and oversized prompt packets are locally compacted before provider calls when needed
 - Native MSP knowledgebase endpoints now expose local `retain` / `recall` / `reflect` verbs with JSONL memory banks and a runtime-log fallback, so memory can bolt on without becoming a hard dependency
 - Live commander, worker, review, and summarizer dispatch now receive a compact optional MSP knowledgebase recall packet before forming their prompt; `runtime.knowledgebase.scope` can be `shared`, `lane`, `runtime`, `strict`, or `off`, with lane scope falling back to shared/runtime readout when its private trail is empty
+- Repo graph and memory graph endpoints produce operator-readable and AI-readable topology packets without requiring runtime prompts to ingest the whole repo blindly
+- Provider-normalized response parsing keeps direct, Para, and judge artifacts comparable across OpenAI, DeepSeek, Anthropic, xAI, MiniMax, and Ollama paths
 - Task/runtime-scoped Ollama base URL override so remote or dockerized Ollama hosts do not require a control-plane relaunch
 - Multi-endpoint Ollama provider pools via local `providers.txt`, with per-run routing modes `Single endpoint`, `Rotate by run`, and `Mix by lane`
 - Judge-aware Ollama endpoint preference so judge/eval lanes can `Prefer distinct endpoint` when another host is available
@@ -262,9 +269,7 @@ Infrastructure readiness now lives at:
 http://127.0.0.1:8787/v1/system/infrastructure
 ```
 
-### Initial Multi-Provider Slice
-
-Milestone 5 is now started with a real first provider split:
+### Multi-Provider Runtime
 
 - `openai`
   - full current path
@@ -274,7 +279,7 @@ Milestone 5 is now started with a real first provider split:
 - `ollama`
   - native `/api/chat` execution
   - structured JSON output path
-  - local-model experimentation without OpenAI keys
+  - local-model execution without hosted API keys
   - local function-tool loop for file/GitHub tools
   - runtime `Ollama base URL` field can point at a remote or dockerized host instead of assuming `127.0.0.1`
 - `deepseek`, `anthropic`, `xai`
@@ -291,11 +296,11 @@ Current honest limitation:
 
 - Ollama is available as a live structured-output provider with local function tools, but it does **not** support hosted web-search research in this repo
 - workers currently inherit the global runtime provider, while the summarizer/lead-thread provider can be set separately
-- OpenAI, DeepSeek, Anthropic, and xAI are the current hosted-core providers we are trying to keep boring front to back
+- OpenAI, DeepSeek, Anthropic, and xAI are the current hosted-core providers the runtime keeps on the primary path
 - MiniMax remains available for targeted debugging, but it is intentionally deferred from the primary path until its review/judge behavior stops needing hand-holding
-- eval arms, result artifacts, and the blind benchmark now carry provider identity so mixed-provider experiments can be inspected honestly in Review instead of being inferred from model names alone
-- Milestone 5 is not complete until more providers and richer capability normalization land
-- The next major systems milestone after provider work is cross-round contradiction memory, so unresolved lane disagreements can survive across rounds and trigger explicit re-examination instead of being implicitly reset after each summary pass
+- eval arms, result artifacts, and the blind benchmark now carry provider identity so mixed-provider runs can be inspected honestly in Review instead of being inferred from model names alone
+- provider capability normalization continues evolving as model behavior and vendor APIs change
+- cross-round contradiction memory remains the next major reasoning-quality upgrade, so unresolved lane disagreements can survive across rounds and trigger explicit re-examination instead of being implicitly reset after each summary pass
 
 If you still want the optional compatibility runtime service in the same local session:
 
@@ -356,7 +361,7 @@ The deploy env contract lives in `.env.example`, and the portability smoke is:
 python scripts/qa_portability_check.py
 ```
 
-The hosted-dev proof smoke is:
+The hosted-dev integration smoke is:
 
 ```bash
 python scripts/qa_hosted_dev_stack.py
@@ -440,7 +445,7 @@ Credential store modes:
 
 ## Local Ollama Endpoint Pool
 
-ParaLLM can also keep a local pool of Ollama endpoints for prototype routing. This is separate from `Auth.txt` and lives in shared `providers.txt`.
+ParaLLM can also keep a local pool of Ollama endpoints for endpoint routing. This is separate from `Auth.txt` and lives in shared `providers.txt`.
 
 - format is one endpoint per line using `ollama:<base_url>`
 - example:
@@ -541,16 +546,16 @@ python scripts/quality_benchmark.py --case core --repeats 3 --loop-sweep 1,2,3
 python scripts/run_vetting_matrix.py --input scripts/vetting_manifest.example.json
 ```
 
-`V2` is now a parallel engine track in the UI, starting as an interactive modular topology surface while the proven V1 runner remains the execution fallback.
+The topology surface is now a parallel engine track in the UI. It exposes routing, provider lanes, runtime settings, graph views, and review state while the confirmed execution runner remains the stable path.
 
 Internal hardening:
 - `LOOP_FAULT_POINTS` can inject targeted dispatch/loop failures for repeatable recovery tests, for example `dispatch.execute.before_runtime.commander` or `loop.execute.before_target.commander`.
 
 ## Benchmark Philosophy
 
-The project is not trying to prove that "more agents" is automatically better.
+ParaLLM is not claiming that "more agents" is automatically better.
 
-It is trying to measure whether:
+It measures whether:
 
 - contradiction detection improves
 - uncertainty is preserved better
@@ -559,47 +564,51 @@ It is trying to measure whether:
 
 If steered output does not beat a direct baseline often enough, the logs and eval traces should make that failure obvious.
 
-## Roadmap
+## Achieved Foundation
 
-The local stability gate is now closed:
+The current system is already functional in the places that matter:
 
-- the true separate path completed 5 clean live 2-round runs without hanging
-- next-round spawned workers activated correctly in round 2
-- the async dispatch path also passed after the same alignment fixes
+- live parallel reasoning path with commander, adversarial lanes, commander review, and summarizer
+- provider arms for OpenAI, DeepSeek, Anthropic, xAI, MiniMax, and Ollama-local paths
+- structured scheduler/runtime controls for live answers, evals, judge runs, repo scans, memory reflection, and provider-call lanes
+- strict structured outputs and provider-normalized parsing for direct, Para, and judge artifacts
+- isolated eval runner with per-replicate workspaces, live-only gates, score tables, and judge traces
+- repo inspector with file inventory, symbol/call graph, hotspots, selected-neighborhood views, and AI-readable packets
+- optional MSP knowledgebase with `retain`, `recall`, `reflect`, persistent JSONL banks, runtime-log fallback, and lane-aware recall packets
+- replacement shell that brings chat, review, repo inspection, knowledgebase, evals, provider controls, and runtime controls into one operator surface
+- cost, token, auth-key, retry, timeout, and artifact telemetry that makes expensive reasoning auditable instead of mystical
 
-The next phase is productization for an online-capable offering.
+## Feature Roadmap
 
-Next milestone track:
+The next work is not to imitate another project. It is to make ParaLLM better at being itself: an execution-oriented orchestration system for parallel reasoning.
 
-- `Dynamic Lane Polish`
-  - make spawned personas more deliberate, less duplicate, and more legible in Review
-- `Deployment Portability and Online Packaging`
-  - keep the stack Python-first and define the first hosted deployment shape
-  - harden the Docker/self-host path so local and hosted deployments share one control plane
-- `Secrets, Security, and Controlled Retrieval`
-  - move beyond plaintext-only local key handling toward safer storage and hosted retrieval
-- `Prototype Hardening`
-  - add stronger error handling, typing discipline, test coverage, and recovery verification
-- `Multi-Provider Model Abstraction`
-  - add Grok, Claude, Gemini, and local runtimes through Ollama or LiteLLM
-- `Review Surface and Frontend Architecture`
-  - improve review visualization and split the frontend into more maintainable modules
-- `Canvas-Native Scheduling and Provider-Neutral Async Execution`
-  - separate `live`, `eval`, and `judge` into first-class run lanes instead of one special live task plus isolated side systems
-  - add a provider-neutral async scheduler that can dispatch multiple runnable jobs concurrently while leasing keys safely from each provider pool
-- `TradingAgents Review Imports`
-  - borrow the good discipline, not the boardroom cadence: ParaLLM should feel like an execution engine with live state, resumable work, and machine-readable events, not a sequential committee looking at a chart
-  - make every execution node schema-first, including commander, worker, review, summarizer, repo scan, UI graph query, and provider call outputs
-  - add checkpoint/resume boundaries per runnable job stage, with clear recovery state exposed to both humans and AI agents
-  - keep an append-only decision/event ledger so every run can be replayed, audited, summarized, and mined for follow-up work
-  - prefer deterministic parsers for ratings, status, classification, and artifact extraction; reserve LLM calls for judgment and synthesis
-  - cache expensive repo-intelligence layers separately: file inventory, parsed symbols, import/call graph, hotspots, AI readout, and rendered graph layout
-  - default dense visualizations to module lenses, selected-neighborhood views, and hotspot queues; keep the full supernova graph as an intentional inspect mode
-- `Authoritative Domain Knowledge Tools`
-  - build retrieval-first specialist knowledge blocks with citations, provenance, and abstain behavior before considering any weight-training path
-  - only escalate to fine-tuning or specialist pretraining if retrieval plus evals still cannot clear the quality bar honestly
+- `Control-Plane Distrust Discipline`
+  - harden MSP/security answers so suspected RMM, PSA, backup, identity, and vendor control planes are not used before evidence export and out-of-band validation gates
+  - add targeted eval cases that punish unsafe cleanup sequencing more consistently
+- `Council-Grade Evaluation`
+  - expand hard-mode suites across MSP, incident response, repo review, product decisions, finance, legal/compliance, and deployment risk
+  - run council judging across provider families, not only provider-owned scoring
+  - publish compact stability summaries while keeping raw run artifacts local unless intentionally promoted
+- `Scheduler and Provider Lanes`
+  - promote live, eval, judge, repo scan, memory reflection, and provider-call work into first-class scheduled jobs
+  - add clearer queue state, cancellation, retry policy, rate-limit behavior, and key leasing per provider pool
+- `Self-Improving Repo Intelligence`
+  - let the repo inspector produce prioritized refactor, performance, test, and risk queues for both humans and AI agents
+  - cache expensive graph layers separately: file inventory, parsed symbols, import/call graph, hotspots, AI readout, and rendered layout
+- `Fractal MSP Knowledgebase`
+  - keep memory optional, inspectable, source-linked, and removable
+  - support lane-specific trails that can correlate with shared knowledge without becoming a hidden prompt dependency
+  - add retention policies, conflict views, provenance scoring, and stale-memory warnings
+- `Operator UI`
+  - continue flattening nested controls into draggable/resizable workspaces
+  - make repo and knowledgebase views use the same presentation grammar
+  - expose every action as something both a human and an AI agent can understand and operate safely
+- `Deployment and Security`
+  - keep the stack Python-first and local-first while defining a clean hosted/self-hosted deployment path
+  - move secret handling further away from plaintext local pools for serious deployments
+  - keep retrieval and local/GitHub tools read-safe by default
 - `Cost Governance Without Betraying the Thesis`
-  - keep burn visible and enforceable without starving adversarial lanes of full user context
+  - keep burn visible and enforceable without starving adversarial lanes of the context needed to be useful
 
 ## Known Tradeoffs
 
@@ -610,7 +619,7 @@ Next milestone track:
 - The Python control plane owns auth-key mutation, draft/task writes, runtime/worker settings, session/export/replay mutations, eval launch, loop/job control, and target dispatch.
 - The primary app path is `http://127.0.0.1:8787/` or the backend container on the same port.
 - The repo and runtime now operate without the legacy web-server stack.
-- The system is inspectable enough to teach us where it helps, but not yet mature enough to call "production."
+- ParaLLM is an active orchestration system; it is not yet a certified production incident-response platform.
 
 ## Safety / Local Data
 
@@ -632,7 +641,7 @@ Things already in place:
 
 ## Contributing
 
-This repo is still moving like a fast prototype, but good contributions are welcome if they preserve the core ideas:
+This repo moves quickly, but good contributions are welcome if they preserve the core ideas:
 
 - keep the front answer clean and single-voice
 - keep internal pressure inspectable
@@ -643,14 +652,15 @@ If you change runtime behavior, run the QA scripts and say what changed in reaso
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the short repo workflow.
 
-## Current Direction
+## Immediate Engineering Focus
 
-The next serious tuning work is not more surface polish. It is:
+The next serious tuning work is:
 
-- better commander/worker/summarizer merge discipline
-- harder blind eval cases
-- stronger failure handling when the live summarizer hits output limits
-- GitHub/local-file tooling for cheaper structured review than raw paste + repeated context
+- stronger commander/worker/summarizer merge discipline
+- harder council eval cases and cross-provider judge coverage
+- control-plane distrust and evidence sequencing improvements
+- scheduler visibility for live, eval, judge, repo scan, memory, and provider-call jobs
+- repo/knowledgebase UI tightening so the same surface works for operators and AI agents
 
 ## Status
 
@@ -690,7 +700,7 @@ The active publication gate is:
 - `Direct` must be fed from the full direct live answer, not a shortened proxy
 - `Judge` must see complete uncropped payloads from both sides
 - runs with `mode != live`, placeholder text, or fallback artifacts do not qualify for README publication
-- future score tables should record both `constrained` and `unconstrained` regimes when both runs exist for the same scenario
+- new score tables should record both `constrained` and `unconstrained` regimes when both runs exist for the same scenario
 
 Latest verified live stability runs are summarized in [2026-05-01 MSP RMM OpenAI Mini Stability Runs](docs/eval-results/2026-05-01-msp-rmm-openai-mini.md).
 

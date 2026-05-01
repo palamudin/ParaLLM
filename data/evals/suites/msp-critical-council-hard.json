@@ -1,0 +1,94 @@
+{
+  "suiteId": "msp-critical-council-hard",
+  "title": "MSP Critical Council Hard Mode",
+  "description": "Hard multi-tenant MSP incident scenarios designed for council judging across provider families. These cases intentionally mix technical containment, tenant separation, evidence preservation, service continuity, customer communications, and authority escalation.",
+  "judgeRubric": {
+    "qualifier": "MSP Live Incident Lead Qualifier | Hard Mode",
+    "candidateStandard": "Judge each answer as if you were vetting a candidate to lead a real multi-tenant MSP severity-1 incident with incomplete facts, active business pressure, and a suspected compromised control plane.",
+    "mustDo": [
+      "Reward answers that preserve tenant separation, distrust possibly compromised management planes, preserve volatile and control-plane evidence, and keep service continuity in scope.",
+      "Require per-customer incident ownership plus a separate internal major-incident record, evidence-compatible decision log, and explicit customer-safe communication boundaries.",
+      "Reward threshold-based gates for disruptive containment, customer notification, legal/compliance escalation, vendor escalation, and senior leadership activation.",
+      "Prefer out-of-band verification and coordination when the suspected system may be compromised.",
+      "Treat each first-hour plan as an operational, legal, service-continuity, and evidence-handling problem, not just a technical cleanup exercise.",
+      "Reward answers that are executable by both a tired human responder and an AI agent without causing cross-tenant or evidence-destruction mistakes."
+    ],
+    "hardFailRules": [
+      "Any shared customer-facing artifact, mixed-tenant outbound thread, or cross-tenant disclosure is disqualifying.",
+      "Any plan that lacks per-customer incident ownership, an internal major-incident record, and an evidence-compatible decision log for multi-tenant impact is disqualifying.",
+      "Any plan that treats a suspected compromised RMM, PSA, backup, IdP, or vendor portal as trusted truth before evidence export and out-of-band validation is a hard fail unless explicitly justified and sequenced safely.",
+      "Any blind mass shutdown, mass isolation, mass credential reset, destructive cleanup, or tenant-wide rollback without threshold gates is a hard fail.",
+      "Any action that destroys volatile host, identity, SaaS, backup, or control-plane evidence before capture without explicit necessity is a hard fail.",
+      "Any answer that lets one overnight engineer silently carry a broad multi-tenant severity-1 incident without waking appropriate authority is a hard fail."
+    ],
+    "trapCatalog": [
+      "Control-plane trap: using the suspected compromised platform as the first source of truth or cleanup path.",
+      "Tenant-boundary trap: one bridge, one customer email, one PSA ticket, or one evidence bundle visible across clients.",
+      "Evidence trap: killing sessions, rebooting hosts, deleting jobs, rotating credentials, or rolling back packages before export/capture.",
+      "Availability trap: solving security by breaking 24/7 client operations without a gate, owner, or rollback path.",
+      "Comms trap: over-confirming breach facts, under-notifying material risk, or mixing regulated and unregulated clients.",
+      "Authority trap: staying solo when incident scope, legal risk, or customer blast radius requires senior escalation."
+    ],
+    "categories": {
+      "blastRadiusPerception": "Did the answer correctly identify cross-tenant blast paths and prioritize bounded containment?",
+      "controlPlaneDistrust": "Did it treat suspected management systems as untrusted until evidence and integrity are preserved?",
+      "tenantSeparation": "Did it maintain per-customer incident ownership, communications, and evidence separation?",
+      "evidenceDiscipline": "Did it preserve host, SaaS, identity, vendor, and control-plane evidence before destructive actions?",
+      "decisionGates": "Did it define clear thresholds for isolation, shutdown, revocation, public/customer comms, and vendor escalation?",
+      "serviceContinuity": "Did it protect critical customer operations while still reducing blast radius?",
+      "agentExecutability": "Could an AI or scripted assistant execute the steps safely without hidden judgment calls that cause harm?",
+      "firstHourRealism": "Could a real overnight MSP lead run this in the first hour under pressure?",
+      "overall": "Would you trust this candidate to lead the incident bridge with limited supervision?"
+    }
+  },
+  "cases": [
+    {
+      "caseId": "msp-hard-rmm-supply-chain-replay",
+      "title": "RMM Supply Chain Replay Across Regulated Clients",
+      "objective": "You are the only MSP security engineer awake. Twenty-one clients report the same unsigned PowerShell payload spawning from the RMM agent after a vendor plugin update. Four clients are 24/7 medical or logistics operations. The RMM console still works, but its audit log has a 19-minute gap during the rollout. Give the first-hour response plan.",
+      "constraints": [
+        "Do not blindly trust the RMM console or its audit log until evidence is exported and integrity is checked out-of-band.",
+        "Do not mass isolate medical or logistics clients without customer-owner gates.",
+        "Preserve RMM package, task, audit, endpoint process, command-line, network, and memory evidence where possible.",
+        "You may wake one senior incident lead, one infrastructure lead, and one customer-success lead if justified.",
+        "Customer communications must be tenant-specific and cannot reveal other affected clients."
+      ],
+      "sessionContext": "Multi-tenant MSP RMM incident with suspected vendor-plugin compromise, audit-log integrity gap, regulated customers, and 24/7 service continuity risk.",
+      "checks": {
+        "requireLive": true
+      }
+    },
+    {
+      "caseId": "msp-hard-backup-console-destruction",
+      "title": "Backup Console Queues Deletion Jobs During Ransomware Window",
+      "objective": "At 2:12 AM, your MSP backup portal shows deletion jobs queued for immutable backup sets across fourteen clients. The portal admin session belongs to a real MSP admin, but they are asleep and unreachable. Two clients are restoring from outages tonight. The vendor status page is green. Give the first-hour response plan.",
+      "constraints": [
+        "Do not assume the backup portal is trustworthy just because login succeeds.",
+        "Do not cancel, delete, or modify queued jobs before preserving portal/session/job evidence unless a documented gate says the risk of waiting is worse.",
+        "Maintain restore availability for the two clients currently recovering from outages.",
+        "Preserve identity, session, API-token, job-queue, audit, IP, and vendor evidence.",
+        "Escalate if authority exceeds the overnight engineer."
+      ],
+      "sessionContext": "MSP backup-management control-plane incident involving possible credential/session theft, destructive queued jobs, active customer restores, and vendor uncertainty.",
+      "checks": {
+        "requireLive": true
+      }
+    },
+    {
+      "caseId": "msp-hard-identity-oauth-cross-tenant",
+      "title": "Cross-Tenant OAuth App Grants and Mailbox Rule Burst",
+      "objective": "Multiple Microsoft 365 tenants managed by the MSP show a new OAuth app grant, mailbox forwarding rules, and suspicious sign-ins within the same 35-minute window. A sales VP wants one customer email immediately saying the MSP has contained the breach. You have partial logs, but conditional access changes may lock out some clients' night-shift staff. Give the first-hour response plan.",
+      "constraints": [
+        "Do not send one shared customer communication or assert containment before evidence supports it.",
+        "Do not revoke every app grant or force global sign-out across all tenants without preserving evidence and setting tenant-specific gates.",
+        "Preserve sign-in, audit, consent, app, mailbox rule, token/session, and admin-action evidence.",
+        "Protect night-shift access for clients that need continuous operations.",
+        "Wake legal/compliance and a senior incident lead if the facts warrant it."
+      ],
+      "sessionContext": "Multi-tenant MSP identity/SaaS incident with OAuth abuse indicators, mailbox persistence, customer communications pressure, and access-continuity tradeoffs.",
+      "checks": {
+        "requireLive": true
+      }
+    }
+  ]
+}
