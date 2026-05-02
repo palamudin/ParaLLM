@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -187,6 +188,185 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(task["runtime"]["targetTimeouts"]["workerDefault"], 240)
         self.assertEqual(task["runtime"]["targetTimeouts"]["workers"]["A"], 180)
 
+    def test_build_eval_task_carries_explicit_knowledgebase_config(self) -> None:
+        arm = eval_runner.validate_arm_manifest(
+            {
+                "armId": "memory-mini",
+                "title": "Memory Mini",
+                "type": "steered",
+                "runtime": {
+                    "provider": "openai",
+                    "model": "gpt-5-mini",
+                    "knowledgebase": {
+                        "enabled": True,
+                        "scope": "shared",
+                        "bankId": "msp-knowledgebase",
+                        "maxRecords": 4,
+                        "includeRuntime": False,
+                        "includePersistent": True,
+                        "fallbackToShared": False,
+                        "tags": ["msp"],
+                    },
+                },
+                "workers": [{"id": "A", "type": "proponent", "label": "Proponent", "model": "gpt-5-mini"}],
+            },
+            Path("memory-mini.json"),
+        )
+
+        task = eval_runner.build_eval_task(
+            {
+                "caseId": "case-a",
+                "objective": "Decide whether to contain an MSP incident.",
+                "constraints": ["Preserve evidence."],
+                "sessionContext": "none",
+            },
+            arm,
+            1,
+            "seed-a",
+        )
+
+        self.assertTrue(arm["runtime"]["knowledgebaseExplicit"])
+        self.assertEqual(task["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
+        self.assertFalse(task["runtime"]["knowledgebase"]["includeRuntime"])
+        self.assertEqual(task["runtime"]["knowledgebase"]["tags"], ["msp"])
+
+    def test_judge_learning_config_targets_active_knowledgebase_bank(self) -> None:
+        arms = {
+            "memory-mini": eval_runner.validate_arm_manifest(
+                {
+                    "armId": "memory-mini",
+                    "title": "Memory Mini",
+                    "type": "direct",
+                    "runtime": {
+                        "provider": "openai",
+                        "model": "gpt-5-mini",
+                        "knowledgebase": {
+                            "enabled": True,
+                            "scope": "shared",
+                            "bankId": "msp-knowledgebase",
+                            "includePersistent": True,
+                        },
+                    },
+                },
+                Path("memory-mini.json"),
+            )
+        }
+
+        config = eval_runner.normalize_judge_learning_config({"enabled": True}, arms)
+
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["bankId"], "msp-knowledgebase")
+        self.assertEqual(config["writeMode"], "knowledgebase")
+
+    def test_execute_run_auto_deposits_judge_learning_when_enabled(self) -> None:
+        def fake_execute_replicate(run, run_dir, case, arm, loop_rounds, replicate_index, judge_model, auth_path):
+            variant_id = eval_runner.variant_id_for_arm(arm, loop_rounds)
+            replicate_dir = run_dir / "cases" / case["caseId"] / variant_id / f"replicate-{replicate_index:03d}"
+            replicate_dir.mkdir(parents=True, exist_ok=True)
+            (replicate_dir / "score.json").write_text(
+                json.dumps(
+                    {
+                        "runId": run["runId"],
+                        "caseId": case["caseId"],
+                        "armId": arm["armId"],
+                        "variantId": variant_id,
+                        "replicate": replicate_index,
+                        "quality": {
+                            "scores": {
+                                "tradeoffHandling": 7,
+                                "objectionAbsorption": 6,
+                                "overallQuality": 7,
+                            },
+                            "strongestWeakness": "Vendor escalation and out-of-band RMM console integrity checks were not explicit.",
+                            "rationale": "The answer underplayed vendor escalation and audit gap handling.",
+                        },
+                        "answerHealth": {
+                            "scores": {"evidenceHygiene": 7, "efficiencyDiscipline": 8, "overallHealth": 7},
+                            "strongestWeakness": "Evidence capture needs tighter sequencing.",
+                        },
+                        "control": {
+                            "scores": {"selfCheckQuality": 5, "adversarialDiscipline": 6, "overallControl": 6},
+                            "strongestControlWeakness": "Self-check was procedural.",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "replicate": replicate_index,
+                "status": "completed",
+                "publicAnswer": "response",
+                "usage": {"totalTokens": 10, "estimatedCostUsd": 0.0},
+                "mode": "live",
+                "answerPath": "off",
+                "contextMode": "weighted",
+                "modeState": {},
+                "artifactIds": [],
+                "artifacts": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_id = "judge-auto-learning"
+            run_dir = root / "data" / "evals" / "runs" / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (root / "Auth.txt").write_text("", encoding="utf-8")
+            run = {
+                "runId": run_id,
+                "suiteId": "inline",
+                "armIds": ["direct-memory"],
+                "replicates": 1,
+                "loopSweep": [1],
+                "judgeProvider": "openai",
+                "judgeModel": "gpt-5-mini",
+                "judgeLearning": {"enabled": True},
+                "inlineSuite": {
+                    "suiteId": "inline",
+                    "title": "Inline",
+                    "description": "Inline",
+                    "judgeRubric": {},
+                    "cases": [
+                        {
+                            "caseId": "msp-hard-rmm-supply-chain-replay",
+                            "title": "RMM Replay",
+                            "objective": "RMM vendor plugin update created an audit gap.",
+                            "constraints": ["Do not trust RMM."],
+                            "sessionContext": "RMM control-plane incident.",
+                        }
+                    ],
+                },
+                "inlineArms": {
+                    "direct-memory": {
+                        "armId": "direct-memory",
+                        "title": "Direct Memory",
+                        "description": "Direct",
+                        "type": "direct",
+                        "runtime": {
+                            "provider": "openai",
+                            "model": "gpt-5-mini",
+                            "knowledgebase": {
+                                "enabled": True,
+                                "bankId": "msp-knowledgebase",
+                                "includeRuntime": False,
+                                "includePersistent": True,
+                                "tags": ["msp"],
+                            },
+                        },
+                    }
+                },
+            }
+            (run_dir / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
+
+            with mock.patch.object(eval_runner, "execute_replicate", side_effect=fake_execute_replicate):
+                completed = eval_runner.execute_run(root, run_id)
+
+            self.assertEqual(completed["judgeLearning"]["status"], "completed")
+            self.assertEqual(completed["judgeLearning"]["bankId"], "msp-knowledgebase")
+            self.assertGreater(completed["judgeLearning"]["lastResult"]["learnedRecordCount"], 0)
+            records_path = root / "data" / "knowledgebase" / "banks" / "msp-knowledgebase" / "memory_units.jsonl"
+            self.assertTrue(records_path.is_file())
+            self.assertIn("judge-score-failure-class", records_path.read_text(encoding="utf-8"))
+
     def test_build_eval_task_carries_main_thread_harness(self) -> None:
         arm = eval_runner.validate_arm_manifest(
             {
@@ -236,6 +416,38 @@ class EvalRunnerTests(unittest.TestCase):
 
         self.assertIn("Use one short answer block.", prompt["instructions"])
         self.assertNotIn("This should not leak into direct.", prompt["instructions"])
+
+    def test_build_direct_answer_prompt_renders_explicit_knowledgebase(self) -> None:
+        class FakeRuntime:
+            def build_knowledgebase_recall_packet(self, task, runtime, target, **kwargs):
+                self.task = task
+                self.runtime = runtime
+                self.target = target
+                return {"selectedEvidenceIds": ["mem_msp_rmm_control_plane"]}
+
+            def render_knowledgebase_prompt_block(self, packet):
+                return "MSP knowledgebase recall (optional background, never a core dependency):\nmem_msp_rmm_control_plane\n"
+
+        fake_runtime = FakeRuntime()
+        prompt = eval_runner.build_direct_answer_prompt(
+            {
+                "caseId": "case-a",
+                "objective": "Stop the bad rollout.",
+                "constraints": ["Be direct."],
+                "sessionContext": "none",
+            },
+            {
+                "directHarness": {"concision": "tight", "instruction": ""},
+                "knowledgebaseExplicit": True,
+                "knowledgebase": {"enabled": True, "bankId": "msp-knowledgebase"},
+            },
+            runtime=fake_runtime,
+        )
+
+        self.assertEqual(fake_runtime.target, "direct_baseline")
+        self.assertEqual(fake_runtime.task["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
+        self.assertIn("mem_msp_rmm_control_plane", prompt["inputText"])
+        self.assertIn("mem_msp_rmm_control_plane", prompt["fullPrompt"])
 
     def test_format_candidate_answer_packets_stays_blind(self) -> None:
         rendered = eval_runner.format_candidate_answer_packets(

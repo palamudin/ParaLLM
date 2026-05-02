@@ -149,6 +149,8 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(result["run"]["judgeModel"], "gpt-5.4")
         self.assertEqual(result["run"]["judgeRuntime"]["requestTimeoutSeconds"], 333)
         self.assertEqual(result["run"]["judgeRuntime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
+        self.assertTrue(result["run"]["judgeLearning"]["enabled"])
+        self.assertEqual(result["run"]["judgeLearning"]["bankId"], "msp-knowledgebase")
         self.assertTrue((self.root / "data" / "evals" / "runs" / result["runId"] / "run.json").is_file())
         launch_runner.assert_called_once()
 

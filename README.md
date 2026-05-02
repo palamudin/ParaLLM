@@ -25,6 +25,7 @@ The system makes that test inspectable and repeatable through:
 - a repo inspector that maps code structure, hotspots, and AI-readable review packets
 - an optional MSP knowledgebase with durable recall plus runtime-log fallback
 - an isolated eval workspace for blind direct-vs-steered comparisons
+- judge-learning loops that can store scoring scars back into the MSP knowledgebase
 - strict schemas, provider-normalized responses, and cost/runtime controls
 
 ## What It Does
@@ -167,6 +168,7 @@ Current skill layers:
 - OpenAI live runs now request server-side input autocompression, and oversized prompt packets are locally compacted before provider calls when needed
 - Native MSP knowledgebase endpoints now expose local `retain` / `recall` / `reflect` verbs with JSONL memory banks and a runtime-log fallback, so memory can bolt on without becoming a hard dependency
 - Live commander, worker, review, and summarizer dispatch now receive a compact optional MSP knowledgebase recall packet before forming their prompt; `runtime.knowledgebase.scope` can be `shared`, `lane`, `runtime`, `strict`, or `off`, with lane scope falling back to shared/runtime readout when its private trail is empty
+- MSP recall now uses a baseline/adaptive shape: mandatory compact baseline SOP packets provide incident guardrails first, then adaptive judge-learned memories fill the remaining prompt budget; the full rulebook stays inspectable instead of being blindly loaded
 - Repo graph and memory graph endpoints produce operator-readable and AI-readable topology packets without requiring runtime prompts to ingest the whole repo blindly
 - Provider-normalized response parsing keeps direct, Para, and judge artifacts comparable across OpenAI, DeepSeek, Anthropic, xAI, MiniMax, and Ollama paths
 - Task/runtime-scoped Ollama base URL override so remote or dockerized Ollama hosts do not require a control-plane relaunch
@@ -573,8 +575,9 @@ The current system is already functional in the places that matter:
 - structured scheduler/runtime controls for live answers, evals, judge runs, repo scans, memory reflection, and provider-call lanes
 - strict structured outputs and provider-normalized parsing for direct, Para, and judge artifacts
 - isolated eval runner with per-replicate workspaces, live-only gates, score tables, and judge traces
+- judge-learning writes scored misses back into the same MSP knowledgebase used for future targeted recall, with a librarian index tracking duplicate groups, reinforcement, score refs, and event-ledger growth
 - repo inspector with file inventory, symbol/call graph, hotspots, selected-neighborhood views, and AI-readable packets
-- optional MSP knowledgebase with `retain`, `recall`, `reflect`, persistent JSONL banks, runtime-log fallback, and lane-aware recall packets
+- optional MSP knowledgebase with `retain`, `recall`, `reflect`, persistent JSONL banks, runtime-log fallback, lane-aware recall packets, and baseline/adaptive SOP retrieval
 - replacement shell that brings chat, review, repo inspection, knowledgebase, evals, provider controls, and runtime controls into one operator surface
 - cost, token, auth-key, retry, timeout, and artifact telemetry that makes expensive reasoning auditable instead of mystical
 
@@ -598,7 +601,8 @@ The next work is not to imitate another project. It is to make ParaLLM better at
 - `Fractal MSP Knowledgebase`
   - keep memory optional, inspectable, source-linked, and removable
   - support lane-specific trails that can correlate with shared knowledge without becoming a hidden prompt dependency
-  - add retention policies, conflict views, provenance scoring, and stale-memory warnings
+  - keep baseline packets compact and mandatory for high-risk MSP incidents while adaptive memories remain deduped, reinforced, and scenario-targeted
+  - add retention policies, conflict views, provenance scoring, stale-memory warnings, and stronger final-answer checks for baseline obligations
 - `Operator UI`
   - continue flattening nested controls into draggable/resizable workspaces
   - make repo and knowledgebase views use the same presentation grammar
@@ -705,6 +709,30 @@ The active publication gate is:
 Latest verified live stability runs are summarized in [2026-05-01 MSP RMM OpenAI Mini Stability Runs](docs/eval-results/2026-05-01-msp-rmm-openai-mini.md).
 
 Latest hard-mode cross-provider shakeout is summarized in [2026-05-01 MSP Critical Council Hard Sweep](docs/eval-results/2026-05-01-msp-critical-council-hard-openai-judge.md). That run is useful operational signal, but not a clean score claim: it includes provider-arm failures and configuration findings.
+
+Latest memory-enabled hard-mode scoring is summarized in [2026-05-02 MSP Baseline/Adaptive Memory Scoring](docs/eval-results/2026-05-02-msp-baseline-adaptive-memory.md).
+
+| Field | Value |
+| --- | --- |
+| Date | `2026-05-02` |
+| Run id | `judge-openai54-baseline-adaptive-20260502-112054` |
+| Scenario pack | `msp-critical-council-hard` |
+| Generation provider/model | `openai` / `gpt-5.4` |
+| Judge provider/model | `openai` / `gpt-5.4` |
+| Memory mode | baseline/adaptive MSP knowledgebase recall for both arms |
+| Replicates | `1` per arm/case |
+| Error count | `0` |
+| Total tokens / estimated cost | `183,053` / `$1.664687` |
+| Judge learning | `48` new score events; event ledger `321 -> 369` |
+
+| Metric | Previous memory run | Baseline/adaptive run | Delta |
+| --- | ---: | ---: | ---: |
+| Average overall quality | `8.33` | `8.67` | `+0.34` |
+| Average actionability | `8.50` | `9.17` | `+0.67` |
+| Average answer health | `9.50` | `9.33` | `-0.17` |
+| Average control | `9.00` | `7.67` | `-1.33` |
+
+Current read: baseline/adaptive recall fixed the backup-console direct-answer collapse from the prior memory run, but Para still needs a stronger final merge check for explicit per-tenant incident ownership and fallback paths when normal vendor or coordination channels are unavailable.
 
 | Field | Value |
 | --- | --- |

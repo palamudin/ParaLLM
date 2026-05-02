@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -13,7 +14,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - helpful runtime error
 
 from runtime.engine import RuntimeErrorWithCode
 
-from . import config, control, dispatch, evals, infrastructure, jobs, knowledgebase, memory_graph, repo_graph, sessions, settings, storage
+from . import config, control, dispatch, evals, infrastructure, jobs, judge_learning, knowledgebase, memory_graph, repo_graph, sessions, settings, storage
 
 
 async def request_payload(request: Request) -> dict[str, object]:
@@ -214,6 +215,26 @@ def create_app(root: Path | None = None) -> FastAPI:
         payload = await request_payload(request)
         return JSONResponse(knowledgebase.reflect(paths.root, payload))
 
+    @app.post("/v1/knowledgebase/learn/evals")
+    async def post_knowledgebase_learn_evals(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        raw_run_ids = payload.get("runIds") or payload.get("run_ids") or payload.get("runId") or payload.get("run_id") or []
+        if isinstance(raw_run_ids, str):
+            run_ids = [part.strip() for part in re.split(r"[,\s]+", raw_run_ids) if part.strip()]
+        elif isinstance(raw_run_ids, list):
+            run_ids = [str(part).strip() for part in raw_run_ids if str(part).strip()]
+        else:
+            run_ids = []
+        return JSONResponse(
+            judge_learning.learn_from_eval_runs(
+                paths.root,
+                run_ids=run_ids,
+                latest=int(payload.get("latest") or 1),
+                bank_id=str(payload.get("bankId") or payload.get("bank_id") or judge_learning.DEFAULT_LEARNING_BANK_ID),
+                dry_run=knowledgebase.coerce_bool(payload.get("dryRun", payload.get("dry_run")), False),
+            )
+        )
+
     @app.get("/v1/memory/graph")
     def get_memory_graph_legacy(
         maxEvents: int = 30,
@@ -269,6 +290,10 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.post("/v1/memory/reflect")
     async def post_memory_reflect_legacy(request: Request) -> JSONResponse:
         return await post_knowledgebase_reflect(request)
+
+    @app.post("/v1/memory/learn/evals")
+    async def post_memory_learn_evals_legacy(request: Request) -> JSONResponse:
+        return await post_knowledgebase_learn_evals(request)
 
     @app.get("/v1/auth/status")
     def get_auth_status() -> JSONResponse:

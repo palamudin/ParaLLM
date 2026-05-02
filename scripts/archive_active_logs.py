@@ -52,7 +52,7 @@ def move_dir_contents(source_dir: Path, archive_dir: Path) -> List[str]:
     return moved
 
 
-def move_file(source_file: Path, archive_dir: Path) -> str | None:
+def move_file(source_file: Path, archive_dir: Path, warnings: List[str] | None = None) -> str | None:
     if not source_file.exists():
         return None
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -65,7 +65,19 @@ def move_file(source_file: Path, archive_dir: Path) -> str | None:
                 destination = candidate
                 break
             suffix += 1
-    shutil.move(str(source_file), str(destination))
+    try:
+        shutil.move(str(source_file), str(destination))
+    except PermissionError as exc:
+        # Live backend logs can be held open on Windows. Preserve a snapshot and
+        # leave the active writer alone so archiving does not die halfway.
+        try:
+            shutil.copy2(source_file, destination)
+            if warnings is not None:
+                warnings.append(f"Copied locked file instead of moving it: {source_file} ({exc})")
+        except OSError as copy_exc:
+            if warnings is not None:
+                warnings.append(f"Skipped locked file that could not be copied: {source_file} ({copy_exc})")
+            return None
     return str(destination)
 
 
@@ -95,6 +107,7 @@ def archive_active_logs(root: Path) -> Dict[str, Any]:
         "directories": {},
         "files": {},
     }
+    warnings: List[str] = []
 
     dir_targets = [
         ("checkpoints", paths.checkpoints),
@@ -119,7 +132,7 @@ def archive_active_logs(root: Path) -> Dict[str, Any]:
         ("backend_live_err", paths.data / "backend-live.err.log"),
     ]
     for label, source_file in file_targets:
-        moved["files"][label] = move_file(source_file, archive_root / "files")
+        moved["files"][label] = move_file(source_file, archive_root / "files", warnings)
 
     fresh_state = build_fresh_state(current_state)
     write_json(paths.state, fresh_state)
@@ -142,6 +155,7 @@ def archive_active_logs(root: Path) -> Dict[str, Any]:
         "preservedDraft": fresh_state.get("draft"),
         "previousTaskId": ((current_state.get("activeTask") or {}) if isinstance(current_state.get("activeTask"), dict) else {}).get("taskId"),
         "moved": moved,
+        "warnings": warnings,
     }
     write_json(archive_root / "manifest.json", manifest)
     return manifest

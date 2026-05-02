@@ -5128,6 +5128,7 @@ class LoopRuntime:
                     "warnings": normalize_string_array_preserve_items(recall.get("warnings", []))[:12],
                     "hits": recall.get("hits") if isinstance(recall.get("hits"), list) else [],
                     "aiPacket": recall.get("aiPacket") if isinstance(recall.get("aiPacket"), dict) else base_packet["aiPacket"],
+                    "memoryPlan": recall.get("memoryPlan") if isinstance(recall.get("memoryPlan"), dict) else {},
                     "filters": {
                         "tags": filter_tags,
                         "tagsMatch": str(config["tagsMatch"]),
@@ -5159,6 +5160,7 @@ class LoopRuntime:
             "route": packet.get("route") if isinstance(packet.get("route"), dict) else {},
             "config": packet.get("config") if isinstance(packet.get("config"), dict) else {},
             "filters": packet.get("filters") if isinstance(packet.get("filters"), dict) else {},
+            "memoryPlan": packet.get("memoryPlan") if isinstance(packet.get("memoryPlan"), dict) else {},
             "resultCount": int(packet.get("resultCount") or 0),
             "totalCandidates": int(packet.get("totalCandidates") or 0),
             "fallbackUsed": bool(packet.get("fallbackUsed")),
@@ -5175,6 +5177,10 @@ class LoopRuntime:
                     "source": str(hit.get("source") or ""),
                     "sourceId": truncate_text(hit.get("sourceId") or "", 180),
                     "summary": truncate_text(hit.get("summary") or hit.get("text") or "", 520),
+                    "metadata": hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {},
+                    "sop": hit.get("sop") if isinstance(hit.get("sop"), dict) else {},
+                    "memoryLayer": str(hit.get("memoryLayer") or "adaptive"),
+                    "baselineReason": str(hit.get("baselineReason") or ""),
                     "score": hit.get("score"),
                     "tags": normalize_string_array_preserve_items(hit.get("tags", []))[:12],
                     "createdAt": str(hit.get("createdAt") or ""),
@@ -5185,11 +5191,103 @@ class LoopRuntime:
             "fallbackPolicy": str(ai_packet.get("fallbackPolicy") or "Memory is optional; current task context and inspected evidence win."),
         }
 
+    def project_targeted_sop_prompt_packet(self, projected: Dict[str, Any]) -> Dict[str, Any]:
+        baseline_packets: List[Dict[str, Any]] = []
+        adaptive_packets: List[Dict[str, Any]] = []
+        non_sop_hits: List[Dict[str, Any]] = []
+
+        def short_items(value: Any, count: int, limit: int = 150) -> List[str]:
+            return [truncate_text(item, limit) for item in normalize_string_array_preserve_items(value)[:count] if truncate_text(item, limit)]
+
+        for hit in projected.get("hits", []):
+            if not isinstance(hit, dict):
+                continue
+            sop = hit.get("sop") if isinstance(hit.get("sop"), dict) else {}
+            metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+            learning_meta = {}
+            if metadata.get("learning.kind"):
+                learning_meta = {
+                    "kind": truncate_text(metadata.get("learning.kind") or "", 80),
+                    "failureClass": truncate_text(metadata.get("learning.failureClass") or "", 80),
+                    "scenarioId": truncate_text(metadata.get("learning.scenarioId") or "", 100),
+                    "missCount": metadata.get("learning.missCount"),
+                    "scoreRefCount": metadata.get("learning.scoreRefCount"),
+                    "eventCount": metadata.get("learning.eventCount"),
+                    "adaptiveWeight": metadata.get("learning.adaptiveWeight"),
+                    "replayIntervalDays": metadata.get("learning.replayIntervalDays"),
+                }
+            if not sop:
+                non_sop_hits.append(
+                    {
+                        "id": hit.get("id"),
+                        "title": hit.get("title"),
+                        "type": hit.get("type"),
+                        "sourceId": hit.get("sourceId"),
+                        "summary": truncate_text(hit.get("summary") or "", 240),
+                    }
+                )
+                continue
+            packet = {
+                "id": hit.get("id"),
+                "title": hit.get("title"),
+                "useCase": sop.get("useCase") or hit.get("title"),
+                "eventTypes": short_items(sop.get("eventTypes", []), 8, 80),
+                "summary": truncate_text(sop.get("summary") or "", 220),
+                "triggers": short_items(sop.get("triggers", []), 4),
+                "firstActions": short_items(sop.get("firstActions", []), 4),
+                "evidence": short_items(sop.get("evidence", []), 5, 120),
+                "decisionGates": short_items(sop.get("decisionGates", []), 4),
+                "communications": short_items(sop.get("communications", []), 3),
+                "escalation": short_items(sop.get("escalation", []), 3),
+                "agentChecklist": short_items(sop.get("agentChecklist", []), 4),
+                "avoid": short_items(sop.get("avoid", []), 4),
+                "sourceRefs": short_items(sop.get("sourceRefs", []), 3, 140),
+                "learning": learning_meta,
+            }
+            if str(hit.get("memoryLayer") or "").lower() == "baseline":
+                packet["baselineReason"] = truncate_text(hit.get("baselineReason") or "baseline", 80)
+                baseline_packets.append(packet)
+            else:
+                adaptive_packets.append(packet)
+        if not baseline_packets and not adaptive_packets:
+            return projected
+        config = projected.get("config") if isinstance(projected.get("config"), dict) else {}
+        memory_plan = projected.get("memoryPlan") if isinstance(projected.get("memoryPlan"), dict) else {}
+        sop_packets = [*baseline_packets, *adaptive_packets]
+        return {
+            "schemaVersion": projected["schemaVersion"],
+            "intent": "targeted_usecase_sop_recall",
+            "enabled": projected["enabled"],
+            "available": projected["available"],
+            "coreDependency": False,
+            "target": projected["target"],
+            "bankId": config.get("bankId"),
+            "resultCount": projected["resultCount"],
+            "fallbackUsed": projected["fallbackUsed"],
+            "degraded": projected["degraded"],
+            "warnings": projected["warnings"],
+            "selectedEvidenceIds": projected["selectedEvidenceIds"],
+            "memoryMode": "baseline_and_adaptive_sop_packets",
+            "omittedFullText": True,
+            "retrievalPolicy": {
+                "mode": str(memory_plan.get("mode") or "baseline_and_adaptive"),
+                "baselineCount": memory_plan.get("baselineCount", len(baseline_packets)),
+                "adaptiveCount": memory_plan.get("adaptiveCount", len(adaptive_packets)),
+                "baselinePolicy": str(memory_plan.get("baselinePolicy") or "Baseline packets are mandatory guardrails; adaptive packets are scenario/learning recall."),
+            },
+            "baselinePackets": baseline_packets[:2],
+            "adaptivePackets": adaptive_packets[:3],
+            "sopPackets": sop_packets[:5],
+            "supportingHits": non_sop_hits[:3],
+            "fallbackPolicy": projected["fallbackPolicy"],
+        }
+
     def render_knowledgebase_prompt_block(self, packet: Dict[str, Any]) -> str:
         projected = self.project_knowledgebase_prompt_packet(packet)
+        prompt_packet = self.project_targeted_sop_prompt_packet(projected)
         return (
             "MSP knowledgebase recall (optional background, never a core dependency):\n"
-            + json.dumps(projected, ensure_ascii=False, indent=2)
+            + json.dumps(prompt_packet, ensure_ascii=False, indent=2)
             + "\n\n"
             "Memory handling rule: use this as supporting context only. Current user input, current constraints, live tool evidence, and inspected files override stale or conflicting memory.\n\n"
         )

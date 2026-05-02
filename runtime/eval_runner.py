@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import sys
 import traceback
 from copy import deepcopy
@@ -15,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app import metadata as metadata_store
+from backend.app import judge_learning, metadata as metadata_store
 from backend.app.control import auth_file_path
 from runtime.engine import (
     LoopRuntime,
@@ -29,6 +30,7 @@ from runtime.engine import (
     default_summarizer_harness,
     default_direct_harness,
     default_judge_model_for_provider,
+    default_knowledgebase_config,
     default_model_for_provider,
     default_budget_config,
     default_loop_state,
@@ -44,6 +46,7 @@ from runtime.engine import (
     normalize_direct_baseline_mode,
     normalize_direct_answer_payload,
     normalize_harness_config,
+    normalize_knowledgebase_config,
     normalize_model_id,
     normalize_ollama_base_url,
     normalize_ollama_timeout_profile,
@@ -95,6 +98,69 @@ COMPARISON_SCORE_FIELDS = [
     "operationalSeparation",
     "overallDifferentiation",
 ]
+
+
+def default_judge_learning_config() -> Dict[str, Any]:
+    return {
+        "enabled": False,
+        "bankId": "",
+        "dryRun": False,
+        "writeMode": "knowledgebase",
+        "source": "judge_scores",
+    }
+
+
+def infer_judge_learning_bank_id(arms: Dict[str, Dict[str, Any]] | List[Dict[str, Any]]) -> str:
+    arm_values = arms.values() if isinstance(arms, dict) else arms
+    candidates: List[str] = []
+    for arm in arm_values:
+        if not isinstance(arm, dict):
+            continue
+        runtime_config = arm.get("runtime") if isinstance(arm.get("runtime"), dict) else {}
+        knowledgebase_config = normalize_knowledgebase_config(
+            runtime_config.get("knowledgebase") if isinstance(runtime_config.get("knowledgebase"), dict) else {}
+        )
+        bank_id = str(knowledgebase_config.get("bankId") or "").strip()
+        if (
+            bool(knowledgebase_config.get("enabled"))
+            and bool(knowledgebase_config.get("includePersistent"))
+            and bank_id
+            and bank_id not in candidates
+        ):
+            candidates.append(bank_id)
+    return candidates[0] if candidates else judge_learning.DEFAULT_LEARNING_BANK_ID
+
+
+def normalize_judge_learning_config(config: Optional[Dict[str, Any]], arms: Dict[str, Dict[str, Any]] | List[Dict[str, Any]]) -> Dict[str, Any]:
+    raw = config if isinstance(config, dict) else {}
+    default = default_judge_learning_config()
+    bank_id = str(raw.get("bankId") or raw.get("bank_id") or "").strip() or infer_judge_learning_bank_id(arms)
+    write_mode = str(raw.get("writeMode") or raw.get("write_mode") or default["writeMode"]).strip().lower()
+    if write_mode not in {"knowledgebase"}:
+        write_mode = "knowledgebase"
+    return {
+        "enabled": coerce_bool(raw.get("enabled"), default["enabled"]),
+        "bankId": bank_id,
+        "dryRun": coerce_bool(raw.get("dryRun", raw.get("dry_run")), default["dryRun"]),
+        "writeMode": write_mode,
+        "source": str(raw.get("source") or default["source"]).strip() or default["source"],
+    }
+
+
+def compact_judge_learning_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "schemaVersion": str(result.get("schemaVersion") or judge_learning.SCHEMA_VERSION),
+        "generatedAt": str(result.get("generatedAt") or ""),
+        "dryRun": bool(result.get("dryRun")),
+        "bankId": str(result.get("bankId") or ""),
+        "runIds": normalize_string_array_preserve_items(result.get("runIds", []))[:12],
+        "scoreFilesSeen": int(result.get("scoreFilesSeen") or 0),
+        "scoreFilesLearned": int(result.get("scoreFilesLearned") or 0),
+        "learnedRecordCount": int(result.get("learnedRecordCount") or 0),
+        "write": result.get("write") if isinstance(result.get("write"), dict) else {},
+        "librarian": result.get("librarian") if isinstance(result.get("librarian"), dict) else {},
+        "warnings": normalize_string_array_preserve_items(result.get("warnings", []))[:12],
+    }
 
 QUALITY_SCORE_ALIASES = {
     "decisiveness": "decisiveness",
@@ -1576,6 +1642,8 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
     budget = normalize_budget_config(runtime_payload.get("budget") if isinstance(runtime_payload.get("budget"), dict) else {})
     research = normalize_research_config(runtime_payload.get("research") if isinstance(runtime_payload.get("research"), dict) else {})
     vetting = normalize_vetting_config(runtime_payload.get("vetting") if isinstance(runtime_payload.get("vetting"), dict) else {})
+    knowledgebase_payload = runtime_payload.get("knowledgebase") if isinstance(runtime_payload.get("knowledgebase"), dict) else None
+    knowledgebase = normalize_knowledgebase_config(knowledgebase_payload if isinstance(knowledgebase_payload, dict) else {})
     preferred_loop = normalize_loop_preferences(runtime_payload.get("preferredLoop") if isinstance(runtime_payload.get("preferredLoop"), dict) else {})
     target_timeouts = normalize_target_timeout_config(
         runtime_payload.get("targetTimeouts") if isinstance(runtime_payload.get("targetTimeouts"), dict) else {}
@@ -1619,6 +1687,8 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "budget": budget,
             "research": research,
             "vetting": vetting,
+            "knowledgebase": knowledgebase,
+            "knowledgebaseExplicit": isinstance(knowledgebase_payload, dict),
             "preferredLoop": preferred_loop,
             "targetTimeouts": target_timeouts,
             "requireLive": coerce_bool(runtime_payload.get("requireLive"), execution_mode == "live"),
@@ -1658,6 +1728,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "budget": deepcopy(runtime_config["budget"]),
             "research": deepcopy(runtime_config["research"]),
             "vetting": deepcopy(runtime_config["vetting"]),
+            "knowledgebase": deepcopy(runtime_config.get("knowledgebase", default_knowledgebase_config())),
             "targetTimeouts": deepcopy(runtime_config["targetTimeouts"]),
             "pricingSource": None,
             "pricingCheckedAt": None,
@@ -1680,6 +1751,47 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
         },
         "workers": deepcopy(arm["workers"]),
     }
+
+
+def hydrate_eval_knowledgebase(runtime: LoopRuntime, runtime_config: Dict[str, Any]) -> List[str]:
+    """Copy explicitly requested persistent eval memory banks into the isolated runtime workspace."""
+    if not runtime_config.get("knowledgebaseExplicit"):
+        return []
+    config = normalize_knowledgebase_config(runtime_config.get("knowledgebase") if isinstance(runtime_config.get("knowledgebase"), dict) else {})
+    if not config["enabled"] or not config["includePersistent"]:
+        return []
+
+    config_root = Path(getattr(runtime, "config_root", getattr(runtime, "root", Path(".")))).resolve()
+    runtime_root = Path(getattr(runtime, "root", Path("."))).resolve()
+    source_banks_root = config_root / "data" / "knowledgebase" / "banks"
+    dest_banks_root = runtime_root / "data" / "knowledgebase" / "banks"
+    if not source_banks_root.is_dir():
+        return []
+
+    if config["bankId"]:
+        source_banks = [source_banks_root / config["bankId"]]
+    else:
+        source_banks = [path for path in source_banks_root.iterdir() if path.is_dir()]
+
+    copied: List[str] = []
+    for source_bank in source_banks:
+        if not source_bank.is_dir():
+            continue
+        dest_bank = dest_banks_root / source_bank.name
+        try:
+            if source_bank.resolve() == dest_bank.resolve():
+                continue
+        except FileNotFoundError:
+            pass
+        for source_file in source_bank.rglob("*"):
+            if not source_file.is_file():
+                continue
+            relative = source_file.relative_to(source_bank)
+            target_file = dest_bank / relative
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, target_file)
+        copied.append(source_bank.name)
+    return copied
 
 
 def initialize_steered_workspace(runtime: LoopRuntime, task: Dict[str, Any]) -> None:
@@ -1727,6 +1839,7 @@ def run_direct_answer(
     arm: Dict[str, Any],
 ) -> Dict[str, Any]:
     provider = str(arm["runtime"].get("provider") or "openai").strip()
+    hydrate_eval_knowledgebase(runtime, arm["runtime"])
     primary_assignment = (
         dict(auth_assignments[0])
         if isinstance(auth_assignments, list) and auth_assignments and isinstance(auth_assignments[0], dict)
@@ -1742,7 +1855,7 @@ def run_direct_answer(
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
     requested_max_output = int(runtime_config["budget"]["maxOutputTokens"])
-    prompt_packet = build_direct_answer_prompt(case, runtime_config)
+    prompt_packet = build_direct_answer_prompt(case, runtime_config, runtime=runtime)
     instructions = prompt_packet["instructions"]
     input_text = prompt_packet["inputText"]
     if runtime_config["executionMode"] == "live" and (api_key or not runtime.provider_requires_api_key(provider)):
@@ -1826,6 +1939,7 @@ def run_steered_answer(
     workspace_root = replicate_dir / "workspace"
     runtime = LoopRuntime(workspace_root, auth_path=auth_path)
     task = build_eval_task(case, arm, loop_rounds, seed)
+    hydrate_eval_knowledgebase(runtime, arm["runtime"])
     initialize_steered_workspace(runtime, task)
     worker_ids = [worker["id"] for worker in task_workers(task)]
     answer_path = normalize_direct_baseline_mode(arm["runtime"].get("directBaselineMode"), default_direct_baseline_mode())
@@ -2001,7 +2115,11 @@ def format_candidate_answer_packets(answers: List[Dict[str, Any]]) -> str:
     return "\n\n".join(blocks).strip() or "No candidate answers supplied."
 
 
-def build_direct_answer_prompt(case: Dict[str, Any], runtime_config: Dict[str, Any]) -> Dict[str, Any]:
+def build_direct_answer_prompt(
+    case: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+    runtime: Optional[LoopRuntime] = None,
+) -> Dict[str, Any]:
     harness_lines = direct_baseline_harness_instruction_lines(
         runtime_config.get("directHarness", default_direct_harness())
     )
@@ -2014,13 +2132,30 @@ def build_direct_answer_prompt(case: Dict[str, Any], runtime_config: Dict[str, A
     if harness_lines:
         instructions += "\n".join(harness_lines) + "\n"
     instructions += "Return JSON only that matches the schema."
-    input_text = "\n\n".join(
-        [
-            format_prompt_section("Objective", str(case.get("objective") or "").strip()),
-            format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
-            format_prompt_section("Session context", str(case.get("sessionContext", "") or "none").strip() or "none"),
-        ]
-    ).strip()
+    sections = [
+        format_prompt_section("Objective", str(case.get("objective") or "").strip()),
+        format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
+        format_prompt_section("Session context", str(case.get("sessionContext", "") or "none").strip() or "none"),
+    ]
+    if runtime_config.get("knowledgebaseExplicit") and runtime is not None and hasattr(runtime, "build_knowledgebase_recall_packet"):
+        task = {
+            "taskId": sanitize_id(str(case.get("caseId") or "eval-direct")),
+            "objective": str(case.get("objective") or "").strip(),
+            "constraints": list(case.get("constraints", [])) if isinstance(case.get("constraints"), list) else [],
+            "sessionContext": str(case.get("sessionContext") or "").strip(),
+            "runtime": {"knowledgebase": deepcopy(runtime_config.get("knowledgebase", default_knowledgebase_config()))},
+        }
+        knowledgebase_packet = runtime.build_knowledgebase_recall_packet(
+            task,
+            task["runtime"],
+            "direct_baseline",
+            label="Direct Baseline",
+            role="direct_answer",
+            focus="single-thread user-facing answer",
+            constraints=task["constraints"],
+        )
+        sections.append(runtime.render_knowledgebase_prompt_block(knowledgebase_packet).strip())
+    input_text = "\n\n".join(sections).strip()
     return {
         "instructions": instructions,
         "inputText": input_text,
@@ -3309,6 +3444,10 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
         arm_path = root / "data" / "evals" / "arms" / f"{arm_id}.json"
         arm_map[arm_id] = validate_arm_manifest(read_json(arm_path), arm_path)
     auth_path = auth_file_path(root)
+    run["judgeLearning"] = normalize_judge_learning_config(
+        run.get("judgeLearning") if isinstance(run.get("judgeLearning"), dict) else {},
+        arm_map,
+    )
     run["suite"] = {
         "suiteId": suite["suiteId"],
         "title": suite["title"],
@@ -3323,6 +3462,8 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
             "type": arm["type"],
             "provider": arm["runtime"]["provider"],
             "summarizerProvider": arm["runtime"]["summarizerProvider"],
+            "knowledgebase": deepcopy(arm["runtime"].get("knowledgebase", default_knowledgebase_config())),
+            "knowledgebaseExplicit": bool(arm["runtime"].get("knowledgebaseExplicit")),
         }
         for arm in arm_map.values()
     ]
@@ -3369,6 +3510,8 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
                         "summarizerModel": arm["runtime"]["summarizerModel"],
                         "directProvider": arm["runtime"]["directProvider"],
                         "directModel": arm["runtime"]["directModel"],
+                        "knowledgebase": deepcopy(arm["runtime"].get("knowledgebase", default_knowledgebase_config())),
+                        "knowledgebaseExplicit": bool(arm["runtime"].get("knowledgebaseExplicit")),
                         "loopRounds": int(loop_rounds),
                         "replicates": [],
                     }
@@ -3426,6 +3569,32 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
     run["completedAt"] = utc_now()
     run["current"] = None
     persist_run(run_path, run)
+    learning_config = run.get("judgeLearning") if isinstance(run.get("judgeLearning"), dict) else {}
+    if bool(learning_config.get("enabled")):
+        try:
+            learning_result = judge_learning.learn_from_eval_runs(
+                root,
+                run_ids=[run_id],
+                bank_id=str(learning_config.get("bankId") or infer_judge_learning_bank_id(arm_map)),
+                dry_run=coerce_bool(learning_config.get("dryRun"), False),
+            )
+            run["judgeLearning"] = {
+                **learning_config,
+                "status": "completed",
+                "lastResult": compact_judge_learning_result(learning_result),
+            }
+        except Exception as exc:
+            run["judgeLearning"] = {
+                **learning_config,
+                "status": "error",
+                "error": f"{exc.__class__.__name__}: {str(exc)}",
+            }
+        run["summary"]["judgeLearning"] = {
+            key: value
+            for key, value in run["judgeLearning"].items()
+            if key in {"enabled", "bankId", "dryRun", "writeMode", "source", "status", "error", "lastResult"}
+        }
+        persist_run(run_path, run)
     return run
 
 

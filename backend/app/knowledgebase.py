@@ -17,6 +17,49 @@ SCHEMA_VERSION = "parallm-native-knowledgebase/v0"
 DEFAULT_BANK_ID = "runtime"
 MAX_RECORD_TEXT = 8000
 VALID_FACT_TYPES = {"world", "experience", "observation", "runbook", "note", "event", "state", "artifact"}
+MSP_BANK_ID = "msp-knowledgebase"
+MSP_BASELINE_SOURCE_IDS = {
+    "msp-usecase-sop#common-major-incident": "major_incident_baseline",
+    "msp-usecase-sop#247-operations": "continuity_baseline",
+}
+MSP_CONTINUITY_TERMS = {
+    "24/7",
+    "24x7",
+    "continuity",
+    "medical",
+    "logistics",
+    "restore",
+    "restoring",
+    "night-shift",
+    "night",
+    "outage",
+    "operations",
+}
+MSP_MAJOR_INCIDENT_TERMS = {
+    "msp",
+    "tenant",
+    "tenants",
+    "client",
+    "clients",
+    "customer",
+    "customers",
+    "multi-tenant",
+    "control-plane",
+    "rmm",
+    "psa",
+    "backup",
+    "restore",
+    "oauth",
+    "entra",
+    "microsoft",
+    "destructive",
+    "ransomware",
+    "incident",
+    "severity",
+    "sev-1",
+    "after-hours",
+    "overnight",
+}
 
 
 @dataclass(frozen=True)
@@ -128,6 +171,59 @@ def metadata_field(payload: Any, key: str = "metadata") -> Dict[str, Any]:
     return clean
 
 
+def compact_string_list(value: Any, limit: int = 8, item_limit: int = 220) -> List[str]:
+    if isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, list):
+        raw = value
+    else:
+        raw = []
+    items: List[str] = []
+    for item in raw:
+        normalized = compact(item, item_limit)
+        if normalized and normalized not in items:
+            items.append(normalized)
+        if len(items) >= max(1, limit):
+            break
+    return items
+
+
+def normalize_sop_packet(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    packet: Dict[str, Any] = {}
+    scalar_fields = {
+        "schemaVersion": 80,
+        "useCase": 120,
+        "summary": 260,
+        "owner": 100,
+        "severity": 80,
+        "fallback": 220,
+    }
+    list_fields = {
+        "eventTypes": (10, 80),
+        "triggers": (8, 180),
+        "firstActions": (8, 220),
+        "evidence": (10, 180),
+        "decisionGates": (8, 220),
+        "communications": (6, 220),
+        "escalation": (6, 220),
+        "agentChecklist": (8, 180),
+        "avoid": (8, 180),
+        "handoff": (6, 220),
+        "sourceRefs": (6, 180),
+    }
+    for field, limit in scalar_fields.items():
+        text = compact(value.get(field), limit)
+        if text:
+            packet[field] = text
+    for field, (limit, item_limit) in list_fields.items():
+        items = compact_string_list(value.get(field), limit=limit, item_limit=item_limit)
+        if items:
+            packet[field] = items
+    return packet
+
+
 def extract_entities(text: str, tags: Optional[Iterable[str]] = None) -> List[str]:
     entities: List[str] = []
     for candidate in re.findall(r"\b[A-Z][A-Za-z0-9._-]{2,}(?:\s+[A-Z][A-Za-z0-9._-]{2,}){0,3}", text or ""):
@@ -160,7 +256,7 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         fact_type = "note"
     created_at = str(record.get("createdAt") or record.get("timestamp") or record.get("occurredAt") or utc_now())
     record_id = str(record.get("id") or stable_id("mem", bank_id, created_at, text))
-    return {
+    normalized = {
         "id": record_id,
         "bankId": bank_id,
         "title": compact(record.get("title") or record.get("sourceId") or record_id, 140),
@@ -174,6 +270,10 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "metadata": metadata_field(record),
         "createdAt": created_at,
     }
+    sop = normalize_sop_packet(record.get("sop"))
+    if sop:
+        normalized["sop"] = sop
+    return normalized
 
 
 def record_from_payload(bank_id: str, item: Dict[str, Any], base: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -213,6 +313,9 @@ def record_from_payload(bank_id: str, item: Dict[str, Any], base: Dict[str, Any]
         "metadata": metadata,
         "createdAt": timestamp,
     }
+    sop = item.get("sop") if isinstance(item.get("sop"), dict) else base.get("sop")
+    if isinstance(sop, dict):
+        record["sop"] = sop
     return normalize_record(record)
 
 
@@ -498,6 +601,38 @@ def tag_matches(record_tags: List[str], wanted: List[str], mode: str = "any") ->
     return bool(record_set & wanted_set)
 
 
+def baseline_reason(record: Dict[str, Any], query: str, query_terms: List[str], wanted_tags: List[str], bank_id: str) -> str:
+    if record.get("bankId") != MSP_BANK_ID and bank_id != MSP_BANK_ID:
+        return ""
+    source_id = str(record.get("sourceId") or "").strip()
+    reason = MSP_BASELINE_SOURCE_IDS.get(source_id)
+    if not reason:
+        return ""
+    terms = set(query_terms)
+    query_lower = str(query or "").lower()
+    has_msp_context = bank_id == MSP_BANK_ID or "msp" in wanted_tags or "msp" in terms
+    if not has_msp_context:
+        return ""
+    if source_id == "msp-usecase-sop#common-major-incident":
+        if terms & MSP_MAJOR_INCIDENT_TERMS or "multi-tenant" in query_lower or "control plane" in query_lower:
+            return reason
+        return ""
+    if source_id == "msp-usecase-sop#247-operations":
+        if terms & MSP_CONTINUITY_TERMS or "24/7" in query_lower or "night shift" in query_lower:
+            return reason
+        return ""
+    return reason
+
+
+def baseline_priority(record: Dict[str, Any]) -> int:
+    source_id = str(record.get("sourceId") or "").strip()
+    order = {
+        "msp-usecase-sop#common-major-incident": 0,
+        "msp-usecase-sop#247-operations": 1,
+    }
+    return order.get(source_id, 50)
+
+
 def parse_timestamp(value: Any) -> Optional[float]:
     text = str(value or "").strip()
     if not text:
@@ -510,6 +645,8 @@ def parse_timestamp(value: Any) -> Optional[float]:
 
 
 def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wanted_tags: List[str]) -> tuple[float, Dict[str, float]]:
+    sop = record.get("sop") if isinstance(record.get("sop"), dict) else {}
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     haystack = " ".join(
         [
             str(record.get("title") or ""),
@@ -517,6 +654,11 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
             str(record.get("context") or ""),
             " ".join(record.get("tags") or []),
             " ".join(record.get("entities") or []),
+            str(sop.get("useCase") or ""),
+            " ".join(sop.get("eventTypes") or []),
+            " ".join(sop.get("triggers") or []),
+            " ".join(sop.get("firstActions") or []),
+            " ".join(sop.get("decisionGates") or []),
         ]
     )
     lower_haystack = haystack.lower()
@@ -526,6 +668,28 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
     phrase = 1.0 if query and query.lower() in lower_haystack else 0.0
     tag = 1.0 if wanted_tags and tag_matches(record.get("tags") or [], wanted_tags) else 0.0
     source = 0.25 if record.get("source") == "runtime_fallback" else 0.1
+    sop_boost = 0.0
+    if sop and query_terms:
+        sop_terms = set(tokenize(" ".join(
+            [
+                str(sop.get("useCase") or ""),
+                " ".join(sop.get("eventTypes") or []),
+                " ".join(sop.get("triggers") or []),
+            ]
+        )))
+        if sop_terms:
+            sop_boost = min(1.0, len(sop_terms & set(query_terms)) / max(1, min(len(sop_terms), len(set(query_terms)))))
+    learning_boost = 0.0
+    if metadata.get("learning.kind") and query_terms:
+        try:
+            adaptive_weight = float(metadata.get("learning.adaptiveWeight") or 0.0)
+        except (TypeError, ValueError):
+            adaptive_weight = 0.0
+        try:
+            miss_count = float(metadata.get("learning.missCount") or 0.0)
+        except (TypeError, ValueError):
+            miss_count = 0.0
+        learning_boost = min(1.4, adaptive_weight * 0.08 + math.log1p(max(0.0, miss_count)) * 0.18)
     timestamp = parse_timestamp(record.get("createdAt"))
     recency = 0.0
     if timestamp is not None:
@@ -533,8 +697,36 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
         recency = 1.0 / (1.0 + min(age_days, 90.0) / 14.0)
     if not query_terms:
         keyword = 0.1
-    score = keyword * 4.0 + phrase * 2.0 + tag * 1.2 + source + recency * 0.35
-    return score, {"keyword": round(keyword, 4), "phrase": phrase, "tag": tag, "source": source, "recency": round(recency, 4)}
+    score = keyword * 4.0 + phrase * 2.0 + tag * 1.2 + source + recency * 0.35 + sop_boost * 1.6 + learning_boost
+    return score, {
+        "keyword": round(keyword, 4),
+        "phrase": phrase,
+        "tag": tag,
+        "source": source,
+        "recency": round(recency, 4),
+        "sop": round(sop_boost, 4),
+        "learning": round(learning_boost, 4),
+    }
+
+
+def sop_context_line(hit: Dict[str, Any]) -> str:
+    sop = hit.get("sop") if isinstance(hit.get("sop"), dict) else {}
+    if not sop:
+        return compact(hit.get("text"), 700)
+    parts = [
+        f"useCase={sop.get('useCase')}",
+        f"events={', '.join(sop.get('eventTypes') or [])}",
+    ]
+    for label, field in [
+        ("first", "firstActions"),
+        ("evidence", "evidence"),
+        ("gates", "decisionGates"),
+        ("avoid", "avoid"),
+    ]:
+        items = sop.get(field) if isinstance(sop.get(field), list) else []
+        if items:
+            parts.append(f"{label}: " + " | ".join(items[:4]))
+    return compact("; ".join(part for part in parts if part and not part.endswith("=None")), 900)
 
 
 def recall(
@@ -582,16 +774,45 @@ def recall(
 
     query_terms = tokenize(query)
     scored: List[Dict[str, Any]] = []
+    baseline_scored: List[Dict[str, Any]] = []
     for record in filtered:
         score, parts = record_score(record, query, query_terms, wanted_tags)
+        reason = baseline_reason(record, query, query_terms, wanted_tags, bank_id)
+        enriched = {**record, "score": round(score, 4), "scoreParts": parts}
+        if reason:
+            enriched["memoryLayer"] = "baseline"
+            enriched["baselineReason"] = reason
+            baseline_scored.append(enriched)
+            continue
         if query_terms and score <= 0.35:
             continue
-        scored.append({**record, "score": round(score, 4), "scoreParts": parts})
+        enriched["memoryLayer"] = "adaptive" if record.get("sop") else "supporting"
+        scored.append(enriched)
+    baseline_scored.sort(
+        key=lambda item: (
+            -baseline_priority(item),
+            float(item.get("score") or 0),
+            parse_timestamp(item.get("createdAt")) or 0,
+        ),
+        reverse=True,
+    )
     scored.sort(key=lambda item: (float(item.get("score") or 0), parse_timestamp(item.get("createdAt")) or 0), reverse=True)
 
     selected: List[Dict[str, Any]] = []
     used_tokens = 0
+    baseline_limit = min(2, max_records)
+    if scored and max_records > 1:
+        baseline_limit = min(baseline_limit, max_records - 1)
+    for item in baseline_scored[:baseline_limit]:
+        item_tokens = approx_tokens(item.get("text"))
+        if selected and used_tokens + item_tokens > max_tokens:
+            continue
+        selected.append(item)
+        used_tokens += item_tokens
+    selected_ids = {str(item.get("id") or "") for item in selected}
     for item in scored:
+        if str(item.get("id") or "") in selected_ids:
+            continue
         item_tokens = approx_tokens(item.get("text"))
         if selected and used_tokens + item_tokens > max_tokens:
             continue
@@ -601,7 +822,7 @@ def recall(
             break
 
     context_lines = [
-        f"[{index}] {hit.get('title')} ({hit.get('type')}, {hit.get('sourceId')}): {compact(hit.get('text'), 700)}"
+        f"[{index}] {hit.get('title')} ({hit.get('type')}, {hit.get('sourceId')}): {sop_context_line(hit)}"
         for index, hit in enumerate(selected, start=1)
     ]
     return {
@@ -614,9 +835,16 @@ def recall(
         "degraded": False,
         "warnings": warnings[:20],
         "resultCount": len(selected),
-        "totalCandidates": len(scored),
+        "totalCandidates": len(scored) + len(baseline_scored),
         "maxTokens": max_tokens,
         "usedTokensApprox": used_tokens,
+        "memoryPlan": {
+            "mode": "baseline_and_adaptive",
+            "baselineCount": sum(1 for hit in selected if hit.get("memoryLayer") == "baseline"),
+            "adaptiveCount": sum(1 for hit in selected if hit.get("memoryLayer") == "adaptive"),
+            "supportingCount": sum(1 for hit in selected if hit.get("memoryLayer") == "supporting"),
+            "baselinePolicy": "MSP high-risk incidents reserve mandatory baseline SOP packets before adaptive recall fills the remaining slots.",
+        },
         "hits": [
             {
                 "id": hit.get("id"),
@@ -632,6 +860,9 @@ def recall(
                 "tags": hit.get("tags"),
                 "entities": hit.get("entities"),
                 "metadata": hit.get("metadata"),
+                "sop": hit.get("sop") if isinstance(hit.get("sop"), dict) else {},
+                "memoryLayer": hit.get("memoryLayer") or "adaptive",
+                "baselineReason": hit.get("baselineReason"),
                 "createdAt": hit.get("createdAt"),
             }
             for hit in selected

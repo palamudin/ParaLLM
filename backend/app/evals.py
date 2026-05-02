@@ -131,6 +131,37 @@ def _parse_float(value: Any, default: float, minimum: float = 0.0) -> float:
     return max(minimum, parsed)
 
 
+def _infer_judge_learning_bank_id(arms: List[Dict[str, Any]], fallback: str = "msp-knowledgebase") -> str:
+    candidates: List[str] = []
+    for arm in arms:
+        runtime_config = arm.get("runtime") if isinstance(arm.get("runtime"), dict) else {}
+        knowledgebase_config = runtime_config.get("knowledgebase") if isinstance(runtime_config.get("knowledgebase"), dict) else {}
+        bank_id = str(knowledgebase_config.get("bankId") or "").strip()
+        if (
+            bool(knowledgebase_config.get("enabled", True))
+            and bool(knowledgebase_config.get("includePersistent", True))
+            and bank_id
+            and bank_id not in candidates
+        ):
+            candidates.append(bank_id)
+    return candidates[0] if candidates else fallback
+
+
+def _judge_learning_config(payload: Dict[str, Any], arms: List[Dict[str, Any]], *, default_enabled: bool = False) -> Dict[str, Any]:
+    raw = payload.get("judgeLearning") if isinstance(payload.get("judgeLearning"), dict) else {}
+    enabled_value = raw.get("enabled")
+    if enabled_value is None:
+        enabled_value = payload.get("judgeLearningEnabled")
+    bank_id = str(raw.get("bankId") or raw.get("bank_id") or payload.get("judgeLearningBankId") or "").strip()
+    return {
+        "enabled": _parse_bool(enabled_value, default_enabled),
+        "bankId": bank_id or _infer_judge_learning_bank_id(arms),
+        "dryRun": _parse_bool(raw.get("dryRun", raw.get("dry_run", payload.get("judgeLearningDryRun"))), False),
+        "writeMode": "knowledgebase",
+        "source": "judge_scores",
+    }
+
+
 def _load_suite(paths: storage.Paths, suite_id: str) -> Dict[str, Any]:
     manifest = read_manifest_by_id(paths.eval_suites, suite_id, "suiteId")
     if not isinstance(manifest, dict):
@@ -564,6 +595,7 @@ def start_front_eval_run(payload: Dict[str, Any], root: Optional[Path] = None) -
     run["inlineArms"] = {arm["armId"]: arm}
     run["selectedCaseId"] = case_id or (suite.get("cases") or [{}])[0].get("caseId")
     run["launcher"] = {"kind": "front-eval", "label": arm["title"]}
+    run["judgeLearning"] = _judge_learning_config(payload, [arm], default_enabled=False)
     write_eval_run(paths, run)
     launch_eval_runner(run_id, paths.root)
     return {"message": "Front eval queued.", "runId": run_id, "run": storage.build_eval_run_preview(run)}
@@ -636,6 +668,7 @@ def start_front_judge_run(payload: Dict[str, Any], root: Optional[Path] = None) 
     ] or [1]
     run["inlineSuite"] = suite
     run["inlineArms"] = {arm["armId"]: arm for arm in arms}
+    run["judgeLearning"] = _judge_learning_config(payload, arms, default_enabled=True)
     run["launcher"] = {
         "kind": "front-judge",
         "suiteIds": suite_ids,

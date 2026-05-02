@@ -10,15 +10,30 @@ Use this as the domain skill after `claim-calibration` and `evidence-ledger` whe
 ## Quick Workflow
 
 1. Classify the scenario: incident, change, access, backup/restore, customer communication, vendor/supply-chain, or service-quality dispute.
-2. Identify the tenants, the control plane, the affected customer systems, and who has authority to approve risky action.
-3. Separate facts, assumptions, and unknowns. Do not treat a management console as trusted truth when that console or its identity path may be compromised.
-4. State the first safe action: preserve evidence, stop spread, keep service alive, or hold an unsafe change.
-5. Define gates before disruptive action: evidence captured, impact assessed, customer-owner approval, senior authority, rollback ready, and tenant-safe comms.
-6. Produce a compact pressure packet with verdict, confidence, top pressure, evidence, unknowns, and recommended next check.
+2. Prefer the matching use-case SOP packet from `msp-knowledgebase` before reading broad rulebook material. The packet is the prompt budget path; the rulebook is the inspection path.
+3. Identify the tenants, the control plane, the affected customer systems, and who has authority to approve risky action.
+4. Separate facts, assumptions, and unknowns. Do not treat a management console as trusted truth when that console or its identity path may be compromised.
+5. State the first safe action: preserve evidence, stop spread, keep service alive, or hold an unsafe change.
+6. Define gates before disruptive action: evidence captured, impact assessed, customer-owner approval, senior authority, rollback ready, and tenant-safe comms.
+7. Produce a compact pressure packet with verdict, confidence, top pressure, evidence, unknowns, and recommended next check.
+
+## Use-Case SOP Packets
+
+The durable MSP knowledgebase is organized as narrow packets, not a full documentation dump. Use the closest packet and keep full-text retrieval optional:
+
+- `24/7 operations and continuity SOP`
+- `SOC alert triage SOP`
+- `Service desk access and authority SOP`
+- `Azure hosting operations SOP`
+- `Client-facing software delivery SOP`
+- `RMM control-plane incident SOP`
+- `Backup and restore destruction SOP`
+- `Identity OAuth SaaS incident SOP`
+- `MSP common major incident frame`
 
 ## Provider Rules
 
-- Tenant separation is sacred. Keep tickets, evidence, scope, decisions, and customer messages separated per customer, with one internal major-incident record above them.
+- Tenant separation is sacred. Keep tickets, evidence, scope, decisions, and customer messages separated per customer, with one internal major-incident record above them and a named owner for every affected tenant child record.
 - The MSP control plane is a blast-radius amplifier. RMM, PSA, backup portals, identity, remote access, and vendor integrations need skepticism when they are part of the incident path.
 - Evidence comes before cleanup when feasible. Preserve logs, package/script contents, job history, command lines, identities, tokens, source IPs, timestamps, screenshots/exports, hashes, and chain-of-custody records.
 - Least privilege beats convenience. Prefer named accounts, MFA, just-in-time access, just-enough access, privileged access workstations, and no shared cross-customer admin credentials.

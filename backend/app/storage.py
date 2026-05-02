@@ -1644,6 +1644,7 @@ def build_eval_run_preview(run: Dict[str, Any]) -> Dict[str, Any]:
         "judgeProvider": run.get("judgeProvider"),
         "judgeModel": run.get("judgeModel"),
         "judgeRuntime": run.get("judgeRuntime") if isinstance(run.get("judgeRuntime"), dict) else None,
+        "judgeLearning": run.get("judgeLearning") if isinstance(run.get("judgeLearning"), dict) else None,
         "current": run.get("current") if isinstance(run.get("current"), dict) else None,
         "error": run.get("error"),
         "summary": {

@@ -688,6 +688,7 @@
             caseId: String(caseEntry?.caseId || ""),
             caseTitle: String(caseEntry?.title || caseEntry?.caseId || "Case"),
             objective: String(caseEntry?.objective || ""),
+            constraints: Array.isArray(caseEntry?.constraints) ? caseEntry.constraints.map((item) => String(item || "").trim()).filter(Boolean) : [],
             variantId: String(variant?.variantId || ""),
             replicate: repNo,
             para: paraLane,
@@ -785,6 +786,24 @@
     `;
   }
 
+  function renderScoreQuestionBubble(session) {
+    const question = String(session?.objective || "").trim();
+    const constraints = Array.isArray(session?.constraints)
+      ? session.constraints.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    return `
+      <section class="replacement-score-question-bubble" aria-label="User question">
+        <div class="replacement-message-role">User question</div>
+        <p>${escapeHtml(question || "No user question recorded for this judged session.")}</p>
+        ${constraints.length ? `
+          <div class="replacement-score-question-constraints">
+            ${constraints.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+          </div>
+        ` : ""}
+      </section>
+    `;
+  }
+
   function renderScoreJudgePanel(session) {
     const paraQuality = scoreValue(session?.para?.quality, "overallQuality");
     const directQuality = scoreValue(session?.direct?.quality, "overallQuality");
@@ -860,9 +879,9 @@
           <div class="replacement-kicker">${escapeHtml(session.caseId || "case")}</div>
           <h4>${escapeHtml(session.caseTitle || "Judged session")}</h4>
         </div>
-        <p>${escapeHtml(truncateText(session.objective || "", 260) || "No objective recorded.")}</p>
       </section>
       <div class="replacement-score-lane-grid">
+        ${renderScoreQuestionBubble(session)}
         ${renderScoreLaneCard(session.para, "primary")}
         ${renderScoreLaneCard(session.direct, "secondary")}
       </div>
@@ -873,6 +892,15 @@
   function renderScoreRunMeta(run, sessions) {
     if (!run) return "No judged runs available.";
     const summary = run.summary || {};
+    const learning = run.judgeLearning && typeof run.judgeLearning === "object" ? run.judgeLearning : null;
+    const learningResult = learning && learning.lastResult && typeof learning.lastResult === "object" ? learning.lastResult : null;
+    const learningLabel = learning
+      ? (
+        learning.enabled
+          ? `learning ${learning.status || "on"}${learningResult ? `, ${Number(learningResult.learnedRecordCount || 0)} memories` : ""}`
+          : "learning off"
+      )
+      : "";
     const bits = [
       String(run.suiteId || "").trim(),
       String(run.status || "").trim(),
@@ -882,6 +910,7 @@
       Number(summary.errorCount || 0) ? `${Number(summary.errorCount || 0)} errors` : "0 errors",
       Number(summary.totalTokens || 0) ? `${Number(summary.totalTokens || 0).toLocaleString()} tokens` : "",
       sessions.length ? `${sessions.length} comparable sessions` : "",
+      learningLabel,
     ].filter(Boolean);
     return bits.join(" | ");
   }
