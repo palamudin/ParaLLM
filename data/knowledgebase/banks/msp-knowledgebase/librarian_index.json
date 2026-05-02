@@ -1,26 +1,26 @@
 {
   "schemaVersion": "parallm-judge-learning/v0/librarian",
-  "generatedAt": "2026-05-02T11:54:49+00:00",
+  "generatedAt": "2026-05-02T14:23:42+00:00",
   "bankId": "msp-knowledgebase",
   "recordCount": 33,
   "learnedRecordCount": 24,
   "groupCount": 24,
   "duplicateGroupCount": 0,
-  "uniqueScoreRefCount": 47,
+  "uniqueScoreRefCount": 76,
   "overWeightedCount": 24,
   "reinforcementGroupCount": 24,
   "eventLedger": {
     "path": "C:\\xampp\\htdocs\\loop\\data\\knowledgebase\\banks\\msp-knowledgebase\\learning_events.jsonl",
-    "eventCount": 369,
+    "eventCount": 594,
     "schemaVersion": "parallm-judge-learning/v0/event",
     "authoritativeForScoreRefs": true
   },
   "storageDuplication": {
     "recordDuplicateGroupCount": 0,
-    "scoreRefSlots": 369,
-    "uniqueScoreRefCount": 47,
-    "scoreRefReuseSlots": 322,
-    "scoreRefReuseGroupCount": 47,
+    "scoreRefSlots": 594,
+    "uniqueScoreRefCount": 76,
+    "scoreRefReuseSlots": 518,
+    "scoreRefReuseGroupCount": 76,
     "saturatedGroupCount": 24,
     "recommendation": "Keep one learned memory per scenario/failure group. Move raw score-ref history into a compact event ledger when scoreRefReuseSlots or saturatedGroupCount rises, and keep only exemplar refs on the memory packet."
   },
@@ -49,8 +49,8 @@
         "Learned: Authority and role activation (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 14,
-      "sourceRunCount": 5
+      "eventCount": 24,
+      "sourceRunCount": 7
     },
     {
       "group": "backup-restore-destruction:continuity-gating",
@@ -62,8 +62,8 @@
         "Learned: Service continuity containment gate (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 7
     },
     {
       "group": "backup-restore-destruction:control-plane-distrust",
@@ -75,8 +75,8 @@
         "Learned: Untrusted control-plane integrity check (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 14,
-      "sourceRunCount": 5
+      "eventCount": 24,
+      "sourceRunCount": 7
     },
     {
       "group": "backup-restore-destruction:evidence-preservation",
@@ -88,8 +88,8 @@
         "Learned: Evidence-first containment sequencing (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 7
     },
     {
       "group": "backup-restore-destruction:lead-control-self-check",
@@ -101,8 +101,8 @@
         "Learned: Lead-thread control and self-check (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 7
     },
     {
       "group": "backup-restore-destruction:operator-efficiency",
@@ -114,8 +114,8 @@
         "Learned: First-hour operator efficiency (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 7
     },
     {
       "group": "backup-restore-destruction:tenant-safe-communications",
@@ -127,8 +127,8 @@
         "Learned: Tenant-safe incident communications (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 14,
-      "sourceRunCount": 5
+      "eventCount": 24,
+      "sourceRunCount": 7
     },
     {
       "group": "backup-restore-destruction:vendor-escalation",
@@ -140,8 +140,8 @@
         "Learned: Vendor escalation and artifact handoff (Backup/restore destruction incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 7
     },
     {
       "group": "identity-oauth-saas:authority-escalation",
@@ -153,8 +153,8 @@
         "Learned: Authority and role activation (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 17,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 8
     },
     {
       "group": "identity-oauth-saas:continuity-gating",
@@ -166,8 +166,8 @@
         "Learned: Service continuity containment gate (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 17,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 8
     },
     {
       "group": "identity-oauth-saas:control-plane-distrust",
@@ -179,8 +179,8 @@
         "Learned: Untrusted control-plane integrity check (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 17,
-      "sourceRunCount": 5
+      "eventCount": 24,
+      "sourceRunCount": 7
     },
     {
       "group": "identity-oauth-saas:evidence-preservation",
@@ -192,8 +192,8 @@
         "Learned: Evidence-first containment sequencing (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 17,
-      "sourceRunCount": 5
+      "eventCount": 26,
+      "sourceRunCount": 8
     },
     {
       "group": "identity-oauth-saas:lead-control-self-check",
@@ -205,8 +205,8 @@
         "Learned: Lead-thread control and self-check (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 16,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 8
     },
     {
       "group": "identity-oauth-saas:operator-efficiency",
@@ -218,8 +218,8 @@
         "Learned: First-hour operator efficiency (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 17,
-      "sourceRunCount": 5
+      "eventCount": 26,
+      "sourceRunCount": 8
     },
     {
       "group": "identity-oauth-saas:tenant-safe-communications",
@@ -231,8 +231,8 @@
         "Learned: Tenant-safe incident communications (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 17,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 8
     },
     {
       "group": "identity-oauth-saas:vendor-escalation",
@@ -244,8 +244,8 @@
         "Learned: Vendor escalation and artifact handoff (Identity/OAuth SaaS incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 16,
-      "sourceRunCount": 5
+      "eventCount": 23,
+      "sourceRunCount": 8
     },
     {
       "group": "rmm-control-plane:authority-escalation",
@@ -257,8 +257,8 @@
         "Learned: Authority and role activation (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 6
     },
     {
       "group": "rmm-control-plane:continuity-gating",
@@ -270,8 +270,8 @@
         "Learned: Service continuity containment gate (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 6
     },
     {
       "group": "rmm-control-plane:control-plane-distrust",
@@ -283,8 +283,8 @@
         "Learned: Untrusted control-plane integrity check (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 6
     },
     {
       "group": "rmm-control-plane:evidence-preservation",
@@ -296,8 +296,8 @@
         "Learned: Evidence-first containment sequencing (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 6
     },
     {
       "group": "rmm-control-plane:lead-control-self-check",
@@ -309,8 +309,8 @@
         "Learned: Lead-thread control and self-check (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 14,
-      "sourceRunCount": 5
+      "eventCount": 24,
+      "sourceRunCount": 6
     },
     {
       "group": "rmm-control-plane:operator-efficiency",
@@ -322,8 +322,8 @@
         "Learned: First-hour operator efficiency (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 6
     },
     {
       "group": "rmm-control-plane:tenant-safe-communications",
@@ -335,8 +335,8 @@
         "Learned: Tenant-safe incident communications (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 15,
-      "sourceRunCount": 5
+      "eventCount": 25,
+      "sourceRunCount": 6
     },
     {
       "group": "rmm-control-plane:vendor-escalation",
@@ -348,8 +348,8 @@
         "Learned: Vendor escalation and artifact handoff (RMM control-plane incident)"
       ],
       "scoreRefCount": 3,
-      "eventCount": 14,
-      "sourceRunCount": 5
+      "eventCount": 24,
+      "sourceRunCount": 6
     }
   ],
   "duplicateGroups": [],
@@ -358,9 +358,9 @@
       "id": "mem_learn_e4fae606b76a9a2b",
       "group": "backup-restore-destruction:authority-escalation",
       "title": "Learned: Authority and role activation (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 14,
-      "missCount": 14,
+      "sourceRunCount": 7,
+      "scoreRefCount": 24,
+      "missCount": 24,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -368,9 +368,9 @@
       "id": "mem_learn_bacf168e384183fc",
       "group": "backup-restore-destruction:continuity-gating",
       "title": "Learned: Service continuity containment gate (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 7,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -378,9 +378,9 @@
       "id": "mem_learn_ec5f56b6a591d099",
       "group": "backup-restore-destruction:control-plane-distrust",
       "title": "Learned: Untrusted control-plane integrity check (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 14,
-      "missCount": 14,
+      "sourceRunCount": 7,
+      "scoreRefCount": 24,
+      "missCount": 24,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -388,9 +388,9 @@
       "id": "mem_learn_4586d7e501b2344d",
       "group": "backup-restore-destruction:evidence-preservation",
       "title": "Learned: Evidence-first containment sequencing (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 7,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -398,9 +398,9 @@
       "id": "mem_learn_e65bab1f0b3caef9",
       "group": "backup-restore-destruction:lead-control-self-check",
       "title": "Learned: Lead-thread control and self-check (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 7,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -408,9 +408,9 @@
       "id": "mem_learn_6f52c97c7129c2e9",
       "group": "backup-restore-destruction:operator-efficiency",
       "title": "Learned: First-hour operator efficiency (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 7,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -418,9 +418,9 @@
       "id": "mem_learn_527b35aba3159cbc",
       "group": "backup-restore-destruction:tenant-safe-communications",
       "title": "Learned: Tenant-safe incident communications (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 14,
-      "missCount": 14,
+      "sourceRunCount": 7,
+      "scoreRefCount": 24,
+      "missCount": 24,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -428,9 +428,9 @@
       "id": "mem_learn_8f03295b82eba7af",
       "group": "backup-restore-destruction:vendor-escalation",
       "title": "Learned: Vendor escalation and artifact handoff (Backup/restore destruction incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 7,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -438,9 +438,9 @@
       "id": "mem_learn_88552e56f0d66566",
       "group": "identity-oauth-saas:authority-escalation",
       "title": "Learned: Authority and role activation (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 17,
-      "missCount": 17,
+      "sourceRunCount": 8,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -448,9 +448,9 @@
       "id": "mem_learn_80db86d3131979b6",
       "group": "identity-oauth-saas:continuity-gating",
       "title": "Learned: Service continuity containment gate (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 17,
-      "missCount": 17,
+      "sourceRunCount": 8,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -458,9 +458,9 @@
       "id": "mem_learn_1f1b1a2c28aca4bf",
       "group": "identity-oauth-saas:control-plane-distrust",
       "title": "Learned: Untrusted control-plane integrity check (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 17,
-      "missCount": 17,
+      "sourceRunCount": 7,
+      "scoreRefCount": 24,
+      "missCount": 24,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -468,9 +468,9 @@
       "id": "mem_learn_cd5489a6be8ccb14",
       "group": "identity-oauth-saas:evidence-preservation",
       "title": "Learned: Evidence-first containment sequencing (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 17,
-      "missCount": 17,
+      "sourceRunCount": 8,
+      "scoreRefCount": 26,
+      "missCount": 26,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -478,9 +478,9 @@
       "id": "mem_learn_749f8c8beb5320d7",
       "group": "identity-oauth-saas:lead-control-self-check",
       "title": "Learned: Lead-thread control and self-check (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 16,
-      "missCount": 16,
+      "sourceRunCount": 8,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -488,9 +488,9 @@
       "id": "mem_learn_a9351771fd279120",
       "group": "identity-oauth-saas:operator-efficiency",
       "title": "Learned: First-hour operator efficiency (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 17,
-      "missCount": 17,
+      "sourceRunCount": 8,
+      "scoreRefCount": 26,
+      "missCount": 26,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -498,9 +498,9 @@
       "id": "mem_learn_be0bb001882b50a8",
       "group": "identity-oauth-saas:tenant-safe-communications",
       "title": "Learned: Tenant-safe incident communications (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 17,
-      "missCount": 17,
+      "sourceRunCount": 8,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -508,9 +508,9 @@
       "id": "mem_learn_ff6eddc0282cb24b",
       "group": "identity-oauth-saas:vendor-escalation",
       "title": "Learned: Vendor escalation and artifact handoff (Identity/OAuth SaaS incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 16,
-      "missCount": 16,
+      "sourceRunCount": 8,
+      "scoreRefCount": 23,
+      "missCount": 23,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -518,9 +518,9 @@
       "id": "mem_learn_25b2affcdfabc380",
       "group": "rmm-control-plane:authority-escalation",
       "title": "Learned: Authority and role activation (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 6,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -528,9 +528,9 @@
       "id": "mem_learn_30722d104e70814d",
       "group": "rmm-control-plane:continuity-gating",
       "title": "Learned: Service continuity containment gate (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 6,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -538,9 +538,9 @@
       "id": "mem_learn_d70b343fe0de8bb5",
       "group": "rmm-control-plane:control-plane-distrust",
       "title": "Learned: Untrusted control-plane integrity check (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 6,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -548,9 +548,9 @@
       "id": "mem_learn_ef670cfdd07f5730",
       "group": "rmm-control-plane:evidence-preservation",
       "title": "Learned: Evidence-first containment sequencing (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 6,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -558,9 +558,9 @@
       "id": "mem_learn_0e1f5b06ac4a8208",
       "group": "rmm-control-plane:lead-control-self-check",
       "title": "Learned: Lead-thread control and self-check (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 14,
-      "missCount": 14,
+      "sourceRunCount": 6,
+      "scoreRefCount": 24,
+      "missCount": 24,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -568,9 +568,9 @@
       "id": "mem_learn_4332626264421db6",
       "group": "rmm-control-plane:operator-efficiency",
       "title": "Learned: First-hour operator efficiency (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 6,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -578,9 +578,9 @@
       "id": "mem_learn_8b369239ca04aac5",
       "group": "rmm-control-plane:tenant-safe-communications",
       "title": "Learned: Tenant-safe incident communications (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 15,
-      "missCount": 15,
+      "sourceRunCount": 6,
+      "scoreRefCount": 25,
+      "missCount": 25,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     },
@@ -588,9 +588,9 @@
       "id": "mem_learn_32ecb43cbdd059c1",
       "group": "rmm-control-plane:vendor-escalation",
       "title": "Learned: Vendor escalation and artifact handoff (RMM control-plane incident)",
-      "sourceRunCount": 5,
-      "scoreRefCount": 14,
-      "missCount": 14,
+      "sourceRunCount": 6,
+      "scoreRefCount": 24,
+      "missCount": 24,
       "adaptiveWeight": 10.0,
       "state": "saturated"
     }
@@ -629,6 +629,42 @@
       "useCount": 8
     },
     {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/direct-anthropic-sonnet-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/direct-deepseek-v4flash-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/direct-gpt54-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/direct-minimax-highspeed-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/direct-xai-fast-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/para-anthropic-sonnet-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/para-deepseek-v4flash-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/para-gpt54-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-backup-console-destruction/para-xai-fast-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
       "scoreRef": "data/evals/runs/judge-openai54-baseline-adaptive-20260502-112054/cases/msp-hard-backup-console-destruction/direct-gpt54-open/replicate-001/score.json",
       "useCount": 8
     },
@@ -650,6 +686,10 @@
     },
     {
       "scoreRef": "data/evals/runs/judge-openai54-memory-benefit-20260502-095951/cases/msp-hard-backup-console-destruction/para-gpt54-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/mm1-bkp-141422/cases/bkp/mm-para1--loops-1/replicate-001/score.json",
       "useCount": 8
     },
     {
@@ -686,6 +726,30 @@
     },
     {
       "scoreRef": "data/evals/runs/judge-deepseek-learning-20260502-063713-4c1ace/cases/msp-hard-identity-oauth-cross-tenant/para-deepseek-v4flash-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-identity-oauth-cross-tenant/direct-anthropic-sonnet-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-identity-oauth-cross-tenant/direct-deepseek-v4flash-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-identity-oauth-cross-tenant/direct-xai-fast-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-identity-oauth-cross-tenant/para-anthropic-sonnet-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-identity-oauth-cross-tenant/para-gpt54-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-retry-20260502-135934-02/cases/msp-hard-identity-oauth-cross-tenant/para-deepseek-v4flash-critical-double--loops-1/replicate-001/score.json",
       "useCount": 8
     },
     {
@@ -745,6 +809,46 @@
       "useCount": 8
     },
     {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/direct-anthropic-sonnet-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/direct-deepseek-v4flash-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/direct-gpt54-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/direct-minimax-highspeed-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/direct-xai-fast-open/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/para-anthropic-sonnet-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/para-deepseek-v4flash-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/para-gpt54-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/para-minimax-highspeed-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-rmm-supply-chain-replay/para-xai-fast-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 8
+    },
+    {
       "scoreRef": "data/evals/runs/judge-openai54-baseline-adaptive-20260502-112054/cases/msp-hard-rmm-supply-chain-replay/direct-gpt54-open/replicate-001/score.json",
       "useCount": 8
     },
@@ -773,6 +877,14 @@
       "useCount": 7
     },
     {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-identity-oauth-cross-tenant/direct-gpt54-open/replicate-001/score.json",
+      "useCount": 7
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-retry-20260502-135934-03/cases/msp-hard-identity-oauth-cross-tenant/direct-minimax-highspeed-open/replicate-001/score.json",
+      "useCount": 7
+    },
+    {
       "scoreRef": "data/evals/runs/judge-deepseek-learning-20260502-063713-4c1ace/cases/msp-hard-rmm-supply-chain-replay/direct-deepseek-v4pro-open/replicate-001/score.json",
       "useCount": 7
     },
@@ -783,6 +895,10 @@
     {
       "scoreRef": "data/evals/runs/judge-deepseek-learning-20260502-063713-4c1ace/cases/msp-hard-backup-console-destruction/direct-deepseek-v4flash-open/replicate-001/score.json",
       "useCount": 5
+    },
+    {
+      "scoreRef": "data/evals/runs/judge-msp-basis-council-20260502-121129/cases/msp-hard-identity-oauth-cross-tenant/para-xai-fast-critical-double--loops-1/replicate-001/score.json",
+      "useCount": 3
     }
   ],
   "overWeighted": [
@@ -791,168 +907,168 @@
       "title": "Learned: Authority and role activation (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:authority-escalation",
       "adaptiveWeight": 10.0,
-      "missCount": 14
+      "missCount": 24
     },
     {
       "id": "mem_learn_bacf168e384183fc",
       "title": "Learned: Service continuity containment gate (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:continuity-gating",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_ec5f56b6a591d099",
       "title": "Learned: Untrusted control-plane integrity check (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:control-plane-distrust",
       "adaptiveWeight": 10.0,
-      "missCount": 14
+      "missCount": 24
     },
     {
       "id": "mem_learn_4586d7e501b2344d",
       "title": "Learned: Evidence-first containment sequencing (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:evidence-preservation",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_e65bab1f0b3caef9",
       "title": "Learned: Lead-thread control and self-check (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:lead-control-self-check",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_6f52c97c7129c2e9",
       "title": "Learned: First-hour operator efficiency (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:operator-efficiency",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_527b35aba3159cbc",
       "title": "Learned: Tenant-safe incident communications (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:tenant-safe-communications",
       "adaptiveWeight": 10.0,
-      "missCount": 14
+      "missCount": 24
     },
     {
       "id": "mem_learn_8f03295b82eba7af",
       "title": "Learned: Vendor escalation and artifact handoff (Backup/restore destruction incident)",
       "group": "backup-restore-destruction:vendor-escalation",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_88552e56f0d66566",
       "title": "Learned: Authority and role activation (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:authority-escalation",
       "adaptiveWeight": 10.0,
-      "missCount": 17
+      "missCount": 25
     },
     {
       "id": "mem_learn_80db86d3131979b6",
       "title": "Learned: Service continuity containment gate (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:continuity-gating",
       "adaptiveWeight": 10.0,
-      "missCount": 17
+      "missCount": 25
     },
     {
       "id": "mem_learn_1f1b1a2c28aca4bf",
       "title": "Learned: Untrusted control-plane integrity check (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:control-plane-distrust",
       "adaptiveWeight": 10.0,
-      "missCount": 17
+      "missCount": 24
     },
     {
       "id": "mem_learn_cd5489a6be8ccb14",
       "title": "Learned: Evidence-first containment sequencing (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:evidence-preservation",
       "adaptiveWeight": 10.0,
-      "missCount": 17
+      "missCount": 26
     },
     {
       "id": "mem_learn_749f8c8beb5320d7",
       "title": "Learned: Lead-thread control and self-check (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:lead-control-self-check",
       "adaptiveWeight": 10.0,
-      "missCount": 16
+      "missCount": 25
     },
     {
       "id": "mem_learn_a9351771fd279120",
       "title": "Learned: First-hour operator efficiency (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:operator-efficiency",
       "adaptiveWeight": 10.0,
-      "missCount": 17
+      "missCount": 26
     },
     {
       "id": "mem_learn_be0bb001882b50a8",
       "title": "Learned: Tenant-safe incident communications (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:tenant-safe-communications",
       "adaptiveWeight": 10.0,
-      "missCount": 17
+      "missCount": 25
     },
     {
       "id": "mem_learn_ff6eddc0282cb24b",
       "title": "Learned: Vendor escalation and artifact handoff (Identity/OAuth SaaS incident)",
       "group": "identity-oauth-saas:vendor-escalation",
       "adaptiveWeight": 10.0,
-      "missCount": 16
+      "missCount": 23
     },
     {
       "id": "mem_learn_25b2affcdfabc380",
       "title": "Learned: Authority and role activation (RMM control-plane incident)",
       "group": "rmm-control-plane:authority-escalation",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_30722d104e70814d",
       "title": "Learned: Service continuity containment gate (RMM control-plane incident)",
       "group": "rmm-control-plane:continuity-gating",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_d70b343fe0de8bb5",
       "title": "Learned: Untrusted control-plane integrity check (RMM control-plane incident)",
       "group": "rmm-control-plane:control-plane-distrust",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_ef670cfdd07f5730",
       "title": "Learned: Evidence-first containment sequencing (RMM control-plane incident)",
       "group": "rmm-control-plane:evidence-preservation",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_0e1f5b06ac4a8208",
       "title": "Learned: Lead-thread control and self-check (RMM control-plane incident)",
       "group": "rmm-control-plane:lead-control-self-check",
       "adaptiveWeight": 10.0,
-      "missCount": 14
+      "missCount": 24
     },
     {
       "id": "mem_learn_4332626264421db6",
       "title": "Learned: First-hour operator efficiency (RMM control-plane incident)",
       "group": "rmm-control-plane:operator-efficiency",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_8b369239ca04aac5",
       "title": "Learned: Tenant-safe incident communications (RMM control-plane incident)",
       "group": "rmm-control-plane:tenant-safe-communications",
       "adaptiveWeight": 10.0,
-      "missCount": 15
+      "missCount": 25
     },
     {
       "id": "mem_learn_32ecb43cbdd059c1",
       "title": "Learned: Vendor escalation and artifact handoff (RMM control-plane incident)",
       "group": "rmm-control-plane:vendor-escalation",
       "adaptiveWeight": 10.0,
-      "missCount": 14
+      "missCount": 24
     }
   ],
   "vectorCandidates": [
@@ -974,8 +1090,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 14,
-      "chunkText": "Learned: Authority and role activation (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Broad multi-tenant, destructive, regulated, or control-plane events require named incident authority instead of a solo overnight engineer. This is a failure-class memory, not an answer key. It was reinforced by 14 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail captu..."
+      "eventCount": 24,
+      "chunkText": "Learned: Authority and role activation (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Broad multi-tenant, destructive, regulated, or control-plane events require named incident authority instead of a solo overnight engineer. This is a failure-class memory, not an answer key. It was reinforced by 24 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail captu..."
     },
     {
       "id": "mem_learn_bacf168e384183fc",
@@ -995,8 +1111,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Service continuity containment gate (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Security containment must be segmented by tenant and continuity risk, especially for 24/7, medical, logistics, restore, and night-shift operations. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/sessi..."
+      "eventCount": 25,
+      "chunkText": "Learned: Service continuity containment gate (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Security containment must be segmented by tenant and continuity risk, especially for 24/7, medical, logistics, restore, and night-shift operations. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/sessi..."
     },
     {
       "id": "mem_learn_ec5f56b6a591d099",
@@ -1016,8 +1132,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 14,
-      "chunkText": "Learned: Untrusted control-plane integrity check (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: When a management plane is implicated, treat the console, portal, audit log, and API as evidence sources that require corroboration. This is a failure-class memory, not an answer key. It was reinforced by 14 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail c..."
+      "eventCount": 24,
+      "chunkText": "Learned: Untrusted control-plane integrity check (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: When a management plane is implicated, treat the console, portal, audit log, and API as evidence sources that require corroboration. This is a failure-class memory, not an answer key. It was reinforced by 24 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail c..."
     },
     {
       "id": "mem_learn_4586d7e501b2344d",
@@ -1037,8 +1153,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Evidence-first containment sequencing (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Preserve volatile, identity, SaaS, endpoint, and control-plane evidence before disruptive cleanup unless a documented emergency gate is crossed. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/sessio..."
+      "eventCount": 25,
+      "chunkText": "Learned: Evidence-first containment sequencing (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Preserve volatile, identity, SaaS, endpoint, and control-plane evidence before disruptive cleanup unless a documented emergency gate is crossed. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/sessio..."
     },
     {
       "id": "mem_learn_e65bab1f0b3caef9",
@@ -1058,8 +1174,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Lead-thread control and self-check (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Para should show private control: accept useful pressure, reject irrelevant pressure, and perform a final self-check before the public answer. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session det..."
+      "eventCount": 25,
+      "chunkText": "Learned: Lead-thread control and self-check (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Para should show private control: accept useful pressure, reject irrelevant pressure, and perform a final self-check before the public answer. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session det..."
     },
     {
       "id": "mem_learn_6f52c97c7129c2e9",
@@ -1079,8 +1195,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: First-hour operator efficiency (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: A strong answer must be executable under pressure: short enough to run, ordered by time/owner/gate, and free of idealized collection steps. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail cap..."
+      "eventCount": 25,
+      "chunkText": "Learned: First-hour operator efficiency (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: A strong answer must be executable under pressure: short enough to run, ordered by time/owner/gate, and free of idealized collection steps. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail cap..."
     },
     {
       "id": "mem_learn_527b35aba3159cbc",
@@ -1100,8 +1216,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 14,
-      "chunkText": "Learned: Tenant-safe incident communications (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Customer communications must be tenant-specific, confidence-calibrated, and separated from internal cross-tenant bridge knowledge. This is a failure-class memory, not an answer key. It was reinforced by 14 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail capture..."
+      "eventCount": 24,
+      "chunkText": "Learned: Tenant-safe incident communications (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: Customer communications must be tenant-specific, confidence-calibrated, and separated from internal cross-tenant bridge knowledge. This is a failure-class memory, not an answer key. It was reinforced by 24 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example token/session detail capture..."
     },
     {
       "id": "mem_learn_8f03295b82eba7af",
@@ -1121,8 +1237,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Vendor escalation and artifact handoff (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: When vendor software, portals, APIs, plugins, or hosted control planes may be part of the incident, open a vendor escalation with preserved artifact IDs. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example to..."
+      "eventCount": 25,
+      "chunkText": "Learned: Vendor escalation and artifact handoff (Backup/restore destruction incident) Judge-learned MSP SOP delta for Backup/restore destruction incident: When vendor software, portals, APIs, plugins, or hosted control planes may be part of the incident, open a vendor escalation with preserved artifact IDs. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Backup/restore destruction incident. Source case: msp-hard-backup-console-destruction. Observed judge pressure: - direct-anthropic-sonnet-open: Legal/compliance escalation thresholds are only partly explicit, and the plan could more clearly vet internal systems (ticketing/identity) as truly out-of-band before relying on them as the source of truth. - direct-minimax-highspeed-open: It provides no incident plan, no tenant separation, no evidence-preservation steps, no escalation path, and no service-continuity handling. - direct-openai-mini-open: Customer/legal/compliance communication thresholds are less fully developed than the technical/evidence workflow, and some evidence asks (for example to..."
     },
     {
       "id": "mem_learn_88552e56f0d66566",
@@ -1142,8 +1258,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 17,
-      "chunkText": "Learned: Authority and role activation (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Broad multi-tenant, destructive, regulated, or control-plane events require named incident authority instead of a solo overnight engineer. This is a failure-class memory, not an answer key. It was reinforced by 17 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and pos..."
+      "eventCount": 25,
+      "chunkText": "Learned: Authority and role activation (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Broad multi-tenant, destructive, regulated, or control-plane events require named incident authority instead of a solo overnight engineer. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 8 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and pos..."
     },
     {
       "id": "mem_learn_80db86d3131979b6",
@@ -1163,8 +1279,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 17,
-      "chunkText": "Learned: Service continuity containment gate (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Security containment must be segmented by tenant and continuity risk, especially for 24/7, medical, logistics, restore, and night-shift operations. This is a failure-class memory, not an answer key. It was reinforced by 17 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band val..."
+      "eventCount": 25,
+      "chunkText": "Learned: Service continuity containment gate (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Security containment must be segmented by tenant and continuity risk, especially for 24/7, medical, logistics, restore, and night-shift operations. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 8 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band val..."
     },
     {
       "id": "mem_learn_1f1b1a2c28aca4bf",
@@ -1184,8 +1300,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 17,
-      "chunkText": "Learned: Untrusted control-plane integrity check (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: When a management plane is implicated, treat the console, portal, audit log, and API as evidence sources that require corroboration. This is a failure-class memory, not an answer key. It was reinforced by 17 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and..."
+      "eventCount": 24,
+      "chunkText": "Learned: Untrusted control-plane integrity check (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: When a management plane is implicated, treat the console, portal, audit log, and API as evidence sources that require corroboration. This is a failure-class memory, not an answer key. It was reinforced by 24 judge observation(s) across 7 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and..."
     },
     {
       "id": "mem_learn_cd5489a6be8ccb14",
@@ -1205,8 +1321,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 17,
-      "chunkText": "Learned: Evidence-first containment sequencing (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Preserve volatile, identity, SaaS, endpoint, and control-plane evidence before disruptive cleanup unless a documented emergency gate is crossed. This is a failure-class memory, not an answer key. It was reinforced by 17 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band vali..."
+      "eventCount": 26,
+      "chunkText": "Learned: Evidence-first containment sequencing (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Preserve volatile, identity, SaaS, endpoint, and control-plane evidence before disruptive cleanup unless a documented emergency gate is crossed. This is a failure-class memory, not an answer key. It was reinforced by 26 judge observation(s) across 8 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band vali..."
     },
     {
       "id": "mem_learn_749f8c8beb5320d7",
@@ -1226,8 +1342,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 16,
-      "chunkText": "Learned: Lead-thread control and self-check (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Para should show private control: accept useful pressure, reject irrelevant pressure, and perform a final self-check before the public answer. This is a failure-class memory, not an answer key. It was reinforced by 16 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validatio..."
+      "eventCount": 25,
+      "chunkText": "Learned: Lead-thread control and self-check (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Para should show private control: accept useful pressure, reject irrelevant pressure, and perform a final self-check before the public answer. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 8 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validatio..."
     },
     {
       "id": "mem_learn_a9351771fd279120",
@@ -1247,8 +1363,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 17,
-      "chunkText": "Learned: First-hour operator efficiency (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: A strong answer must be executable under pressure: short enough to run, ordered by time/owner/gate, and free of idealized collection steps. This is a failure-class memory, not an answer key. It was reinforced by 17 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and p..."
+      "eventCount": 26,
+      "chunkText": "Learned: First-hour operator efficiency (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: A strong answer must be executable under pressure: short enough to run, ordered by time/owner/gate, and free of idealized collection steps. This is a failure-class memory, not an answer key. It was reinforced by 26 judge observation(s) across 8 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and p..."
     },
     {
       "id": "mem_learn_be0bb001882b50a8",
@@ -1268,8 +1384,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 17,
-      "chunkText": "Learned: Tenant-safe incident communications (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Customer communications must be tenant-specific, confidence-calibrated, and separated from internal cross-tenant bridge knowledge. This is a failure-class memory, not an answer key. It was reinforced by 17 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and possi..."
+      "eventCount": 25,
+      "chunkText": "Learned: Tenant-safe incident communications (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: Customer communications must be tenant-specific, confidence-calibrated, and separated from internal cross-tenant bridge knowledge. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 8 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of-band validation and possi..."
     },
     {
       "id": "mem_learn_ff6eddc0282cb24b",
@@ -1289,8 +1405,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 16,
-      "chunkText": "Learned: Vendor escalation and artifact handoff (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: When vendor software, portals, APIs, plugins, or hosted control planes may be part of the incident, open a vendor escalation with preserved artifact IDs. This is a failure-class memory, not an answer key. It was reinforced by 16 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of..."
+      "eventCount": 23,
+      "chunkText": "Learned: Vendor escalation and artifact handoff (Identity/OAuth SaaS incident) Judge-learned MSP SOP delta for Identity/OAuth SaaS incident: When vendor software, portals, APIs, plugins, or hosted control planes may be part of the incident, open a vendor escalation with preserved artifact IDs. This is a failure-class memory, not an answer key. It was reinforced by 23 judge observation(s) across 8 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: Identity/OAuth SaaS incident. Source case: msp-hard-identity-oauth-cross-tenant. Observed judge pressure: - direct-anthropic-sonnet-open: The visible answer is slightly incomplete on customer/vendor communication execution, and the initial use of the MSP ticketing system as the 'single source of truth' needed a cleaner out-of-band fallback if PSA integrit... - direct-minimax-highspeed-open: It does not explicitly establish per-tenant incident ownership and an evidence-compatible decision log, and it under-specifies out-of-band validation/vendor escalation if the MSP control plane is suspect. - direct-openai-mini-open: It underplays explicit distrust and isolation of the MSP/control-plane layer itself; out-of..."
     },
     {
       "id": "mem_learn_25b2affcdfabc380",
@@ -1310,8 +1426,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Authority and role activation (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Broad multi-tenant, destructive, regulated, or control-plane events require named incident authority instead of a solo overnight engineer. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: It tr..."
+      "eventCount": 25,
+      "chunkText": "Learned: Authority and role activation (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Broad multi-tenant, destructive, regulated, or control-plane events require named incident authority instead of a solo overnight engineer. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: It tr..."
     },
     {
       "id": "mem_learn_30722d104e70814d",
@@ -1331,8 +1447,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Service continuity containment gate (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Security containment must be segmented by tenant and continuity risk, especially for 24/7, medical, logistics, restore, and night-shift operations. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-f..."
+      "eventCount": 25,
+      "chunkText": "Learned: Service continuity containment gate (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Security containment must be segmented by tenant and continuity risk, especially for 24/7, medical, logistics, restore, and night-shift operations. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-f..."
     },
     {
       "id": "mem_learn_d70b343fe0de8bb5",
@@ -1352,8 +1468,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Untrusted control-plane integrity check (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: When a management plane is implicated, treat the console, portal, audit log, and API as evidence sources that require corroboration. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: I..."
+      "eventCount": 25,
+      "chunkText": "Learned: Untrusted control-plane integrity check (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: When a management plane is implicated, treat the console, portal, audit log, and API as evidence sources that require corroboration. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: I..."
     },
     {
       "id": "mem_learn_ef670cfdd07f5730",
@@ -1373,8 +1489,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Evidence-first containment sequencing (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Preserve volatile, identity, SaaS, endpoint, and control-plane evidence before disruptive cleanup unless a documented emergency gate is crossed. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fa..."
+      "eventCount": 25,
+      "chunkText": "Learned: Evidence-first containment sequencing (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Preserve volatile, identity, SaaS, endpoint, and control-plane evidence before disruptive cleanup unless a documented emergency gate is crossed. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fa..."
     },
     {
       "id": "mem_learn_0e1f5b06ac4a8208",
@@ -1394,8 +1510,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 14,
-      "chunkText": "Learned: Lead-thread control and self-check (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Para should show private control: accept useful pressure, reject irrelevant pressure, and perform a final self-check before the public answer. This is a failure-class memory, not an answer key. It was reinforced by 14 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-op..."
+      "eventCount": 24,
+      "chunkText": "Learned: Lead-thread control and self-check (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Para should show private control: accept useful pressure, reject irrelevant pressure, and perform a final self-check before the public answer. This is a failure-class memory, not an answer key. It was reinforced by 24 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-op..."
     },
     {
       "id": "mem_learn_4332626264421db6",
@@ -1415,8 +1531,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: First-hour operator efficiency (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: A strong answer must be executable under pressure: short enough to run, ordered by time/owner/gate, and free of idealized collection steps. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: It..."
+      "eventCount": 25,
+      "chunkText": "Learned: First-hour operator efficiency (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: A strong answer must be executable under pressure: short enough to run, ordered by time/owner/gate, and free of idealized collection steps. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: It..."
     },
     {
       "id": "mem_learn_8b369239ca04aac5",
@@ -1436,8 +1552,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 15,
-      "chunkText": "Learned: Tenant-safe incident communications (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Customer communications must be tenant-specific, confidence-calibrated, and separated from internal cross-tenant bridge knowledge. This is a failure-class memory, not an answer key. It was reinforced by 15 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: It trea..."
+      "eventCount": 25,
+      "chunkText": "Learned: Tenant-safe incident communications (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: Customer communications must be tenant-specific, confidence-calibrated, and separated from internal cross-tenant bridge knowledge. This is a failure-class memory, not an answer key. It was reinforced by 25 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - direct-xai-fast-open: It trea..."
     },
     {
       "id": "mem_learn_32ecb43cbdd059c1",
@@ -1457,8 +1573,8 @@
       ],
       "source": "judge-learning",
       "sourceId": "judge-20260501-170250+0000-2eebcc,judge-deepseek-learning-20260502-063713-4c1ace,judge-openai54-learning-20260502-082652,judge-openai54-memory-benefit-20260502-095951,judge-openai...",
-      "eventCount": 14,
-      "chunkText": "Learned: Vendor escalation and artifact handoff (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: When vendor software, portals, APIs, plugins, or hosted control planes may be part of the incident, open a vendor escalation with preserved artifact IDs. This is a failure-class memory, not an answer key. It was reinforced by 14 judge observation(s) across 5 run(s). Adaptive replay weight 10.0; next replay interval 14 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - dir..."
+      "eventCount": 24,
+      "chunkText": "Learned: Vendor escalation and artifact handoff (RMM control-plane incident) Judge-learned MSP SOP delta for RMM control-plane incident: When vendor software, portals, APIs, plugins, or hosted control planes may be part of the incident, open a vendor escalation with preserved artifact IDs. This is a failure-class memory, not an answer key. It was reinforced by 24 judge observation(s) across 6 run(s). Adaptive replay weight 10.0; next replay interval 30 day(s). Case family: RMM control-plane incident. Source case: msp-hard-rmm-supply-chain-replay. Observed judge pressure: - direct-anthropic-sonnet-open: It never explicitly establishes per-tenant incident ownership/child records, so multi-tenant coordination and accountability are weaker than they should be for an MSP severity-1. - direct-minimax-highspeed-open: It contains no actionable incident leadership content and fails every mandatory requirement for a suspected compromised MSP control-plane severity-1 event. - direct-openai-mini-open: It does not explicitly create separate per-customer incident ownership/cases and evidence separation, which is a critical multi-tenant requirement and effectively a disqualifying gap here. - dir..."
     }
   ]
 }

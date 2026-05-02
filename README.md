@@ -712,6 +712,8 @@ Latest hard-mode cross-provider shakeout is summarized in [2026-05-01 MSP Critic
 
 Latest memory-enabled hard-mode scoring is summarized in [2026-05-02 MSP Baseline/Adaptive Memory Scoring](docs/eval-results/2026-05-02-msp-baseline-adaptive-memory.md).
 
+Latest basis council/provider-owned sweep is summarized in [2026-05-02 MSP Basis Council and Provider-Owned Sweep](docs/eval-results/2026-05-02-msp-basis-council-provider-owned.md).
+
 | Field | Value |
 | --- | --- |
 | Date | `2026-05-02` |
@@ -733,6 +735,8 @@ Latest memory-enabled hard-mode scoring is summarized in [2026-05-02 MSP Baselin
 | Average control | `9.00` | `7.67` | `-1.33` |
 
 Current read: baseline/adaptive recall fixed the backup-console direct-answer collapse from the prior memory run, but Para still needs a stronger final merge check for explicit per-tenant incident ownership and fallback paths when normal vendor or coordination channels are unavailable.
+
+The follow-up basis sweep across provider families reached the same conclusion more sharply: the infrastructure is good enough to proceed, but the quality thesis is not ready for a larger proof run. Same-provider judges preferred Direct in most backup and identity cases, while Para remained strongest on RMM/control-plane cases. The next major reasoning-quality upgrade is cross-round contradiction memory plus final merge gates before another expensive scoring cycle.
 
 | Field | Value |
 | --- | --- |
