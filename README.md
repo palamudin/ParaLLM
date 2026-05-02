@@ -302,7 +302,7 @@ Current honest limitation:
 - MiniMax remains available for targeted debugging, but it is intentionally deferred from the primary path until its review/judge behavior stops needing hand-holding
 - eval arms, result artifacts, and the blind benchmark now carry provider identity so mixed-provider runs can be inspected honestly in Review instead of being inferred from model names alone
 - provider capability normalization continues evolving as model behavior and vendor APIs change
-- cross-round contradiction memory remains the next major reasoning-quality upgrade, so unresolved lane disagreements can survive across rounds and trigger explicit re-examination instead of being implicitly reset after each summary pass
+- cross-round contradiction memory is now implemented for MSP-style final-answer gates; live DeepSeek validation confirmed gate injection, while provider JSON fragility and long Windows eval paths remain runtime hardening targets
 
 If you still want the optional compatibility runtime service in the same local session:
 
@@ -576,6 +576,7 @@ The current system is already functional in the places that matter:
 - strict structured outputs and provider-normalized parsing for direct, Para, and judge artifacts
 - isolated eval runner with per-replicate workspaces, live-only gates, score tables, and judge traces
 - judge-learning writes scored misses back into the same MSP knowledgebase used for future targeted recall, with a librarian index tracking duplicate groups, reinforcement, score refs, and event-ledger growth
+- cross-round contradiction memory replays unresolved worker/review pressure into the summarizer and applies MSP final-answer backstops for tenant ownership, evidence sequencing, control-plane distrust, tenant-safe comms, continuity authority, and vendor/legal escalation
 - repo inspector with file inventory, symbol/call graph, hotspots, selected-neighborhood views, and AI-readable packets
 - optional MSP knowledgebase with `retain`, `recall`, `reflect`, persistent JSONL banks, runtime-log fallback, lane-aware recall packets, and baseline/adaptive SOP retrieval
 - replacement shell that brings chat, review, repo inspection, knowledgebase, evals, provider controls, and runtime controls into one operator surface
@@ -602,7 +603,7 @@ The next work is not to imitate another project. It is to make ParaLLM better at
   - keep memory optional, inspectable, source-linked, and removable
   - support lane-specific trails that can correlate with shared knowledge without becoming a hidden prompt dependency
   - keep baseline packets compact and mandatory for high-risk MSP incidents while adaptive memories remain deduped, reinforced, and scenario-targeted
-  - add retention policies, conflict views, provenance scoring, stale-memory warnings, and stronger final-answer checks for baseline obligations
+  - add retention policies, conflict views, provenance scoring, stale-memory warnings, and broader final-answer gates beyond the current MSP incident baseline
 - `Operator UI`
   - continue flattening nested controls into draggable/resizable workspaces
   - make repo and knowledgebase views use the same presentation grammar
@@ -716,6 +717,8 @@ Latest basis council/provider-owned sweep is summarized in [2026-05-02 MSP Basis
 
 Latest focused rub test is summarized in [2026-05-02 OpenAI 5.4 Rub Test: Backup/Identity](docs/eval-results/2026-05-02-openai54-rub-test-backup-identity.md).
 
+Latest contradiction-memory validation is summarized in [2026-05-02 DeepSeek Contradiction Memory Validation](docs/eval-results/2026-05-02-deepseek-contradiction-memory-validation.md).
+
 | Field | Value |
 | --- | --- |
 | Date | `2026-05-02` |
@@ -738,9 +741,9 @@ Latest focused rub test is summarized in [2026-05-02 OpenAI 5.4 Rub Test: Backup
 
 Current read: baseline/adaptive recall fixed the backup-console direct-answer collapse from the prior memory run, but Para still needs a stronger final merge check for explicit per-tenant incident ownership and fallback paths when normal vendor or coordination channels are unavailable.
 
-The follow-up basis sweep across provider families reached the same conclusion more sharply: the infrastructure is good enough to proceed, but the quality thesis is not ready for a larger proof run. Same-provider judges preferred Direct in most backup and identity cases, while Para remained strongest on RMM/control-plane cases. The next major reasoning-quality upgrade is cross-round contradiction memory plus final merge gates before another expensive scoring cycle.
+The follow-up basis sweep across provider families reached the same conclusion more sharply: the infrastructure is good enough to proceed, but the quality thesis was not ready for a larger proof run. Same-provider judges preferred Direct in most backup and identity cases, while Para remained strongest on RMM/control-plane cases. That led to cross-round contradiction memory plus final merge gates before another expensive scoring cycle.
 
-The focused OpenAI 5.4 rub test confirmed the failure mode: backup Direct scored `9/9/9`, while backup Para scored `9/5/6` and repeatedly lost explicit named per-tenant ownership/evidence handling in final synthesis. The identity half did not run because OpenAI quota was exhausted. That is enough signal: implement contradiction memory before spending on another broad score pass.
+The focused OpenAI 5.4 rub test confirmed the failure mode: backup Direct scored `9/9/9`, while backup Para scored `9/5/6` and repeatedly lost explicit named per-tenant ownership/evidence handling in final synthesis. The identity half did not run because OpenAI quota was exhausted. Contradiction memory now addresses that specific merge failure, and the next broad score pass should measure whether it improves Para without inflating prompt burn or creating rote answers.
 
 | Field | Value |
 | --- | --- |

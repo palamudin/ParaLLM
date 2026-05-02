@@ -256,6 +256,114 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertTrue(projected["adaptivePackets"])
         self.assertEqual(projected["retrievalPolicy"]["baselineCount"], 1)
 
+    def test_contradiction_memory_backstop_adds_missing_msp_tenant_owner_gate(self) -> None:
+        task = {
+            "taskId": "t-backup-gap",
+            "objective": "Backup portal deletion jobs are queued across fourteen MSP customers during active restores.",
+            "constraints": ["Preserve evidence.", "Keep customer communications separated."],
+            "runtime": {"knowledgebase": {"enabled": False}},
+            "workers": [{"id": "A", "label": "Sceptic", "role": "adversarial", "focus": "MSP evidence gaps", "model": "gpt-5-mini"}],
+        }
+        worker_state = {
+            "A": {
+                "workerId": "A",
+                "label": "Sceptic",
+                "role": "adversarial",
+                "focus": "MSP evidence gaps",
+                "step": 1,
+                "observation": "The draft misses per-customer ownership.",
+                "detriments": ["Without tenant owners, the MSP cannot prove who owns each affected restore decision."],
+                "uncertainty": ["Which customers are in active restore windows is not mapped."],
+                "evidenceGaps": ["Need per-tenant ticket and evidence bundle ownership."],
+            }
+        }
+        commander_review = {
+            "taskId": "t-backup-gap",
+            "round": 1,
+            "answerDraft": "Pause the deletion jobs, preserve logs, and notify customers.",
+            "controlAudit": {
+                "heldOutConcerns": ["Per-customer ownership is missing."],
+                "selfCheck": "The draft still needs MSP gates.",
+            },
+            "requiredDecisionGates": ["Every affected tenant needs a named decision owner."],
+            "evidenceOrCommsRisks": ["Do not mix customer messages."],
+        }
+
+        packet = self.runtime.build_contradiction_memory_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            commander_review,
+            worker_state,
+            task["workers"],
+            round_number=1,
+        )
+        summary = {
+            "frontAnswer": {
+                "answer": "Pause deletion jobs, preserve portal evidence, and communicate carefully.",
+                "stance": "Contain the backup portal risk.",
+                "leadDirection": "Pause deletion jobs.",
+                "adversarialPressure": "",
+                "confidenceNote": "",
+            },
+            "controlAudit": {"heldOutConcerns": [], "selfCheck": ""},
+        }
+
+        fixed = self.runtime.apply_contradiction_memory_final_gates(summary, packet)
+        answer = fixed["frontAnswer"]["answer"]
+
+        self.assertIn("evidence-compatible decision log", answer)
+        self.assertIn("named owner for every affected tenant child record", answer)
+        self.assertIn("Preserve/export per-tenant evidence", answer)
+        self.assertIn("tenant-specific", answer)
+        self.assertIn("msp-tenant-ownership", fixed["controlAudit"]["selfCheck"])
+
+    def test_contradiction_memory_tenant_owner_gate_rejects_generic_incident_language(self) -> None:
+        gate = {
+            "id": "msp-tenant-ownership",
+            "title": "Tenant record ownership",
+            "requirement": "Open one internal major-incident record with an evidence-compatible decision log plus a named owner for every affected tenant child record.",
+        }
+        vague_answer = (
+            "Activate the incident owner, preserve audit logs, use decision gates before job changes, "
+            "and keep per-customer communications separated."
+        )
+
+        self.assertFalse(self.runtime.final_answer_satisfies_gate(vague_answer, gate))
+
+    def test_contradiction_memory_backstop_does_not_duplicate_existing_gate(self) -> None:
+        task = {
+            "taskId": "t-backup-covered",
+            "objective": "Backup deletion jobs hit several MSP client tenants.",
+            "runtime": {"knowledgebase": {"enabled": False}},
+        }
+        packet = self.runtime.build_contradiction_memory_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            {"taskId": "t-backup-covered", "round": 1},
+            {},
+            [],
+            round_number=1,
+        )
+        answer_text = (
+            "Open one internal major-incident record and assign a named owner for every affected tenant child record. "
+            "Maintain an evidence-compatible decision log. "
+            "Preserve evidence before cleanup, use out-of-band backup portal validation, keep communications tenant-specific, "
+            "map 24x7 continuity and customer authority before disruption, and trigger vendor escalation for hosted-control-plane risk."
+        )
+        summary = {
+            "frontAnswer": {
+                "answer": answer_text,
+                "stance": "Use MSP gates.",
+                "leadDirection": "Use MSP gates.",
+                "adversarialPressure": "",
+                "confidenceNote": "",
+            }
+        }
+
+        fixed = self.runtime.apply_contradiction_memory_final_gates(summary, packet)
+
+        self.assertEqual(fixed["frontAnswer"]["answer"], answer_text)
+
 
 if __name__ == "__main__":
     unittest.main()

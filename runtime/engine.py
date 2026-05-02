@@ -3546,6 +3546,81 @@ def normalize_control_audit(control_audit: Any, fallback_summary: Optional[Dict[
     return normalized
 
 
+MSP_CONTRADICTION_GATE_TRIGGERS = {
+    "msp",
+    "mssp",
+    "tenant",
+    "customer",
+    "client",
+    "rmm",
+    "psa",
+    "backup",
+    "restore",
+    "deletion",
+    "identity",
+    "oauth",
+    "mfa",
+    "azure",
+    "soc",
+    "service desk",
+    "vendor",
+    "portal",
+    "control plane",
+}
+
+
+MSP_FINAL_ANSWER_GATES = [
+    {
+        "id": "msp-tenant-ownership",
+        "title": "Tenant record ownership",
+        "requirement": "Open one internal major-incident record with an evidence-compatible decision log plus a named owner for every affected tenant child record.",
+        "matchAny": ["named owner", "owner per affected tenant", "owner for every affected tenant", "tenant child record", "child record", "decision log", "log all decisions"],
+        "triggers": ["tenant", "customer", "client", "msp", "backup", "restore", "rmm", "psa", "identity", "oauth", "azure"],
+        "source": "msp-provider-sop",
+    },
+    {
+        "id": "msp-evidence-before-cleanup",
+        "title": "Evidence before destructive action",
+        "requirement": "Preserve/export per-tenant evidence before cleanup, cancellation, deletion, or restore-impacting action unless an emergency exception is owned and logged.",
+        "matchAny": ["evidence before", "preserve evidence", "export evidence", "export logs", "chain-of-custody", "chain of custody"],
+        "triggers": ["backup", "restore", "deletion", "rmm", "psa", "identity", "oauth", "incident", "compromise"],
+        "source": "msp-provider-sop",
+    },
+    {
+        "id": "msp-control-plane-distrust",
+        "title": "Control-plane skepticism",
+        "requirement": "Treat the affected RMM, PSA, backup, identity, vendor, or portal control plane as suspect until validated out of band.",
+        "matchAny": ["out-of-band", "out of band", "independent validation", "do not trust", "treat the control plane as suspect", "portal as suspect"],
+        "triggers": ["rmm", "psa", "backup", "restore", "identity", "oauth", "vendor", "portal", "control plane"],
+        "source": "msp-provider-sop",
+    },
+    {
+        "id": "msp-tenant-safe-communications",
+        "title": "Tenant-safe communications",
+        "requirement": "Keep customer communications tenant-specific and do not reveal other affected customers unless legal/customer authority explicitly allows it.",
+        "matchAny": ["tenant-specific", "customer-specific", "per-tenant", "per customer", "do not reveal other affected customers", "separate customer"],
+        "triggers": ["tenant", "customer", "client", "msp", "multi-tenant", "incident", "communications"],
+        "source": "msp-provider-sop",
+    },
+    {
+        "id": "msp-continuity-authority-gate",
+        "title": "Continuity and authority gate",
+        "requirement": "Map medical/logistics/24x7 continuity commitments and get the named customer/internal authority before disruptive containment or restore changes.",
+        "matchAny": ["continuity", "24/7", "24x7", "medical", "logistics", "customer authority", "approval before disruptive"],
+        "triggers": ["24/7", "24x7", "medical", "logistics", "restore", "backup", "disruptive", "outage"],
+        "source": "msp-provider-sop",
+    },
+    {
+        "id": "msp-vendor-escalation",
+        "title": "Vendor and senior escalation",
+        "requirement": "Escalate to the vendor, senior incident owner, legal, or compliance track when hosted control-plane, credential, evidence, or multi-tenant risk is involved.",
+        "matchAny": ["vendor escalation", "escalate to the vendor", "senior incident", "legal", "compliance", "hosted control-plane"],
+        "triggers": ["vendor", "portal", "control plane", "backup", "restore", "identity", "oauth", "multi-tenant"],
+        "source": "msp-provider-sop",
+    },
+]
+
+
 def normalize_dynamic_lane_decision(decision: Any) -> Dict[str, Any]:
     normalized = {
         "shouldSpawn": False,
@@ -5291,6 +5366,293 @@ class LoopRuntime:
             + "\n\n"
             "Memory handling rule: use this as supporting context only. Current user input, current constraints, live tool evidence, and inspected files override stale or conflicting memory.\n\n"
         )
+
+    def task_matches_msp_contradiction_gate(self, task: Dict[str, Any], prompt_packet: Optional[Dict[str, Any]] = None) -> bool:
+        task_text = " ".join(
+            [
+                str(task.get("objective") or ""),
+                str(task.get("sessionContext") or ""),
+                " ".join(normalize_string_array_preserve_items(task.get("constraints", []))),
+            ]
+        ).lower()
+        if any(trigger in task_text for trigger in MSP_CONTRADICTION_GATE_TRIGGERS):
+            return True
+        if not isinstance(prompt_packet, dict):
+            return False
+        for key in ("baselinePackets", "adaptivePackets", "sopPackets"):
+            packets = prompt_packet.get(key)
+            if not isinstance(packets, list):
+                continue
+            for packet in packets:
+                if not isinstance(packet, dict):
+                    continue
+                packet_text = " ".join(
+                    [
+                        str(packet.get("title") or ""),
+                        str(packet.get("useCase") or ""),
+                        " ".join(normalize_string_array_preserve_items(packet.get("eventTypes", []))),
+                    ]
+                ).lower()
+                if "msp" in packet_text or "tenant" in packet_text:
+                    return True
+        return False
+
+    def msp_final_gate_applies(self, gate: Dict[str, Any], task_text: str) -> bool:
+        triggers = [str(item).lower() for item in gate.get("triggers", []) if str(item).strip()]
+        return not triggers or any(trigger in task_text for trigger in triggers)
+
+    def final_answer_satisfies_gate(self, answer_text: str, gate: Dict[str, Any]) -> bool:
+        lowered = str(answer_text or "").lower()
+        if not lowered:
+            return False
+        gate_id = str(gate.get("id") or "")
+        gate_library_entry = next((item for item in MSP_FINAL_ANSWER_GATES if item.get("id") == gate_id), {})
+        match_source = gate.get("matchAny", gate_library_entry.get("matchAny", []))
+        match_any = [str(item).lower() for item in match_source if str(item).strip()]
+        if any(item in lowered for item in match_any):
+            if gate_id != "msp-tenant-ownership":
+                return True
+        if gate_id == "msp-tenant-ownership":
+            has_major_record = any(
+                item in lowered
+                for item in (
+                    "internal major-incident record",
+                    "internal major incident record",
+                    "major-incident record",
+                    "major incident record",
+                )
+            )
+            has_tenant_owner = any(
+                item in lowered
+                for item in (
+                    "named owner for every affected tenant",
+                    "named owner for each affected tenant",
+                    "owner for every affected tenant",
+                    "owner for each affected tenant",
+                    "owner per affected tenant",
+                    "per-tenant owner",
+                    "per-customer owner",
+                    "tenant child record",
+                    "affected tenant child record",
+                    "customer child record",
+                )
+            )
+            has_decision_log = (
+                "decision log" in lowered
+                or "evidence-compatible decision" in lowered
+                or "evidence compatible decision" in lowered
+                or "log all decisions" in lowered
+                or "log every decision" in lowered
+                or "log decisions" in lowered
+                or "decision-and-rationale log" in lowered
+                or "decision and rationale log" in lowered
+            )
+            return (
+                has_major_record
+                and has_tenant_owner
+                and has_decision_log
+            )
+        if gate_id == "msp-evidence-before-cleanup":
+            return (
+                any(item in lowered for item in ("evidence", "log", "export", "snapshot", "chain"))
+                and any(item in lowered for item in ("before", "prior to", "first"))
+                and any(item in lowered for item in ("delete", "cancel", "cleanup", "restore", "contain"))
+            )
+        if gate_id == "msp-control-plane-distrust":
+            return (
+                any(item in lowered for item in ("out-of-band", "out of band", "independent", "do not trust", "suspect"))
+                and any(item in lowered for item in ("rmm", "psa", "backup", "identity", "vendor", "portal", "control plane"))
+            )
+        return False
+
+    def build_contradiction_memory_packet(
+        self,
+        task: Dict[str, Any],
+        runtime: Optional[Dict[str, Any]],
+        commander_review_checkpoint: Optional[Dict[str, Any]],
+        worker_state: Optional[Dict[str, Any]],
+        workers: Optional[List[Dict[str, str]]],
+        knowledgebase_packet: Optional[Dict[str, Any]] = None,
+        round_number: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        runtime_config = runtime if isinstance(runtime, dict) else self.get_task_runtime(task)
+        if not isinstance(knowledgebase_packet, dict):
+            knowledgebase_packet = self.build_knowledgebase_recall_packet(
+                task,
+                runtime_config,
+                "summarizer",
+                label="Summarizer",
+                role="final_answer",
+                focus="final user-facing synthesis",
+                round_number=round_number,
+                constraints=limit_string_list(task.get("constraints", []), 24, 400),
+            )
+        projected_recall = self.project_knowledgebase_prompt_packet(knowledgebase_packet)
+        prompt_packet = self.project_targeted_sop_prompt_packet(projected_recall)
+        review_projection = self.project_commander_review_for_summary(
+            commander_review_checkpoint,
+            task,
+            int(round_number or (commander_review_checkpoint or {}).get("round", 0) or 1),
+            None,
+            [worker["id"] for worker in workers or [] if isinstance((worker_state or {}).get(worker["id"]), dict)],
+        )
+        control_audit = normalize_control_audit(review_projection.get("controlAudit"), {
+            "frontAnswer": {
+                "answer": review_projection.get("answerDraft", ""),
+                "stance": review_projection.get("stance", ""),
+                "leadDirection": review_projection.get("leadDirection", ""),
+                "adversarialPressure": "",
+                "confidenceNote": "",
+            },
+            "summarizerOpinion": {
+                "stance": review_projection.get("stance", ""),
+                "because": review_projection.get("whyThisDirection", ""),
+                "uncertainty": (review_projection.get("remainingUncertainty") or [""])[0],
+                "integrationMode": "",
+            },
+            "claimsNeedingVerification": review_projection.get("remainingUncertainty", []),
+        })
+
+        open_items: List[str] = []
+
+        def add_items(value: Any, max_items: int = 4, max_length: int = 220) -> None:
+            for item in limit_string_list(value, max_items, max_length):
+                if item and item not in open_items:
+                    open_items.append(item)
+
+        add_items(review_projection.get("requiredDecisionGates", []))
+        add_items(review_projection.get("evidenceOrCommsRisks", []))
+        add_items(review_projection.get("claimsToLimit", []), 3)
+        add_items(review_projection.get("remainingUncertainty", []), 3)
+        add_items(control_audit.get("heldOutConcerns", []), 3)
+        worker_projection = self.project_worker_state_for_adjudication(worker_state or {}, workers or [])
+        for checkpoint in worker_projection:
+            add_items(checkpoint.get("evidenceGaps", []), 2, 180)
+            add_items(checkpoint.get("uncertainty", []), 2, 180)
+            add_items(checkpoint.get("detriments", []), 1, 180)
+
+        task_text = " ".join(
+            [
+                str(task.get("objective") or ""),
+                str(task.get("sessionContext") or ""),
+                " ".join(normalize_string_array_preserve_items(task.get("constraints", []))),
+                json.dumps(prompt_packet, ensure_ascii=False),
+            ]
+        ).lower()
+        final_gates: List[Dict[str, Any]] = []
+        if self.task_matches_msp_contradiction_gate(task, prompt_packet):
+            for gate in MSP_FINAL_ANSWER_GATES:
+                if self.msp_final_gate_applies(gate, task_text):
+                    final_gates.append(
+                        {
+                            "id": gate["id"],
+                            "title": gate["title"],
+                            "requirement": gate["requirement"],
+                            "source": gate["source"],
+                        }
+                    )
+
+        sop_obligations: List[str] = []
+        if isinstance(prompt_packet, dict):
+            for key in ("baselinePackets", "adaptivePackets"):
+                for sop in prompt_packet.get(key, []) if isinstance(prompt_packet.get(key), list) else []:
+                    if not isinstance(sop, dict):
+                        continue
+                    for field in ("firstActions", "decisionGates", "avoid", "communications", "escalation"):
+                        for item in limit_string_list(sop.get(field, []), 3, 180):
+                            if item and item not in sop_obligations:
+                                sop_obligations.append(item)
+        packet = {
+            "schemaVersion": "contradiction-memory/v1",
+            "intent": "cross_round_final_answer_gate",
+            "enabled": bool(final_gates or open_items or sop_obligations),
+            "coreDependency": False,
+            "round": int(round_number or review_projection.get("round", 0) or 0),
+            "source": "commander_review + worker_pressure + msp_knowledgebase_recall",
+            "openContradictions": open_items[:8],
+            "sopObligations": sop_obligations[:10],
+            "finalAnswerGates": final_gates[:6],
+            "fallbackPolicy": "If this packet is empty, continue normally. If non-empty, satisfy or explicitly reject each finalAnswerGate before the public answer leaves the summarizer.",
+        }
+        return packet
+
+    def render_contradiction_memory_prompt_block(self, packet: Dict[str, Any]) -> str:
+        if not isinstance(packet, dict) or not packet.get("enabled"):
+            return ""
+        projected = {
+            "schemaVersion": str(packet.get("schemaVersion") or "contradiction-memory/v1"),
+            "intent": str(packet.get("intent") or "cross_round_final_answer_gate"),
+            "coreDependency": False,
+            "round": int(packet.get("round") or 0),
+            "openContradictions": limit_string_list(packet.get("openContradictions", []), 6, 180),
+            "sopObligations": limit_string_list(packet.get("sopObligations", []), 8, 180),
+            "finalAnswerGates": [
+                {
+                    "id": str(gate.get("id") or ""),
+                    "title": truncate_text(gate.get("title") or "", 100),
+                    "requirement": truncate_text(gate.get("requirement") or "", 240),
+                    "source": str(gate.get("source") or ""),
+                }
+                for gate in packet.get("finalAnswerGates", [])[:6]
+                if isinstance(gate, dict)
+            ],
+            "fallbackPolicy": str(packet.get("fallbackPolicy") or ""),
+        }
+        return (
+            "Cross-round contradiction memory (mandatory final-answer coverage check):\n"
+            + json.dumps(projected, ensure_ascii=False, indent=2)
+            + "\n\n"
+            "Contradiction handling rule: do not parrot this packet. Resolve each finalAnswerGate naturally inside the answer, or explicitly reject it in controlAudit.selfCheck with a reason. Do not drop a gate just because the lead draft already feels complete.\n\n"
+        )
+
+    def apply_contradiction_memory_final_gates(self, summary: Dict[str, Any], packet: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(summary, dict) or not isinstance(packet, dict) or not packet.get("enabled"):
+            return summary
+        final_gates = [gate for gate in packet.get("finalAnswerGates", []) if isinstance(gate, dict)]
+        if not final_gates:
+            return summary
+        front_answer = summary.get("frontAnswer") if isinstance(summary.get("frontAnswer"), dict) else {}
+        answer_text = str(front_answer.get("answer") or "").strip()
+        missing = [gate for gate in final_gates if not self.final_answer_satisfies_gate(answer_text, gate)]
+        if not missing:
+            return summary
+        gate_lines = [
+            f"- {truncate_text(gate.get('requirement') or gate.get('title') or gate.get('id') or '', 260)}"
+            for gate in missing[:6]
+        ]
+        backstop = "Operational gates to keep explicit:\n" + "\n".join(gate_lines)
+        front_answer["answer"] = (answer_text + "\n\n" + backstop).strip() if answer_text else backstop
+        summary["frontAnswer"] = front_answer
+        control_audit = summary.get("controlAudit") if isinstance(summary.get("controlAudit"), dict) else {}
+        held_out = normalize_string_array_preserve_items(control_audit.get("heldOutConcerns", []))
+        for gate in missing[:6]:
+            note = truncate_text(f"Final answer backstop inserted: {gate.get('title') or gate.get('id')}", 180)
+            if note not in held_out:
+                held_out.append(note)
+        control_audit["heldOutConcerns"] = held_out[:8]
+        existing_self_check = str(control_audit.get("selfCheck") or "").strip()
+        inserted = ", ".join(str(gate.get("id") or "") for gate in missing[:6] if str(gate.get("id") or "").strip())
+        self_check = f"Contradiction-memory backstop verified mandatory MSP gates and inserted missing gates: {inserted}."
+        control_audit["selfCheck"] = truncate_text((existing_self_check + " " + self_check).strip(), 420)
+        summary["controlAudit"] = control_audit
+        summary["publicAnswer"] = str(front_answer.get("answer") or "").strip()
+        summary["flattenedOutputText"] = flatten_output_payload_text(summary, "summary_output")
+        return summary
+
+    def contradiction_memory_call_meta(self, packet: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "enabled": bool(packet.get("enabled")) if isinstance(packet, dict) else False,
+            "coreDependency": False,
+            "round": int(packet.get("round") or 0) if isinstance(packet, dict) else 0,
+            "openContradictionCount": len(packet.get("openContradictions", [])) if isinstance(packet, dict) and isinstance(packet.get("openContradictions"), list) else 0,
+            "sopObligationCount": len(packet.get("sopObligations", [])) if isinstance(packet, dict) and isinstance(packet.get("sopObligations"), list) else 0,
+            "finalGateCount": len(packet.get("finalAnswerGates", [])) if isinstance(packet, dict) and isinstance(packet.get("finalAnswerGates"), list) else 0,
+            "gateIds": [
+                str(gate.get("id") or "")
+                for gate in packet.get("finalAnswerGates", [])[:8]
+                if isinstance(gate, dict) and str(gate.get("id") or "").strip()
+            ] if isinstance(packet, dict) else [],
+        }
 
     def knowledgebase_call_meta(self, packet: Dict[str, Any]) -> Dict[str, Any]:
         projected = self.project_knowledgebase_prompt_packet(packet)
@@ -10726,6 +11088,15 @@ class LoopRuntime:
             constraints=constraints,
             commander_checkpoint=commander_checkpoint,
         )
+        contradiction_memory_packet = self.build_contradiction_memory_packet(
+            task,
+            runtime,
+            commander_review_checkpoint,
+            worker_state,
+            workers,
+            knowledgebase_packet,
+            round_number=int(commander_projection.get("round", 0) or 1),
+        )
         has_commander_review = isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) > 0
         compact_summary = has_commander_review and model_prefers_compact_context(runtime["provider"], runtime["model"])
         skill_context = build_runtime_skill_context(runtime["provider"], "summarizer", compact=compact_summary)
@@ -10750,6 +11121,7 @@ class LoopRuntime:
                 f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
                 f"Background context:\n{session_context or 'none'}\n\n"
                 + self.render_knowledgebase_prompt_block(knowledgebase_packet)
+                + self.render_contradiction_memory_prompt_block(contradiction_memory_packet)
                 + f"Authoritative rebound lead binder:\n{json.dumps(commander_review_binder, ensure_ascii=False, indent=2)}"
             )
             if partial_mode:
@@ -10863,6 +11235,7 @@ class LoopRuntime:
                 f"Current constraints:\n{chr(10).join(constraints) if constraints else 'none'}\n\n"
                 f"Background context:\n{session_context or 'none'}\n\n"
                 + self.render_knowledgebase_prompt_block(knowledgebase_packet)
+                + self.render_contradiction_memory_prompt_block(contradiction_memory_packet)
                 + f"Rebound lead position from the internal pressure test:\n{json.dumps(commander_review_binder, ensure_ascii=False, indent=2)}\n\n"
                 + f"Lead draft before the final rewrite:\n{json.dumps(commander_projection, ensure_ascii=False, indent=2)}\n\n"
                 + f"Partial summary mode:\n{partial_mode}\n\n"
@@ -10912,6 +11285,7 @@ class LoopRuntime:
             if not str(front_answer.get("stance", "")).strip():
                 front_answer["stance"] = commander_review_projection.get("stance", "")
             parsed["frontAnswer"] = front_answer
+        parsed = self.apply_contradiction_memory_final_gates(parsed, contradiction_memory_packet)
         assert_public_answer_free_of_internal_provenance(
             flatten_output_payload_text(parsed, "summary_output"),
             "summary",
@@ -10936,6 +11310,7 @@ class LoopRuntime:
             "auth": result.auth_assignment,
             "authFailoverHistory": result.auth_failover_history,
             "knowledgebaseRecall": self.knowledgebase_call_meta(knowledgebase_packet),
+            "contradictionMemory": self.contradiction_memory_call_meta(contradiction_memory_packet),
             **prompt_metrics,
             **binder_meta,
         }
@@ -12072,6 +12447,16 @@ class LoopRuntime:
         if summary is None:
             summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
         summary = self.normalize_summary(summary, line_catalog)
+        contradiction_memory_packet = self.build_contradiction_memory_packet(
+            task,
+            runtime,
+            commander_review_checkpoint,
+            worker_state,
+            workers,
+            round_number=commander_round,
+        )
+        summary = self.apply_contradiction_memory_final_gates(summary, contradiction_memory_packet)
+        summary = self.normalize_summary(summary, line_catalog)
         summary["partialSummary"] = False
         summary["round"] = commander_round
         dynamic_lane_decision = summary.get("dynamicLaneDecision") if isinstance(summary.get("dynamicLaneDecision"), dict) else {}
@@ -12122,6 +12507,7 @@ class LoopRuntime:
                 "reviewBinderEstimatedTokens": int(call_meta.get("reviewBinderEstimatedTokens", 0) or 0),
                 "reviewBinderInitialTokens": int(call_meta.get("reviewBinderInitialTokens", 0) or 0),
                 "reviewBinderCompacted": bool(call_meta.get("reviewBinderCompacted", False)),
+                "contradictionMemory": call_meta.get("contradictionMemory") if isinstance(call_meta.get("contradictionMemory"), dict) else self.contradiction_memory_call_meta(contradiction_memory_packet),
                 "modelContextWindowTokens": int(call_meta.get("modelContextWindowTokens", 0) or 0),
                 "modelMaxOutputTokens": int(call_meta.get("modelMaxOutputTokens", 0) or 0),
             } if response else None,
@@ -12161,6 +12547,7 @@ class LoopRuntime:
                 "vettingEnabled": bool(vetting_config["enabled"]),
                 "dynamicLaneDecision": dynamic_lane_decision,
                 "dynamicLaneResolution": summary.get("dynamicLaneResolution"),
+                "contradictionMemory": self.contradiction_memory_call_meta(contradiction_memory_packet),
                 "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
@@ -12278,6 +12665,16 @@ class LoopRuntime:
                 line_catalog,
             )
         summary = self.normalize_summary(summary, line_catalog)
+        contradiction_memory_packet = self.build_contradiction_memory_packet(
+            task,
+            runtime,
+            commander_review_checkpoint if isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) == commander_round else None,
+            worker_state,
+            workers,
+            round_number=commander_round,
+        )
+        summary = self.apply_contradiction_memory_final_gates(summary, contradiction_memory_packet)
+        summary = self.normalize_summary(summary, line_catalog)
         summary["round"] = commander_round
         summary = self.annotate_partial_summary(summary, list(worker_state.keys()), pending_workers)
         self.assert_execution_not_cancelled()
@@ -12330,6 +12727,7 @@ class LoopRuntime:
                 "lineCatalogIncluded": bool(call_meta.get("lineCatalogIncluded", False)),
                 "workerEvidenceIncluded": bool(call_meta.get("workerEvidenceIncluded", False)),
                 "schemaRequiredFields": normalize_string_array_preserve_items(call_meta.get("schemaRequiredFields", [])),
+                "contradictionMemory": call_meta.get("contradictionMemory") if isinstance(call_meta.get("contradictionMemory"), dict) else self.contradiction_memory_call_meta(contradiction_memory_packet),
                 "pendingWorkers": pending_workers,
             } if response else None,
             "authMeta": auth_meta,
@@ -12354,6 +12752,7 @@ class LoopRuntime:
                 "responseId": response_id,
                 "availableWorkers": list(worker_state.keys()),
                 "pendingWorkers": pending_workers,
+                "contradictionMemory": self.contradiction_memory_call_meta(contradiction_memory_packet),
                 "requestedMaxOutputTokens": int(call_meta.get("requestedMaxOutputTokens", runtime["maxOutputTokens"])),
                 "effectiveMaxOutputTokens": int(call_meta.get("effectiveMaxOutputTokens", runtime["maxOutputTokens"])),
                 "maxOutputTokenAttempts": list(call_meta.get("attempts", [])),
