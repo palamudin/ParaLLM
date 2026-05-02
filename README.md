@@ -714,6 +714,8 @@ Latest memory-enabled hard-mode scoring is summarized in [2026-05-02 MSP Baselin
 
 Latest basis council/provider-owned sweep is summarized in [2026-05-02 MSP Basis Council and Provider-Owned Sweep](docs/eval-results/2026-05-02-msp-basis-council-provider-owned.md).
 
+Latest focused rub test is summarized in [2026-05-02 OpenAI 5.4 Rub Test: Backup/Identity](docs/eval-results/2026-05-02-openai54-rub-test-backup-identity.md).
+
 | Field | Value |
 | --- | --- |
 | Date | `2026-05-02` |
@@ -737,6 +739,8 @@ Latest basis council/provider-owned sweep is summarized in [2026-05-02 MSP Basis
 Current read: baseline/adaptive recall fixed the backup-console direct-answer collapse from the prior memory run, but Para still needs a stronger final merge check for explicit per-tenant incident ownership and fallback paths when normal vendor or coordination channels are unavailable.
 
 The follow-up basis sweep across provider families reached the same conclusion more sharply: the infrastructure is good enough to proceed, but the quality thesis is not ready for a larger proof run. Same-provider judges preferred Direct in most backup and identity cases, while Para remained strongest on RMM/control-plane cases. The next major reasoning-quality upgrade is cross-round contradiction memory plus final merge gates before another expensive scoring cycle.
+
+The focused OpenAI 5.4 rub test confirmed the failure mode: backup Direct scored `9/9/9`, while backup Para scored `9/5/6` and repeatedly lost explicit named per-tenant ownership/evidence handling in final synthesis. The identity half did not run because OpenAI quota was exhausted. That is enough signal: implement contradiction memory before spending on another broad score pass.
 
 | Field | Value |
 | --- | --- |
