@@ -345,6 +345,27 @@ def sanitize_id(value: str) -> str:
     return cleaned.strip("-") or "item"
 
 
+def compact_dir_component(value: str, prefix: str, max_length: int = 32) -> str:
+    cleaned = sanitize_id(value)
+    max_length = max(16, int(max_length or 32))
+    if len(cleaned) <= max_length:
+        return cleaned
+    digest = hashlib.sha1(str(value or "").encode("utf-8")).hexdigest()[:8]
+    head_budget = max(6, max_length - len(prefix) - len(digest) - 2)
+    head = cleaned[:head_budget].strip("-_") or prefix
+    return f"{prefix}-{head}-{digest}"
+
+
+def replicate_dir_for(run_dir: Path, case_id: str, variant_id: str, replicate_index: int) -> Path:
+    return (
+        run_dir
+        / "cases"
+        / compact_dir_component(case_id, "case", 32)
+        / compact_dir_component(variant_id, "variant", 36)
+        / f"replicate-{replicate_index:03d}"
+    )
+
+
 def build_task_id(seed: str) -> str:
     digest = hashlib.md5(seed.encode("utf-8")).hexdigest()[:6]
     # Keep eval task ids short so Windows artifact paths stay below common
@@ -430,6 +451,29 @@ def _extract_live_score_block(
     if populated < minimum_fields:
         raise RuntimeErrorWithCode("Live judge returned no usable score payload.", 500)
     return normalized
+
+
+def missing_judge_audit_fields(payload: Dict[str, Any], required_fields: List[str]) -> List[str]:
+    return [field for field in required_fields if not str(payload.get(field, "") or "").strip()]
+
+
+def require_judge_audit_text(
+    payload: Dict[str, Any],
+    required_fields: List[str],
+    judge_label: str,
+    *,
+    raw_output_text: str = "",
+) -> None:
+    missing = missing_judge_audit_fields(payload, required_fields)
+    if not missing:
+        return
+    error = RuntimeErrorWithCode(
+        f"Live {judge_label} judge returned score-only payload; missing audit fields: {', '.join(missing)}.",
+        500,
+    )
+    error.raw_output_text = str(raw_output_text or "")
+    error.failure_kind = "score_only_judge"
+    raise error
 
 
 def average_score_blocks(blocks: List[Dict[str, Any]], fields: List[str]) -> Dict[str, float]:
@@ -1625,9 +1669,9 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
     reasoning_effort = str(runtime_payload.get("reasoningEffort", "low")).strip().lower()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = "low"
-    execution_mode = str(runtime_payload.get("executionMode", "live")).strip().lower()
-    if execution_mode not in {"live", "mock"}:
-        execution_mode = "live"
+    execution_mode = str(runtime_payload.get("executionMode", "live")).strip().lower() or "live"
+    if execution_mode != "live":
+        raise EvalError(f"Arm {arm_id} uses unsupported executionMode {execution_mode!r}; eval arms must run live.")
     context_mode = normalize_context_mode(runtime_payload.get("contextMode", default_context_mode()), default_context_mode())
     direct_baseline_mode = normalize_direct_baseline_mode(
         runtime_payload.get("directBaselineMode", default_direct_baseline_mode()),
@@ -1691,8 +1735,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "knowledgebaseExplicit": isinstance(knowledgebase_payload, dict),
             "preferredLoop": preferred_loop,
             "targetTimeouts": target_timeouts,
-            "requireLive": coerce_bool(runtime_payload.get("requireLive"), execution_mode == "live"),
-            "allowMockFallback": coerce_bool(runtime_payload.get("allowMockFallback"), execution_mode == "mock"),
+            "requireLive": True,
         },
         "workers": normalized_workers,
     }
@@ -1810,7 +1853,7 @@ def initialize_steered_workspace(runtime: LoopRuntime, task: Dict[str, Any]) -> 
         runtime.initialize_task_state_unlocked(task, state)
 
 
-def build_mock_direct_answer(case: Dict[str, Any]) -> Dict[str, Any]:
+def build_offline_fixture_direct_answer(case: Dict[str, Any]) -> Dict[str, Any]:
     title = case.get("title", "the case")
     objective = case.get("objective", "")
     if "billing" in objective.lower() or "holiday" in objective.lower():
@@ -1828,7 +1871,7 @@ def build_mock_direct_answer(case: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "answer": answer,
         "stance": stance,
-        "confidenceNote": f"Mock direct answer for {title}; useful for eval plumbing, not factual confidence.",
+        "confidenceNote": f"Offline fixture answer for {title}; useful for eval plumbing, not factual confidence.",
     }
 
 
@@ -1854,10 +1897,18 @@ def run_direct_answer(
     runtime_config = arm["runtime"]
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
-    requested_max_output = int(runtime_config["budget"]["maxOutputTokens"])
+    runtime_budget = runtime_config.get("budget") if isinstance(runtime_config.get("budget"), dict) else {}
+    requested_max_output = int(runtime_budget.get("maxOutputTokens", 0) or 0)
     prompt_packet = build_direct_answer_prompt(case, runtime_config, runtime=runtime)
     instructions = prompt_packet["instructions"]
     input_text = prompt_packet["inputText"]
+    if not (runtime_config["executionMode"] == "live" and (api_key or not runtime.provider_requires_api_key(provider))):
+        runtime.raise_live_stage_missing_credentials(
+            stage="eval_direct_answer",
+            target_label="direct_baseline",
+            task_id=sanitize_id(str(case.get("caseId") or "eval-direct")),
+            auth_meta=auth_meta,
+        )
     if runtime_config["executionMode"] == "live" and (api_key or not runtime.provider_requires_api_key(provider)):
         try:
             result = runtime.invoke_provider_json(
@@ -1873,6 +1924,7 @@ def run_direct_answer(
                 target_kind="generic",
                 auth_assignments=auth_assignments,
                 provider_settings=runtime_config,
+                task_id=sanitize_id(str(case.get("caseId") or "eval-direct")),
             )
             usage = runtime.get_response_usage_delta(result.response, model) or default_usage_state()
             normalized_answer = normalize_direct_answer_payload(
@@ -1904,26 +1956,43 @@ def run_direct_answer(
                 ),
                 "authMeta": auth_meta,
             }
-        except RuntimeErrorWithCode:
-            if not runtime_config["allowMockFallback"]:
-                raise
+        except RuntimeErrorWithCode as error:
+            persist_failed_call_from_error(
+                runtime,
+                error,
+                task_id=sanitize_id(str(case.get("caseId") or "eval-direct")),
+                target_kind="generic",
+                provider=provider,
+                model=model,
+                schema_name="eval_direct_answer",
+                max_output_tokens=requested_max_output,
+            )
+            raise
+    raise RuntimeErrorWithCode("Live direct eval did not produce a validated answer.", 502)
+
+
+def answer_path_call_plan(answer_path: str, worker_count: int, loop_rounds: int) -> Dict[str, Any]:
+    normalized_path = normalize_direct_baseline_mode(answer_path, default_direct_baseline_mode())
+    rounds = max(1, int(loop_rounds or 1))
+    workers = max(0, int(worker_count or 0))
+    nodes: List[str] = []
+    if normalized_path in {"single", "both"}:
+        nodes.append("direct_baseline")
+    if normalized_path != "single":
+        for round_index in range(1, rounds + 1):
+            prefix = f"round{round_index}"
+            nodes.append(f"{prefix}:commander")
+            nodes.extend(f"{prefix}:worker:{worker_index + 1}" for worker_index in range(workers))
+            nodes.append(f"{prefix}:commander_review")
+            nodes.append(f"{prefix}:summarizer")
     return {
-        "mode": "mock",
-        "provider": provider,
-        "providerCapabilities": provider_capability_profile(provider),
-        "model": model,
-        "inputText": prompt_packet["inputText"],
-        "fullPrompt": prompt_packet["fullPrompt"],
-        "answer": normalize_direct_answer_payload(
-            build_mock_direct_answer(case),
-            case.get("objective", ""),
-            provider=provider,
-        ),
-        "usage": default_usage_state(),
-        "responseId": None,
-        "rawOutputText": None,
-        "responseMeta": None,
-        "authMeta": auth_meta,
+        "answerPath": normalized_path,
+        "loopRounds": rounds,
+        "workerCount": workers,
+        "plannedVendorCalls": len(nodes),
+        "nodes": nodes,
+        "scope": "answer_generation_only",
+        "excludes": ["quality_judge", "answer_health_judge", "control_judge", "comparison_judge", "judge_learning_librarian"],
     }
 
 
@@ -1943,6 +2012,7 @@ def run_steered_answer(
     initialize_steered_workspace(runtime, task)
     worker_ids = [worker["id"] for worker in task_workers(task)]
     answer_path = normalize_direct_baseline_mode(arm["runtime"].get("directBaselineMode"), default_direct_baseline_mode())
+    call_plan = answer_path_call_plan(answer_path, len(worker_ids), loop_rounds)
 
     if answer_path == "single":
         runtime.run_target("direct_baseline", task["taskId"])
@@ -1987,9 +2057,9 @@ def run_steered_answer(
         direct_baseline_output_payload = read_json(direct_baseline_output_path)
     return {
         "mode": (
-            str(direct_baseline.get("mode", "mock")).strip().lower()
+            str(direct_baseline.get("mode", "unknown")).strip().lower()
             if answer_path == "single" and isinstance(direct_baseline, dict)
-            else ("live" if summary_mode and usage.get("totalTokens", 0) else "mock")
+            else ("live" if summary_mode and usage.get("totalTokens", 0) else "unknown")
         ),
         "taskId": task["taskId"],
         "summary": summary if isinstance(summary, dict) else None,
@@ -2002,6 +2072,7 @@ def run_steered_answer(
         "outputsRoot": outputs_root,
         "summaryOutput": summary_output_payload,
         "directBaselineOutput": direct_baseline_output_payload,
+        "answerPathCallPlan": call_plan,
     }
 
 
@@ -2060,7 +2131,41 @@ def invoke_live_judge_json(
         max_output_tokens=max_output_tokens,
         target_kind="arbiter",
         provider_settings=provider_settings or {},
+        task_id=sanitize_id(str(schema_name or "eval-judge")),
     )
+
+
+def persist_failed_call_from_error(
+    runtime: LoopRuntime,
+    error: RuntimeErrorWithCode,
+    *,
+    task_id: str,
+    target_kind: str,
+    provider: str,
+    model: str,
+    schema_name: str,
+    max_output_tokens: int = 0,
+) -> Optional[Dict[str, Any]]:
+    existing = getattr(error, "failed_call_artifact", None)
+    if isinstance(existing, dict):
+        return existing
+    if not hasattr(runtime, "write_failed_call_artifact"):
+        return None
+    raw_output_text = str(getattr(error, "raw_output_text", "") or "")
+    failure_kind = str(getattr(error, "failure_kind", "") or "")
+    artifact = runtime.write_failed_call_artifact(
+        task_id=task_id,
+        target_kind=target_kind,
+        provider=provider,
+        model=model,
+        schema_name=schema_name,
+        error=error,
+        raw_output_text=raw_output_text,
+        requested_max_output_tokens=max_output_tokens,
+        failure_kind=failure_kind,
+    )
+    error.failed_call_artifact = artifact
+    return artifact
 
 
 def format_prompt_value(value: Any, depth: int = 0) -> str:
@@ -2178,6 +2283,7 @@ def quality_judge_live(
         "Score from 1 to 10 on each quality dimension.\n"
         "Reward decisiveness, tradeoff handling, objection absorption, actionability, and a clean single assistant voice.\n"
         "Use the hidden rubric and gold notes as guidance, but do not require exact wording.\n"
+        "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
     input_text = "\n\n".join(
@@ -2203,6 +2309,12 @@ def quality_judge_live(
     )
     parsed = result.parsed
     scores = _extract_live_score_block(parsed, QUALITY_SCORE_FIELDS, QUALITY_SCORE_ALIASES)
+    require_judge_audit_text(
+        parsed,
+        ["verdict", "strongestStrength", "strongestWeakness", "rationale"],
+        "quality",
+        raw_output_text=str(result.output_text or ""),
+    )
     return {
         "mode": "live",
         "scores": scores,
@@ -2235,12 +2347,12 @@ def heuristic_quality_judge(public_answer: str) -> Dict[str, Any]:
     penalty = 1 if paragraphs > 3 else 0
     quality_scores["overallQuality"] = max(1, round(mean([value for key, value in quality_scores.items() if key != "overallQuality"])) - penalty)
     return {
-        "mode": "mock",
+        "mode": "heuristic",
         "scores": quality_scores,
         "verdict": "Heuristic quality estimate.",
         "strongestStrength": "Clear recommendation" if has_recommendation else "Readable structure",
         "strongestWeakness": "Needs a more operational next step" if not has_next_step else "Needs stronger objection absorption",
-        "rationale": "Mock judge used heuristic quality signals because no live judge model was available.",
+        "rationale": "Heuristic judge used structural quality signals because no live judge model was available.",
         "responseId": None,
     }
 
@@ -2259,6 +2371,7 @@ def answer_health_judge_live(
         "You are grading the operational health of one candidate assistant answer.\n"
         "Score from 1 to 10 on instruction fit, structural clarity, confidence calibration, evidence hygiene, and efficiency/discipline.\n"
         "Use telemetry as supporting context, not as a substitute for reading the answer.\n"
+        "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
     input_text = "\n\n".join(
@@ -2283,6 +2396,12 @@ def answer_health_judge_live(
     )
     parsed = result.parsed
     scores = _extract_live_score_block(parsed, ANSWER_HEALTH_SCORE_FIELDS, ANSWER_HEALTH_SCORE_ALIASES)
+    require_judge_audit_text(
+        parsed,
+        ["verdict", "strongestStrength", "strongestWeakness", "rationale"],
+        "answer-health",
+        raw_output_text=str(result.output_text or ""),
+    )
     return {
         "mode": "live",
         "scores": scores,
@@ -2316,12 +2435,12 @@ def heuristic_answer_health(public_answer: str, telemetry: Dict[str, Any]) -> Di
     }
     scores["overallHealth"] = max(1, round(mean([value for key, value in scores.items() if key != "overallHealth"])))
     return {
-        "mode": "mock",
+        "mode": "heuristic",
         "scores": scores,
         "verdict": "Heuristic answer-health estimate.",
         "strongestStrength": "The answer stays structurally disciplined." if scores["instructionFit"] >= 8 else "Some structural discipline is present.",
-        "strongestWeakness": "Efficiency/calibration signals are weak." if scores["efficiencyDiscipline"] <= 5 else "Evidence handling remains structurally inferred in mock mode.",
-        "rationale": "Mock judge used telemetry and structural cues because no live judge model was available.",
+        "strongestWeakness": "Efficiency/calibration signals are weak." if scores["efficiencyDiscipline"] <= 5 else "Evidence handling remains structurally inferred without a live judge.",
+        "rationale": "Heuristic judge used telemetry and structural cues because no live judge model was available.",
         "responseId": None,
         "telemetry": telemetry,
     }
@@ -2343,6 +2462,7 @@ def control_judge_live(
         "You are grading whether a lead assistant thread stayed in control of adversarial pressure.\n"
         "Reward answers where the lead direction is clear, accepted objections are selective, rejected pressure is actually rejected, and the self-check is meaningful.\n"
         "Penalize funnel-like behavior where internal pressure is merely forwarded or averaged into the final answer.\n"
+        "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
     input_text = "\n\n".join(
@@ -2376,6 +2496,12 @@ def control_judge_live(
     )
     parsed = result.parsed
     scores = _extract_live_score_block(parsed, CONTROL_SCORE_FIELDS, CONTROL_SCORE_ALIASES)
+    require_judge_audit_text(
+        parsed,
+        ["verdict", "strongestControlStrength", "strongestControlWeakness", "rationale"],
+        "control",
+        raw_output_text=str(result.output_text or ""),
+    )
     return {
         "mode": "live",
         "scores": scores,
@@ -2408,12 +2534,12 @@ def heuristic_control_judge(summary: Dict[str, Any]) -> Dict[str, Any]:
         scores["adversarialDiscipline"] = min(10, scores["adversarialDiscipline"] + 1)
     scores["overallControl"] = round(mean([value for key, value in scores.items() if key != "overallControl"]))
     return {
-        "mode": "mock",
+        "mode": "heuristic",
         "scores": scores,
         "verdict": "Heuristic control estimate.",
         "strongestControlStrength": "Lead-thread structure is explicit." if scores["leadControl"] >= 8 else "Some control audit fields are present.",
-        "strongestControlWeakness": "Public answer still leaks process." if mentions_process else "Control is only structurally inferred in mock mode.",
-        "rationale": "Mock control judge used structural signals because no live judge model was available.",
+        "strongestControlWeakness": "Public answer still leaks process." if mentions_process else "Control is only structurally inferred without a live judge.",
+        "rationale": "Heuristic control judge used structural signals because no live judge model was available.",
         "responseId": None,
     }
 
@@ -2433,10 +2559,20 @@ def run_quality_judge(
             result = quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in QUALITY_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable quality scores.", 500)
+            require_judge_audit_text(result, ["verdict", "strongestStrength", "strongestWeakness", "rationale"], "quality")
             return result
-        except RuntimeErrorWithCode:
-            pass
-    return heuristic_quality_judge(public_answer)
+        except RuntimeErrorWithCode as error:
+            persist_failed_call_from_error(
+                judge_runtime,
+                error,
+                task_id=sanitize_id(str(case.get("caseId") or "quality-judge")),
+                target_kind="arbiter",
+                provider=judge_provider,
+                model=judge_model,
+                schema_name="quality_judge",
+            )
+            raise
+    raise RuntimeErrorWithCode("Live quality judge requires a configured provider key.", 401)
 
 
 def run_answer_health_judge(
@@ -2454,10 +2590,20 @@ def run_answer_health_judge(
             result = answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in ANSWER_HEALTH_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable answer-health scores.", 500)
+            require_judge_audit_text(result, ["verdict", "strongestStrength", "strongestWeakness", "rationale"], "answer-health")
             return result
-        except RuntimeErrorWithCode:
-            pass
-    return heuristic_answer_health(public_answer, telemetry)
+        except RuntimeErrorWithCode as error:
+            persist_failed_call_from_error(
+                judge_runtime,
+                error,
+                task_id=sanitize_id(str(case.get("caseId") or "answer-health-judge")),
+                target_kind="arbiter",
+                provider=judge_provider,
+                model=judge_model,
+                schema_name="answer_health_judge",
+            )
+            raise
+    raise RuntimeErrorWithCode("Live answer-health judge requires a configured provider key.", 401)
 
 
 def run_control_judge(
@@ -2474,10 +2620,20 @@ def run_control_judge(
             result = control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in CONTROL_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable control scores.", 500)
+            require_judge_audit_text(result, ["verdict", "strongestControlStrength", "strongestControlWeakness", "rationale"], "control")
             return result
-        except RuntimeErrorWithCode:
-            pass
-    return heuristic_control_judge(summary)
+        except RuntimeErrorWithCode as error:
+            persist_failed_call_from_error(
+                judge_runtime,
+                error,
+                task_id=sanitize_id(str(case.get("caseId") or "control-judge")),
+                target_kind="arbiter",
+                provider=judge_provider,
+                model=judge_model,
+                schema_name="control_judge",
+            )
+            raise
+    raise RuntimeErrorWithCode("Live control judge requires a configured provider key.", 401)
 
 
 def comparison_judge_live(
@@ -2503,6 +2659,7 @@ def comparison_judge_live(
         "Verdict must be exactly one of: pressurized_advantage, baseline_advantage, mixed.\n"
         "decisionRelation must be exactly one of: same_direction, refined_direction, different_direction, opposed_direction.\n"
         "Use the supplied quality/health summaries and similarity metrics as context, but base the verdict on the actual answer texts.\n"
+        "Every narrative field must be a non-empty sentence; never return empty strings for verdict, edges, relation, or rationale.\n"
         "Return JSON only that matches the schema."
     )
     input_text = "\n\n".join(
@@ -2534,6 +2691,12 @@ def comparison_judge_live(
     )
     parsed = result.parsed
     scores = _extract_live_score_block(parsed, COMPARISON_SCORE_FIELDS, COMPARISON_SCORE_ALIASES)
+    require_judge_audit_text(
+        parsed,
+        ["verdict", "decisionRelation", "primaryEdge", "baselineEdge", "rationale"],
+        "comparison",
+        raw_output_text=str(result.output_text or ""),
+    )
     return {
         "mode": "live",
         "scores": scores,
@@ -2573,7 +2736,7 @@ def heuristic_comparison_judge(
     if material_difference_score <= 3 and verdict != "mixed":
         verdict = "mixed"
     return {
-        "mode": "mock",
+        "mode": "heuristic",
         "scores": {
             "materialDifference": material_difference_score,
             "decisionShift": decision_shift_score,
@@ -2627,10 +2790,20 @@ def run_comparison_judge(
             )
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in COMPARISON_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable comparison scores.", 500)
+            require_judge_audit_text(result, ["verdict", "decisionRelation", "primaryEdge", "baselineEdge", "rationale"], "comparison")
             return result
-        except RuntimeErrorWithCode:
-            pass
-    return heuristic_comparison_judge(primary_answer, baseline_answer, primary_quality, baseline_quality, similarity)
+        except RuntimeErrorWithCode as error:
+            persist_failed_call_from_error(
+                judge_runtime,
+                error,
+                task_id=sanitize_id(str(case.get("caseId") or "comparison-judge")),
+                target_kind="arbiter",
+                provider=judge_provider,
+                model=judge_model,
+                schema_name="comparison_judge",
+            )
+            raise
+    raise RuntimeErrorWithCode("Live comparison judge requires a configured provider key.", 401)
 
 
 def vetting_matrix_judge_live(
@@ -2773,6 +2946,55 @@ def mode_summary_for_steered(workspace_root: Path, task_id: str, loop_rounds: in
     }
 
 
+def normalize_required_concept_groups(checks: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_groups = checks.get("requiredConceptGroups")
+    if not isinstance(raw_groups, list):
+        return []
+    groups: List[Dict[str, Any]] = []
+    for index, raw in enumerate(raw_groups, start=1):
+        if not isinstance(raw, dict):
+            continue
+        group_id = sanitize_id(str(raw.get("id") or f"concept-{index}").strip()) or f"concept-{index}"
+        label = str(raw.get("label") or group_id).strip() or group_id
+        any_of = [str(item).strip() for item in raw.get("anyOf", []) if str(item).strip()] if isinstance(raw.get("anyOf"), list) else []
+        all_of = [str(item).strip() for item in raw.get("allOf", []) if str(item).strip()] if isinstance(raw.get("allOf"), list) else []
+        if not any_of and not all_of:
+            continue
+        groups.append({"id": group_id, "label": label, "anyOf": any_of, "allOf": all_of})
+    return groups
+
+
+def evaluate_required_concept_groups(public_answer: str, checks: Dict[str, Any]) -> Dict[str, Any]:
+    groups = normalize_required_concept_groups(checks)
+    if not groups:
+        return {"passed": True, "detail": "No required concept groups configured.", "groups": []}
+    lowered_answer = public_answer.lower()
+    results: List[Dict[str, Any]] = []
+    for group in groups:
+        any_of = list(group.get("anyOf") or [])
+        all_of = list(group.get("allOf") or [])
+        matched_any = [phrase for phrase in any_of if phrase.lower() in lowered_answer]
+        missing_all = [phrase for phrase in all_of if phrase.lower() not in lowered_answer]
+        any_passed = bool(matched_any) if any_of else True
+        passed = any_passed and not missing_all
+        results.append(
+            {
+                "id": group["id"],
+                "label": group["label"],
+                "passed": passed,
+                "matchedAnyOf": matched_any[:8],
+                "missingAnyOf": [] if any_passed else any_of[:12],
+                "missingAllOf": missing_all[:12],
+            }
+        )
+    missing = [item["label"] for item in results if not item["passed"]]
+    return {
+        "passed": not missing,
+        "detail": "All required SOP concept groups were present." if not missing else f"Missing SOP concept groups: {', '.join(missing)}.",
+        "groups": results,
+    }
+
+
 def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict[str, Any], public_answer: str) -> Dict[str, Any]:
     checks = case.get("checks", {}) if isinstance(case.get("checks"), dict) else {}
     usage = normalize_usage_state(result.get("usage") if isinstance(result.get("usage"), dict) else {})
@@ -2828,7 +3050,7 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
             mode_values.append(str(direct_baseline.get("mode", "unknown")).strip().lower() or "unknown")
 
     live_ok = all(mode == "live" for mode in mode_values if mode) if mode_values else False
-    mock_fallback_ok = bool(arm["runtime"]["allowMockFallback"]) or all(mode == "live" for mode in mode_values if mode)
+    live_only_ok = all(mode == "live" for mode in mode_values if mode)
     max_paragraphs = int(checks.get("maxParagraphs", 0) or 0)
     paragraph_count = count_paragraphs(public_answer)
     required_phrases = [str(item).strip() for item in checks.get("requiredPhrases", []) if str(item).strip()] if isinstance(checks.get("requiredPhrases"), list) else []
@@ -2862,6 +3084,7 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
             "passed": max_paragraphs <= 0 or paragraph_count <= max_paragraphs,
             "detail": f"{paragraph_count} paragraph(s) against cap {max_paragraphs or 'none'}.",
         },
+        "requiredConceptGroups": evaluate_required_concept_groups(public_answer, checks),
     }
     if required_live:
         checks_out["requireLive"] = {
@@ -2874,9 +3097,9 @@ def deterministic_checks(case: Dict[str, Any], arm: Dict[str, Any], result: Dict
             "passed": has_direct_baseline,
             "detail": "Parallel direct baseline was captured." if has_direct_baseline else f"Direct baseline missing. Error: {result.get('baselineError') or 'none'}",
         }
-    checks_out["noMockFallback"] = {
-        "passed": mock_fallback_ok,
-        "detail": "Mock fallback policy respected." if mock_fallback_ok else f"Mock fallback occurred in modes: {', '.join(mode_values)}",
+    checks_out["liveOnly"] = {
+        "passed": live_only_ok,
+        "detail": "All execution outputs were live." if live_only_ok else f"Non-live modes observed: {', '.join(mode_values)}",
     }
     passed_count = sum(1 for entry in checks_out.values() if entry["passed"])
     total_count = len(checks_out)
@@ -2924,6 +3147,12 @@ def artifact_meta_from_payload(path: Path, relative_path: Path, payload: Dict[st
     elif name == "direct_answer_output.json":
         kind = "direct_output"
         target = "direct"
+    elif payload.get("artifactType") == "node_transfer":
+        kind = "node_transfer"
+        target = payload.get("sourceNode") or "node_transfer"
+    elif payload.get("artifactType") == "failed_call" or "failed_call" in name:
+        kind = "failed_call"
+        target = payload.get("target") or "failed_call"
     artifact_id = sanitize_id(f"{case_id}-{variant_id}-r{replicate}-{kind}-{name}")
     summary = {
         "taskId": payload.get("taskId"),
@@ -2940,6 +3169,19 @@ def artifact_meta_from_payload(path: Path, relative_path: Path, payload: Dict[st
         "maxOutputTokenAttempts": ((payload.get("responseMeta") or {}).get("maxOutputTokenAttempts") if isinstance(payload.get("responseMeta"), dict) else []),
         "recoveredFromIncomplete": ((payload.get("responseMeta") or {}).get("recoveredFromIncomplete") if isinstance(payload.get("responseMeta"), dict) else False),
         "rawOutputAvailable": bool(str(payload.get("rawOutputText", "") or "").strip()),
+        "failureKind": payload.get("failureKind"),
+        "error": payload.get("error"),
+        "passStatus": payload.get("passStatus") or ("discarded_failed_attempt" if payload.get("artifactType") == "failed_call" else None),
+        "passedToNextNode": bool(payload.get("passedToNextNode")) if payload.get("artifactType") == "failed_call" else None,
+        "handoffNote": payload.get("handoffNote") or (
+            "Failed-call artifacts are review-only and are not passed between nodes."
+            if payload.get("artifactType") == "failed_call"
+            else None
+        ),
+        "transferStatus": payload.get("status") if payload.get("artifactType") == "node_transfer" else None,
+        "validationStatus": payload.get("validationStatus") if payload.get("artifactType") == "node_transfer" else None,
+        "integrity": payload.get("integrity") if isinstance(payload.get("integrity"), dict) else {},
+        "integrityCheck": payload.get("integrityCheck") if isinstance(payload.get("integrityCheck"), dict) else {},
     }
     return {
         "artifactId": artifact_id,
@@ -2972,6 +3214,8 @@ def collect_replicate_artifacts(run: Dict[str, Any], run_dir: Path, case_id: str
             path.name in {"score.json", "result.json", "direct_answer_output.json"}
             or relative_text.startswith("workspace/data/outputs/")
             or relative_text.startswith("workspace/data/checkpoints/")
+            or relative_text.startswith("workspace/data/failed_calls/")
+            or relative_text.startswith("workspace/data/node_transfers/")
         )
         if not is_review_surface:
             continue
@@ -3140,7 +3384,7 @@ def execute_replicate(
     auth_path: Path,
 ) -> Dict[str, Any]:
     variant_id = variant_id_for_arm(arm, loop_rounds)
-    replicate_dir = run_dir / "cases" / case["caseId"] / variant_id / f"replicate-{replicate_index:03d}"
+    replicate_dir = replicate_dir_for(run_dir, case["caseId"], variant_id, replicate_index)
     replicate_dir.mkdir(parents=True, exist_ok=True)
     seed = f"{run['runId']}:{case['caseId']}:{variant_id}:{replicate_index}"
     judge_runtime = LoopRuntime(replicate_dir / "_judge_runtime", auth_path=auth_path)
@@ -3232,6 +3476,7 @@ def execute_replicate(
                 if isinstance(steered.get("directBaselineOutput"), dict)
                 else None
             ),
+            "answerPathCallPlan": steered.get("answerPathCallPlan"),
             "model": arm["runtime"]["directModel"] if answer_path == "single" else arm["runtime"]["summarizerModel"],
             "modeState": mode_state,
         }
@@ -3361,6 +3606,7 @@ def execute_replicate(
         "baselineAnswerHealth": baseline_answer_health,
         "comparison": comparison,
         "usage": result["usage"],
+        "answerPathCallPlan": result.get("answerPathCallPlan"),
         "generatedAt": utc_now(),
     }
     write_json(replicate_dir / "score.json", score_payload)
@@ -3390,6 +3636,7 @@ def execute_replicate(
         "contextMode": arm["runtime"].get("contextMode"),
         "modeState": result.get("modeState", {}),
         "usage": result["usage"],
+        "answerPathCallPlan": result.get("answerPathCallPlan"),
         "publicAnswer": public_answer,
         "answer": result.get("answer"),
         "directBaseline": result.get("directBaseline"),
@@ -3407,6 +3654,7 @@ def execute_replicate(
         "status": "completed",
         "publicAnswer": public_answer,
         "usage": result["usage"],
+        "answerPathCallPlan": result.get("answerPathCallPlan"),
         "mode": result["mode"],
         "answerPath": result.get("answerPath") if arm["type"] == "steered" else "off",
         "contextMode": arm["runtime"].get("contextMode"),
@@ -3535,6 +3783,8 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
                             auth_path=auth_path,
                         )
                     except Exception as error:
+                        replicate_dir = replicate_dir_for(run_dir, case["caseId"], variant_id, replicate_index)
+                        score_path = replicate_dir / "score.json"
                         error_payload = {
                             "replicate": replicate_index,
                             "status": "error",
@@ -3545,7 +3795,7 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
                             "artifacts": [],
                         }
                         write_json(
-                            run_dir / "cases" / case["caseId"] / variant_id / f"replicate-{replicate_index:03d}" / "score.json",
+                            score_path,
                             {
                                 "runId": run["runId"],
                                 "caseId": case["caseId"],
@@ -3556,6 +3806,19 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
                                 "generatedAt": utc_now(),
                             },
                         )
+                        try:
+                            error_artifacts = collect_replicate_artifacts(
+                                run,
+                                run_dir,
+                                case["caseId"],
+                                variant_id,
+                                replicate_index,
+                                replicate_dir,
+                            )
+                        except Exception:
+                            error_artifacts = []
+                        error_payload["artifacts"] = error_artifacts
+                        error_payload["artifactIds"] = [entry["artifactId"] for entry in error_artifacts]
                         variant_entry["replicates"].append(error_payload)
                         variant_entry["aggregate"] = aggregate_variant(variant_entry)
                         persist_run(run_path, run)

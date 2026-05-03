@@ -38,7 +38,7 @@ def wait_for_eval_run(base_url: str, run_id: str, timeout_seconds: float = 120.0
 
 
 def validate_isolated_snapshot(root: Path, run_id: str) -> None:
-    task_dir = root / "data" / "evals" / "runs" / run_id / "cases" / "internal-rollout" / "steered-mock--loops-1" / "replicate-001" / "workspace" / "data" / "tasks"
+    task_dir = root / "data" / "evals" / "runs" / run_id / "cases" / "internal-rollout" / "steered-mini--loops-1" / "replicate-001" / "workspace" / "data" / "tasks"
     task_files = sorted(task_dir.glob("*.json"))
     if not task_files:
         raise QAError("Isolated steered task snapshot was missing.")
@@ -64,13 +64,13 @@ def main() -> int:
     state_hash_before = file_sha256(state_path)
 
     with PreservedState(root):
-        qa_print("Starting isolated mock eval smoke")
+        qa_print("Starting isolated live eval smoke")
         start = request_json(
             api_url(args.base_url, "eval_run_start"),
             method="POST",
             form_data={
-                "suiteId": "smoke-mock",
-                "armIds": json.dumps(["direct-mock", "steered-mock"]),
+                "suiteId": "smoke-live",
+                "armIds": json.dumps(["direct-openai-mini-open", "steered-mini"]),
                 "replicates": "1",
                 "loopSweep": "1,2",
             },

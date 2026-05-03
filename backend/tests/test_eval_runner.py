@@ -24,6 +24,20 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertTrue(task_id.startswith("te-"))
         self.assertLessEqual(len(task_id), 9)
 
+    def test_replicate_dir_for_compacts_case_and_variant_path_components(self) -> None:
+        run_dir = Path("runs") / "judge-test"
+        case_id = "msp-hard-rmm-supply-chain-replay-across-regulated-clients-with-long-title"
+        variant_id = "para-deepseek-v4flash-critical-double--loops-1-with-extra-router-detail"
+
+        replicate_dir = eval_runner.replicate_dir_for(run_dir, case_id, variant_id, 1)
+        parts = replicate_dir.parts
+
+        self.assertEqual(parts[-1], "replicate-001")
+        self.assertLessEqual(len(parts[-3]), 32)
+        self.assertLessEqual(len(parts[-2]), 36)
+        self.assertNotIn(case_id, parts)
+        self.assertNotIn(variant_id, parts)
+
     def test_run_steered_answer_reads_task_scoped_state(self) -> None:
         arm = eval_runner.validate_arm_manifest(
             {
@@ -112,6 +126,24 @@ class EvalRunnerTests(unittest.TestCase):
 
         self.assertEqual(result["summary"], scoped_summary)
         self.assertEqual(result["mode"], "live")
+        self.assertEqual(result["answerPathCallPlan"]["plannedVendorCalls"], 4)
+        self.assertEqual(result["answerPathCallPlan"]["nodes"], ["round1:commander", "round1:worker:1", "round1:commander_review", "round1:summarizer"])
+
+    def test_answer_path_call_plan_keeps_two_worker_default_visible(self) -> None:
+        plan = eval_runner.answer_path_call_plan("off", worker_count=2, loop_rounds=1)
+
+        self.assertEqual(plan["plannedVendorCalls"], 5)
+        self.assertEqual(
+            plan["nodes"],
+            [
+                "round1:commander",
+                "round1:worker:1",
+                "round1:worker:2",
+                "round1:commander_review",
+                "round1:summarizer",
+            ],
+        )
+        self.assertEqual(plan["scope"], "answer_generation_only")
 
     def test_validate_arm_manifest_tracks_context_and_answer_path(self) -> None:
         manifest = eval_runner.validate_arm_manifest(
@@ -261,7 +293,7 @@ class EvalRunnerTests(unittest.TestCase):
     def test_execute_run_auto_deposits_judge_learning_when_enabled(self) -> None:
         def fake_execute_replicate(run, run_dir, case, arm, loop_rounds, replicate_index, judge_model, auth_path):
             variant_id = eval_runner.variant_id_for_arm(arm, loop_rounds)
-            replicate_dir = run_dir / "cases" / case["caseId"] / variant_id / f"replicate-{replicate_index:03d}"
+            replicate_dir = eval_runner.replicate_dir_for(run_dir, case["caseId"], variant_id, replicate_index)
             replicate_dir.mkdir(parents=True, exist_ok=True)
             (replicate_dir / "score.json").write_text(
                 json.dumps(
@@ -736,6 +768,52 @@ class EvalRunnerTests(unittest.TestCase):
 
         self.assertFalse(checks["checks"]["directBaselineCaptured"]["passed"])
         self.assertIn("timeout", checks["checks"]["directBaselineCaptured"]["detail"])
+
+    def test_deterministic_checks_report_required_sop_concept_groups(self) -> None:
+        result = {
+            "answer": {
+                "answer": "Open per-customer incidents, preserve evidence, and wake the senior incident lead.",
+                "stance": "contain",
+                "confidenceNote": "medium",
+            },
+            "usage": {"totalTokens": 100, "estimatedCostUsd": 0.01},
+            "mode": "live",
+        }
+
+        checks = eval_runner.deterministic_checks(
+            {
+                "checks": {
+                    "requiredConceptGroups": [
+                        {
+                            "id": "tenant-ownership",
+                            "label": "Per-customer incident ownership",
+                            "anyOf": ["per-customer", "per customer", "per-client"],
+                        },
+                        {
+                            "id": "vendor-escalation",
+                            "label": "Vendor escalation",
+                            "anyOf": ["vendor escalation", "vendor support", "vendor bridge"],
+                        },
+                    ]
+                }
+            },
+            {
+                "type": "direct",
+                "runtime": {
+                    "budget": {"maxTotalTokens": 0, "maxCostUsd": 0.0},
+                    "allowMockFallback": True,
+                    "requireLive": False,
+                },
+            },
+            result,
+            result["answer"]["answer"],
+        )
+
+        concept_check = checks["checks"]["requiredConceptGroups"]
+        self.assertFalse(concept_check["passed"])
+        self.assertIn("Vendor escalation", concept_check["detail"])
+        self.assertTrue(concept_check["groups"][0]["passed"])
+        self.assertFalse(concept_check["groups"][1]["passed"])
 
     def test_answer_similarity_metrics_detect_near_duplicate_answers(self) -> None:
         metrics = eval_runner.answer_similarity_metrics(
@@ -1459,7 +1537,7 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(normalized["scores"]["B"]["overall"], 7.5)
         self.assertEqual(normalized["bestFinalAnswer"], "A")
 
-    def test_run_quality_judge_falls_back_when_live_scores_are_missing(self) -> None:
+    def test_run_quality_judge_raises_when_live_scores_are_missing(self) -> None:
         with mock.patch.object(
             eval_runner,
             "quality_judge_live",
@@ -1473,21 +1551,47 @@ class EvalRunnerTests(unittest.TestCase):
                 "responseId": "resp_bad",
             },
         ):
-            result = eval_runner.run_quality_judge(
-                judge_runtime=object(),
-                judge_provider="minimax",
-                api_key="key",
-                judge_model="MiniMax-M2.7",
-                case={"objective": "Do the thing.", "constraints": []},
-                judge_rubric={},
-                public_answer="Recommend staged containment with explicit next steps.",
-                provider_settings={},
-            )
+            with self.assertRaises(eval_runner.RuntimeErrorWithCode):
+                eval_runner.run_quality_judge(
+                    judge_runtime=object(),
+                    judge_provider="minimax",
+                    api_key="key",
+                    judge_model="MiniMax-M2.7",
+                    case={"objective": "Do the thing.", "constraints": []},
+                    judge_rubric={},
+                    public_answer="Recommend staged containment with explicit next steps.",
+                    provider_settings={},
+                )
 
-        self.assertEqual(result["mode"], "mock")
-        self.assertGreater(result["scores"]["overallQuality"], 0)
+    def test_run_quality_judge_raises_when_live_audit_text_is_missing(self) -> None:
+        with mock.patch.object(
+            eval_runner,
+            "quality_judge_live",
+            return_value={
+                "mode": "live",
+                "scores": {field: 7 for field in eval_runner.QUALITY_SCORE_FIELDS},
+                "verdict": "",
+                "strongestStrength": "Concrete sequencing.",
+                "strongestWeakness": "",
+                "rationale": "",
+                "responseId": "resp_score_only",
+            },
+        ):
+            with self.assertRaises(eval_runner.RuntimeErrorWithCode) as captured:
+                eval_runner.run_quality_judge(
+                    judge_runtime=object(),
+                    judge_provider="deepseek",
+                    api_key="key",
+                    judge_model="deepseek-v4-pro",
+                    case={"objective": "Do the thing.", "constraints": []},
+                    judge_rubric={},
+                    public_answer="Recommend staged containment with explicit next steps.",
+                    provider_settings={},
+                )
 
-    def test_run_answer_health_judge_falls_back_when_live_scores_are_missing(self) -> None:
+        self.assertIn("score-only payload", str(captured.exception))
+
+    def test_run_answer_health_judge_raises_when_live_scores_are_missing(self) -> None:
         with mock.patch.object(
             eval_runner,
             "answer_health_judge_live",
@@ -1502,19 +1606,46 @@ class EvalRunnerTests(unittest.TestCase):
                 "telemetry": {},
             },
         ):
-            result = eval_runner.run_answer_health_judge(
-                judge_runtime=object(),
-                judge_provider="minimax",
-                api_key="key",
-                judge_model="MiniMax-M2.7",
-                case={"objective": "Do the thing.", "constraints": []},
-                public_answer="If evidence is incomplete, isolate surgically and escalate.",
-                telemetry={"charCount": 64},
-                provider_settings={},
-            )
+            with self.assertRaises(eval_runner.RuntimeErrorWithCode):
+                eval_runner.run_answer_health_judge(
+                    judge_runtime=object(),
+                    judge_provider="minimax",
+                    api_key="key",
+                    judge_model="MiniMax-M2.7",
+                    case={"objective": "Do the thing.", "constraints": []},
+                    public_answer="If evidence is incomplete, isolate surgically and escalate.",
+                    telemetry={"charCount": 64},
+                    provider_settings={},
+                )
 
-        self.assertEqual(result["mode"], "mock")
-        self.assertGreater(result["scores"]["overallHealth"], 0)
+    def test_run_answer_health_judge_raises_when_live_audit_text_is_missing(self) -> None:
+        with mock.patch.object(
+            eval_runner,
+            "answer_health_judge_live",
+            return_value={
+                "mode": "live",
+                "scores": {field: 8 for field in eval_runner.ANSWER_HEALTH_SCORE_FIELDS},
+                "verdict": "Healthy shape.",
+                "strongestStrength": "",
+                "strongestWeakness": "",
+                "rationale": "",
+                "responseId": "resp_score_only",
+                "telemetry": {},
+            },
+        ):
+            with self.assertRaises(eval_runner.RuntimeErrorWithCode) as captured:
+                eval_runner.run_answer_health_judge(
+                    judge_runtime=object(),
+                    judge_provider="deepseek",
+                    api_key="key",
+                    judge_model="deepseek-v4-pro",
+                    case={"objective": "Do the thing.", "constraints": []},
+                    public_answer="If evidence is incomplete, isolate surgically and escalate.",
+                    telemetry={"charCount": 64},
+                    provider_settings={},
+                )
+
+        self.assertIn("score-only payload", str(captured.exception))
 
 
 if __name__ == "__main__":

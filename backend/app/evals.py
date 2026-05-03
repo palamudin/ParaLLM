@@ -222,7 +222,6 @@ def _front_runtime_budget(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "maxCostUsd": _parse_float(payload.get("maxCostUsd"), 5.0, 0.0),
         "maxTotalTokens": 0,
-        "maxOutputTokens": 0,
     }
 
 
@@ -322,7 +321,10 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
     summarizer_model = str(payload.get("summarizerModel") or model).strip() or model
     direct_provider = str(payload.get("directProvider") or provider).strip() or provider
     direct_model = str(payload.get("directModel") or model).strip() or model
-    execution_mode = str(payload.get("executionMode") or "live").strip() or "live"
+    requested_execution_mode = str(payload.get("executionMode") or "live").strip().lower() or "live"
+    if requested_execution_mode != "live":
+        raise RuntimeErrorWithCode("Front evals only support live execution. Configure a real provider/key before starting the run.", 400)
+    execution_mode = "live"
     engine_version = str(payload.get("engineVersion") or "v1").strip() or "v1"
     engine_graph = payload.get("engineGraph") if isinstance(payload.get("engineGraph"), dict) else None
     worker_list = _front_worker_list(payload)
@@ -361,8 +363,7 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
             "vetting": _front_runtime_vetting(payload),
             "preferredLoop": _front_runtime_loop(payload),
             "targetTimeouts": _front_runtime_timeouts(payload),
-            "requireLive": execution_mode == "live",
-            "allowMockFallback": execution_mode != "live",
+            "requireLive": True,
         },
         "workers": worker_list,
     }

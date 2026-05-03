@@ -709,7 +709,7 @@ def execute_suite(
                 max_total_tokens=args.max_total_tokens,
                 max_output_tokens=args.max_output_tokens,
                 loop_rounds=loop_rounds,
-                require_live=not args.allow_mock_fallback,
+                require_live=True,
                 dynamic_spinup=bool(args.dynamic_spinup),
             )
             task_ids_to_cleanup.append(steered["taskId"])
@@ -848,11 +848,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-restart-runtime", action="store_true", help="Do not refresh the resident runtime before the benchmark.")
     parser.add_argument("--keep-artifacts", action="store_true", help="Keep generated task artifacts instead of cleaning them up.")
     parser.add_argument("--dynamic-spinup", action="store_true", help="Enable dynamic next-round lane spin-up during steered runs.")
-    parser.add_argument(
-        "--allow-mock-fallback",
-        action="store_true",
-        help="Permit mock-fallback steered runs instead of failing the benchmark as invalid.",
-    )
     return parser.parse_args()
 
 
@@ -900,7 +895,6 @@ def main() -> int:
             "maxOutputTokens": args.max_output_tokens,
             "keepArtifacts": bool(args.keep_artifacts),
             "dynamicSpinup": bool(args.dynamic_spinup),
-            "allowMockFallback": bool(args.allow_mock_fallback),
         },
     }
 

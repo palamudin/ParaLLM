@@ -248,7 +248,7 @@ def main() -> int:
             f"{base_url}/v1/tasks",
             {
                 "objective": "Hosted-dev smoke: prove queue, metadata, artifacts, and secrets are live.",
-                "executionMode": "mock",
+                "executionMode": "live",
                 "model": "gpt-5-mini",
                 "summarizerModel": "gpt-5-mini",
                 "loopRounds": 2,

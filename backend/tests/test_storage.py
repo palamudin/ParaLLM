@@ -21,6 +21,9 @@ class StorageReadModelTests(unittest.TestCase):
             self.paths.tasks,
             self.paths.checkpoints,
             self.paths.outputs,
+            self.paths.failed_calls,
+            self.paths.handoffs,
+            self.paths.node_transfers,
             self.paths.sessions,
             self.paths.jobs,
             self.paths.eval_suites,
@@ -240,12 +243,13 @@ class StorageReadModelTests(unittest.TestCase):
                         {
                             "ts": "2026-04-21T12:01:00+00:00",
                             "stage": "worker_A",
-                            "message": "Live API call failed; falling back to mock.",
+                            "message": "Live API call failed after retries; no synthetic output was used.",
                             "context": {
                                 "taskId": "t-health-1",
                                 "workerId": "A",
                                 "model": "gpt-5-mini",
                                 "error": "OpenAI API request failed: HTTP 500",
+                                "mode": "synthetic",
                             },
                         }
                     ),
@@ -303,11 +307,11 @@ class StorageReadModelTests(unittest.TestCase):
                         {
                             "ts": "2026-04-21T12:00:00+00:00",
                             "stage": "worker_A",
-                            "message": "Live API call failed; falling back to mock.",
+                            "message": "Live API call failed after retries; no synthetic output was used.",
                             "context": {
                                 "taskId": "t-health-sticky",
                                 "workerId": "A",
-                                "mode": "mock",
+                                "mode": "synthetic",
                             },
                         }
                     ),
@@ -332,8 +336,8 @@ class StorageReadModelTests(unittest.TestCase):
 
         self.assertTrue(payload["executionHealth"]["degraded"])
         self.assertEqual(payload["executionHealth"]["fallbackCount"], 1)
-        self.assertEqual(payload["executionHealth"]["targets"]["A"]["status"], "degraded")
-        self.assertTrue(payload["executionHealth"]["targets"]["A"]["usedMockFallback"])
+        self.assertEqual(payload["executionHealth"]["targets"]["A"]["status"], "error")
+        self.assertTrue(payload["executionHealth"]["targets"]["A"]["usedNonLiveFallback"])
 
     def test_read_state_payload_surfaces_telemetry_contract_warnings(self) -> None:
         self.write_json(
@@ -849,6 +853,238 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["effectiveMaxOutputTokens"], 1800)
         self.assertTrue(payload["summary"]["recoveredFromIncomplete"])
         self.assertEqual(payload["content"]["label"], "Proponent")
+
+    def test_failed_call_artifacts_are_review_readable(self) -> None:
+        artifact_name = "t-20260421-120200-deadbe_commander-review_deepseek_failed_call_malformed_json_20260421-120200-000000.json"
+        self.write_json(
+            self.paths.failed_calls / artifact_name,
+            {
+                "schemaVersion": "parallm.failed_call.v1",
+                "artifactType": "failed_call",
+                "capturedAt": "2026-04-21T12:02:00+00:00",
+                "taskId": "t-20260421-120200-deadbe",
+                "target": "commander_review",
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "schemaName": "loop_commander_review",
+                "failureKind": "malformed_json",
+                "error": "Model response JSON parse failed: bad json",
+                "responseId": "chatcmpl-bad",
+                "rawOutputText": "{\"bad\":",
+                "ingestion": {
+                    "rawLength": 7,
+                    "candidateKind": "raw",
+                    "candidateParseError": "Expecting value",
+                },
+                "responseMeta": {
+                    "requestedMaxOutputTokens": 2048,
+                    "effectiveMaxOutputTokens": 2048,
+                    "maxOutputTokenAttempts": [2048],
+                    "providerTrace": {"provider": "deepseek", "target": "commander_review"},
+                },
+            },
+        )
+
+        history = storage.build_history_payload(self.paths)
+        failed = history["failedCalls"][0]
+        payload = storage.read_artifact(self.paths, artifact_name)
+
+        self.assertEqual(failed["kind"], "failed_call")
+        self.assertEqual(failed["failureKind"], "malformed_json")
+        self.assertEqual(payload["storage"], "failed_calls")
+        self.assertEqual(payload["summary"]["failureKind"], "malformed_json")
+        self.assertEqual(payload["summary"]["ingestion"]["rawLength"], 7)
+        self.assertEqual(payload["content"]["rawOutputText"], "{\"bad\":")
+
+    def test_eval_failed_call_artifacts_are_in_review_history(self) -> None:
+        run_id = "eval-failed-ledger-1"
+        artifact_id = "case-arm-r1-failed_call-fc_eval-json"
+        relative_path = "cases/case-1/arm-1/replicate-001/workspace/data/failed_calls/fc_eval.json"
+        artifact_payload = {
+            "schemaVersion": "parallm.failed_call.v1",
+            "artifactType": "failed_call",
+            "capturedAt": "2026-05-02T20:12:00+00:00",
+            "taskId": "te-eval",
+            "target": "worker",
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "schemaName": "worker_b_checkpoint",
+            "failureKind": "overflow",
+            "error": "Model response JSON parse failed: Unterminated string",
+            "rawOutputText": "{\"workerId\":\"B\"",
+        }
+        self.write_json(self.paths.eval_runs / run_id / relative_path, artifact_payload)
+        self.write_json(
+            self.paths.eval_runs / run_id / "run.json",
+            {
+                "runId": run_id,
+                "status": "completed",
+                "createdAt": "2026-05-02T20:10:00+00:00",
+                "updatedAt": "2026-05-02T20:13:00+00:00",
+                "artifactIndex": {
+                    artifact_id: {
+                        "artifactId": artifact_id,
+                        "name": "fc_eval.json",
+                        "kind": "failed_call",
+                        "storage": "eval",
+                        "relativePath": relative_path,
+                        "modifiedAt": "2026-05-02T20:12:00+00:00",
+                        "size": 321,
+                        "caseId": "case-1",
+                        "variantId": "arm-1",
+                        "replicate": 1,
+                        "runId": run_id,
+                        "summary": {
+                            "taskId": "te-eval",
+                            "target": "worker",
+                            "provider": "deepseek",
+                            "model": "deepseek-v4-flash",
+                            "rawOutputAvailable": True,
+                            "failureKind": "overflow",
+                            "error": "Model response JSON parse failed: Unterminated string",
+                        },
+                    }
+                },
+            },
+        )
+
+        history = storage.build_history_payload(self.paths)
+        failed = [entry for entry in history["failedCalls"] if entry.get("storage") == "eval"]
+        artifact = storage.read_eval_artifact(self.paths, run_id, artifact_id)
+
+        self.assertEqual(failed[0]["runId"], run_id)
+        self.assertEqual(failed[0]["artifactId"], artifact_id)
+        self.assertEqual(failed[0]["failureKind"], "overflow")
+        self.assertEqual(artifact["content"]["rawOutputText"], "{\"workerId\":\"B\"")
+
+    def test_handoff_packet_is_saved_and_review_readable(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-handoff-1",
+                    "title": "RMM incident",
+                    "objective": "Keep operator continuity across agent handoff.",
+                    "workers": [{"id": "A"}, {"id": "B"}],
+                    "runtime": {"engine": "parallel"},
+                },
+                "draft": {
+                    "runtimeMode": "live",
+                    "contextMode": "weighted",
+                    "loopRounds": 1,
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                    "knowledgebase": {"enabled": True, "selectedCorpus": "msp-knowledgebase"},
+                },
+                "workers": {
+                    "A": {"label": "Proponent", "step": 1},
+                    "B": None,
+                },
+                "loop": {
+                    "status": "running",
+                    "jobId": "job-1",
+                    "totalRounds": 1,
+                    "completedRounds": 0,
+                    "currentRound": 1,
+                    "lastMessage": "DeepSeek worker is running.",
+                },
+                "memoryVersion": 4,
+            },
+        )
+        self.write_json(
+            self.paths.jobs / "job-1.json",
+            {
+                "jobId": "job-1",
+                "taskId": "t-handoff-1",
+                "jobType": "loop",
+                "status": "running",
+                "target": "commander",
+                "queuedAt": "2026-05-02T20:00:00+00:00",
+                "lastMessage": "Waiting on provider.",
+                "metadata": {"provider": "deepseek", "model": "deepseek-v4-flash"},
+            },
+        )
+        self.paths.steps.write_text(
+            json.dumps(
+                {
+                    "ts": "2026-05-02T20:00:01+00:00",
+                    "stage": "worker_A",
+                    "message": "Captured worker checkpoint.",
+                    "context": {"taskId": "t-handoff-1"},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        packet = storage.write_handoff_packet(
+            self.paths,
+            actor="test",
+            reason="unit-test",
+            next_action="Continue from the latest worker checkpoint.",
+        )
+        artifact_name = packet["artifact"]["name"]
+        history = storage.build_history_payload(self.paths)
+        artifact = storage.read_artifact(self.paths, artifact_name)
+
+        self.assertEqual(packet["artifactType"], "handoff_packet")
+        self.assertEqual(packet["activeTask"]["taskId"], "t-handoff-1")
+        self.assertTrue(packet["packetHash"])
+        self.assertTrue(packet["integrity"]["evidenceDigest"])
+        self.assertEqual(history["handoffs"][0]["name"], artifact_name)
+        self.assertEqual(history["handoffs"][0]["kind"], "handoff_packet")
+        self.assertEqual(artifact["storage"], "handoffs")
+        self.assertEqual(artifact["content"]["packetId"], packet["packetId"])
+        self.assertIn("chatHistoryRole", artifact["content"]["contract"])
+
+    def test_node_transfer_artifacts_surface_integrity_status(self) -> None:
+        artifact_name = "nt_t1_worker_A_summarizer_120000000000.json"
+        self.write_json(
+            self.paths.node_transfers / artifact_name,
+            {
+                "schemaVersion": "parallm.node_transfer.v1",
+                "artifactType": "node_transfer",
+                "transferId": "nt_t1_worker_A_summarizer_120000000000",
+                "createdAt": "2026-05-02T20:20:00+00:00",
+                "taskId": "t-transfer-1",
+                "sourceNode": "worker_A",
+                "targetNodes": ["commander_review", "summarizer"],
+                "status": "accepted",
+                "validationStatus": "valid",
+                "passedToNextNode": True,
+                "retryable": False,
+                "oversightAction": "none",
+                "integrity": {
+                    "canonicalJsonBytes": 128,
+                    "crc32": "7ad12f00",
+                    "sha256": "a" * 64,
+                },
+                "integrityCheck": {
+                    "ok": True,
+                    "mismatches": [],
+                },
+                "payloadShape": {
+                    "type": "dict",
+                    "keys": ["workerId", "observation"],
+                    "keyCount": 2,
+                },
+                "artifacts": {
+                    "checkpoint": "t-transfer-1_A_step001.json",
+                    "output": "t-transfer-1_A_step001_output.json",
+                },
+            },
+        )
+
+        history = storage.build_history_payload(self.paths)
+        transfer = history["nodeTransfers"][0]
+        artifact = storage.read_artifact(self.paths, artifact_name)
+
+        self.assertEqual(transfer["kind"], "node_transfer")
+        self.assertEqual(transfer["status"], "accepted")
+        self.assertTrue(transfer["integrityOk"])
+        self.assertEqual(transfer["crc32"], "7ad12f00")
+        self.assertEqual(artifact["storage"], "node_transfers")
+        self.assertEqual(artifact["content"]["integrity"]["sha256"], "a" * 64)
 
     def test_read_artifact_surfaces_contract_warnings_for_malformed_response_meta(self) -> None:
         artifact_name = "t-20260421-120100-deadbe_A_step001_output.json"

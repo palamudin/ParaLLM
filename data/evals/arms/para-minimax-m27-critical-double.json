@@ -1,22 +1,22 @@
 {
-  "armId": "para-openai-mini-unconstrained-double",
-  "title": "ParaLLM OpenAI Mini | Unconstrained | Two Adversarials",
-  "description": "OpenAI mini Para run with two targeted adversarial lanes and no extra answer-side style harness.",
+  "armId": "para-minimax-m27-critical-double",
+  "title": "Para MiniMax M2.7 | Critical Structured | Two Adversarials",
+  "description": "MiniMax M2.7 Para run with two targeted adversarial lanes for MSP critical-incident pressure testing.",
   "type": "steered",
   "runtime": {
     "executionMode": "live",
     "contextMode": "weighted",
     "directBaselineMode": "off",
-    "provider": "openai",
-    "model": "gpt-5-mini",
-    "directProvider": "openai",
-    "directModel": "gpt-5-mini",
-    "summarizerProvider": "openai",
-    "summarizerModel": "gpt-5-mini",
-    "reasoningEffort": "low",
+    "provider": "minimax",
+    "model": "MiniMax-M2.7",
+    "directProvider": "minimax",
+    "directModel": "MiniMax-M2.7",
+    "summarizerProvider": "minimax",
+    "summarizerModel": "MiniMax-M2.7",
+    "reasoningEffort": "high",
     "budget": {
       "maxTotalTokens": 0,
-      "maxCostUsd": 1.5
+      "maxCostUsd": 10
     },
     "research": {
       "enabled": false,
@@ -26,25 +26,17 @@
     "vetting": {
       "enabled": true
     },
-    "knowledgebase": {
-      "enabled": true,
-      "scope": "shared",
-      "maxRecords": 6,
-      "maxTokens": 900,
-      "includeRuntime": true,
-      "includePersistent": true
-    },
     "preferredLoop": {
       "rounds": 1,
       "delayMs": 0
     },
-    "directHarness": {
-      "concision": "none",
-      "instruction": ""
-    },
     "summarizerHarness": {
       "concision": "none",
-      "instruction": ""
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
     },
     "requireLive": true
   },
@@ -56,7 +48,7 @@
       "role": "pressure-test the first-hour plan for management-plane trust, evidence loss, and unsafe remediation sequencing",
       "focus": "find places where the plan trusts or uses a possibly compromised RMM or PSA too early or destroys evidence",
       "temperature": "balanced",
-      "model": "gpt-5-mini"
+      "model": "MiniMax-M2.7"
     },
     {
       "id": "B",
@@ -65,7 +57,7 @@
       "role": "pressure-test the plan for per-customer ticketing, major-incident discipline, compliance-safe communications, and operator management structure",
       "focus": "find missing internal major incident tracking, per-customer ownership, and cross-tenant communication risks",
       "temperature": "balanced",
-      "model": "gpt-5-mini"
+      "model": "MiniMax-M2.7"
     }
   ]
 }

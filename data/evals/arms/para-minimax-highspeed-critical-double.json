@@ -16,8 +16,7 @@
     "reasoningEffort": "low",
     "budget": {
       "maxTotalTokens": 0,
-      "maxCostUsd": 3,
-      "maxOutputTokens": 0
+      "maxCostUsd": 3
     },
     "research": {
       "enabled": false,
@@ -39,8 +38,7 @@
       "concision": "none",
       "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
     },
-    "requireLive": true,
-    "allowMockFallback": false
+    "requireLive": true
   },
   "workers": [
     {

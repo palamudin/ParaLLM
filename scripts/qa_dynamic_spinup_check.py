@@ -40,10 +40,10 @@ def main() -> None:
             ],
         }
         workers = task_workers(task)
-        commander_checkpoint = runtime.new_mock_commander(task, runtime.get_task_runtime(task), 1, task["constraints"], None)
+        commander_checkpoint = runtime.new_offline_fixture_commander(task, runtime.get_task_runtime(task), 1, task["constraints"], None)
         worker_state = {}
         for worker in workers:
-            worker_state[worker["id"]] = runtime.new_mock_checkpoint(
+            worker_state[worker["id"]] = runtime.new_offline_fixture_checkpoint(
                 task,
                 worker,
                 runtime.get_task_runtime(task, worker["model"], worker["id"]),
@@ -66,7 +66,7 @@ def main() -> None:
         runtime.get_api_key_assignment = lambda *args, **kwargs: {"apiKey": "test-key", "slot": 1, "masked": "sk-test"}  # type: ignore[method-assign]
 
         def fake_live_commander_review(api_key, task_arg, commander_arg, workers_arg, worker_state_arg, runtime_arg, line_catalog_arg):
-            checkpoint = runtime.new_mock_commander_review(task_arg, commander_arg, workers_arg, worker_state_arg)
+            checkpoint = runtime.new_offline_fixture_commander_review(task_arg, commander_arg, workers_arg, worker_state_arg)
             checkpoint["dynamicLaneDecision"] = {
                 "shouldSpawn": True,
                 "suggestedLaneTypes": ["security"],

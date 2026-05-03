@@ -2336,7 +2336,7 @@ function formatExecutionHealthSummary(health) {
   }
   const bits = [];
   if (Number(health.fallbackCount || 0) > 0) {
-    bits.push(formatInteger(health.fallbackCount || 0) + " mock fallback" + (Number(health.fallbackCount || 0) === 1 ? "" : "s"));
+    bits.push(formatInteger(health.fallbackCount || 0) + " non-live fallback" + (Number(health.fallbackCount || 0) === 1 ? "" : "s"));
   }
   if (Number(health.recoveredCount || 0) > 0) {
     bits.push(formatInteger(health.recoveredCount || 0) + " recovered live stage" + (Number(health.recoveredCount || 0) === 1 ? "" : "s"));
@@ -2355,11 +2355,11 @@ function artifactExecutionHealth(artifact) {
   const mode = String(artifact?.mode || "").trim();
   const recovered = !!artifact?.recoveredFromIncomplete;
   const contractWarnings = Array.isArray(artifact?.contractWarnings) ? artifact.contractWarnings.filter(Boolean) : [];
-  const degraded = mode === "mock" || recovered || contractWarnings.length > 0;
+  const degraded = (mode && mode !== "live") || recovered || contractWarnings.length > 0;
   return {
     degraded,
     mode,
-    fallbackCount: mode === "mock" ? 1 : 0,
+    fallbackCount: mode && mode !== "live" ? 1 : 0,
     recoveredCount: recovered ? 1 : 0,
     contractWarningCount: contractWarnings.length
   };
@@ -2419,6 +2419,7 @@ function renderArtifactMeta(data) {
     "skills: " + (activeSkills.length ? activeSkills.join(", ") : "none"),
     "step: " + (summary.step ?? "-") + " | round: " + (summary.round ?? "-"),
     "responseId: " + (summary.responseId || "none"),
+    data?.kind === "failed_call" ? "failure: " + (summary.failureKind || "provider_error") + " | error: " + (summary.error || "n/a") : "",
     "output cap: " + artifactOutputCapSummary(summary),
     "local tools: " + (localToolCalls.length ? localToolCalls.length + " call" + (localToolCalls.length === 1 ? "" : "s") : "none")
       + " | local sources: " + (localFileSources.length ? localFileSources.length : 0),
@@ -2440,6 +2441,18 @@ function renderArtifactContent(data) {
 
   if (Object.prototype.hasOwnProperty.call(content, "output")) {
     sections.push("Canonical Structured Output\n" + pretty(content.output));
+  } else if (content.artifactType === "failed_call") {
+    sections.push("Failed Call Summary\n" + pretty({
+      failureKind: content.failureKind,
+      error: content.error,
+      taskId: content.taskId,
+      target: content.target,
+      provider: content.provider,
+      model: content.model,
+      schemaName: content.schemaName,
+      responseId: content.responseId,
+    }));
+    sections.push("Malformed JSON Ingestion\n" + pretty(content.ingestion || {}));
   } else {
     sections.push("Artifact Content\n" + pretty(content));
   }
@@ -7759,8 +7772,8 @@ function renderWaitingProgress(task, workerState, loop, state) {
   const latestIssue = executionHealth?.latestIssue || null;
   let executionNote = "";
   if (latestIssue) {
-    if (latestIssue.usedMockFallback) {
-      executionNote = `${latestIssue.label || friendlyTargetLabel(latestIssue.target, task)} fell back to mock. ${String(latestIssue.lastError || latestIssue.lastMessage || "").trim()}`;
+    if (latestIssue.usedNonLiveFallback) {
+      executionNote = `${latestIssue.label || friendlyTargetLabel(latestIssue.target, task)} produced non-live output. ${String(latestIssue.lastError || latestIssue.lastMessage || "").trim()}`;
     } else if (latestIssue.recoveredFromIncomplete) {
       executionNote = `${latestIssue.label || friendlyTargetLabel(latestIssue.target, task)} needed output-token recovery but still completed live.`;
     } else if (latestIssue.lastMessage) {
@@ -8908,7 +8921,7 @@ function legacyRenderConversationThreadUnused(task, summary, workerState, loop) 
   messages.push(buildThreadMessage({
     kind: "commander",
     author: "You",
-    tag: task.runtime?.executionMode === "live" ? "Live session" : "Mock session",
+    tag: task.runtime?.executionMode === "live" ? "Live session" : "Non-live session",
     sections: [
       renderTextSection("Prompt", task.objective || ""),
       renderTextSection("Session context", task.sessionContext || ""),

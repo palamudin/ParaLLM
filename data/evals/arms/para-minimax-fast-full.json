@@ -14,8 +14,7 @@
     "reasoningEffort": "high",
     "budget": {
       "maxTotalTokens": 220000,
-      "maxCostUsd": 18,
-      "maxOutputTokens": 0
+      "maxCostUsd": 18
     },
     "research": {
       "enabled": false,
@@ -29,8 +28,7 @@
       "rounds": 1,
       "delayMs": 0
     },
-    "requireLive": true,
-    "allowMockFallback": false
+    "requireLive": true
   },
   "workers": [
     {

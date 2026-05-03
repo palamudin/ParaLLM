@@ -1,7 +1,7 @@
 {
-    "suiteId": "smoke-mock",
-    "title": "Smoke Mock Suite",
-    "description": "Small mock-friendly suite for isolated eval plumbing and UI checks.",
+    "suiteId": "smoke-live",
+    "title": "Smoke Live Suite",
+    "description": "Small live-only suite for isolated eval plumbing and UI checks.",
     "judgeRubric": {
         "mustDo": [
             "Stay single-voice.",
@@ -20,7 +20,7 @@
             ],
             "sessionContext": "",
             "checks": {
-                "requireLive": false,
+                "requireLive": true,
                 "forbiddenPhrases": [
                     "as an ai language model"
                 ],

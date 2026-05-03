@@ -14,8 +14,7 @@
     "reasoningEffort": "low",
     "budget": {
       "maxTotalTokens": 0,
-      "maxCostUsd": 1.5,
-      "maxOutputTokens": 0
+      "maxCostUsd": 1.5
     },
     "research": {
       "enabled": false,
@@ -37,8 +36,7 @@
       "concision": "none",
       "instruction": ""
     },
-    "requireLive": true,
-    "allowMockFallback": false
+    "requireLive": true
   },
   "workers": []
 }

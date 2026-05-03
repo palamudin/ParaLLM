@@ -1,20 +1,20 @@
 {
-  "armId": "direct-minimax-highspeed-open",
-  "title": "Direct MiniMax Highspeed | Open Harness",
-  "description": "Single-thread MiniMax highspeed baseline with the same open detailed-answer policy as the critical MSP Para runs.",
+  "armId": "direct-deepseek-v4pro-open",
+  "title": "Direct DeepSeek V4 Pro | Open Harness",
+  "description": "Single-thread DeepSeek V4 Pro baseline with the same open detailed-answer policy as the critical MSP Para runs.",
   "type": "direct",
   "runtime": {
     "executionMode": "live",
-    "provider": "minimax",
-    "model": "MiniMax-M2.1-highspeed",
-    "directProvider": "minimax",
-    "directModel": "MiniMax-M2.1-highspeed",
-    "summarizerProvider": "minimax",
-    "summarizerModel": "MiniMax-M2.1-highspeed",
-    "reasoningEffort": "low",
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "directProvider": "deepseek",
+    "directModel": "deepseek-v4-pro",
+    "summarizerProvider": "deepseek",
+    "summarizerModel": "deepseek-v4-pro",
+    "reasoningEffort": "high",
     "budget": {
       "maxTotalTokens": 0,
-      "maxCostUsd": 3
+      "maxCostUsd": 6
     },
     "research": {
       "enabled": false,

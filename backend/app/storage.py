@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -28,6 +29,9 @@ class Paths:
     task_states: Path
     checkpoints: Path
     outputs: Path
+    failed_calls: Path
+    handoffs: Path
+    node_transfers: Path
     sessions: Path
     jobs: Path
     evals: Path
@@ -51,6 +55,9 @@ def project_paths(root: Optional[Path] = None) -> Paths:
         task_states=data / "task_states",
         checkpoints=data / "checkpoints",
         outputs=data / "outputs",
+        failed_calls=data / "failed_calls",
+        handoffs=data / "handoffs",
+        node_transfers=data / "node_transfers",
         sessions=data / "sessions",
         jobs=data / "jobs",
         evals=evals,
@@ -717,11 +724,11 @@ def build_job_execution_health(job: Dict[str, Any]) -> Dict[str, Any]:
             "degraded": True,
         }
 
-    if mode == "mock":
+    if mode and mode != "live":
         return {
             "tone": "warning",
-            "label": "Fallback",
-            "summary": last_message or "This job completed with mock fallback output.",
+            "label": "Non-live",
+            "summary": last_message or "This job completed with non-live output and should not be treated as production evidence.",
             "degraded": True,
         }
 
@@ -936,7 +943,7 @@ def artifact_visibility_policy() -> Dict[str, Any]:
         "exportSurface": "raw_output_exception",
         "rules": [
             "Home and canonical memory render only normalized structured outputs and adjudicated answers.",
-            "Raw model text is a review-only exception and is limited to saved output artifacts plus export bundles.",
+            "Raw model text is a review-only exception and is limited to saved output artifacts, failed-call artifacts, and export bundles.",
             "Carry-forward context, task snapshots, worker checkpoints, and summary state must stay structured.",
             "When raw output is shown in Review, it is for auditability and replay, not as the canonical source of truth.",
         ],
@@ -960,6 +967,38 @@ ARTIFACT_PATTERNS = [
 
 
 def build_artifact_history_entry(name: str, modified_at: str, size: int, content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if isinstance(content, dict) and (content.get("artifactType") == "failed_call" or "failed_call" in name):
+        warnings: List[str] = []
+        response_meta = content.get("responseMeta") if isinstance(content.get("responseMeta"), dict) else {}
+        provider_trace = normalize_provider_trace(response_meta.get("providerTrace"))
+        return {
+            "name": name,
+            "modifiedAt": modified_at,
+            "size": coerce_int(size, default=0, minimum=0, warnings=warnings, label=f"{name}.size") or 0,
+            "kind": "failed_call",
+            "taskId": str(content.get("taskId") or "").strip() or None,
+            "worker": str(content.get("target") or "").strip() or None,
+            "roundOrStep": None,
+            "provider": content.get("provider"),
+            "providerCapabilities": content.get("providerCapabilities") if isinstance(content.get("providerCapabilities"), dict) else {},
+            "model": content.get("model") or content.get("modelUsed"),
+            "mode": content.get("mode"),
+            "responseId": content.get("responseId") or (provider_trace.get("providerResponseId") if isinstance(provider_trace, dict) else None),
+            "providerTrace": provider_trace,
+            "requestedMaxOutputTokens": coerce_int(response_meta.get("requestedMaxOutputTokens"), allow_none=True, warnings=warnings, label=f"{name}.responseMeta.requestedMaxOutputTokens"),
+            "effectiveMaxOutputTokens": coerce_int(response_meta.get("effectiveMaxOutputTokens"), allow_none=True, warnings=warnings, label=f"{name}.responseMeta.effectiveMaxOutputTokens"),
+            "maxOutputTokenAttempts": coerce_int_list(response_meta.get("maxOutputTokenAttempts"), warnings=warnings, label=f"{name}.responseMeta.maxOutputTokenAttempts"),
+            "recoveredFromIncomplete": bool(response_meta.get("recoveredFromIncomplete")),
+            "rawOutputAvailable": bool(str(content.get("rawOutputText") or "").strip()),
+            "failureKind": str(content.get("failureKind") or "provider_error"),
+            "error": str(content.get("error") or ""),
+            "capturedAt": str(content.get("capturedAt") or modified_at),
+            "ingestion": content.get("ingestion") if isinstance(content.get("ingestion"), dict) else {},
+            "passStatus": str(content.get("passStatus") or "discarded_failed_attempt"),
+            "passedToNextNode": bool(content.get("passedToNextNode")) if "passedToNextNode" in content else False,
+            "handoffNote": str(content.get("handoffNote") or "This failed-call artifact is review-only and was not passed between nodes."),
+            "contractWarnings": warnings[:12],
+        }
     if "_step" not in name and "_round" not in name:
         return None
     warnings: List[str] = []
@@ -1065,6 +1104,529 @@ def count_session_archives(paths: Optional[Paths] = None) -> int:
     return sum(1 for entry in artifacts.list_json_artifacts(paths.root, ["sessions"]) if str(entry.get("name") or "").strip())
 
 
+def list_failed_call_artifacts(paths: Optional[Paths] = None, max_items: int = 50) -> List[Dict[str, Any]]:
+    paths = paths or project_paths()
+    entries: List[Dict[str, Any]] = []
+    for artifact_file in artifacts.list_json_artifacts(paths.root, ["failed_calls"]):
+        content = artifacts.read_json_artifact(paths.root, "failed_calls", str(artifact_file.get("name") or ""))
+        entry = build_artifact_history_entry(
+            str(artifact_file.get("name") or ""),
+            str(artifact_file.get("modifiedAt") or ""),
+            int(artifact_file.get("size") or 0),
+            content,
+        )
+        if entry is not None:
+            entries.append(entry)
+        if len(entries) >= max(0, int(max_items or 0)):
+            break
+    return entries
+
+
+def _infer_failed_call_worker_id(content: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(content, dict):
+        return ""
+    worker_id = str(content.get("workerId") or "").strip()
+    if worker_id:
+        return worker_id.upper()
+    raw = str(content.get("rawOutputText") or "")
+    match = re.search(r'"workerId"\s*:\s*"([^"]+)"', raw)
+    if match:
+        return match.group(1).strip().upper()
+    return ""
+
+
+def _eval_failed_call_successor(
+    artifact_index: Dict[str, Any],
+    failed_artifact: Dict[str, Any],
+    failed_content: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    summary = failed_artifact.get("summary") if isinstance(failed_artifact.get("summary"), dict) else {}
+    target = str(summary.get("target") or (failed_content or {}).get("target") or "").strip().lower()
+    case_id = str(failed_artifact.get("caseId") or "").strip()
+    variant_id = str(failed_artifact.get("variantId") or "").strip()
+    replicate = failed_artifact.get("replicate")
+    worker_hint = _infer_failed_call_worker_id(failed_content)
+
+    def same_slot(candidate: Dict[str, Any]) -> bool:
+        return (
+            str(candidate.get("caseId") or "").strip() == case_id
+            and str(candidate.get("variantId") or "").strip() == variant_id
+            and candidate.get("replicate") == replicate
+        )
+
+    candidates = [artifact for artifact in artifact_index.values() if isinstance(artifact, dict) and same_slot(artifact)]
+    preferred: List[Dict[str, Any]] = []
+    if target == "commander_review":
+        preferred = [artifact for artifact in candidates if str(artifact.get("kind") or "") == "commander_review_output"]
+    elif target == "commander":
+        preferred = [artifact for artifact in candidates if str(artifact.get("kind") or "") == "commander_output"]
+    elif target in {"summary", "summarizer"}:
+        preferred = [artifact for artifact in candidates if str(artifact.get("kind") or "") == "summary_output"]
+    elif target == "worker":
+        for artifact in candidates:
+            if str(artifact.get("kind") or "") != "worker_output":
+                continue
+            artifact_summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+            artifact_target = str(artifact_summary.get("target") or "").strip().upper()
+            artifact_name = str(artifact.get("name") or "").upper()
+            if worker_hint and (artifact_target == worker_hint or f"_{worker_hint}_" in artifact_name):
+                preferred.append(artifact)
+        if not preferred:
+            preferred = [artifact for artifact in candidates if str(artifact.get("kind") or "") == "worker_output"]
+    if not preferred:
+        return None
+    preferred.sort(key=lambda item: (str(item.get("modifiedAt") or ""), str(item.get("artifactId") or "")), reverse=True)
+    successor = preferred[0]
+    successor_summary = successor.get("summary") if isinstance(successor.get("summary"), dict) else {}
+    return {
+        "artifactId": str(successor.get("artifactId") or "").strip(),
+        "name": str(successor.get("name") or "").strip(),
+        "kind": str(successor.get("kind") or "").strip(),
+        "target": str(successor_summary.get("target") or "").strip() or None,
+        "provider": successor_summary.get("provider"),
+        "model": successor_summary.get("model"),
+        "modifiedAt": str(successor.get("modifiedAt") or "").strip() or None,
+    }
+
+
+def list_eval_failed_call_artifacts(paths: Optional[Paths] = None, max_items: int = 50) -> List[Dict[str, Any]]:
+    paths = paths or project_paths()
+    entries: List[Dict[str, Any]] = []
+    for run in list_eval_runs(paths):
+        run_id = str(run.get("runId") or "").strip()
+        artifact_index = run.get("artifactIndex") if isinstance(run.get("artifactIndex"), dict) else {}
+        for artifact in artifact_index.values():
+            if not isinstance(artifact, dict) or str(artifact.get("kind") or "") != "failed_call":
+                continue
+            summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+            failed_content = None
+            artifact_file = eval_resolve_run_file(paths, run_id, str(artifact.get("relativePath") or ""))
+            if artifact_file is not None:
+                failed_content = read_json_file(artifact_file)
+            accepted_successor = _eval_failed_call_successor(artifact_index, artifact, failed_content)
+            entry = {
+                "name": str(artifact.get("name") or "").strip(),
+                "artifactId": str(artifact.get("artifactId") or "").strip(),
+                "kind": "failed_call",
+                "storage": "eval",
+                "runId": str(artifact.get("runId") or run_id).strip(),
+                "caseId": str(artifact.get("caseId") or "").strip() or None,
+                "variantId": str(artifact.get("variantId") or "").strip() or None,
+                "replicate": artifact.get("replicate"),
+                "modifiedAt": str(artifact.get("modifiedAt") or run.get("updatedAt") or run.get("createdAt") or "").strip(),
+                "size": coerce_int(artifact.get("size"), default=0, minimum=0, label=f"{artifact.get('name') or 'eval_failed_call'}.size") or 0,
+                "taskId": str(summary.get("taskId") or "").strip() or None,
+                "worker": str(summary.get("target") or "").strip() or None,
+                "target": str(summary.get("target") or "").strip() or None,
+                "provider": summary.get("provider"),
+                "providerCapabilities": summary.get("providerCapabilities") if isinstance(summary.get("providerCapabilities"), dict) else {},
+                "model": summary.get("model"),
+                "mode": summary.get("mode"),
+                "responseId": summary.get("responseId"),
+                "rawOutputAvailable": bool(summary.get("rawOutputAvailable")),
+                "failureKind": str(summary.get("failureKind") or "provider_error"),
+                "error": str(summary.get("error") or ""),
+                "ingestion": summary.get("ingestion") if isinstance(summary.get("ingestion"), dict) else {},
+                "passStatus": str(summary.get("passStatus") or (failed_content or {}).get("passStatus") or "discarded_failed_attempt"),
+                "passedToNextNode": bool(summary.get("passedToNextNode")) if "passedToNextNode" in summary else bool((failed_content or {}).get("passedToNextNode")),
+                "handoffNote": str(summary.get("handoffNote") or (failed_content or {}).get("handoffNote") or "This failed-call artifact is review-only and was not passed between nodes."),
+                "acceptedSuccessor": accepted_successor,
+            }
+            if entry["runId"] and entry["artifactId"]:
+                entries.append(entry)
+        if len(entries) >= max(0, int(max_items or 0)):
+            break
+    entries.sort(key=lambda item: (str(item.get("modifiedAt") or ""), str(item.get("runId") or ""), str(item.get("artifactId") or "")), reverse=True)
+    return entries[: max(0, int(max_items or 0))]
+
+
+def build_node_transfer_history_entry(name: str, modified_at: str, size: int, content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(content, dict):
+        return None
+    if content.get("artifactType") != "node_transfer":
+        return None
+    integrity = content.get("integrity") if isinstance(content.get("integrity"), dict) else {}
+    integrity_check = content.get("integrityCheck") if isinstance(content.get("integrityCheck"), dict) else {}
+    artifacts_payload = content.get("artifacts") if isinstance(content.get("artifacts"), dict) else {}
+    return {
+        "name": name,
+        "kind": "node_transfer",
+        "modifiedAt": modified_at,
+        "size": coerce_int(size, default=0, minimum=0, label=f"{name}.size") or 0,
+        "transferId": str(content.get("transferId") or Path(name).stem),
+        "taskId": str(content.get("taskId") or "").strip() or None,
+        "sourceNode": str(content.get("sourceNode") or "").strip() or None,
+        "targetNodes": [str(node or "").strip() for node in (content.get("targetNodes") or []) if str(node or "").strip()] if isinstance(content.get("targetNodes"), list) else [],
+        "status": str(content.get("status") or "unknown"),
+        "validationStatus": str(content.get("validationStatus") or "unknown"),
+        "passedToNextNode": bool(content.get("passedToNextNode")),
+        "retryable": bool(content.get("retryable")),
+        "oversightAction": str(content.get("oversightAction") or "").strip() or None,
+        "failureKind": str(content.get("failureKind") or "").strip() or None,
+        "error": str(content.get("error") or "").strip() or None,
+        "crc32": str(integrity.get("crc32") or "").strip() or None,
+        "sha256": str(integrity.get("sha256") or "").strip() or None,
+        "canonicalJsonBytes": coerce_int(integrity.get("canonicalJsonBytes"), default=0, minimum=0, label=f"{name}.canonicalJsonBytes") or 0,
+        "integrityOk": bool(integrity_check.get("ok")),
+        "checkpointArtifact": artifacts_payload.get("checkpoint"),
+        "outputArtifact": artifacts_payload.get("output"),
+        "failedCallArtifact": artifacts_payload.get("failedCall"),
+    }
+
+
+def list_node_transfer_artifacts(paths: Optional[Paths] = None, max_items: int = 80) -> List[Dict[str, Any]]:
+    paths = paths or project_paths()
+    entries: List[Dict[str, Any]] = []
+    for artifact_file in artifacts.list_json_artifacts(paths.root, ["node_transfers"]):
+        content = artifacts.read_json_artifact(paths.root, "node_transfers", str(artifact_file.get("name") or ""))
+        entry = build_node_transfer_history_entry(
+            str(artifact_file.get("name") or ""),
+            str(artifact_file.get("modifiedAt") or ""),
+            int(artifact_file.get("size") or 0),
+            content,
+        )
+        if entry is not None:
+            entries.append(entry)
+        if len(entries) >= max(0, int(max_items or 0)):
+            break
+    return entries
+
+
+def list_eval_node_transfer_artifacts(paths: Optional[Paths] = None, max_items: int = 80) -> List[Dict[str, Any]]:
+    paths = paths or project_paths()
+    entries: List[Dict[str, Any]] = []
+    for run in list_eval_runs(paths):
+        run_id = str(run.get("runId") or "").strip()
+        artifact_index = run.get("artifactIndex") if isinstance(run.get("artifactIndex"), dict) else {}
+        for artifact in artifact_index.values():
+            if not isinstance(artifact, dict) or str(artifact.get("kind") or "") != "node_transfer":
+                continue
+            content = None
+            artifact_file = eval_resolve_run_file(paths, run_id, str(artifact.get("relativePath") or ""))
+            if artifact_file is not None:
+                content = read_json_file(artifact_file)
+            entry = build_node_transfer_history_entry(
+                str(artifact.get("name") or ""),
+                str(artifact.get("modifiedAt") or run.get("updatedAt") or run.get("createdAt") or ""),
+                int(artifact.get("size") or 0),
+                content,
+            )
+            if entry is not None:
+                entry["storage"] = "eval"
+                entry["runId"] = run_id
+                entry["artifactId"] = str(artifact.get("artifactId") or "").strip()
+                entry["caseId"] = str(artifact.get("caseId") or "").strip() or None
+                entry["variantId"] = str(artifact.get("variantId") or "").strip() or None
+                entry["replicate"] = artifact.get("replicate")
+                entries.append(entry)
+        if len(entries) >= max(0, int(max_items or 0)):
+            break
+    entries.sort(key=lambda item: (str(item.get("modifiedAt") or ""), str(item.get("runId") or ""), str(item.get("artifactId") or item.get("name") or "")), reverse=True)
+    return entries[: max(0, int(max_items or 0))]
+
+
+def _clip_text(value: Any, limit: int = 600) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 14)].rstrip() + " ...[clipped]"
+
+
+def _stable_hash(value: Any) -> str:
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _file_sha256(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _tail_jsonl(path: Path, limit: int = 12) -> List[Dict[str, Any]]:
+    raw = read_text(path)
+    if raw is None:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for line in raw.splitlines()[-max(0, int(limit or 0)) :]:
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            parsed = {"raw": _clip_text(line, 400)}
+        if isinstance(parsed, dict):
+            rows.append(parsed)
+    return rows
+
+
+def build_handoff_history_entry(name: str, modified_at: str, size: int, content: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    content = content if isinstance(content, dict) else {}
+    active_task = content.get("activeTask") if isinstance(content.get("activeTask"), dict) else {}
+    loop = content.get("loop") if isinstance(content.get("loop"), dict) else {}
+    dispatch = content.get("dispatch") if isinstance(content.get("dispatch"), dict) else {}
+    return {
+        "name": name,
+        "kind": "handoff_packet",
+        "modifiedAt": modified_at,
+        "size": coerce_int(size, default=0, minimum=0, label=f"{name}.size") or 0,
+        "packetId": str(content.get("packetId") or Path(name).stem),
+        "createdAt": str(content.get("createdAt") or modified_at),
+        "actor": str(content.get("actor") or "").strip() or None,
+        "reason": str(content.get("reason") or "").strip() or None,
+        "taskId": str(active_task.get("taskId") or "").strip() or None,
+        "objective": _clip_text(active_task.get("objective"), 220),
+        "loopStatus": str(loop.get("status") or "").strip() or None,
+        "dispatchStatus": str(dispatch.get("status") or "").strip() or None,
+        "failedCallCount": len(content.get("failedCalls") or []) if isinstance(content.get("failedCalls"), list) else 0,
+        "packetHash": str(content.get("packetHash") or "").strip() or None,
+        "evidenceDigest": str(((content.get("integrity") or {}) if isinstance(content.get("integrity"), dict) else {}).get("evidenceDigest") or "").strip() or None,
+    }
+
+
+def list_handoff_packets(paths: Optional[Paths] = None, max_items: int = 20) -> List[Dict[str, Any]]:
+    paths = paths or project_paths()
+    entries: List[Dict[str, Any]] = []
+    for artifact_file in artifacts.list_json_artifacts(paths.root, ["handoffs"]):
+        content = artifacts.read_json_artifact(paths.root, "handoffs", str(artifact_file.get("name") or ""))
+        entries.append(
+            build_handoff_history_entry(
+                str(artifact_file.get("name") or ""),
+                str(artifact_file.get("modifiedAt") or ""),
+                int(artifact_file.get("size") or 0),
+                content,
+            )
+        )
+        if len(entries) >= max(0, int(max_items or 0)):
+            break
+    return entries
+
+
+def read_latest_handoff_packet(paths: Optional[Paths] = None) -> Optional[Dict[str, Any]]:
+    paths = paths or project_paths()
+    entries = artifacts.list_json_artifacts(paths.root, ["handoffs"])
+    for entry in entries:
+        packet = artifacts.read_json_artifact(paths.root, "handoffs", str(entry.get("name") or ""))
+        if isinstance(packet, dict):
+            return packet
+    return None
+
+
+def _handoff_recent_jobs(paths: Paths, limit: int = 8) -> List[Dict[str, Any]]:
+    jobs = sorted(read_jobs(paths), key=lambda job: parse_ts(job.get("queuedAt")) or 0, reverse=True)
+    rows: List[Dict[str, Any]] = []
+    for job in jobs[: max(0, int(limit or 0))]:
+        metadata_payload = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+        rows.append(
+            {
+                "jobId": job.get("jobId"),
+                "taskId": job.get("taskId"),
+                "jobType": job.get("jobType"),
+                "target": job.get("target"),
+                "status": job.get("status"),
+                "queuedAt": job.get("queuedAt"),
+                "startedAt": job.get("startedAt"),
+                "finishedAt": job.get("finishedAt"),
+                "lastHeartbeatAt": job.get("lastHeartbeatAt"),
+                "lastMessage": _clip_text(job.get("lastMessage"), 260),
+                "provider": str(metadata_payload.get("provider") or "").strip() or None,
+                "model": str(metadata_payload.get("model") or "").strip() or None,
+                "error": _clip_text(job.get("error"), 360),
+            }
+        )
+    return rows
+
+
+def _handoff_recent_artifacts(paths: Paths, limit: int = 14) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for artifact_file in artifacts.list_json_artifacts(paths.root, ["checkpoints", "outputs", "failed_calls"]):
+        category = str(artifact_file.get("category") or "")
+        name = str(artifact_file.get("name") or "")
+        content = artifacts.read_json_artifact(paths.root, category, name)
+        entry = build_artifact_history_entry(name, str(artifact_file.get("modifiedAt") or ""), int(artifact_file.get("size") or 0), content)
+        if entry is None:
+            continue
+        rows.append(
+            {
+                "name": entry.get("name"),
+                "kind": entry.get("kind"),
+                "taskId": entry.get("taskId"),
+                "target": entry.get("worker"),
+                "roundOrStep": entry.get("roundOrStep"),
+                "provider": entry.get("provider"),
+                "model": entry.get("model"),
+                "modifiedAt": entry.get("modifiedAt"),
+                "failureKind": entry.get("failureKind"),
+                "error": _clip_text(entry.get("error"), 280),
+            }
+        )
+        if len(rows) >= max(0, int(limit or 0)):
+            break
+    return rows
+
+
+def build_handoff_packet(
+    paths: Optional[Paths] = None,
+    *,
+    actor: str = "system",
+    reason: str = "manual",
+    next_action: str = "",
+) -> Dict[str, Any]:
+    paths = paths or project_paths()
+    state = read_state_payload(paths)
+    task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else {}
+    draft = state.get("draft") if isinstance(state.get("draft"), dict) else {}
+    loop = state.get("loop") if isinstance(state.get("loop"), dict) else {}
+    dispatch = state.get("dispatch") if isinstance(state.get("dispatch"), dict) else {}
+    workers = state.get("workers") if isinstance(state.get("workers"), dict) else {}
+    failed_calls = list_failed_call_artifacts(paths, 12)
+    recent_jobs = _handoff_recent_jobs(paths, 8)
+    recent_artifacts = _handoff_recent_artifacts(paths, 14)
+    recent_steps = _tail_jsonl(paths.steps, 12)
+    now = utc_now()
+    packet_id = "handoff_" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    known_blockers = []
+    for job in recent_jobs:
+        if str(job.get("status") or "") in {"error", "budget_exhausted", "interrupted", "cancelled"}:
+            known_blockers.append(
+                {
+                    "source": "job",
+                    "jobId": job.get("jobId"),
+                    "target": job.get("target"),
+                    "status": job.get("status"),
+                    "message": job.get("error") or job.get("lastMessage"),
+                }
+            )
+    for failure in failed_calls[:5]:
+        known_blockers.append(
+            {
+                "source": "failed_call",
+                "artifact": failure.get("name"),
+                "target": failure.get("worker"),
+                "provider": failure.get("provider"),
+                "failureKind": failure.get("failureKind"),
+                "message": _clip_text(failure.get("error"), 280),
+            }
+        )
+    state_fingerprint = {
+        "stateSha256": _file_sha256(paths.state),
+        "eventsTailSha256": _stable_hash(_tail_jsonl(paths.events, 80)),
+        "stepsTailSha256": _stable_hash(_tail_jsonl(paths.steps, 80)),
+        "jobsSha256": _stable_hash(recent_jobs),
+        "artifactsSha256": _stable_hash(recent_artifacts),
+    }
+    packet: Dict[str, Any] = {
+        "artifactType": "handoff_packet",
+        "schemaVersion": 1,
+        "packetId": packet_id,
+        "createdAt": now,
+        "actor": _clip_text(actor, 80) or "system",
+        "reason": _clip_text(reason, 240) or "manual",
+        "contract": {
+            "canonicalSource": "data/handoffs artifact plus linked evidence artifacts",
+            "chatHistoryRole": "helpful but non-canonical",
+            "readerRule": "Load this packet first, verify hashes when possible, then inspect linked artifacts before continuing.",
+            "maxPacketPurpose": "handoff state, not complete knowledgebase loadout",
+        },
+        "activeTask": {
+            "taskId": task.get("taskId"),
+            "title": task.get("title"),
+            "objective": _clip_text(task.get("objective"), 1200),
+            "workerIds": [
+                str(worker.get("id") or "").strip()
+                for worker in (task.get("workers") or [])
+                if isinstance(worker, dict) and str(worker.get("id") or "").strip()
+            ],
+            "memoryVersion": state.get("memoryVersion"),
+            "runtime": task.get("runtime") if isinstance(task.get("runtime"), dict) else {},
+        },
+        "draft": {
+            "runtimeMode": draft.get("runtimeMode"),
+            "contextMode": draft.get("contextMode"),
+            "loopRounds": draft.get("loopRounds"),
+            "provider": draft.get("provider"),
+            "model": draft.get("model"),
+            "directBaselineMode": draft.get("directBaselineMode"),
+            "knowledgebase": draft.get("knowledgebase") if isinstance(draft.get("knowledgebase"), dict) else {},
+        },
+        "loop": {
+            key: loop.get(key)
+            for key in (
+                "status",
+                "jobId",
+                "mode",
+                "totalRounds",
+                "completedRounds",
+                "currentRound",
+                "lastHeartbeatAt",
+                "lastMessage",
+                "activeTargets",
+                "providerTrace",
+            )
+        },
+        "dispatch": dispatch,
+        "workerState": {
+            str(worker_id): {
+                "present": isinstance(value, dict),
+                "round": value.get("round") if isinstance(value, dict) else None,
+                "step": value.get("step") if isinstance(value, dict) else None,
+                "label": value.get("label") if isinstance(value, dict) else None,
+            }
+            for worker_id, value in workers.items()
+        },
+        "recentJobs": recent_jobs,
+        "recentArtifacts": recent_artifacts,
+        "failedCalls": failed_calls,
+        "recentSteps": recent_steps,
+        "knownBlockers": known_blockers[:10],
+        "nextActions": [
+            item
+            for item in [
+                _clip_text(next_action, 360),
+                "If a provider call failed, open the failed-call artifact before retrying.",
+                "If hashes changed since this packet, refresh state/history before resuming.",
+            ]
+            if item
+        ],
+        "integrity": {
+            "stateFingerprint": state_fingerprint,
+            "evidenceDigest": _stable_hash(
+                {
+                    "taskId": task.get("taskId"),
+                    "loop": loop,
+                    "dispatch": dispatch,
+                    "recentJobs": recent_jobs,
+                    "recentArtifacts": recent_artifacts,
+                    "failedCalls": failed_calls,
+                    "recentSteps": recent_steps,
+                }
+            ),
+        },
+    }
+    packet["packetHash"] = _stable_hash(packet)
+    return packet
+
+
+def write_handoff_packet(
+    paths: Optional[Paths] = None,
+    *,
+    actor: str = "system",
+    reason: str = "manual",
+    next_action: str = "",
+) -> Dict[str, Any]:
+    paths = paths or project_paths()
+    packet = build_handoff_packet(paths, actor=actor, reason=reason, next_action=next_action)
+    name = f"{packet['packetId']}.json"
+    artifact_meta = artifacts.write_json_artifact(paths.root, "handoffs", name, packet)
+    result = dict(packet)
+    result["artifact"] = artifact_meta
+    return result
+
+
 def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max_artifacts: int = 30, max_rounds: int = 12, max_sessions: int = 10) -> Dict[str, Any]:
     paths = paths or project_paths()
     state = read_state_payload(paths)
@@ -1134,7 +1696,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
             }
         )
 
-    artifact_files = artifacts.list_json_artifacts(paths.root, ["checkpoints", "outputs"])
+    artifact_files = artifacts.list_json_artifacts(paths.root, ["checkpoints", "outputs", "failed_calls"])
 
     artifact_entries: List[Dict[str, Any]] = []
     round_groups: Dict[str, Dict[str, Any]] = {}
@@ -1198,6 +1760,17 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
         "jobs": jobs_out,
         "dispatch": state.get("dispatch"),
         "artifacts": artifact_entries,
+        "failedCalls": sorted(
+            list_failed_call_artifacts(paths, 50) + list_eval_failed_call_artifacts(paths, 50),
+            key=lambda item: (str(item.get("modifiedAt") or ""), str(item.get("runId") or ""), str(item.get("artifactId") or item.get("name") or "")),
+            reverse=True,
+        )[:100],
+        "nodeTransfers": sorted(
+            list_node_transfer_artifacts(paths, 100) + list_eval_node_transfer_artifacts(paths, 100),
+            key=lambda item: (str(item.get("modifiedAt") or ""), str(item.get("runId") or ""), str(item.get("artifactId") or item.get("name") or "")),
+            reverse=True,
+        )[:160],
+        "handoffs": list_handoff_packets(paths, 20),
         "rounds": rounds,
         "sessions": list_session_archives(paths, max_sessions),
         "sessionArchiveCount": count_session_archives(paths),
@@ -1336,12 +1909,12 @@ def build_execution_health(
         ts = str(entry.get("ts") or "").strip()
         mode = str(context.get("mode") or "").strip() or None
         recovered = bool(context.get("recoveredFromIncomplete"))
-        fallback = "falling back to mock" in message_lower or mode == "mock"
-        errored = "failed and was not downgraded to mock" in message_lower or message_lower.startswith("budget stopped")
-        degraded = fallback or recovered or errored
+        non_live = bool(mode and mode != "live")
+        errored = message_lower.startswith("budget stopped") or "synthetic output was used" in message_lower
+        degraded = non_live or recovered or errored
         existing = targets.get(target_id)
         target_degraded = bool((existing or {}).get("degraded")) or degraded
-        target_fallback = bool((existing or {}).get("usedMockFallback")) or fallback
+        target_non_live = bool((existing or {}).get("usedNonLiveFallback")) or non_live
         target_recovered = bool((existing or {}).get("recoveredFromIncomplete")) or recovered
         target_errored = str((existing or {}).get("status") or "") == "error" or errored
         status = "error" if target_errored else ("degraded" if target_degraded else "completed")
@@ -1351,7 +1924,7 @@ def build_execution_health(
             "status": status,
             "mode": mode or ((existing or {}).get("mode")),
             "degraded": target_degraded,
-            "usedMockFallback": target_fallback,
+            "usedNonLiveFallback": target_non_live,
             "recoveredFromIncomplete": target_recovered,
             "lastError": str(context.get("error") or "").strip() or ((existing or {}).get("lastError")) or None,
             "lastMessage": message or ((existing or {}).get("lastMessage")) or "",
@@ -1362,7 +1935,7 @@ def build_execution_health(
             latest_issue_ts = ts
             latest_issue = dict(target_entry)
 
-    fallback_count = sum(1 for target in targets.values() if bool(target.get("usedMockFallback")))
+    fallback_count = sum(1 for target in targets.values() if bool(target.get("usedNonLiveFallback")))
     recovered_count = sum(1 for target in targets.values() if bool(target.get("recoveredFromIncomplete")))
     issue_count = sum(1 for target in targets.values() if bool(target.get("degraded")))
     return {
@@ -1389,14 +1962,14 @@ def build_round_execution_health(artifacts_for_round: List[Dict[str, Any]]) -> D
         label = execution_target_label(target, None)
         mode = str(artifact.get("mode") or "").strip() or None
         recovered = bool(artifact.get("recoveredFromIncomplete"))
-        fallback = mode == "mock"
+        non_live = bool(mode and mode != "live")
         contract_warnings = [
             str(item).strip()
             for item in (artifact.get("contractWarnings") or [])
             if str(item).strip()
         ] if isinstance(artifact.get("contractWarnings"), list) else []
-        degraded = fallback or recovered or bool(contract_warnings)
-        if fallback:
+        degraded = non_live or recovered or bool(contract_warnings)
+        if non_live:
             fallback_count += 1
         if recovered:
             recovered_count += 1
@@ -1408,12 +1981,12 @@ def build_round_execution_health(artifacts_for_round: List[Dict[str, Any]]) -> D
             "status": "degraded" if degraded else "completed",
             "mode": mode,
             "degraded": degraded,
-            "usedMockFallback": fallback,
+            "usedNonLiveFallback": non_live,
             "recoveredFromIncomplete": recovered,
             "lastError": None,
             "lastMessage": (
-                "Used mock fallback for this artifact."
-                if fallback
+                "Used non-live fallback for this artifact."
+                if non_live
                 else (
                     "Recovered after output-token escalation."
                     if recovered
@@ -1448,7 +2021,7 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
     content: Optional[Dict[str, Any]] = None
     modified_at: Optional[str] = None
     size = 0
-    for bucket in ("outputs", "checkpoints"):
+    for bucket in ("outputs", "checkpoints", "failed_calls", "handoffs", "node_transfers"):
         content = artifacts.read_json_artifact(paths.root, bucket, safe_name)
         if isinstance(content, dict):
             bucket_name = bucket
@@ -1512,6 +2085,9 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
             "githubToolCalls": (response_meta.get("githubToolCalls") or [])[:12] if isinstance(response_meta.get("githubToolCalls"), list) else [],
             "githubSources": list(response_meta.get("githubSources") or []) if isinstance(response_meta.get("githubSources"), list) else [],
             "rawOutputAvailable": bool(str(content.get("rawOutputText") or "").strip()),
+            "failureKind": content.get("failureKind"),
+            "error": content.get("error"),
+            "ingestion": content.get("ingestion") if isinstance(content.get("ingestion"), dict) else {},
             "contractWarnings": warnings[:12],
         },
         "policy": artifact_visibility_policy(),
@@ -1739,6 +2315,14 @@ def read_eval_artifact(paths: Optional[Paths], run_id: str, artifact_id: str) ->
     content = read_json_file(artifact_file)
     if not isinstance(content, dict):
         raise ValueError("Eval artifact content is invalid.")
+    summary = entry.get("summary") if isinstance(entry.get("summary"), dict) else {}
+    if str(entry.get("kind") or "") == "failed_call":
+        summary = dict(summary)
+        summary.setdefault("passStatus", str(content.get("passStatus") or "discarded_failed_attempt"))
+        summary.setdefault("passedToNextNode", bool(content.get("passedToNextNode")) if "passedToNextNode" in content else False)
+        summary.setdefault("handoffNote", str(content.get("handoffNote") or "This failed-call artifact is review-only and was not passed between nodes."))
+        summary.setdefault("nodeTransferArtifact", content.get("nodeTransferArtifact"))
+        summary.setdefault("acceptedSuccessor", _eval_failed_call_successor(artifact_index, entry, content))
     return {
         "artifactId": artifact_id,
         "name": entry.get("name") or artifact_file.name,
@@ -1746,7 +2330,7 @@ def read_eval_artifact(paths: Optional[Paths], run_id: str, artifact_id: str) ->
         "storage": "eval",
         "modifiedAt": entry.get("modifiedAt") or datetime.fromtimestamp(artifact_file.stat().st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
         "size": entry.get("size") or artifact_file.stat().st_size,
-        "summary": entry.get("summary") if isinstance(entry.get("summary"), dict) else {},
+        "summary": summary,
         "policy": artifact_visibility_policy(),
         "content": content,
     }

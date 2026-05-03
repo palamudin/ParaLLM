@@ -108,6 +108,8 @@ class JudgeLearningTests(unittest.TestCase):
         self.assertEqual(second["write"]["inserted"], 0)
         self.assertEqual(second["write"]["updated"], 0)
         self.assertGreaterEqual(second["write"]["unchanged"], first["write"]["inserted"])
+        self.assertEqual(second["librarian"]["status"], "skipped")
+        self.assertEqual(second["librarian"]["reason"], "no_learning_delta")
         self.assertTrue((self.root / "data" / "knowledgebase" / "banks" / "msp-knowledgebase" / "learning_events.jsonl").is_file())
         self.assertEqual(second["write"]["eventLedger"]["inserted"], 0)
         records, _ = knowledgebase.load_persistent_records(self.root, bank_id="msp-knowledgebase")

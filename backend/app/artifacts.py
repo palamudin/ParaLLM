@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,7 +20,9 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency in some ru
 from .config import deployment_topology
 
 
-ARTIFACT_CATEGORIES = {"checkpoints", "outputs", "sessions", "exports"}
+ARTIFACT_CATEGORIES = {"checkpoints", "outputs", "sessions", "exports", "failed_calls", "handoffs", "node_transfers"}
+MAX_FILESYSTEM_ARTIFACT_PATH = 248
+MAX_ARTIFACT_FILENAME = 96
 
 
 def object_storage_enabled(root: Optional[Path] = None) -> bool:
@@ -52,10 +56,36 @@ def _object_key(category: str, name: str) -> str:
     normalized_category = str(category or "").strip().lower()
     if normalized_category not in ARTIFACT_CATEGORIES:
         raise RuntimeError(f"Unsupported artifact category: {category}")
-    safe_name = Path(str(name or "")).name
+    safe_name = _safe_artifact_name(str(name or ""))
     if not safe_name.endswith(".json"):
         raise RuntimeError("Artifact names must end with .json")
     return f"{normalized_category}/{safe_name}"
+
+
+def _safe_artifact_name(name: str) -> str:
+    safe_name = Path(str(name or "")).name
+    if not safe_name.endswith(".json"):
+        raise RuntimeError("Artifact names must end with .json")
+    return safe_name
+
+
+def _compact_artifact_name(name: str, max_length: int) -> str:
+    safe_name = _safe_artifact_name(name)
+    max_length = max(24, int(max_length or MAX_ARTIFACT_FILENAME))
+    if len(safe_name) <= max_length:
+        return safe_name
+    stem = safe_name[:-5]
+    digest = hashlib.sha1(safe_name.encode("utf-8")).hexdigest()[:12]
+    prefix_budget = max(8, max_length - len(digest) - len("--.json"))
+    prefix = re.sub(r"[^A-Za-z0-9_.-]+", "-", stem).strip("-._")[:prefix_budget].strip("-._") or "artifact"
+    return f"{prefix}-{digest}.json"
+
+
+def _filesystem_artifact_name(target_dir: Path, name: str) -> str:
+    safe_name = _safe_artifact_name(name)
+    available = MAX_FILESYSTEM_ARTIFACT_PATH - len(str(target_dir.resolve())) - 1
+    max_length = max(24, min(MAX_ARTIFACT_FILENAME, available))
+    return _compact_artifact_name(safe_name, max_length)
 
 
 def _ensure_bucket(root: Optional[Path] = None) -> None:
@@ -68,11 +98,12 @@ def _ensure_bucket(root: Optional[Path] = None) -> None:
 
 
 def write_json_artifact(root: Optional[Path], category: str, name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    safe_name = Path(str(name or "")).name
+    requested_name = _safe_artifact_name(str(name or ""))
     if not object_storage_enabled(root):
         topology = deployment_topology(root)
         target_dir = topology.data_root / str(category).strip().lower()
         target_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = _filesystem_artifact_name(target_dir, requested_name)
         target_path = target_dir / safe_name
         # Re-assert the parent directory immediately before write so freshly
         # initialized eval workspaces cannot trip over a missing category path.
@@ -85,8 +116,10 @@ def write_json_artifact(root: Optional[Path], category: str, name: str, payload:
             "category": str(category).strip().lower(),
             "size": stat.st_size,
             "modifiedAt": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
+            "requestedName": requested_name if requested_name != safe_name else None,
         }
 
+    safe_name = _safe_artifact_name(requested_name)
     body = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
     _ensure_bucket(root)
     client = _s3_client(root)
@@ -101,14 +134,21 @@ def write_json_artifact(root: Optional[Path], category: str, name: str, payload:
         "category": str(category).strip().lower(),
         "size": len(body),
         "modifiedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "requestedName": requested_name if requested_name != safe_name else None,
     }
 
 
 def read_json_artifact(root: Optional[Path], category: str, name: str) -> Optional[Dict[str, Any]]:
-    safe_name = Path(str(name or "")).name
+    requested_name = _safe_artifact_name(str(name or ""))
     if not object_storage_enabled(root):
         topology = deployment_topology(root)
-        target_path = topology.data_root / str(category).strip().lower() / safe_name
+        target_dir = topology.data_root / str(category).strip().lower()
+        safe_name = _filesystem_artifact_name(target_dir, requested_name)
+        target_path = target_dir / safe_name
+        if not target_path.exists() and safe_name != requested_name:
+            legacy_path = target_dir / requested_name
+            if legacy_path.exists():
+                target_path = legacy_path
         if not target_path.exists():
             return None
         raw = target_path.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
@@ -120,6 +160,7 @@ def read_json_artifact(root: Optional[Path], category: str, name: str) -> Option
 
     client = _s3_client(root)
     try:
+        safe_name = _safe_artifact_name(requested_name)
         response = client.get_object(Bucket=_bucket_name(root), Key=_object_key(category, safe_name))
     except Exception:  # noqa: BLE001
         return None
@@ -189,10 +230,16 @@ def list_json_artifacts(root: Optional[Path], categories: Optional[List[str]] = 
 
 
 def delete_json_artifact(root: Optional[Path], category: str, name: str) -> bool:
-    safe_name = Path(str(name or "")).name
+    requested_name = _safe_artifact_name(str(name or ""))
     if not object_storage_enabled(root):
         topology = deployment_topology(root)
-        target_path = topology.data_root / str(category).strip().lower() / safe_name
+        target_dir = topology.data_root / str(category).strip().lower()
+        safe_name = _filesystem_artifact_name(target_dir, requested_name)
+        target_path = target_dir / safe_name
+        if not target_path.exists() and safe_name != requested_name:
+            legacy_path = target_dir / requested_name
+            if legacy_path.exists():
+                target_path = legacy_path
         if not target_path.exists():
             return False
         target_path.unlink()
@@ -200,6 +247,7 @@ def delete_json_artifact(root: Optional[Path], category: str, name: str) -> bool
 
     client = _s3_client(root)
     try:
+        safe_name = _safe_artifact_name(requested_name)
         client.delete_object(Bucket=_bucket_name(root), Key=_object_key(category, safe_name))
     except Exception:  # noqa: BLE001
         return False

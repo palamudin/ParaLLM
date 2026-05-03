@@ -56,7 +56,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
 - `scripts/qa_check.py`: reusable QA harness for linting and reversible endpoint smoke checks
 - `scripts/qa_live_check.py`: reusable live QA harness for budget-capped, source-restricted endpoint smoke checks
 - `scripts/qa_eval_check.py`: reusable isolated-eval smoke harness for suites, arms, and run artifacts
-- `scripts/qa_local_tools_check.py`: reusable read-only local-tool smoke harness for root policy, tool execution, and mocked Responses continuation
+- `scripts/qa_local_tools_check.py`: reusable read-only local-tool smoke harness for root policy, tool execution, and controlled Responses continuation
 - `scripts/qa_python_crossover_check.py`: reusable crossover smoke that boots the Python control plane, serves the shell from ASGI, and exercises the migrated write/job/eval paths end to end
 - `scripts/quality_benchmark.py`: blind quality benchmark for comparing direct output vs steered output on the same case
 - `runtime/eval_runner.py`: isolated eval runner for suite/arm/replicate benchmarking outside the live singleton workspace
@@ -73,7 +73,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
 
 ## Runtime Options
 
-- Execution mode: `live` or `mock`
+- Execution mode: `live`
 - Default low-cost recommendation: `gpt-5-mini`
 - Opinionated runtime profiles: `Low`, `Mid`, `High`, and `Ultra` for template-driven cost/depth tradeoffs
 - Per-position model selection for each worker lane and the summarizer
@@ -110,7 +110,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
 - Dynamic worker roster starting with `Proponent` and `Sceptic`, with bounded adversarial expansion through additional lettered lanes
 - Session context remains available for short carry-forward memory between sessions, but it now lives under `Debug` instead of the main Home flow
 - Home is now chat-first: the main workflow is prompt plus `Send`, and that single action creates a task and kicks off the configured loop automatically
-- The Home composer is now draft-first instead of active-task-first, so a stale task no longer overwrites the next-send `live` / `mock` setting after refresh
+- The Home composer is now draft-first instead of active-task-first, so a stale task no longer overwrites the next-send live setting after refresh
 - Home chat polling now preserves scroll position and lane-inspector expansion state instead of snapping back to the bottom on every refresh
 - Manual operations such as `Run Round`, `Run Auto Loop`, `Summarize`, `Refresh`, `Reset Session`, and `Reset State` now live under `Debug` instead of cluttering the main conversation flow
 - Worker side controls now expose directive, temperature, and per-worker model selectors directly in the home rail, plus a `+ Add` lane button for on-demand adversarial expansion
@@ -157,7 +157,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
 - Read-only tool paths should have their own explicit QA so tool-loop regressions get caught without spending live tokens
 - GitHub/repo read tooling should share that same QA discipline so connector-like access can be verified without spending model tokens
 - Dynamic lane spin-up should also have its own QA because a bad roster mutation is a state-management bug, not just a prompting bug
-- Live QA should stay separate from mock QA so spend-bearing checks remain explicit, budget-capped, and domain-restricted
+- Live QA keeps spend-bearing checks explicit, budget-capped, and domain-restricted
 - Quality benchmarking should also be first-class so we can test whether steered output is actually better than a direct answer, not just more elaborate
 - Isolated evals should live beside the app, not inside the interactive singleton state, so hidden gold answers and benchmark artifacts cannot contaminate normal tasks
 - Session context is now treated as review/debug data rather than primary user input and has been moved out of the Home surface
@@ -175,19 +175,19 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
 - Reset Session archives the current state to `data/sessions`, clears the active task, and reloads a fresh draft with short carry-forward context
 - Per-round checkpoint snapshots such as `*_A_step002.json` and `*_summary_round002.json`
 - UI history panels for recent jobs and checkpoint artifacts
-- Optional live model execution with mock fallback still available
-- Reusable `python scripts/qa_check.py` harness for Python/JS checks plus reversible mock endpoint smoke, with optional resident-runtime refresh to avoid stale-code false negatives
-- The mock QA harness now also covers lane-template spawning, export/replay, bounded queueing, retry, and resume through the active Python endpoints
+- Live model execution is required; provider/key failures fail loudly
+- Reusable `python scripts/qa_check.py` harness for Python/JS checks plus reversible live endpoint smoke, with optional resident-runtime refresh to avoid stale-code false negatives
+- The live QA harness now also covers lane-template spawning, export/replay, bounded queueing, retry, and resume through the active Python endpoints
 - Reusable `python scripts/qa_live_check.py` harness for reversible live endpoint smoke with OpenAI-domain allow-lists, runtime refresh, and spend/token caps
 - Verified live smoke run with grounded worker search and summarizer vetting against OpenAI-owned sources on April 18, 2026
 - Verified widened live `A/B/C` run with grounded worker research, live summarizer vetting, and saved output artifacts on April 19, 2026
-- Verified resident Python runtime dispatch on April 19, 2026 with mock `A/B/summarizer` execution through the control-plane endpoints
-- Verified resident Python runtime live path on April 19, 2026; model calls reached the Python runtime correctly and preserved the existing fallback-to-mock behavior when Responses API output was truncated by `max_output_tokens`
+- Verified resident Python runtime dispatch on April 19, 2026 with synthetic fixture `A/B/summarizer` execution through the control-plane endpoints
+- Verified resident Python runtime live path on April 19, 2026; model calls reached the Python runtime correctly and now fail loudly when provider output cannot be validated
 - Verified low-cap resident Python live run on April 19, 2026 with task budget `maxOutputTokens=500`; workers and summarizer still completed live because the runtime elevated to safe structured-output floors (`900` worker, `1400` summarizer) and retried to `1800` where needed
 - Verified dynamic multi-adversarial roster on April 19, 2026:
-  - mock `A/B/C` manual round completed with all 3 workers represented in summary/output artifacts
-  - mock `A/B/C/D` manual round completed with all 4 workers represented in summary/output artifacts
-  - mock `A/B/C/D/E` 2-round background loop completed with all 5 workers represented in summary/output artifacts
+  - synthetic fixture `A/B/C` manual round completed with all 3 workers represented in summary/output artifacts
+  - synthetic fixture `A/B/C/D` manual round completed with all 4 workers represented in summary/output artifacts
+  - synthetic fixture `A/B/C/D/E` 2-round background loop completed with all 5 workers represented in summary/output artifacts
   - live `A/B/C` manual round completed through the resident Python runtime with usage tracked for `A`, `B`, `C`, and `summarizer`
 - Verified chat-first send flow on April 19, 2026:
   - draft settings and worker roster can be saved before a task exists
@@ -195,15 +195,15 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
   - worker directive / temperature / model changes persist through the new roster endpoints
   - `Send` creates a task from the staged roster and immediately starts the configured loop
 - Verified live-mode refresh fix on April 19, 2026:
-  - with an older mock task still active, the rendered Settings form now keeps the persisted draft's `executionMode=live`
-  - a fresh manual live smoke task (`t-20260419-082140-1a296c`) completed through the resident Python runtime instead of falling back to mock
+  - with an older synthetic task still active, the rendered Settings form now keeps the persisted draft's `executionMode=live`
+  - a fresh manual live smoke task (`t-20260419-082140-1a296c`) completed through the resident Python runtime without synthetic fallback
   - a second manual live task (`t-20260419-082140-4e6764`) confirmed the current project/key also has live access to `gpt-5.4-mini` and `gpt-5.4`
 - Verified thread-behavior cleanup on April 19, 2026:
   - Home no longer forces the chat viewport to the bottom on every polling refresh
   - the lane inspector stays expanded while the displayed thread content is unchanged
   - lane inspection is now presented above the final Agent answer for users who want to review the internal lanes
 - Verified release-validation send flow on April 19, 2026:
-  - mock `start_task` plus `start_loop` smoke completed end to end with summary output saved
+  - synthetic fixture `start_task` plus `start_loop` smoke completed end to end with summary output saved
   - live `start_task` plus `start_loop` smoke completed end to end through the resident Python runtime
   - the live release-validation smoke used `6,422` total tokens for an estimated `$0.006562`
 - Verified PowerShell removal on April 19, 2026:
@@ -212,7 +212,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
   - after killing the resident Python service, both manual dispatch and a 1-round background live loop successfully relaunched it
 - Verified reusable QA harness on April 19, 2026:
   - `python scripts/qa_check.py` passed after restarting the resident Python runtime to pick up the current backend code
-  - the reversible mock smoke confirmed `frontAnswer`, `summarizerOpinion`, `reviewTrace`, and `lineCatalog` in both state and saved summary output artifacts
+  - the reversible synthetic smoke confirmed `frontAnswer`, `summarizerOpinion`, `reviewTrace`, and `lineCatalog` in both state and saved summary output artifacts
 - Verified reusable live QA harness on April 19, 2026:
   - `python scripts/qa_live_check.py` passed after restarting the resident Python runtime to pick up the current backend code
   - the reversible live smoke stayed within the configured cap at approximately `$0.031216`, using `29,471` tokens and `2` web-search calls
@@ -237,7 +237,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
 - Verified steer-vs-direct benchmark harness on April 19, 2026:
   - a new blind judge path compares a direct baseline answer against the public steered answer on the same prompt
   - the judge only sees anonymous `Answer A` / `Answer B` slots so it cannot bias toward the known architecture
-  - the benchmark now rejects silent mock-fallback steer runs by default so a broken live path does not masquerade as a bad quality result
+  - the benchmark now rejects silent synthetic steer runs by default so a broken live path does not masquerade as a bad quality result
   - the benchmark now also scores lead-thread control over adversarial pressure and can sweep multiple loop depths in one run
   - repeat trials now aggregate score deltas for decisiveness, tradeoff handling, objection absorption, actionability, single-voice quality, and overall quality
   - benchmark reports now save locally under `data/benchmarks/`
@@ -596,7 +596,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
 - Provider key groups are now isolated for `openai`, `anthropic`, `xai`, and `minimax` across env, mounted-secret, external-provider, and local-file backends, so one vendor path never reuses another vendor's keys.
 - Provider groups can now resolve credentials independently through `Local`, `Env`, or `DB` mode, which lets one vendor stay on shared local `Auth.txt` for testing while another vendor stays on environment-backed or external secret paths.
 - Live model calls now rotate to the next non-empty key on auth-style failures instead of binding one lane to one dead key for the rest of the run.
-- Managed secret backends now fail loudly when empty or unreachable, so live execution no longer drifts into file/env fallthrough or quiet mock fallback when the selected backend is degraded.
+- Managed secret backends now fail loudly when empty or unreachable, so live execution no longer drifts into file/env fallthrough or quiet synthetic fallback when the selected backend is degraded.
 
 ### Milestone 4: Prototype Hardening
 

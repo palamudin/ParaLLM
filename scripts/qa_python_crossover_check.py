@@ -297,13 +297,13 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             if not isinstance(draft, dict):
                 raise QAError("Draft was missing after adding a worker through Python.")
 
-            qa_print("Starting a mock task through the Python control plane")
+            qa_print("Starting a live task through the Python control plane")
             start = request_json(
                 backend_base + "/v1/tasks",
                 method="POST",
                 form_data={
                     "objective": "QA the Python control-plane crossover path.",
-                    "executionMode": "mock",
+                    "executionMode": "live",
                     "model": "gpt-5-mini",
                     "summarizerModel": "gpt-5-mini",
                     "workers": json.dumps(draft.get("workers") or []),
@@ -403,8 +403,8 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
                 backend_base + "/v1/evals/runs",
                 method="POST",
                 form_data={
-                    "suiteId": "smoke-mock",
-                    "armIds": json.dumps(["steered-mock"]),
+                    "suiteId": "smoke-live",
+                    "armIds": json.dumps(["steered-mini"]),
                     "replicates": "1",
                     "loopSweep": "1",
                     "judgeModel": "gpt-5.4-mini",

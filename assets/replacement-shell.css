@@ -707,6 +707,85 @@ input {
   line-height: 1.55;
 }
 
+.replacement-review-toolbar {
+  align-items: center;
+}
+
+.replacement-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: min(520px, 100%);
+}
+
+.replacement-review-actions select {
+  min-width: 260px;
+}
+
+.replacement-fail-ledger,
+.replacement-handoff-ledger,
+.replacement-transfer-ledger {
+  align-content: start;
+}
+
+.replacement-fail-grid {
+  grid-template-columns: minmax(280px, 0.7fr) minmax(360px, 1.3fr);
+  align-items: start;
+}
+
+.replacement-fail-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--rs-border);
+  border-radius: var(--rs-card-radius);
+  background: color-mix(in srgb, var(--rs-surface-muted) 78%, transparent);
+}
+
+.replacement-fail-panel-wide {
+  grid-column: 1 / -1;
+}
+
+.replacement-fail-panel pre {
+  max-height: 42vh;
+}
+
+.replacement-fail-meta {
+  display: grid;
+  gap: 8px;
+}
+
+.replacement-fail-meta-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--rs-border) 62%, transparent);
+}
+
+.replacement-fail-meta-row:last-child {
+  border-bottom: 0;
+}
+
+.replacement-fail-meta-row span {
+  color: var(--rs-muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.replacement-fail-meta-row strong {
+  color: var(--rs-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.replacement-fail-meta-row-wide {
+  grid-template-columns: 1fr;
+}
+
 .replacement-score-controls {
   gap: 14px;
 }
@@ -1169,6 +1248,7 @@ input {
   }
 
   .replacement-control-grid,
+  .replacement-fail-grid,
   .replacement-score-select-grid,
   .replacement-score-lane-grid,
   .replacement-score-session-head,
@@ -1180,8 +1260,15 @@ input {
 
   .replacement-view-head,
   .replacement-composer-actions,
-  .replacement-inspector-toolbar {
+  .replacement-inspector-toolbar,
+  .replacement-review-actions {
     flex-direction: column;
+  }
+
+  .replacement-review-actions,
+  .replacement-review-actions select {
+    width: 100%;
+    min-width: 0;
   }
 
   .replacement-inspector-note {

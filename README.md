@@ -48,7 +48,7 @@ The system makes that test inspectable and repeatable through:
   - MiniMax remains wired but is intentionally deferred from the primary path until its review lane is boring and repeatable
   - Ollama works as a native structured-output path with operator-set endpoint routing for local, remote, or dockerized hosts
   - workers and summarizer can be assigned different providers
-- Reversible QA scripts for mock, live, and eval smoke tests
+- Reversible QA scripts for live and eval smoke tests
 
 ## Architecture
 
@@ -193,7 +193,7 @@ Current skill layers:
 - Eval arms can now sweep `single`, `off`, and `both compare` answer paths plus `light workers` / `full workers` routing, with saved baseline-vs-pressurized comparison artifacts and score deltas per replicate
 - Eval run detail now exposes a collapsible technical compare, a side-by-side user-view answer compare, and a historical verification trail for each replicate
 - Reusable QA scripts for:
-  - mock smoke
+  - live smoke
   - live smoke
   - isolated eval smoke
   - local file tool smoke
@@ -467,7 +467,7 @@ Assignment behavior:
 - if there are fewer keys than positions, slots wrap
 - when wrapping is required, the starting slot rotates across rounds so one key does not always take commander-first traffic
 - if a live lane hits an auth-style key failure, the runtime now retries on the next non-empty key in pool order before giving up
-- if the active backend is managed and exposes no usable keys, live lanes fail loudly instead of downgrading to mock behind your back
+- if the active backend is managed and exposes no usable keys, live lanes fail loudly instead of producing synthetic output behind your back
 
 Only masked previews are shown in the UI. Raw keys stay in provider-specific env vars for `env`, provider-specific mounted files for `docker_secret`, grouped payloads for `external`, or prefixed local `Auth.txt` entries only when a provider group is explicitly switched into `Local`.
 
@@ -755,7 +755,7 @@ The focused OpenAI 5.4 rub test confirmed the failure mode: backup Direct scored
 | Unconstrained run id | `judge-20260501-111907+0000-d5db95` |
 | Replicates | `5` per arm per regime |
 | Error count | `0` in both runs |
-| Live/fallback status | live only; mock fallback excluded |
+| Live/fallback status | live only; synthetic fallback excluded |
 | Total tokens / estimated cost | constrained `153,102` / `$0.105828`; unconstrained `138,904` / `$0.088030` |
 
 | Regime | Arm | Deterministic | Quality mean | Quality sd | Quality min-max | Health mean | Control mean |

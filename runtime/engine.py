@@ -12,12 +12,13 @@ import socket
 import time
 import urllib.error
 import urllib.request
+import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from backend.app import artifacts as artifact_store
@@ -491,9 +492,10 @@ def model_prefers_compact_context(provider: Optional[str], model: Optional[str])
 
 
 class RuntimeErrorWithCode(Exception):
-    def __init__(self, message: str, status_code: int = 500) -> None:
+    def __init__(self, message: str, status_code: int = 500, failed_call_artifact: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.failed_call_artifact = failed_call_artifact
 
 
 def utc_now() -> str:
@@ -2975,36 +2977,60 @@ def strip_structured_output_prefix(text: str) -> str:
 
 
 def extract_balanced_json_object(text: str) -> str:
+    objects = extract_balanced_json_objects(text, limit=1)
+    return objects[0] if objects else ""
+
+
+def extract_balanced_json_object_spans(text: str, limit: int = 32) -> List[Tuple[int, int, str]]:
     raw = str(text or "")
-    start = raw.find("{")
-    if start < 0:
-        return ""
-    depth = 0
-    in_string = False
-    escape = False
-    for index in range(start, len(raw)):
-        char = raw[index]
-        if in_string:
-            if escape:
-                escape = False
-                continue
-            if char == "\\":
-                escape = True
+    if "{" not in raw:
+        return []
+    results: List[Tuple[int, int, str]] = []
+    scanned_starts = 0
+    max_starts = max(limit * 16, 64)
+    for start, start_char in enumerate(raw):
+        if start_char != "{":
+            continue
+        scanned_starts += 1
+        if scanned_starts > max_starts and results:
+            break
+        if scanned_starts > 2048:
+            break
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(raw)):
+            char = raw[index]
+            if in_string:
+                if escape:
+                    escape = False
+                    continue
+                if char == "\\":
+                    escape = True
+                    continue
+                if char == '"':
+                    in_string = False
                 continue
             if char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-            continue
-        if char == "{":
-            depth += 1
-            continue
-        if char == "}":
-            depth -= 1
-            if depth == 0:
-                return raw[start:index + 1].strip()
-    return ""
+                in_string = True
+                continue
+            if char == "{":
+                depth += 1
+                continue
+            if char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start:index + 1].strip()
+                    if candidate and all(candidate != existing[2] for existing in results):
+                        results.append((start, index + 1, candidate))
+                    break
+        if len(results) >= limit:
+            break
+    return results
+
+
+def extract_balanced_json_objects(text: str, limit: int = 32) -> List[str]:
+    return [candidate for _start, _end, candidate in extract_balanced_json_object_spans(text, limit=limit)]
 
 
 def escape_json_string_control_chars(text: str) -> str:
@@ -3088,19 +3114,177 @@ def parse_pythonish_object_text(text: str) -> Optional[Dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
+STRUCTURED_OUTPUT_PAYLOAD_HINT_KEYS = {
+    "answer",
+    "answerDraft",
+    "frontAnswer",
+    "publicAnswer",
+    "summarizerOpinion",
+    "sourceWorkers",
+    "workerId",
+    "taskId",
+    "round",
+    "stance",
+    "leadDirection",
+    "confidenceNote",
+    "controlAudit",
+    "observation",
+    "benefits",
+    "detriments",
+    "incident",
+    "immediateActions",
+    "decisionGates",
+}
+STRUCTURED_OUTPUT_SCHEMA_FRAGMENT_KEYS = {
+    "type",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "description",
+    "enum",
+    "format",
+    "minimum",
+    "maximum",
+    "minItems",
+    "maxItems",
+}
+STRUCTURED_OUTPUT_JSON_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
+
+
+def looks_like_schema_echo(payload: Dict[str, Any]) -> bool:
+    keys = {str(key) for key in payload.keys()}
+    if not keys:
+        return False
+    if keys.isdisjoint(STRUCTURED_OUTPUT_PAYLOAD_HINT_KEYS) and keys.issubset(STRUCTURED_OUTPUT_SCHEMA_FRAGMENT_KEYS):
+        return True
+    type_value = str(payload.get("type") or "").strip().lower()
+    if type_value in STRUCTURED_OUTPUT_JSON_SCHEMA_TYPES and keys.isdisjoint(STRUCTURED_OUTPUT_PAYLOAD_HINT_KEYS):
+        return True
+    non_empty_values = [value for value in payload.values() if value not in (None, "", [], {})]
+    if keys.intersection(STRUCTURED_OUTPUT_PAYLOAD_HINT_KEYS) and non_empty_values:
+        if all(looks_like_schema_fragment_value(value) for value in non_empty_values):
+            return True
+    return False
+
+
+def looks_like_schema_fragment_value(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    keys = {str(key) for key in value.keys()}
+    if not keys:
+        return False
+    type_value = str(value.get("type") or "").strip().lower()
+    if type_value in STRUCTURED_OUTPUT_JSON_SCHEMA_TYPES and keys.issubset(STRUCTURED_OUTPUT_SCHEMA_FRAGMENT_KEYS):
+        return True
+    return looks_like_schema_echo(value)
+
+
+def structured_output_payload_score(payload: Dict[str, Any]) -> int:
+    if looks_like_schema_echo(payload):
+        return -1000
+    score = 0
+    weights = {
+        "frontAnswer": 20,
+        "answer": 18,
+        "publicAnswer": 18,
+        "answerDraft": 16,
+        "summarizerOpinion": 10,
+        "workerId": 10,
+        "taskId": 8,
+        "round": 4,
+        "stance": 4,
+        "leadDirection": 6,
+        "confidenceNote": 4,
+        "controlAudit": 6,
+        "observation": 5,
+        "benefits": 5,
+        "detriments": 5,
+        "incident": 6,
+        "immediateActions": 6,
+        "decisionGates": 6,
+        "scores": 10,
+        "verdict": 8,
+        "strongestStrength": 6,
+        "strongestWeakness": 6,
+        "strongestControlStrength": 6,
+        "strongestControlWeakness": 6,
+        "primaryEdge": 6,
+        "baselineEdge": 6,
+        "decisionRelation": 6,
+        "rationale": 8,
+    }
+    for key, weight in weights.items():
+        if key in payload and payload.get(key) not in (None, "", [], {}):
+            score += weight
+    score += structured_output_content_quality_score(payload)
+    score += min(len(payload), 12)
+    return score
+
+
+def structured_output_content_quality_score(payload: Dict[str, Any]) -> int:
+    text_parts: List[str] = []
+    for key in (
+        "answer",
+        "answerDraft",
+        "publicAnswer",
+        "leadDirection",
+        "stance",
+        "confidenceNote",
+        "verdict",
+        "strongestStrength",
+        "strongestWeakness",
+        "strongestControlStrength",
+        "strongestControlWeakness",
+        "primaryEdge",
+        "baselineEdge",
+        "rationale",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str):
+            text_parts.append(value)
+    front_answer = payload.get("frontAnswer")
+    if isinstance(front_answer, dict):
+        nested_answer = front_answer.get("answer")
+        if isinstance(nested_answer, str):
+            text_parts.append(nested_answer)
+    joined = "\n".join(text_parts).strip()
+    if not joined:
+        return 0
+    compact = re.sub(r"[\s.…_-]+", "", joined)
+    if not compact:
+        return -250
+    score = min(len(joined) // 80, 60)
+    if len(joined) >= 240:
+        score += 10
+    return score
+
+
 def parse_structured_output_text(output_text: str) -> Dict[str, Any]:
     raw = strip_structured_output_prefix(output_text)
+    def parse_error(message: str, failure_kind: str = "malformed_json") -> RuntimeErrorWithCode:
+        error = RuntimeErrorWithCode(message, 500)
+        error.raw_output_text = str(output_text or "")
+        error.failure_kind = failure_kind
+        return error
+
     if not raw:
-        raise RuntimeErrorWithCode("Model response JSON parse failed: empty output.", 500)
+        raise parse_error("Model response JSON parse failed: empty output.", "empty_output")
     candidates: List[str] = [raw]
     fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE)
     for block in fenced_blocks:
         cleaned = strip_structured_output_prefix(block)
         if cleaned and cleaned not in candidates:
             candidates.append(cleaned)
-    balanced_object = extract_balanced_json_object(raw)
-    if balanced_object and balanced_object not in candidates:
-        candidates.append(balanced_object)
+    balanced_spans = extract_balanced_json_object_spans(raw)
+    leading_offset = len(raw) - len(raw.lstrip())
+    raw_starts_as_object = raw.lstrip().startswith("{")
+    has_top_level_span = any(start == leading_offset for start, _end, _candidate in balanced_spans)
+    for start, _end, balanced_object in balanced_spans:
+        if raw_starts_as_object and not has_top_level_span and start > leading_offset:
+            continue
+        if balanced_object and balanced_object not in candidates:
+            candidates.append(balanced_object)
     for candidate in list(candidates):
         repaired = escape_json_string_control_chars(candidate)
         if repaired and repaired not in candidates:
@@ -3109,6 +3293,9 @@ def parse_structured_output_text(output_text: str) -> Dict[str, Any]:
         if relaxed and relaxed not in candidates:
             candidates.append(relaxed)
     last_error: Optional[json.JSONDecodeError] = None
+    parsed_candidates: List[Tuple[int, int, Dict[str, Any]]] = []
+    saw_non_object = False
+    saw_schema_echo = False
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
@@ -3118,11 +3305,60 @@ def parse_structured_output_text(output_text: str) -> Dict[str, Any]:
             if parsed is None:
                 continue
         if not isinstance(parsed, dict):
-            raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
-        return parsed
+            saw_non_object = True
+            continue
+        score = structured_output_payload_score(parsed)
+        if score <= -1000:
+            saw_schema_echo = True
+            continue
+        parsed_candidates.append((score, -len(parsed_candidates), parsed))
+    if parsed_candidates:
+        parsed_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return parsed_candidates[0][2]
+    if saw_schema_echo:
+        raise parse_error("Model response JSON parse failed: response contained schema echo but no payload object.")
+    if saw_non_object:
+        raise parse_error("Model response JSON parse failed: expected object output.")
     if last_error is not None:
-        raise RuntimeErrorWithCode(f"Model response JSON parse failed: {last_error}", 500)
-    raise RuntimeErrorWithCode("Model response JSON parse failed: expected object output.", 500)
+        raise parse_error(f"Model response JSON parse failed: {last_error}")
+    raise parse_error("Model response JSON parse failed: expected object output.")
+
+
+def looks_like_incomplete_structured_output(output_text: Any) -> bool:
+    raw = str(output_text or "").strip()
+    if not raw:
+        return False
+    depth = 0
+    in_string = False
+    escape = False
+    saw_container = False
+    for char in raw:
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                escape = True
+                continue
+            if char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char in "{[":
+            saw_container = True
+            depth += 1
+            continue
+        if char in "}]":
+            depth -= 1
+            continue
+    if not saw_container:
+        return False
+    if in_string or depth > 0:
+        return True
+    tail = raw[-80:].rstrip()
+    return tail.endswith((':', ',', '\\'))
 
 
 def schema_looks_like_direct_answer(schema: Any) -> bool:
@@ -3152,13 +3388,14 @@ def salvage_direct_answer_payload(provider: Any, raw_output_text: Any) -> Option
     }
 
 
-def flatten_output_payload_text(payload: Any, artifact_type: str = "") -> str:
+def flatten_output_payload_text(payload: Any, artifact_type: str = "", provider_hint: Any = "") -> str:
     normalized_type = str(artifact_type or "").strip().lower()
     if isinstance(payload, dict):
         provider = str(
             payload.get("provider")
             or payload.get("providerName")
             or payload.get("providerHint")
+            or provider_hint
             or ""
         ).strip()
         raw_candidates = [
@@ -3811,6 +4048,9 @@ PROVIDER_TRACE_STAGE_LABELS: Dict[str, str] = {
 
 def provider_trace_target_label(target: Any) -> str:
     normalized = str(target or "").strip().lower()
+    worker_match = re.match(r"^worker[_:-]?([a-z0-9]+)$", normalized)
+    if worker_match:
+        return f"Worker {worker_match.group(1).upper()}"
     if normalized == "commander":
         return "Commander"
     if normalized == "direct_baseline":
@@ -3828,6 +4068,17 @@ def provider_trace_target_label(target: Any) -> str:
     return normalized or "Target"
 
 
+def node_target_from_schema_or_target(schema_name: Any, target: Any) -> str:
+    schema_text = str(schema_name or "").strip().lower()
+    schema_match = re.match(r"^worker[_:-]?([a-z0-9]+)[_:-]checkpoint$", schema_text)
+    if schema_match:
+        return f"worker_{schema_match.group(1).upper()}"
+    normalized = normalize_auth_target(target)
+    if len(normalized) == 1 and normalized.isalpha():
+        return f"worker_{normalized.upper()}"
+    return normalized
+
+
 class LoopRuntime:
     def __init__(self, root: str | Path, auth_path: str | Path | None = None) -> None:
         self.root = Path(root).resolve()
@@ -3836,6 +4087,9 @@ class LoopRuntime:
         self.task_states_path = self.data_path / "task_states"
         self.checkpoints_path = self.data_path / "checkpoints"
         self.outputs_path = self.data_path / "outputs"
+        self.failed_calls_path = self.data_path / "failed_calls"
+        self.handoffs_path = self.data_path / "handoffs"
+        self.node_transfers_path = self.data_path / "node_transfers"
         self.sessions_path = self.data_path / "sessions"
         self.jobs_path = self.data_path / "jobs"
         self.locks_path = self.data_path / "locks"
@@ -3853,6 +4107,9 @@ class LoopRuntime:
             self.task_states_path,
             self.checkpoints_path,
             self.outputs_path,
+            self.failed_calls_path,
+            self.handoffs_path,
+            self.node_transfers_path,
             self.sessions_path,
             self.jobs_path,
             self.locks_path,
@@ -3866,6 +4123,7 @@ class LoopRuntime:
             self.steps_path.write_text("", encoding="utf-8")
 
     def _write_json_file(self, path: Path, payload: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _read_json_file(self, path: Path, fallback: Any) -> Any:
@@ -4521,7 +4779,7 @@ class LoopRuntime:
         detail = str(auth_state.get("failureDetail") or f"{auth_state.get('backend')} returned no usable keys.")
         self.append_step(
             stage,
-            "Managed secret backend is unavailable; refusing mock fallback for live execution.",
+            "Managed secret backend is unavailable; refusing synthetic fallback for live execution.",
             {
                 "taskId": task_id,
                 "target": target,
@@ -4873,9 +5131,10 @@ class LoopRuntime:
         }
         task_runtime = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
         if task_runtime:
-            execution_mode = str(task_runtime.get("executionMode", runtime["executionMode"])).strip()
-            if execution_mode in {"live", "mock"}:
-                runtime["executionMode"] = execution_mode
+            execution_mode = str(task_runtime.get("executionMode", runtime["executionMode"])).strip().lower()
+            if execution_mode and execution_mode != "live":
+                raise RuntimeErrorWithCode("Only live execution mode is supported. Configure a real provider/key instead of a synthetic run.", 400)
+            runtime["executionMode"] = "live"
             reasoning_effort = str(task_runtime.get("reasoningEffort", runtime["reasoningEffort"])).strip()
             if reasoning_effort in {"none", "low", "medium", "high", "xhigh"}:
                 runtime["reasoningEffort"] = reasoning_effort
@@ -6514,7 +6773,7 @@ class LoopRuntime:
         if status["exceeded"]:
             raise RuntimeErrorWithCode(f"Budget limit reached: {status['message']}", 409)
 
-    def should_fallback_to_mock(self, error: RuntimeErrorWithCode) -> bool:
+    def is_retryable_live_failure(self, error: RuntimeErrorWithCode) -> bool:
         message = str(error).lower()
         fatal_markers = (
             "model_not_found",
@@ -6542,7 +6801,7 @@ class LoopRuntime:
     def should_retry_live_failure(self, error: RuntimeErrorWithCode) -> bool:
         if str(error).startswith("Budget limit reached:"):
             return False
-        return self.should_fallback_to_mock(error)
+        return self.is_retryable_live_failure(error)
 
     def execute_live_stage_with_retry(
         self,
@@ -6556,7 +6815,7 @@ class LoopRuntime:
         call: Callable[[], Any],
         extra_context: Optional[Dict[str, Any]] = None,
         retry_message: str = "Live API call failed; retrying live call.",
-        exhausted_message: str = "Live API call failed after retries; no mock fallback was used.",
+        exhausted_message: str = "Live API call failed after retries; no synthetic output was used.",
     ) -> tuple[Any, int]:
         attempts_allowed = max(1, int(self.live_retry_attempt_limit(target_label)))
         extra = dict(extra_context or {})
@@ -6580,8 +6839,29 @@ class LoopRuntime:
                 if attempt_number < attempts_allowed and self.should_retry_live_failure(error):
                     self.append_step(stage, retry_message, context)
                     continue
+                failed_call_artifact = getattr(error, "failed_call_artifact", None)
+                if not isinstance(failed_call_artifact, dict):
+                    raw_output_text = str(getattr(error, "raw_output_text", "") or "")
+                    failure_kind = str(getattr(error, "failure_kind", "") or "")
+                    failed_call_artifact = self.write_failed_call_artifact(
+                        task_id=task_id,
+                        target_kind=target_label,
+                        provider=str((auth_meta or {}).get("provider") or ""),
+                        model=model,
+                        error=error,
+                        raw_output_text=raw_output_text,
+                        requested_max_output_tokens=int(requested_max_output_tokens or 0),
+                        auth_assignment=auth_meta,
+                        failure_kind=failure_kind,
+                    )
+                    error.failed_call_artifact = failed_call_artifact
+                context["failedCallArtifact"] = failed_call_artifact
                 self.append_step(stage, exhausted_message, context)
-                raise RuntimeErrorWithCode(f"Live run failed for {target_label}: {error}", error.status_code) from error
+                raise RuntimeErrorWithCode(
+                    f"Live run failed for {target_label}: {error}",
+                    error.status_code,
+                    failed_call_artifact=failed_call_artifact,
+                ) from error
 
     def raise_live_stage_missing_credentials(
         self,
@@ -6594,7 +6874,7 @@ class LoopRuntime:
     ) -> None:
         self.append_step(
             stage,
-            "No API key found for a live run; no mock fallback was used.",
+            "No API key found for a live run; no synthetic output was used.",
             {
                 "taskId": task_id,
                 "target": target_label,
@@ -6704,7 +6984,7 @@ class LoopRuntime:
             current_api_key = str(assignment.get("apiKey", "")).strip()
             if not current_api_key:
                 continue
-            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            attempts = self.build_output_token_attempts(max_output_tokens, target_kind, provider="openai", model=model)
             recovered_from_incomplete = False
 
             try:
@@ -7082,6 +7362,7 @@ class LoopRuntime:
         function_handlers: Optional[Dict[str, Any]] = None,
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
         request_timeout_seconds: int = 1800,
+        task_id: Optional[str] = None,
     ) -> OpenAIResult:
         handlers = function_handlers if isinstance(function_handlers, dict) else {}
         assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
@@ -7119,7 +7400,13 @@ class LoopRuntime:
             current_api_key = str(assignment.get("apiKey", "")).strip()
             if not current_api_key:
                 continue
-            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            attempts = self.build_output_token_attempts(
+                max_output_tokens,
+                target_kind,
+                provider="minimax",
+                model=model,
+                require_explicit_max=True,
+            )
             recovered_from_incomplete = False
 
             try:
@@ -7147,7 +7434,7 @@ class LoopRuntime:
                     tool_turns = 0
                     retry_attempt = False
                     while True:
-                        transport_max_tokens = max(1, min(2048, int(effective_tokens or 0) if int(effective_tokens or 0) > 0 else 2048))
+                        transport_max_tokens = max(1, int(effective_tokens or 0))
                         body: Dict[str, Any] = {
                             "model": model,
                             "messages": messages,
@@ -7197,25 +7484,106 @@ class LoopRuntime:
                                 error=f"HTTP {error.code}",
                                 **self.provider_trace_from_headers("minimax", header_map),
                             )
-                            raise RuntimeErrorWithCode(f"MiniMax API request failed: HTTP {error.code} | {body_text}", 500)
+                            runtime_error = RuntimeErrorWithCode(f"MiniMax API request failed: HTTP {error.code} | {body_text}", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="minimax",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                raw_output_text=body_text,
+                                finish_reason=f"HTTP {error.code}",
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="http_error",
+                            )
+                            raise runtime_error
                         except Exception as error:
                             if self.is_request_timeout_error(error):
                                 report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
-                                raise RuntimeErrorWithCode(
+                                runtime_error = RuntimeErrorWithCode(
                                     f"MiniMax API request timed out after {request_timeout_seconds}s.",
                                     504,
                                 )
+                                runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                    task_id=task_id,
+                                    target_kind=target_kind,
+                                    provider="minimax",
+                                    model=model,
+                                    schema_name=schema_name,
+                                    error=runtime_error,
+                                    requested_max_output_tokens=max_output_tokens,
+                                    effective_max_output_tokens=transport_max_tokens,
+                                    attempts=attempts,
+                                    provider_trace=provider_trace,
+                                    auth_assignment=auth_assignment_meta(assignment),
+                                    failure_kind="timeout",
+                                )
+                                raise runtime_error
                             report_trace("error", completedAt=utc_now(), error=str(error))
-                            raise RuntimeErrorWithCode(f"MiniMax API request failed: {error}", 500)
+                            runtime_error = RuntimeErrorWithCode(f"MiniMax API request failed: {error}", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="minimax",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="connection",
+                            )
+                            raise runtime_error
 
                         if isinstance(response.get("error"), dict):
-                            raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+                            runtime_error = RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="minimax",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                raw_response=response,
+                                response_id=str(response.get("id", "")),
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="provider_error",
+                            )
+                            raise runtime_error
                         base_resp = response.get("base_resp") if isinstance(response.get("base_resp"), dict) else {}
                         status_code = int(base_resp.get("status_code", 0) or 0)
                         status_msg = str(base_resp.get("status_msg", "") or "").strip()
                         if status_code:
                             detail = status_msg or f"MiniMax base_resp status_code={status_code}"
-                            raise RuntimeErrorWithCode(f"Model response error: {detail}", 500)
+                            runtime_error = RuntimeErrorWithCode(f"Model response error: {detail}", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="minimax",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                raw_response=response,
+                                response_id=str(response.get("id", "")),
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="provider_error",
+                            )
+                            raise runtime_error
 
                         choices = response.get("choices") if isinstance(response.get("choices"), list) else []
                         first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
@@ -7306,11 +7674,30 @@ class LoopRuntime:
                                 recovered_from_incomplete = True
                                 retry_attempt = True
                                 break
-                            raise RuntimeErrorWithCode("Model response did not include choices[0].message.content.", 500)
+                            runtime_error = RuntimeErrorWithCode("Model response did not include choices[0].message.content.", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="minimax",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                raw_response=response,
+                                response_id=str(response.get("id", "")),
+                                finish_reason=finish_reason,
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                recovered_from_incomplete=recovered_from_incomplete,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="overflow" if finish_reason == "length" else "empty_output",
+                            )
+                            raise runtime_error
 
                         try:
                             parsed = parse_structured_output_text(output_text)
-                        except RuntimeErrorWithCode:
+                        except RuntimeErrorWithCode as parse_error:
                             salvaged = (
                                 salvage_direct_answer_payload("minimax", output_text)
                                 if schema_looks_like_direct_answer(schema)
@@ -7319,11 +7706,31 @@ class LoopRuntime:
                             if salvaged is not None:
                                 parsed = salvaged
                             else:
-                                if finish_reason == "length" and index < len(attempts) - 1:
+                                incomplete_output = finish_reason == "length" or looks_like_incomplete_structured_output(output_text)
+                                if incomplete_output and index < len(attempts) - 1:
                                     recovered_from_incomplete = True
                                     retry_attempt = True
                                     break
-                                raise
+                                parse_error.failed_call_artifact = self.write_failed_call_artifact(
+                                    task_id=task_id,
+                                    target_kind=target_kind,
+                                    provider="minimax",
+                                    model=model,
+                                    schema_name=schema_name,
+                                    error=parse_error,
+                                    raw_output_text=output_text,
+                                    raw_response=response,
+                                    response_id=str(response.get("id", "")),
+                                    finish_reason=finish_reason,
+                                    requested_max_output_tokens=max_output_tokens,
+                                    effective_max_output_tokens=transport_max_tokens,
+                                    attempts=attempts,
+                                    recovered_from_incomplete=recovered_from_incomplete,
+                                    provider_trace=provider_trace,
+                                    auth_assignment=auth_assignment_meta(assignment),
+                                    failure_kind="overflow" if finish_reason == "length" else "malformed_json",
+                                )
+                                raise parse_error
 
                         return OpenAIResult(
                             provider="minimax",
@@ -7402,6 +7809,7 @@ class LoopRuntime:
         function_handlers: Optional[Dict[str, Any]] = None,
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
         request_timeout_seconds: int = 1800,
+        task_id: Optional[str] = None,
     ) -> OpenAIResult:
         handlers = function_handlers if isinstance(function_handlers, dict) else {}
         assignment_candidates = [dict(entry) for entry in (auth_assignments or []) if isinstance(entry, dict) and str(entry.get("apiKey", "")).strip()]
@@ -7439,7 +7847,13 @@ class LoopRuntime:
             current_api_key = str(assignment.get("apiKey", "")).strip()
             if not current_api_key:
                 continue
-            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            attempts = self.build_output_token_attempts(
+                max_output_tokens,
+                target_kind,
+                provider="deepseek",
+                model=model,
+                require_explicit_max=True,
+            )
             recovered_from_incomplete = False
 
             try:
@@ -7467,7 +7881,7 @@ class LoopRuntime:
                     tool_turns = 0
                     retry_attempt = False
                     while True:
-                        transport_max_tokens = max(1, min(4096, int(effective_tokens or 0) if int(effective_tokens or 0) > 0 else 2048))
+                        transport_max_tokens = max(1, int(effective_tokens or 0))
                         body: Dict[str, Any] = {
                             "model": model,
                             "messages": messages,
@@ -7521,16 +7935,63 @@ class LoopRuntime:
                                 error=f"HTTP {error.code}",
                                 **self.provider_trace_from_headers("deepseek", header_map),
                             )
-                            raise RuntimeErrorWithCode(f"DeepSeek API request failed: HTTP {error.code} | {body_text}", 500)
+                            runtime_error = RuntimeErrorWithCode(f"DeepSeek API request failed: HTTP {error.code} | {body_text}", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="deepseek",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                raw_output_text=body_text,
+                                finish_reason=f"HTTP {error.code}",
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="http_error",
+                            )
+                            raise runtime_error
                         except Exception as error:
                             if self.is_request_timeout_error(error):
                                 report_trace("timeout", completedAt=utc_now(), error=f"Timed out after {request_timeout_seconds}s")
-                                raise RuntimeErrorWithCode(
+                                runtime_error = RuntimeErrorWithCode(
                                     f"DeepSeek API request timed out after {request_timeout_seconds}s.",
                                     504,
                                 )
+                                runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                    task_id=task_id,
+                                    target_kind=target_kind,
+                                    provider="deepseek",
+                                    model=model,
+                                    schema_name=schema_name,
+                                    error=runtime_error,
+                                    requested_max_output_tokens=max_output_tokens,
+                                    effective_max_output_tokens=transport_max_tokens,
+                                    attempts=attempts,
+                                    provider_trace=provider_trace,
+                                    auth_assignment=auth_assignment_meta(assignment),
+                                    failure_kind="timeout",
+                                )
+                                raise runtime_error
                             report_trace("error", completedAt=utc_now(), error=str(error))
-                            raise RuntimeErrorWithCode(f"DeepSeek API request failed: {error}", 500)
+                            runtime_error = RuntimeErrorWithCode(f"DeepSeek API request failed: {error}", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="deepseek",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="connection",
+                            )
+                            raise runtime_error
 
                         if isinstance(response.get("error"), dict):
                             raise RuntimeErrorWithCode(f"Model response error: {json.dumps(response['error'], ensure_ascii=False)}", 500)
@@ -7624,11 +8085,30 @@ class LoopRuntime:
                                 recovered_from_incomplete = True
                                 retry_attempt = True
                                 break
-                            raise RuntimeErrorWithCode("Model response did not include choices[0].message.content.", 500)
+                            runtime_error = RuntimeErrorWithCode("Model response did not include choices[0].message.content.", 500)
+                            runtime_error.failed_call_artifact = self.write_failed_call_artifact(
+                                task_id=task_id,
+                                target_kind=target_kind,
+                                provider="deepseek",
+                                model=model,
+                                schema_name=schema_name,
+                                error=runtime_error,
+                                raw_response=response,
+                                response_id=str(response.get("id", "")),
+                                finish_reason=finish_reason,
+                                requested_max_output_tokens=max_output_tokens,
+                                effective_max_output_tokens=transport_max_tokens,
+                                attempts=attempts,
+                                recovered_from_incomplete=recovered_from_incomplete,
+                                provider_trace=provider_trace,
+                                auth_assignment=auth_assignment_meta(assignment),
+                                failure_kind="overflow" if finish_reason == "length" else "empty_output",
+                            )
+                            raise runtime_error
 
                         try:
                             parsed = parse_structured_output_text(output_text)
-                        except RuntimeErrorWithCode:
+                        except RuntimeErrorWithCode as parse_error:
                             salvaged = (
                                 salvage_direct_answer_payload("deepseek", output_text)
                                 if schema_looks_like_direct_answer(schema)
@@ -7637,11 +8117,31 @@ class LoopRuntime:
                             if salvaged is not None:
                                 parsed = salvaged
                             else:
-                                if finish_reason == "length" and index < len(attempts) - 1:
+                                incomplete_output = finish_reason == "length" or looks_like_incomplete_structured_output(output_text)
+                                if incomplete_output and index < len(attempts) - 1:
                                     recovered_from_incomplete = True
                                     retry_attempt = True
                                     break
-                                raise
+                                parse_error.failed_call_artifact = self.write_failed_call_artifact(
+                                    task_id=task_id,
+                                    target_kind=target_kind,
+                                    provider="deepseek",
+                                    model=model,
+                                    schema_name=schema_name,
+                                    error=parse_error,
+                                    raw_output_text=output_text,
+                                    raw_response=response,
+                                    response_id=str(response.get("id", "")),
+                                    finish_reason=finish_reason,
+                                    requested_max_output_tokens=max_output_tokens,
+                                    effective_max_output_tokens=transport_max_tokens,
+                                    attempts=attempts,
+                                    recovered_from_incomplete=recovered_from_incomplete,
+                                    provider_trace=provider_trace,
+                                    auth_assignment=auth_assignment_meta(assignment),
+                                    failure_kind="overflow" if finish_reason == "length" else "malformed_json",
+                                )
+                                raise parse_error
 
                         return OpenAIResult(
                             provider="deepseek",
@@ -7765,7 +8265,7 @@ class LoopRuntime:
             current_api_key = str(assignment.get("apiKey", "")).strip()
             if not current_api_key:
                 continue
-            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            attempts = self.build_output_token_attempts(max_output_tokens, target_kind, provider="xai", model=model)
             recovered_from_incomplete = False
 
             try:
@@ -8100,7 +8600,13 @@ class LoopRuntime:
             current_api_key = str(assignment.get("apiKey", "")).strip()
             if not current_api_key:
                 continue
-            attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+            attempts = self.build_output_token_attempts(
+                max_output_tokens,
+                target_kind,
+                provider=normalized_provider,
+                model=model,
+                require_explicit_max=True,
+            )
             recovered_from_incomplete = False
 
             try:
@@ -8126,7 +8632,7 @@ class LoopRuntime:
                                 + "\nDo not add commentary before or after the JSON object."
                                 + "\nEscape every newline inside string values as \\\\n and every tab as \\\\t."
                             ).strip()
-                        transport_max_tokens = effective_tokens if effective_tokens > 0 else 8192
+                        transport_max_tokens = max(1, int(effective_tokens or 0))
                         body: Dict[str, Any] = {
                             "model": model,
                             "max_tokens": transport_max_tokens,
@@ -8387,7 +8893,7 @@ class LoopRuntime:
         provider_instance: Optional[Dict[str, Any]] = None,
         request_timeout_seconds: int = 1800,
     ) -> OpenAIResult:
-        attempts = self.build_output_token_attempts(max_output_tokens, target_kind)
+        attempts = self.build_output_token_attempts(max_output_tokens, target_kind, provider="ollama", model=model)
         last_error: Optional[RuntimeErrorWithCode] = None
         api_key = self.ollama_api_key()
         ollama_tools = self.convert_function_tools_to_ollama(tools)
@@ -8627,6 +9133,7 @@ class LoopRuntime:
         function_handlers: Optional[Dict[str, Any]] = None,
         auth_assignments: Optional[List[Dict[str, Any]]] = None,
         provider_settings: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
     ) -> OpenAIResult:
         normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
         request_timeout_seconds = clamp_timeout_seconds(
@@ -8704,6 +9211,7 @@ class LoopRuntime:
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
+                task_id=task_id,
             )
         if normalized_provider == "minimax":
             if include:
@@ -8740,6 +9248,7 @@ class LoopRuntime:
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
+                task_id=task_id,
             )
         if normalized_provider == "anthropic":
             if include:
@@ -8811,32 +9320,38 @@ class LoopRuntime:
             )
         raise RuntimeErrorWithCode(f"provider_not_configured: Unsupported provider {normalized_provider}.", 400)
 
-    def build_output_token_attempts(self, requested_max_output_tokens: int, target_kind: str) -> List[int]:
+    def build_output_token_attempts(
+        self,
+        requested_max_output_tokens: int,
+        target_kind: str,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        require_explicit_max: bool = False,
+    ) -> List[int]:
         requested = max(0, int(requested_max_output_tokens or 0))
+        model_ceiling = model_capacities.max_output_tokens(provider, model)
         if requested <= 0:
+            if require_explicit_max:
+                explicit_ceiling = model_ceiling or model_capacities.explicit_output_fallback_tokens(provider)
+                return [max(0, int(explicit_ceiling or 0))]
             return [0]
-        kind = target_kind.strip().lower()
-        if kind == "worker":
-            floor = 1600
-            retry_floor = 3200
-            hard_ceiling = 12000
-        elif kind == "summarizer":
-            floor = 2200
-            retry_floor = 3600
-            hard_ceiling = 12000
-        else:
-            floor = 1600
-            retry_floor = 3200
-            hard_ceiling = 12000
 
-        initial = max(requested, floor)
+        retry_policy = model_capacities.output_retry_policy(target_kind)
+        floor = int(retry_policy["floor"])
+        retry_floor = int(retry_policy["retryFloor"])
+        hard_ceiling = model_ceiling or int(retry_policy["fallbackCeiling"])
+
+        initial = min(max(requested, floor), hard_ceiling) if hard_ceiling > 0 else max(requested, floor)
         attempts = [initial]
 
         retry_candidate = max(initial * 2, retry_floor)
-        retry_candidate = min(retry_candidate, max(initial, hard_ceiling))
+        if hard_ceiling > 0:
+            retry_candidate = min(retry_candidate, max(initial, hard_ceiling))
         if retry_candidate > initial:
             attempts.append(retry_candidate)
-        final_candidate = min(max(retry_candidate * 2, retry_floor), hard_ceiling)
+        final_candidate = max(retry_candidate * 2, retry_floor)
+        if hard_ceiling > 0:
+            final_candidate = min(final_candidate, hard_ceiling)
         if final_candidate > retry_candidate:
             attempts.append(final_candidate)
         deduped: List[int] = []
@@ -9100,7 +9615,7 @@ class LoopRuntime:
             },
         }
 
-    def new_mock_commander(
+    def new_offline_fixture_commander(
         self,
         task: Dict[str, Any],
         runtime: Dict[str, Any],
@@ -9278,6 +9793,7 @@ class LoopRuntime:
             function_handlers=function_handlers if function_handlers else None,
             auth_assignments=auth_assignments,
             provider_settings=provider_settings,
+            task_id=str(task["taskId"]),
         )
         parsed = normalize_commander_checkpoint(dict(result.parsed), task, round_number)
         parsed["localToolCalls"] = normalize_local_tool_calls(filter_tool_calls_by_prefixes(result.executed_tools, ("local_",)))
@@ -9401,7 +9917,7 @@ class LoopRuntime:
             },
         }
 
-    def new_mock_commander_review(
+    def new_offline_fixture_commander_review(
         self,
         task: Dict[str, Any],
         commander_checkpoint: Optional[Dict[str, Any]],
@@ -9455,7 +9971,7 @@ class LoopRuntime:
                     "leadDraft": answer_draft or lead_direction,
                     "integrationQuestion": "Does this adversarial point materially improve correctness, scope, safety, or usefulness, or is it mostly noise?",
                     "courseDecision": "maintain",
-                    "courseDecisionReason": "Mock reevaluation defaults to maintaining course unless a worker checkpoint clearly invalidates the lead direction.",
+                    "courseDecisionReason": "Offline fixture reevaluation defaults to maintaining course unless a worker checkpoint clearly invalidates the lead direction.",
                     "contributionAssessments": [
                         {
                             "contribution": point,
@@ -9473,7 +9989,7 @@ class LoopRuntime:
                 "dynamicLaneDecision": {
                     "shouldSpawn": False,
                     "suggestedLaneTypes": [],
-                    "reason": "Mock commander review did not identify a clearly missing adversarial lane.",
+                    "reason": "Offline fixture commander review did not identify a clearly missing adversarial lane.",
                     "requiredPressure": "",
                     "temperature": "",
                     "instruction": "",
@@ -9656,6 +10172,7 @@ class LoopRuntime:
             target_kind="commander_review",
             auth_assignments=auth_assignments,
             provider_settings=provider_settings,
+            task_id=str(task["taskId"]),
         )
         parsed = normalize_commander_review_checkpoint(
             dict(result.parsed),
@@ -9684,7 +10201,7 @@ class LoopRuntime:
         }
         return parsed, result.response_id, result.response, call_meta
 
-    def new_mock_checkpoint(
+    def new_offline_fixture_checkpoint(
         self,
         task: Dict[str, Any],
         worker: Dict[str, str],
@@ -9699,7 +10216,7 @@ class LoopRuntime:
         viewpoint = "utility" if worker["role"] == "utility" else "adversarial"
         session_context = str(task.get("sessionContext", "")).strip()
         peer_text = "\n".join(f"{item['from']}: {item['message']}" for item in peer_messages) if peer_messages else "No peer steer received yet."
-        research_mode = "mock_research" if research_config["enabled"] else "mock"
+        research_mode = "offline_fixture_research" if research_config["enabled"] else "offline_fixture"
         request_to_peer = (
             "Pressure-test whether the expected upside survives real-world constraints without adding hidden coordination drag."
             if worker["role"] == "utility"
@@ -9768,17 +10285,17 @@ class LoopRuntime:
                     "claim": "Parallel lane separation keeps this viewpoint explicit instead of flattening it into a single answer.",
                     "supportLevel": "weak",
                     "sourceUrls": [],
-                    "note": "Mock mode only; this is a scaffolded claim and still needs grounded evidence.",
+                    "note": "Offline fixture only; this scaffolded claim still needs grounded evidence.",
                 },
                 {
                     "claim": "Budget ceilings and model controls are necessary once multiple lanes can run live.",
                     "supportLevel": "weak",
                     "sourceUrls": [],
-                    "note": "Mock mode only; production confidence depends on live accounting and observed loop behavior.",
+                    "note": "Offline fixture only; production confidence depends on live accounting and observed loop behavior.",
                 },
             ],
             "evidenceGaps": [
-                "No live web sources were consulted in mock mode.",
+                "No live web sources were consulted in offline fixture mode.",
                 "Claims should be re-run with grounded research before being treated as supported.",
             ],
             "confidence": 0.72 if worker["role"] == "utility" else 0.77,
@@ -10043,6 +10560,7 @@ class LoopRuntime:
             function_handlers=function_handlers if function_handlers else None,
             auth_assignments=auth_assignments,
             provider_settings=provider_settings,
+            task_id=str(task["taskId"]),
         )
         parsed = dict(result.parsed)
         parsed["researchQueries"] = normalize_string_array_preserve_items(result.web_search_queries)
@@ -10616,7 +11134,7 @@ class LoopRuntime:
 
         return normalize_summary_line_catalog(catalog)
 
-    def new_mock_summary(
+    def new_offline_fixture_summary(
         self,
         task: Dict[str, Any],
         commander_checkpoint: Optional[Dict[str, Any]],
@@ -10782,7 +11300,7 @@ class LoopRuntime:
                 "Mixing models by position can improve robustness if the cheaper lanes carry most of the exploration.",
             ],
             "vettingSummary": (
-                "Mock vetting suggests the checkpoint schema is ready for evidence review, but the claims still need live sourced validation."
+                "Offline fixture vetting suggests the checkpoint schema is ready for evidence review, but the claims still need live sourced validation."
                 if vetting_config["enabled"]
                 else "Vetting is disabled; this summary preserves conflicts but does not score evidence quality."
             ),
@@ -10793,7 +11311,7 @@ class LoopRuntime:
                     "supportingWorkers": ["A", "B"],
                     "challengingWorkers": [],
                     "sourceUrls": [],
-                    "rationale": "Mock mode cannot confirm the claim with live source evidence, but both lanes converge on it as an operating principle.",
+                    "rationale": "Offline fixture mode cannot confirm the claim with live source evidence, but both lanes converge on it as an operating principle.",
                 }
             ],
             "claimsNeedingVerification": [
@@ -11267,6 +11785,7 @@ class LoopRuntime:
             target_kind="summarizer",
             auth_assignments=auth_assignments,
             provider_settings=provider_settings,
+            task_id=str(task["taskId"]),
         )
         parsed = dict(result.parsed)
         if compact_summary:
@@ -11419,7 +11938,7 @@ class LoopRuntime:
             },
         }
 
-    def new_mock_direct_baseline_answer(self, task: Dict[str, Any]) -> Dict[str, str]:
+    def new_offline_fixture_direct_baseline_answer(self, task: Dict[str, Any]) -> Dict[str, str]:
         objective = str(task.get("objective") or "")
         lowered = objective.lower()
         if "billing" in lowered or "holiday" in lowered:
@@ -11438,7 +11957,7 @@ class LoopRuntime:
             {
                 "answer": answer,
                 "stance": stance,
-                "confidenceNote": "Mock direct baseline for runtime plumbing; useful for compare flow validation, not factual confidence.",
+                "confidenceNote": "Offline fixture direct baseline for runtime plumbing; useful for compare flow validation, not factual confidence.",
             },
             objective,
         )
@@ -11495,6 +12014,7 @@ class LoopRuntime:
             target_kind="generic",
             auth_assignments=auth_assignments,
             provider_settings=provider_settings,
+            task_id=str(task["taskId"]),
         )
         parsed = normalize_direct_answer_payload(
             result.parsed,
@@ -11556,6 +12076,479 @@ class LoopRuntime:
         artifact_store.write_json_artifact(self.root, "outputs", history_filename, payload)
         return Path(filename), Path(history_filename)
 
+    def node_transfer_filename_component(self, value: Any, fallback: str = "node", max_length: int = 40) -> str:
+        normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip("-._")
+        if not normalized:
+            normalized = fallback
+        return normalized[: max(8, int(max_length or 40))].strip("-._") or fallback
+
+    def canonical_transfer_bytes(self, payload: Any) -> bytes:
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    def transfer_integrity(self, payload: Any) -> Dict[str, Any]:
+        body = self.canonical_transfer_bytes(payload)
+        return {
+            "canonicalJsonBytes": len(body),
+            "crc32": f"{zlib.crc32(body) & 0xFFFFFFFF:08x}",
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+
+    def verify_transfer_integrity(self, payload: Any, integrity: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        expected = integrity if isinstance(integrity, dict) else {}
+        actual = self.transfer_integrity(payload)
+        expected_sha = str(expected.get("sha256") or "").strip()
+        expected_crc = str(expected.get("crc32") or "").strip().lower()
+        expected_bytes = int(expected.get("canonicalJsonBytes") or 0)
+        mismatches: List[str] = []
+        if expected_sha and expected_sha != actual["sha256"]:
+            mismatches.append("sha256")
+        if expected_crc and expected_crc != actual["crc32"]:
+            mismatches.append("crc32")
+        if expected_bytes and expected_bytes != actual["canonicalJsonBytes"]:
+            mismatches.append("canonicalJsonBytes")
+        return {
+            "ok": not mismatches,
+            "actual": actual,
+            "expected": expected,
+            "mismatches": mismatches,
+        }
+
+    def write_node_transfer_artifact(
+        self,
+        *,
+        task_id: str,
+        source_node: str,
+        target_nodes: List[str],
+        payload: Any,
+        status: str = "accepted",
+        validation_status: str = "valid",
+        checkpoint_artifact: str = "",
+        output_artifact: str = "",
+        failed_call_artifact: str = "",
+        failure_kind: str = "",
+        error: Any = "",
+        retryable: bool = False,
+        oversight_action: str = "",
+    ) -> Dict[str, Any]:
+        self.ensure_data_paths()
+        normalized_status = str(status or "accepted").strip().lower()
+        normalized_validation = str(validation_status or "valid").strip().lower()
+        source = self.node_transfer_filename_component(source_node, "source", 28)
+        target_label = self.node_transfer_filename_component("-".join(target_nodes or []), "target", 28)
+        task_component = self.node_transfer_filename_component(task_id, "task", 14).replace("-", "")
+        timestamp = datetime.now(timezone.utc).strftime("%H%M%S%f")
+        route_hash = hashlib.sha1(f"{source_node}|{'|'.join(target_nodes or [])}".encode("utf-8")).hexdigest()[:10]
+        transfer_id = f"nt_{task_component}_{route_hash}_{timestamp}"
+        integrity = self.transfer_integrity(payload)
+        check = self.verify_transfer_integrity(payload, integrity)
+        payload_keys = sorted(str(key) for key in payload.keys())[:80] if isinstance(payload, dict) else []
+        packet = {
+            "schemaVersion": "parallm.node_transfer.v1",
+            "artifactType": "node_transfer",
+            "transferId": transfer_id,
+            "createdAt": utc_now(),
+            "taskId": str(task_id or "").strip(),
+            "sourceNode": str(source_node or "").strip(),
+            "targetNodes": [str(node or "").strip() for node in (target_nodes or []) if str(node or "").strip()],
+            "routeLabel": {
+                "source": source,
+                "target": target_label,
+                "hash": route_hash,
+            },
+            "status": normalized_status,
+            "validationStatus": normalized_validation,
+            "passedToNextNode": normalized_status == "accepted" and normalized_validation == "valid" and bool(check.get("ok")),
+            "retryable": bool(retryable),
+            "oversightAction": str(oversight_action or "").strip() or (
+                "spin_up_adversary_or_retry" if normalized_status in {"deceased", "reader_rejected", "pass_corrupt"} else "none"
+            ),
+            "failureKind": str(failure_kind or "").strip() or None,
+            "error": str(error or "").strip() or None,
+            "integrity": integrity,
+            "integrityCheck": check,
+            "payloadShape": {
+                "type": type(payload).__name__,
+                "keys": payload_keys,
+                "keyCount": len(payload.keys()) if isinstance(payload, dict) else None,
+            },
+            "artifacts": {
+                "checkpoint": str(checkpoint_artifact or "").strip() or None,
+                "output": str(output_artifact or "").strip() or None,
+                "failedCall": str(failed_call_artifact or "").strip() or None,
+            },
+            "contract": {
+                "writerRule": "Only canonical parsed payloads may be marked accepted.",
+                "readerRule": "Verify crc32, sha256, and canonicalJsonBytes before parsing or reasoning over this transfer.",
+                "failureSplit": "Checksum mismatch means pass_corrupt; checksum ok but schema/parser rejection means reader_rejected.",
+            },
+        }
+        artifact_meta = artifact_store.write_json_artifact(self.root, "node_transfers", f"{transfer_id}.json", packet)
+        packet["artifact"] = artifact_meta
+        self.append_step(
+            "node_transfer",
+            "Node transfer " + ("accepted." if packet["passedToNextNode"] else f"{normalized_status}."),
+            {
+                "taskId": task_id,
+                "sourceNode": source_node,
+                "targetNodes": packet["targetNodes"],
+                "status": normalized_status,
+                "validationStatus": normalized_validation,
+                "passedToNextNode": packet["passedToNextNode"],
+                "crc32": integrity["crc32"],
+                "sha256": integrity["sha256"],
+                "artifact": artifact_meta.get("name"),
+                "failureKind": packet["failureKind"],
+            },
+        )
+        return packet
+
+    def latest_node_transfer_packet(self, task_id: str, source_node: str, target_node: str) -> Optional[Dict[str, Any]]:
+        normalized_task = str(task_id or "").strip()
+        normalized_source = str(source_node or "").strip()
+        normalized_target = str(target_node or "").strip()
+        if not normalized_task or not normalized_source or not normalized_target:
+            return None
+        for artifact in artifact_store.list_json_artifacts(self.root, ["node_transfers"]):
+            packet = artifact_store.read_json_artifact(self.root, "node_transfers", str(artifact.get("name") or ""))
+            if not isinstance(packet, dict):
+                continue
+            if str(packet.get("taskId") or "").strip() != normalized_task:
+                continue
+            if str(packet.get("sourceNode") or "").strip() != normalized_source:
+                continue
+            targets = [str(node or "").strip() for node in (packet.get("targetNodes") or []) if str(node or "").strip()] if isinstance(packet.get("targetNodes"), list) else []
+            if normalized_target not in targets and "workers" not in targets:
+                continue
+            return packet
+        return None
+
+    def verify_node_transfer_before_read(
+        self,
+        *,
+        task_id: str,
+        source_node: str,
+        target_node: str,
+        payload: Any,
+        stage: str,
+    ) -> Dict[str, Any]:
+        packet = self.latest_node_transfer_packet(task_id, source_node, target_node)
+        if not isinstance(packet, dict):
+            self.append_step(
+                "node_transfer",
+                "Node transfer reader encountered legacy unsealed payload.",
+                {
+                    "taskId": task_id,
+                    "sourceNode": source_node,
+                    "targetNode": target_node,
+                    "stage": stage,
+                    "status": "legacy_unsealed",
+                },
+            )
+            return {"ok": True, "status": "legacy_unsealed"}
+        if str(packet.get("status") or "").strip().lower() != "accepted" or not bool(packet.get("passedToNextNode")):
+            raise RuntimeErrorWithCode(
+                f"Node transfer from {source_node} to {target_node} is not accepted: {packet.get('status') or 'unknown'}.",
+                409,
+            )
+        check = self.verify_transfer_integrity(payload, packet.get("integrity") if isinstance(packet.get("integrity"), dict) else {})
+        if not bool(check.get("ok")):
+            self.write_node_transfer_artifact(
+                task_id=task_id,
+                source_node=source_node,
+                target_nodes=[target_node],
+                payload=payload,
+                status="pass_corrupt",
+                validation_status="checksum_mismatch",
+                failure_kind="checksum_mismatch",
+                error="Node transfer checksum mismatch before reader parse.",
+                retryable=False,
+                oversight_action="declare_transfer_deceased_and_spawn_replacement_adversary",
+            )
+            raise RuntimeErrorWithCode(
+                f"Node transfer checksum failed from {source_node} to {target_node}: {', '.join(check.get('mismatches') or [])}.",
+                409,
+            )
+        self.append_step(
+            "node_transfer",
+            "Node transfer checksum verified before reader parse.",
+            {
+                "taskId": task_id,
+                "sourceNode": source_node,
+                "targetNode": target_node,
+                "stage": stage,
+                "status": "verified",
+                "crc32": check["actual"]["crc32"],
+                "sha256": check["actual"]["sha256"],
+            },
+        )
+        return {"ok": True, "status": "verified", "integrity": check["actual"]}
+
+    def failed_call_task_id(self, task_id: Optional[str] = None) -> str:
+        normalized = str(task_id or "").strip()
+        if normalized:
+            return normalized
+        context = self.current_execution_context()
+        for key in ("stateScopeTaskId", "taskId"):
+            candidate = str(context.get(key) or "").strip()
+            if candidate:
+                return candidate
+        try:
+            active_task = self.read_state().get("activeTask")
+        except Exception:
+            active_task = None
+        if isinstance(active_task, dict):
+            candidate = str(active_task.get("taskId") or "").strip()
+            if candidate:
+                return candidate
+        return "unknown-task"
+
+    def failed_call_filename_component(self, value: Any, fallback: str = "unknown", max_length: int = 80) -> str:
+        normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip("-._")
+        if not normalized:
+            normalized = fallback
+        return normalized[:max(12, int(max_length or 80))].strip("-._") or fallback
+
+    def classify_failed_call_kind(self, error: Any, raw_output_text: str = "", finish_reason: str = "") -> str:
+        message = str(error or "").lower()
+        normalized_finish = str(finish_reason or "").strip().lower()
+        if normalized_finish == "length" or "incomplete" in message or "max output" in message or "token" in message and "exceed" in message:
+            return "overflow"
+        if "json parse" in message or str(raw_output_text or "").strip():
+            return "malformed_json"
+        if "timed out" in message or "timeout" in message:
+            return "timeout"
+        if "http " in message:
+            return "http_error"
+        if "connection" in message or "temporary failure" in message or "name resolution" in message or "network" in message:
+            return "connection"
+        if "no api key" in message or "invalid_api_key" in message or "incorrect api key" in message:
+            return "credentials"
+        return "provider_error"
+
+    def build_failed_call_ingestion(self, raw_output_text: str, error: Any) -> Dict[str, Any]:
+        raw = str(raw_output_text or "")
+        ingestion: Dict[str, Any] = {
+            "rawLength": len(raw),
+            "rawPreview": truncate_text(raw, 4000),
+            "parseError": str(error or ""),
+            "candidateKind": "empty",
+            "candidateJsonText": "",
+            "candidateParseError": "",
+            "candidatePackets": [],
+        }
+        if not raw.strip():
+            return ingestion
+        candidates = [("raw", raw)]
+        first_object = raw.find("{")
+        last_object = raw.rfind("}")
+        if first_object >= 0 and last_object > first_object:
+            candidates.append(("first_object_span", raw[first_object:last_object + 1]))
+        first_array = raw.find("[")
+        last_array = raw.rfind("]")
+        if first_array >= 0 and last_array > first_array:
+            candidates.append(("first_array_span", raw[first_array:last_array + 1]))
+        for index, (start, end, candidate_text) in enumerate(extract_balanced_json_object_spans(raw, limit=12), start=1):
+            packet: Dict[str, Any] = {
+                "index": index,
+                "kind": "balanced_object",
+                "start": start,
+                "end": end,
+                "length": len(candidate_text),
+                "preview": truncate_text(candidate_text, 600),
+                "parseError": "",
+                "parsedType": "",
+                "keys": [],
+                "payloadScore": 0,
+                "schemaEcho": False,
+            }
+            try:
+                parsed_packet = json.loads(candidate_text)
+            except json.JSONDecodeError as parse_error:
+                packet["parseError"] = str(parse_error)
+            else:
+                packet["parsedType"] = type(parsed_packet).__name__
+                if isinstance(parsed_packet, dict):
+                    packet["keys"] = sorted(str(key) for key in parsed_packet.keys())[:40]
+                    packet["payloadScore"] = structured_output_payload_score(parsed_packet)
+                    packet["schemaEcho"] = looks_like_schema_echo(parsed_packet)
+            ingestion["candidatePackets"].append(packet)
+        for candidate_kind, candidate_text in candidates:
+            ingestion["candidateKind"] = candidate_kind
+            ingestion["candidateJsonText"] = truncate_text(candidate_text, 12000)
+            try:
+                parsed = json.loads(candidate_text)
+            except json.JSONDecodeError as parse_error:
+                ingestion["candidateParseError"] = str(parse_error)
+                continue
+            ingestion["candidateParseError"] = ""
+            ingestion["candidateParsedType"] = type(parsed).__name__
+            if isinstance(parsed, dict):
+                ingestion["candidateKeys"] = sorted(str(key) for key in parsed.keys())[:40]
+                ingestion["candidatePayloadScore"] = structured_output_payload_score(parsed)
+                ingestion["candidateSchemaEcho"] = looks_like_schema_echo(parsed)
+            return ingestion
+        return ingestion
+
+    def write_failed_call_artifact(
+        self,
+        *,
+        task_id: Optional[str] = None,
+        target_kind: str = "generic",
+        provider: str = "",
+        model: str = "",
+        schema_name: str = "",
+        error: Any = "",
+        raw_output_text: str = "",
+        raw_response: Optional[Dict[str, Any]] = None,
+        response_id: str = "",
+        finish_reason: str = "",
+        requested_max_output_tokens: int = 0,
+        effective_max_output_tokens: int = 0,
+        attempts: Optional[List[int]] = None,
+        recovered_from_incomplete: bool = False,
+        provider_trace: Optional[Dict[str, Any]] = None,
+        auth_assignment: Optional[Dict[str, Any]] = None,
+        failure_kind: str = "",
+    ) -> Dict[str, Any]:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID) if str(provider or "").strip() else "unknown"
+        normalized_target = normalize_auth_target(target_kind)
+        node_target = node_target_from_schema_or_target(schema_name, normalized_target)
+        normalized_task_id = self.failed_call_task_id(task_id)
+        detected_kind = str(failure_kind or "").strip().lower() or self.classify_failed_call_kind(error, raw_output_text, finish_reason)
+        detected_kind = self.failed_call_filename_component(detected_kind, "provider_error", 40)
+        timestamp = datetime.now(timezone.utc).strftime("%H%M%S%f")
+        compact_task = self.failed_call_filename_component(normalized_task_id, "task", 12).replace("-", "")
+        compact_target = self.failed_call_filename_component(normalized_target, "target", 10).replace("-", "")
+        compact_provider = self.failed_call_filename_component(normalized_provider, "provider", 8).replace("-", "")
+        compact_kind = self.failed_call_filename_component(detected_kind, "failure", 12).replace("-", "")
+        safe_name = "_".join(
+            [
+                "fc",
+                compact_task,
+                compact_target,
+                compact_provider,
+                compact_kind,
+                timestamp,
+            ]
+        ) + ".json"
+        response_meta = {
+            "requestedMaxOutputTokens": max(0, int(requested_max_output_tokens or 0)),
+            "effectiveMaxOutputTokens": max(0, int(effective_max_output_tokens or 0)),
+            "maxOutputTokenAttempts": list(attempts or []),
+            "recoveredFromIncomplete": bool(recovered_from_incomplete),
+            "finishReason": str(finish_reason or "").strip() or None,
+            "providerTrace": self.normalize_provider_trace(provider_trace),
+        }
+        payload: Dict[str, Any] = {
+            "schemaVersion": "parallm.failed_call.v1",
+            "artifactType": "failed_call",
+            "capturedAt": utc_now(),
+            "passStatus": "discarded_failed_attempt",
+            "passedToNextNode": False,
+            "handoffNote": "This raw provider payload failed validation and is stored for review only. It must not be used as a node handoff payload.",
+            "taskId": normalized_task_id,
+            "target": normalized_target,
+            "targetNode": node_target,
+            "targetLabel": provider_trace_target_label(node_target),
+            "provider": normalized_provider,
+            "providerLabel": PROVIDER_CATALOG.get(normalized_provider, {}).get("label") or normalized_provider.title(),
+            "model": str(model or "").strip(),
+            "schemaName": str(schema_name or "").strip(),
+            "failureKind": detected_kind,
+            "error": str(error or ""),
+            "responseId": str(response_id or "").strip(),
+            "rawOutputText": str(raw_output_text or ""),
+            "ingestion": self.build_failed_call_ingestion(str(raw_output_text or ""), error),
+            "responseMeta": response_meta,
+            "auth": auth_assignment,
+        }
+        if isinstance(raw_response, dict):
+            payload["rawProviderResponse"] = raw_response
+        artifact_meta = artifact_store.write_json_artifact(self.root, "failed_calls", safe_name, payload)
+        transfer_packet = self.write_node_transfer_artifact(
+            task_id=normalized_task_id,
+            source_node=f"{normalized_provider}:provider_ingress",
+            target_nodes=[node_target],
+            payload={
+                "rawOutputText": str(raw_output_text or ""),
+                "rawProviderResponse": raw_response if isinstance(raw_response, dict) else None,
+                "error": str(error or ""),
+                "failureKind": detected_kind,
+                "responseId": str(response_id or "").strip(),
+            },
+            status="deceased",
+            validation_status="reader_rejected" if str(raw_output_text or "").strip() else "provider_unavailable",
+            failed_call_artifact=str(artifact_meta.get("name") or safe_name),
+            failure_kind=detected_kind,
+            error=error,
+            retryable=detected_kind in {"overflow", "malformed_json", "timeout", "connection", "empty_output", "provider_error"},
+            oversight_action="retry_same_node_or_spawn_adversary_if_repeated",
+        )
+        payload["nodeTransferArtifact"] = transfer_packet.get("artifact", {}).get("name")
+        artifact_store.write_json_artifact(self.root, "failed_calls", safe_name, payload)
+        return {
+            "name": artifact_meta.get("name") or safe_name,
+            "category": artifact_meta.get("category") or "failed_calls",
+            "failureKind": detected_kind,
+            "taskId": normalized_task_id,
+            "target": normalized_target,
+            "targetNode": node_target,
+            "passStatus": "discarded_failed_attempt",
+            "passedToNextNode": False,
+            "nodeTransferArtifact": transfer_packet.get("artifact", {}).get("name"),
+            "provider": normalized_provider,
+            "model": str(model or "").strip(),
+            "rawOutputAvailable": bool(str(raw_output_text or "").strip()),
+            "modifiedAt": artifact_meta.get("modifiedAt"),
+            "size": artifact_meta.get("size"),
+        }
+
+    def flatten_output_for_artifact(
+        self,
+        payload: Any,
+        artifact_type: str,
+        *,
+        provider: str = "",
+        model: str = "",
+        task_id: str = "",
+        target_kind: str = "generic",
+        schema_name: str = "",
+        raw_output_text: Any = "",
+        raw_response: Optional[Dict[str, Any]] = None,
+        response_id: str = "",
+    ) -> str:
+        try:
+            flattened = flatten_output_payload_text(payload, artifact_type, provider_hint=provider)
+        except Exception as error:
+            self.write_failed_call_artifact(
+                task_id=task_id,
+                target_kind=target_kind,
+                provider=provider,
+                model=model,
+                schema_name=schema_name,
+                error=error,
+                raw_output_text=str(raw_output_text or ""),
+                raw_response=raw_response,
+                response_id=response_id,
+                failure_kind="flattener_error",
+            )
+            return ""
+        if not str(flattened or "").strip():
+            self.write_failed_call_artifact(
+                task_id=task_id,
+                target_kind=target_kind,
+                provider=provider,
+                model=model,
+                schema_name=schema_name,
+                error="Flattener returned empty output.",
+                raw_output_text=str(raw_output_text or ""),
+                raw_response=raw_response,
+                response_id=response_id,
+                failure_kind="flattener_empty",
+            )
+            return ""
+        return str(flattened or "").strip()
+
     def run_direct_baseline(self) -> Dict[str, Any]:
         state = self.read_state()
         task = state.get("activeTask")
@@ -11577,7 +12570,7 @@ class LoopRuntime:
             "attempts": [int(direct_runtime["maxOutputTokens"])] if int(direct_runtime["maxOutputTokens"]) > 0 else [],
             "recoveredFromIncomplete": False,
         }
-        mode_used = "mock"
+        mode_used = "live"
         auth_assignments = self.provider_auth_assignments(direct_runtime["provider"], "direct_baseline", task, round_number=1)
         auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = self.live_auth_meta(direct_runtime["provider"], auth_assignment)
@@ -11621,7 +12614,7 @@ class LoopRuntime:
                     auth_meta=auth_meta,
                 )
         if baseline_answer is None:
-            baseline_answer = self.new_mock_direct_baseline_answer(task)
+            raise RuntimeErrorWithCode("Live direct baseline did not produce a validated output.", 502)
         self.assert_execution_not_cancelled()
 
         baseline = {
@@ -11668,7 +12661,18 @@ class LoopRuntime:
             "inputText": str(call_meta.get("inputText") or "").strip() or None,
             "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
-            "flattenedOutputText": flatten_output_payload_text(baseline, "direct_baseline_output"),
+            "flattenedOutputText": self.flatten_output_for_artifact(
+                baseline,
+                "direct_baseline_output",
+                provider=direct_runtime["provider"],
+                model=direct_runtime["model"],
+                task_id=str(task["taskId"]),
+                target_kind="direct_baseline",
+                schema_name="direct_answer",
+                raw_output_text=self.get_response_output_text(response) if response else "",
+                raw_response=response,
+                response_id=str(response_id or ""),
+            ),
             "responseMeta": baseline["responseMeta"],
             "authMeta": auth_meta,
             "output": baseline,
@@ -11677,6 +12681,16 @@ class LoopRuntime:
             f"{task['taskId']}_direct_baseline_output.json",
             f"{task['taskId']}_direct_baseline_round001_output.json",
             output_artifact,
+        )
+        self.write_node_transfer_artifact(
+            task_id=str(task["taskId"]),
+            source_node="direct_baseline",
+            target_nodes=["summarizer", "review", "score_judge"],
+            payload=baseline,
+            status="accepted",
+            validation_status="valid",
+            checkpoint_artifact=str(history_cp),
+            output_artifact=str(history_output),
         )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         self.append_event(
@@ -11741,7 +12755,7 @@ class LoopRuntime:
             "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
             "recoveredFromIncomplete": False,
         }
-        mode_used = "mock"
+        mode_used = "live"
         auth_assignments = self.provider_auth_assignments(runtime["provider"], "commander", task, round_number=round_number)
         auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
@@ -11782,7 +12796,7 @@ class LoopRuntime:
                     auth_meta=auth_meta,
                 )
         if checkpoint is None:
-            checkpoint = self.new_mock_commander(task, runtime, round_number, constraints, prior_summary)
+            raise RuntimeErrorWithCode("Live commander did not produce a validated checkpoint.", 502)
         checkpoint = normalize_commander_checkpoint(checkpoint, task, round_number)
         checkpoint["localToolCalls"] = normalize_local_tool_calls(call_meta.get("localToolCalls", []))
         checkpoint["localFileSources"] = normalize_string_array_preserve_items(call_meta.get("localFileSources", []))
@@ -11809,7 +12823,18 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
-            "flattenedOutputText": flatten_output_payload_text(checkpoint, "commander_output"),
+            "flattenedOutputText": self.flatten_output_for_artifact(
+                checkpoint,
+                "commander_output",
+                provider=runtime["provider"],
+                model=runtime["model"],
+                task_id=str(task["taskId"]),
+                target_kind="commander",
+                schema_name="commander_checkpoint",
+                raw_output_text=self.get_response_output_text(response) if response else "",
+                raw_response=response,
+                response_id=str(response_id or ""),
+            ),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -11832,6 +12857,16 @@ class LoopRuntime:
             f"{task['taskId']}_commander_output.json",
             f"{task['taskId']}_commander_round{round_number:03d}_output.json",
             output_artifact,
+        )
+        self.write_node_transfer_artifact(
+            task_id=str(task["taskId"]),
+            source_node="commander",
+            target_nodes=["workers", "commander_review", "summarizer"],
+            payload=checkpoint,
+            status="accepted",
+            validation_status="valid",
+            checkpoint_artifact=str(history_cp),
+            output_artifact=str(history_output),
         )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         self.append_event(
@@ -11924,6 +12959,13 @@ class LoopRuntime:
                     f"Worker {worker['id']} is not aligned with commander round {commander_round}.",
                     409,
                 )
+            self.verify_node_transfer_before_read(
+                task_id=str(task["taskId"]),
+                source_node=f"worker_{worker['id']}",
+                target_node="commander_review",
+                payload=checkpoint,
+                stage="commander_review",
+            )
         review_config = commander_review_config(task)
         runtime = self.get_task_runtime(task, review_config["model"], "commander_review", review_config["provider"])
         line_catalog = self.build_summary_line_catalog(worker_state, workers, max_items_per_worker=8)
@@ -11937,7 +12979,7 @@ class LoopRuntime:
             "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
             "recoveredFromIncomplete": False,
         }
-        mode_used = "mock"
+        mode_used = "live"
         auth_assignments = self.provider_auth_assignments(runtime["provider"], "commander_review", task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
@@ -11980,7 +13022,7 @@ class LoopRuntime:
                     auth_meta=auth_meta,
                 )
         if checkpoint is None:
-            checkpoint = self.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
+            raise RuntimeErrorWithCode("Live commander review did not produce a validated checkpoint.", 502)
         checkpoint = normalize_commander_review_checkpoint(
             checkpoint,
             task,
@@ -12032,7 +13074,18 @@ class LoopRuntime:
             "inputText": str(call_meta.get("inputText") or "").strip() or None,
             "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
-            "flattenedOutputText": flatten_output_payload_text(checkpoint, "commander_review_output"),
+            "flattenedOutputText": self.flatten_output_for_artifact(
+                checkpoint,
+                "commander_review_output",
+                provider=runtime["provider"],
+                model=runtime["model"],
+                task_id=str(task["taskId"]),
+                target_kind="commander_review",
+                schema_name="commander_review",
+                raw_output_text=self.get_response_output_text(response) if response else "",
+                raw_response=response,
+                response_id=str(response_id or ""),
+            ),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -12062,6 +13115,16 @@ class LoopRuntime:
             f"{task['taskId']}_commander_review_output.json",
             f"{task['taskId']}_commander_review_round{commander_round:03d}_output.json",
             output_artifact,
+        )
+        self.write_node_transfer_artifact(
+            task_id=str(task["taskId"]),
+            source_node="commander_review",
+            target_nodes=["workers", "summarizer"],
+            payload=checkpoint,
+            status="accepted",
+            validation_status="valid",
+            checkpoint_artifact=str(history_cp),
+            output_artifact=str(history_output),
         )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         self.append_event(
@@ -12157,6 +13220,14 @@ class LoopRuntime:
         commander_checkpoint = state.get("commander") if isinstance(state.get("commander"), dict) else None
         prior_memory_version = int(state.get("memoryVersion", 0) or 0)
         commander_round = int((commander_checkpoint or {}).get("round", 0) or 0)
+        if isinstance(commander_checkpoint, dict):
+            self.verify_node_transfer_before_read(
+                task_id=str(task["taskId"]),
+                source_node="commander",
+                target_node=f"worker_{worker_id}",
+                payload=commander_checkpoint,
+                stage=f"worker_{worker_id}",
+            )
         step_number = commander_round if commander_round > 0 else 1
         checkpoint_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
         existing = checkpoint_state.get(worker_id)
@@ -12185,7 +13256,7 @@ class LoopRuntime:
             "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
             "recoveredFromIncomplete": False,
         }
-        mode_used = "mock"
+        mode_used = "live"
         auth_assignments = self.provider_auth_assignments(runtime["provider"], worker_id, task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
@@ -12233,7 +13304,7 @@ class LoopRuntime:
                     extra_context={"workerId": worker_id, "step": step_number},
                 )
         if checkpoint is None:
-            checkpoint = self.new_mock_checkpoint(task, worker, runtime, research_config, step_number, constraints, prior_summary, prior_memory_version, peer_messages)
+            raise RuntimeErrorWithCode(f"Live worker {worker_id} did not produce a validated checkpoint.", 502)
         checkpoint = self.normalize_checkpoint(task, worker_id, worker, runtime, checkpoint, step_number)
         self.assert_execution_not_cancelled()
         def update_state(current: Dict[str, Any]) -> Dict[str, Any]:
@@ -12256,7 +13327,18 @@ class LoopRuntime:
             "capturedAt": utc_now(),
             "responseId": response_id,
             "rawOutputText": self.get_response_output_text(response) if response else None,
-            "flattenedOutputText": flatten_output_payload_text(checkpoint, "worker_output"),
+            "flattenedOutputText": self.flatten_output_for_artifact(
+                checkpoint,
+                "worker_output",
+                provider=runtime["provider"],
+                model=runtime["model"],
+                task_id=str(task["taskId"]),
+                target_kind=worker_id,
+                schema_name="worker_checkpoint",
+                raw_output_text=self.get_response_output_text(response) if response else "",
+                raw_response=response,
+                response_id=str(response_id or ""),
+            ),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -12284,6 +13366,16 @@ class LoopRuntime:
             f"{task['taskId']}_{worker_id}_output.json",
             f"{task['taskId']}_{worker_id}_step{step_number:03d}_output.json",
             output_artifact,
+        )
+        self.write_node_transfer_artifact(
+            task_id=str(task["taskId"]),
+            source_node=f"worker_{worker_id}",
+            target_nodes=["commander_review", "summarizer"],
+            payload=checkpoint,
+            status="accepted",
+            validation_status="valid",
+            checkpoint_artifact=str(history_cp),
+            output_artifact=str(history_output),
         )
         self.append_event(
             "worker_checkpoint",
@@ -12377,6 +13469,13 @@ class LoopRuntime:
                 f"Commander review is not aligned with commander round {commander_round}.",
                 409,
             )
+        self.verify_node_transfer_before_read(
+            task_id=str(task["taskId"]),
+            source_node="commander_review",
+            target_node="summarizer",
+            payload=commander_review_checkpoint,
+            stage="summarizer",
+        )
         for worker in workers:
             checkpoint = state_workers.get(worker["id"])
             if not isinstance(checkpoint, dict):
@@ -12386,6 +13485,13 @@ class LoopRuntime:
                     f"Worker {worker['id']} is not aligned with commander round {commander_round}.",
                     409,
                 )
+            self.verify_node_transfer_before_read(
+                task_id=str(task["taskId"]),
+                source_node=f"worker_{worker['id']}",
+                target_node="summarizer",
+                payload=checkpoint,
+                stage="summarizer",
+            )
             worker_state[worker["id"]] = checkpoint
         summary_config = summarizer_config(task)
         runtime = self.get_task_runtime(task, summary_config["model"], "summarizer", summary_config["provider"])
@@ -12401,7 +13507,7 @@ class LoopRuntime:
             "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
             "recoveredFromIncomplete": False,
         }
-        mode_used = "mock"
+        mode_used = "live"
         auth_assignments = self.provider_auth_assignments(runtime["provider"], "summarizer", task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
@@ -12445,7 +13551,7 @@ class LoopRuntime:
                     auth_meta=auth_meta,
                 )
         if summary is None:
-            summary = self.new_mock_summary(task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, vetting_config, line_catalog)
+            raise RuntimeErrorWithCode("Live summarizer did not produce a validated summary.", 502)
         summary = self.normalize_summary(summary, line_catalog)
         contradiction_memory_packet = self.build_contradiction_memory_packet(
             task,
@@ -12484,7 +13590,18 @@ class LoopRuntime:
             "inputText": str(call_meta.get("inputText") or "").strip() or None,
             "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
-            "flattenedOutputText": flatten_output_payload_text(summary, "summary_output"),
+            "flattenedOutputText": self.flatten_output_for_artifact(
+                summary,
+                "summary_output",
+                provider=runtime["provider"],
+                model=runtime["model"],
+                task_id=str(task["taskId"]),
+                target_kind="summarizer",
+                schema_name="loop_summary_multi",
+                raw_output_text=self.get_response_output_text(response) if response else "",
+                raw_response=response,
+                response_id=str(response_id or ""),
+            ),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -12519,6 +13636,16 @@ class LoopRuntime:
             f"{task['taskId']}_summary_output.json",
             f"{task['taskId']}_summary_round{int(summary.get('round', 0) or 0):03d}_output.json",
             output_artifact,
+        )
+        self.write_node_transfer_artifact(
+            task_id=str(task["taskId"]),
+            source_node="summarizer",
+            target_nodes=["review", "judge_learning", "memory_bank"],
+            payload=summary,
+            status="accepted",
+            validation_status="valid",
+            checkpoint_artifact=str(history_summary),
+            output_artifact=str(history_output),
         )
         self.append_event(
             "summary_written",
@@ -12605,7 +13732,7 @@ class LoopRuntime:
             "attempts": [int(runtime["maxOutputTokens"])] if int(runtime["maxOutputTokens"]) > 0 else [],
             "recoveredFromIncomplete": False,
         }
-        mode_used = "mock"
+        mode_used = "live"
         auth_assignments = self.provider_auth_assignments(runtime["provider"], "summarizer", task, round_number=commander_round)
         auth_assignment = auth_assignments[0] if auth_assignments else None
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
@@ -12636,7 +13763,7 @@ class LoopRuntime:
                     ),
                     extra_context={"reasoningEffort": runtime["reasoningEffort"]},
                     retry_message="Live Answer Now call failed; retrying live call.",
-                    exhausted_message="Live Answer Now call failed after retries; no mock fallback was used.",
+                    exhausted_message="Live Answer Now call failed after retries; no synthetic output was used.",
                 )
                 call_meta = dict(call_meta or {})
                 call_meta["liveAttempts"] = int(live_attempts)
@@ -12655,15 +13782,7 @@ class LoopRuntime:
                     extra_context={"reasoningEffort": runtime["reasoningEffort"]},
                 )
         if summary is None:
-            summary = self.new_mock_summary(
-                task,
-                commander_checkpoint,
-                commander_review_checkpoint if isinstance(commander_review_checkpoint, dict) and int(commander_review_checkpoint.get("round", 0) or 0) == commander_round else None,
-                workers,
-                worker_state,
-                vetting_config,
-                line_catalog,
-            )
+            raise RuntimeErrorWithCode("Live Answer Now did not produce a validated summary.", 502)
         summary = self.normalize_summary(summary, line_catalog)
         contradiction_memory_packet = self.build_contradiction_memory_packet(
             task,
@@ -12713,7 +13832,18 @@ class LoopRuntime:
             "inputText": str(call_meta.get("inputText") or "").strip() or None,
             "fullPrompt": str(call_meta.get("fullPrompt") or "").strip() or None,
             "rawOutputText": self.get_response_output_text(response) if response else None,
-            "flattenedOutputText": flatten_output_payload_text(summary, "summary_partial_output"),
+            "flattenedOutputText": self.flatten_output_for_artifact(
+                summary,
+                "summary_partial_output",
+                provider=runtime["provider"],
+                model=runtime["model"],
+                task_id=str(task["taskId"]),
+                target_kind="answer_now",
+                schema_name="loop_summary_multi",
+                raw_output_text=self.get_response_output_text(response) if response else "",
+                raw_response=response,
+                response_id=str(response_id or ""),
+            ),
             "responseMeta": {
                 "status": str(response.get("status", "completed")),
                 "usageDelta": self.get_response_usage_delta(response, runtime["model"]),
@@ -12737,6 +13867,16 @@ class LoopRuntime:
             f"{task['taskId']}_summary_partial_output.json",
             f"{task['taskId']}_summary_partial_round{int(summary.get('round', 0) or 0):03d}_output.json",
             output_artifact,
+        )
+        self.write_node_transfer_artifact(
+            task_id=str(task["taskId"]),
+            source_node="answer_now",
+            target_nodes=["review"],
+            payload=summary,
+            status="accepted" if summary_write_applied.get("value") else "superseded",
+            validation_status="valid",
+            checkpoint_artifact=str(history_summary),
+            output_artifact=str(history_output),
         )
         budget_totals = usage_snapshot or normalize_usage_state(state.get("usage") if isinstance(state.get("usage"), dict) else {})
         self.append_step(

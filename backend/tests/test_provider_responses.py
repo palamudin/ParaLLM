@@ -89,6 +89,42 @@ class ProviderResponseNormalizerTests(unittest.TestCase):
         answer = provider_responses.extract_normalized_provider_answer("anthropic", raw)
         self.assertIn("Containment", answer)
 
+    def test_extract_normalized_provider_answer_skips_minimax_schema_echo(self) -> None:
+        raw = (
+            "<think>Reasoning for display.</think>\n\n"
+            '{"type":"object","additionalProperties":false,"required":["frontAnswer"],'
+            '"properties":{"frontAnswer":{"type":"object"}}}}\n\n'
+            '{"frontAnswer":{"answer":"Request confirmation of package provenance and any known compromise disclosures.",'
+            '"stance":"act","leadDirection":"contain","adversarialPressure":"none","confidenceNote":"medium"},'
+            '"summarizerOpinion":{"stance":"act","because":"multi-tenant risk",'
+            '"uncertainty":"root cause open","integrationMode":"gated"},"sourceWorkers":[]}'
+        )
+        answer = provider_responses.extract_normalized_provider_answer("minimax", raw)
+        self.assertIn("package provenance", answer)
+        self.assertNotIn('"type":"object"', answer)
+
+    def test_extract_normalized_provider_answer_skips_minimax_direct_schema_payload_echo(self) -> None:
+        raw = (
+            "<think>MiniMax echoed a compact schema before the answer.</think>\n\n"
+            '{"answer":{"type":"string"},"stance":{"type":"string"},"confidenceNote":{"type":"string"}}\n\n'
+            '{"answer":"Run the first-hour incident bridge with per-customer ownership.",'
+            '"stance":"contain safely","confidenceNote":"medium"}'
+        )
+        answer = provider_responses.extract_normalized_provider_answer("minimax", raw)
+        self.assertIn("per-customer ownership", answer)
+        self.assertNotIn("{'type': 'string'}", answer)
+
+    def test_extract_normalized_provider_answer_prefers_real_payload_over_placeholder(self) -> None:
+        raw = (
+            '<think>drafting...</think>\n'
+            '{"answer":"...\\n...","stance":"...","confidenceNote":"..."}\n'
+            '{"answer":"Run the first-hour incident bridge with per-customer ownership and evidence capture.",'
+            '"stance":"contain safely","confidenceNote":"medium"}'
+        )
+        answer = provider_responses.extract_normalized_provider_answer("minimax", raw)
+        self.assertIn("evidence capture", answer)
+        self.assertNotEqual(answer.strip(), "...\n...")
+
     def test_parse_embedded_json_value_repairs_truncated_json(self) -> None:
         repaired = provider_responses.parse_embedded_json_value('{"outer":{"inner":"value"}')
         self.assertEqual(repaired, {"outer": {"inner": "value"}})

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 def normalize_provider_name(provider: Any) -> str:
@@ -45,17 +45,169 @@ def parse_embedded_json_value(value: Any) -> Any:
         extracted = raw[first_object:last_object + 1].strip()
         if extracted and extracted not in candidates:
             candidates.append(extracted)
+    for _start, _end, extracted in extract_balanced_json_object_spans(raw, limit=24):
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+    parsed_candidates: List[Tuple[int, int, Any]] = []
     for candidate in candidates:
         try:
-            return json.loads(candidate)
+            parsed = json.loads(candidate)
         except json.JSONDecodeError:
             repaired = repair_truncated_json(candidate)
             if repaired and repaired != candidate:
                 try:
-                    return json.loads(repaired)
+                    parsed = json.loads(repaired)
                 except json.JSONDecodeError:
                     continue
+            else:
+                continue
+        parsed_candidates.append((embedded_payload_score(parsed), -len(parsed_candidates), parsed))
+    if parsed_candidates:
+        parsed_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return parsed_candidates[0][2]
     return None
+
+
+def extract_balanced_json_object_spans(text: str, limit: int = 24) -> List[Tuple[int, int, str]]:
+    raw = str(text or "")
+    if "{" not in raw:
+        return []
+    results: List[Tuple[int, int, str]] = []
+    scanned_starts = 0
+    max_starts = max(limit * 16, 64)
+    for start, start_char in enumerate(raw):
+        if start_char != "{":
+            continue
+        scanned_starts += 1
+        if scanned_starts > max_starts and results:
+            break
+        if scanned_starts > 2048:
+            break
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(raw)):
+            char = raw[index]
+            if in_string:
+                if escape:
+                    escape = False
+                    continue
+                if char == "\\":
+                    escape = True
+                    continue
+                if char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == "{":
+                depth += 1
+                continue
+            if char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start:index + 1].strip()
+                    if candidate and all(candidate != existing[2] for existing in results):
+                        results.append((start, index + 1, candidate))
+                    break
+        if len(results) >= limit:
+            break
+    return results
+
+
+def embedded_payload_score(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    keys = set(str(key) for key in payload.keys())
+    if not keys:
+        return 0
+    schema_keys = {
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "description",
+        "enum",
+        "format",
+    }
+    payload_weights = {
+        "answer": 30,
+        "frontAnswer": 28,
+        "publicAnswer": 28,
+        "answerDraft": 26,
+        "summarizerOpinion": 18,
+        "workerId": 18,
+        "taskId": 14,
+        "round": 8,
+        "stance": 8,
+        "confidenceNote": 8,
+        "incident": 12,
+        "immediateActions": 12,
+        "decisionGates": 12,
+        "choices": 10,
+        "message": 8,
+        "response": 8,
+        "output": 8,
+    }
+    score = 0
+    for key, weight in payload_weights.items():
+        if key in payload and payload.get(key) not in (None, "", [], {}):
+            score += weight
+    score += embedded_content_quality_score(payload)
+    if keys.intersection(payload_weights.keys()):
+        non_empty_values = [value for value in payload.values() if value not in (None, "", [], {})]
+        if non_empty_values and all(looks_like_schema_fragment_value(value) for value in non_empty_values):
+            score -= 1000
+    if keys.issubset(schema_keys) or (str(payload.get("type") or "").lower() in {"object", "array", "string", "integer", "number", "boolean"} and score == 0):
+        score -= 1000
+    return score + min(len(keys), 12)
+
+
+def embedded_content_quality_score(payload: Dict[str, Any]) -> int:
+    text_parts: List[str] = []
+    for key in ("answer", "answerDraft", "publicAnswer", "leadDirection", "stance", "confidenceNote"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            text_parts.append(value)
+    front_answer = payload.get("frontAnswer")
+    if isinstance(front_answer, dict):
+        nested_answer = front_answer.get("answer")
+        if isinstance(nested_answer, str):
+            text_parts.append(nested_answer)
+    joined = "\n".join(text_parts).strip()
+    if not joined:
+        return 0
+    compact = re.sub(r"[\s.…_-]+", "", joined)
+    if not compact:
+        return -250
+    score = min(len(joined) // 80, 60)
+    if len(joined) >= 240:
+        score += 10
+    return score
+
+
+def looks_like_schema_fragment_value(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    keys = set(str(key) for key in value.keys())
+    if not keys:
+        return False
+    schema_keys = {
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "description",
+        "enum",
+        "format",
+    }
+    if str(value.get("type") or "").lower() in {"object", "array", "string", "integer", "number", "boolean"} and keys.issubset(schema_keys):
+        return True
+    nested_values = [nested for nested in value.values() if nested not in (None, "", [], {})]
+    return bool(nested_values) and all(looks_like_schema_fragment_value(nested) for nested in nested_values)
 
 
 def repair_truncated_json(candidate: Any) -> Optional[str]:

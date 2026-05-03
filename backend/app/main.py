@@ -338,6 +338,29 @@ def create_app(root: Path | None = None) -> FastAPI:
     def get_history() -> JSONResponse:
         return JSONResponse(storage.build_history_payload(paths))
 
+    @app.get("/v1/handoffs/latest")
+    def get_latest_handoff() -> JSONResponse:
+        packet = storage.read_latest_handoff_packet(paths)
+        if packet is None:
+            packet = storage.build_handoff_packet(
+                paths,
+                actor="system",
+                reason="live-preview",
+                next_action="No saved handoff exists yet. Create one before handing control to another agent.",
+            )
+        return JSONResponse(packet)
+
+    @app.post("/v1/handoffs")
+    async def post_handoff(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        packet = storage.write_handoff_packet(
+            paths,
+            actor=str(payload.get("actor") or "operator"),
+            reason=str(payload.get("reason") or "manual"),
+            next_action=str(payload.get("nextAction") or payload.get("next_action") or ""),
+        )
+        return JSONResponse(packet)
+
     @app.get("/v1/events")
     def get_events() -> PlainTextResponse:
         return PlainTextResponse(storage.tail_text_lines(paths.events, 100, "No events."), media_type="text/plain; charset=utf-8")

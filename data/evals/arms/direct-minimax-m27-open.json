@@ -1,20 +1,20 @@
 {
-  "armId": "direct-minimax-highspeed-open",
-  "title": "Direct MiniMax Highspeed | Open Harness",
-  "description": "Single-thread MiniMax highspeed baseline with the same open detailed-answer policy as the critical MSP Para runs.",
+  "armId": "direct-minimax-m27-open",
+  "title": "Direct MiniMax M2.7 | Open Harness",
+  "description": "Single-thread MiniMax M2.7 baseline with the same open detailed-answer policy as the critical MSP Para runs.",
   "type": "direct",
   "runtime": {
     "executionMode": "live",
     "provider": "minimax",
-    "model": "MiniMax-M2.1-highspeed",
+    "model": "MiniMax-M2.7",
     "directProvider": "minimax",
-    "directModel": "MiniMax-M2.1-highspeed",
+    "directModel": "MiniMax-M2.7",
     "summarizerProvider": "minimax",
-    "summarizerModel": "MiniMax-M2.1-highspeed",
-    "reasoningEffort": "low",
+    "summarizerModel": "MiniMax-M2.7",
+    "reasoningEffort": "high",
     "budget": {
       "maxTotalTokens": 0,
-      "maxCostUsd": 3
+      "maxCostUsd": 8
     },
     "research": {
       "enabled": false,

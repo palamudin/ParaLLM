@@ -4,6 +4,10 @@
     draft: "/v1/draft",
     frontLiveRuns: "/v1/front/live/runs",
     evalHistory: "/v1/evals/history",
+    evalArtifact: "/v1/evals/artifact",
+    history: "/v1/history",
+    artifact: "/v1/artifact",
+    handoffs: "/v1/handoffs",
   };
 
   const providerCatalog = {
@@ -57,6 +61,21 @@
     sessions: [],
     loaded: false,
   };
+  const failedCallState = {
+    loaded: false,
+    selectedName: "",
+    failures: [],
+  };
+  const handoffState = {
+    loaded: false,
+    selectedName: "",
+    handoffs: [],
+  };
+  const nodeTransferState = {
+    loaded: false,
+    selectedName: "",
+    transfers: [],
+  };
   let activeSurfaceDrag = null;
 
   const navButtons = Array.from(document.querySelectorAll("[data-view-target]"));
@@ -102,6 +121,24 @@
     scoreRunMeta: document.getElementById("scoreRunMeta"),
     scoreStatus: document.getElementById("scoreStatus"),
     scoreCompareDetail: document.getElementById("scoreCompareDetail"),
+    failedCallSelect: document.getElementById("failedCallSelect"),
+    failedCallRefreshBtn: document.getElementById("failedCallRefreshBtn"),
+    failedCallStatus: document.getElementById("failedCallStatus"),
+    failedCallMeta: document.getElementById("failedCallMeta"),
+    failedCallIngestion: document.getElementById("failedCallIngestion"),
+    failedCallRaw: document.getElementById("failedCallRaw"),
+    failedCallPacket: document.getElementById("failedCallPacket"),
+    handoffSelect: document.getElementById("handoffSelect"),
+    handoffCreateBtn: document.getElementById("handoffCreateBtn"),
+    handoffRefreshBtn: document.getElementById("handoffRefreshBtn"),
+    handoffStatus: document.getElementById("handoffStatus"),
+    handoffMeta: document.getElementById("handoffMeta"),
+    handoffPacket: document.getElementById("handoffPacket"),
+    nodeTransferSelect: document.getElementById("nodeTransferSelect"),
+    nodeTransferRefreshBtn: document.getElementById("nodeTransferRefreshBtn"),
+    nodeTransferStatus: document.getElementById("nodeTransferStatus"),
+    nodeTransferMeta: document.getElementById("nodeTransferMeta"),
+    nodeTransferPacket: document.getElementById("nodeTransferPacket"),
   };
 
   function applySidebarState(collapsed) {
@@ -206,6 +243,14 @@
     const text = String(value || "").replace(/\s+/g, " ").trim();
     const limit = Math.max(20, Number(maxLength || 160));
     return text.length <= limit ? text : text.slice(0, limit - 3).trimEnd() + "...";
+  }
+
+  function prettyJson(value) {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (_) {
+      return String(value ?? "");
+    }
   }
 
   function formatTimestamp(value) {
@@ -329,7 +374,7 @@
   function currentControlState() {
     const workerProvider = selectedGroupedValue("provider", "openai");
     return {
-      executionMode: String(elements.runtimeMode.value || "live"),
+      executionMode: "live",
       engineVersion: selectedGroupedValue("engine", "v1"),
       provider: workerProvider,
       model: String(elements.workerModel.value || ""),
@@ -362,7 +407,7 @@
 
     if (elements.contractNarrative) {
       elements.contractNarrative.textContent =
-        `Run the ${control.engineVersion.toUpperCase()} engine in ${control.executionMode} mode with ${providerLabel(control.provider)} / ${workerModelLabel} for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} on the final answer lane, ${baselineLabel}, use ${contextLabel}, keep research ${researchLabel}, and leave ${vettingLabel}.`;
+        `Run the ${control.engineVersion.toUpperCase()} engine live with ${providerLabel(control.provider)} / ${workerModelLabel} for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} on the final answer lane, ${baselineLabel}, use ${contextLabel}, keep research ${researchLabel}, and leave ${vettingLabel}.`;
     }
 
     elements.summaryPath.textContent =
@@ -374,7 +419,7 @@
     elements.summaryLimits.textContent = `${control.loopRounds} rounds, $${control.maxCostUsd.toFixed(1)} spend wall`;
     elements.summaryResearch.textContent = control.researchEnabled === "1" ? "On" : "Off";
 
-    elements.headerRuntime.textContent = control.executionMode === "mock" ? "Mock" : "Live";
+    elements.headerRuntime.textContent = "Live";
     elements.headerBaseline.textContent =
       control.directBaselineMode === "both"
         ? "Both compare"
@@ -491,7 +536,7 @@
     runtimeState.backendState = state;
     runtimeState.draft = clone(draft);
 
-    elements.runtimeMode.value = String(draft.executionMode || "live");
+    elements.runtimeMode.value = "live";
     setGroupedButton("engine", String(draft.engineVersion || "v1"));
     setGroupedButton("provider", String(draft.provider || "openai"));
     elements.summarizerProvider.value = String(draft.summarizerProvider || draft.provider || "openai");
@@ -889,6 +934,444 @@
     `;
   }
 
+  function handoffLabel(entry) {
+    const bits = [
+      String(entry?.packetId || entry?.name || "handoff"),
+      String(entry?.loopStatus || "").trim(),
+      String(entry?.taskId || "").trim(),
+      entry?.modifiedAt ? formatTimestamp(entry.modifiedAt) : "",
+    ].filter(Boolean);
+    return bits.join(" | ");
+  }
+
+  function renderHandoffMeta(payload) {
+    const content = payload?.content && typeof payload.content === "object" ? payload.content : payload;
+    const task = content?.activeTask && typeof content.activeTask === "object" ? content.activeTask : {};
+    const loop = content?.loop && typeof content.loop === "object" ? content.loop : {};
+    const integrity = content?.integrity && typeof content.integrity === "object" ? content.integrity : {};
+    const rows = [
+      ["Packet", content?.packetId || payload?.name || ""],
+      ["Created", content?.createdAt || payload?.modifiedAt || ""],
+      ["Reason", content?.reason || ""],
+      ["Task", task.taskId || ""],
+      ["Loop", loop.status || ""],
+      ["Current round", [loop.completedRounds, loop.totalRounds].filter((value) => value !== undefined && value !== null).join(" / ")],
+      ["Failed calls", String(Array.isArray(content?.failedCalls) ? content.failedCalls.length : 0)],
+      ["Blockers", String(Array.isArray(content?.knownBlockers) ? content.knownBlockers.length : 0)],
+      ["Evidence digest", integrity.evidenceDigest || ""],
+      ["Packet hash", content?.packetHash || ""],
+    ].filter((row) => String(row[1] || "").trim());
+    const objective = String(task.objective || "").trim();
+    const objectiveRow = objective
+      ? `<div class="replacement-fail-meta-row replacement-fail-meta-row-wide"><span>Objective</span><strong>${escapeHtml(truncateText(objective, 420))}</strong></div>`
+      : "";
+    const rowsHtml = rows.map(([label, value]) => `
+      <div class="replacement-fail-meta-row">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+    `).join("");
+    return rowsHtml + objectiveRow || "No handoff metadata captured.";
+  }
+
+  function setHandoffDetail(payload) {
+    if (elements.handoffMeta) {
+      elements.handoffMeta.innerHTML = renderHandoffMeta(payload);
+    }
+    if (elements.handoffPacket) {
+      const content = payload?.content && typeof payload.content === "object" ? payload.content : payload;
+      elements.handoffPacket.textContent = prettyJson(content || {});
+    }
+  }
+
+  function clearHandoffDetail(message) {
+    const text = message || "No handoff selected.";
+    if (elements.handoffMeta) elements.handoffMeta.textContent = text;
+    if (elements.handoffPacket) elements.handoffPacket.textContent = "{}";
+  }
+
+  async function loadHandoffDetail(name) {
+    const selectedName = String(name || "").trim();
+    if (!selectedName) {
+      clearHandoffDetail("No handoff selected.");
+      return;
+    }
+    if (elements.handoffStatus) {
+      elements.handoffStatus.textContent = "Loading " + selectedName + "...";
+    }
+    const payload = await fetchJson(API.artifact + "?name=" + encodeURIComponent(selectedName));
+    setHandoffDetail(payload);
+    if (elements.handoffStatus) {
+      const packetId = payload?.content?.packetId || payload?.summary?.packetId || selectedName;
+      elements.handoffStatus.textContent = "Viewing handoff packet " + packetId + ".";
+    }
+  }
+
+  function syncHandoffSelector(handoffs) {
+    if (!elements.handoffSelect) return;
+    handoffState.handoffs = Array.isArray(handoffs) ? handoffs : [];
+    if (!handoffState.handoffs.length) {
+      elements.handoffSelect.innerHTML = `<option value="">No handoffs captured</option>`;
+      handoffState.selectedName = "";
+      clearHandoffDetail("No durable handoff packet has been captured yet.");
+      if (elements.handoffStatus) {
+        elements.handoffStatus.textContent = "No handoff packets captured.";
+      }
+      return;
+    }
+    if (!handoffState.selectedName || !handoffState.handoffs.some((entry) => String(entry.name || "") === handoffState.selectedName)) {
+      handoffState.selectedName = String(handoffState.handoffs[0]?.name || "");
+    }
+    elements.handoffSelect.innerHTML = handoffState.handoffs.map((entry) => {
+      const name = String(entry.name || "");
+      return `<option value="${escapeHtml(name)}">${escapeHtml(handoffLabel(entry))}</option>`;
+    }).join("");
+    elements.handoffSelect.value = handoffState.selectedName;
+    loadHandoffDetail(handoffState.selectedName).catch(function (error) {
+      if (elements.handoffStatus) {
+        elements.handoffStatus.textContent = "Handoff load failed: " + String(error.message || error);
+      }
+    });
+  }
+
+  async function loadHandoffs() {
+    if (!elements.handoffSelect) return;
+    if (elements.handoffStatus) {
+      elements.handoffStatus.textContent = "Loading handoff ledger...";
+    }
+    const payload = await fetchJson(API.history);
+    handoffState.loaded = true;
+    syncHandoffSelector(Array.isArray(payload?.handoffs) ? payload.handoffs : []);
+  }
+
+  async function createHandoffPacket() {
+    if (elements.handoffStatus) {
+      elements.handoffStatus.textContent = "Creating durable handoff packet...";
+    }
+    const payload = await fetchJson(API.handoffs, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        actor: "operator",
+        reason: "manual-review-handoff",
+        nextAction: "Resume from this packet, inspect linked artifacts, then continue the active job or eval.",
+      }),
+    });
+    handoffState.selectedName = String(payload?.artifact?.name || "");
+    handoffState.loaded = false;
+    await loadHandoffs();
+  }
+
+  function nodeTransferLabel(entry) {
+    const bits = [
+      String(entry?.storage || "") === "eval" ? "eval " + String(entry?.runId || "").trim() : "live",
+      String(entry?.status || "transfer"),
+      String(entry?.validationStatus || ""),
+      String(entry?.sourceNode || ""),
+      Array.isArray(entry?.targetNodes) ? "to " + entry.targetNodes.join(",") : "",
+      entry?.crc32 ? "crc " + entry.crc32 : "",
+      entry?.modifiedAt ? formatTimestamp(entry.modifiedAt) : "",
+    ].filter(Boolean);
+    return bits.join(" | ");
+  }
+
+  function nodeTransferKey(entry) {
+    if (String(entry?.storage || "") === "eval") {
+      return ["eval", entry?.runId || "", entry?.artifactId || ""].map((part) => encodeURIComponent(String(part))).join("|");
+    }
+    return ["live", entry?.name || ""].map((part) => encodeURIComponent(String(part))).join("|");
+  }
+
+  function nodeTransferEntryForKey(key) {
+    const selected = String(key || "");
+    return nodeTransferState.transfers.find((entry) => nodeTransferKey(entry) === selected)
+      || nodeTransferState.transfers.find((entry) => String(entry?.name || "") === selected)
+      || null;
+  }
+
+  function renderNodeTransferMeta(payload) {
+    const content = payload?.content && typeof payload.content === "object" ? payload.content : payload;
+    const integrity = content?.integrity && typeof content.integrity === "object" ? content.integrity : {};
+    const check = content?.integrityCheck && typeof content.integrityCheck === "object" ? content.integrityCheck : {};
+    const artifacts = content?.artifacts && typeof content.artifacts === "object" ? content.artifacts : {};
+    const rows = [
+      ["Transfer", content?.transferId || payload?.name || ""],
+      ["Status", content?.status || ""],
+      ["Validation", content?.validationStatus || ""],
+      ["Passed", content?.passedToNextNode === true ? "yes" : "no"],
+      ["Integrity", check.ok === true ? "ok" : "failed"],
+      ["Source", content?.sourceNode || ""],
+      ["Targets", Array.isArray(content?.targetNodes) ? content.targetNodes.join(", ") : ""],
+      ["CRC32", integrity.crc32 || ""],
+      ["SHA-256", integrity.sha256 || ""],
+      ["Bytes", String(integrity.canonicalJsonBytes || "")],
+      ["Checkpoint", artifacts.checkpoint || ""],
+      ["Output", artifacts.output || ""],
+      ["Failed call", artifacts.failedCall || ""],
+      ["Oversight", content?.oversightAction || ""],
+      ["Error", content?.error || ""],
+    ].filter((row) => String(row[1] || "").trim());
+    return rows.map(([label, value]) => `
+      <div class="replacement-fail-meta-row">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+    `).join("") || "No transfer metadata captured.";
+  }
+
+  function setNodeTransferDetail(payload) {
+    if (elements.nodeTransferMeta) {
+      elements.nodeTransferMeta.innerHTML = renderNodeTransferMeta(payload);
+    }
+    if (elements.nodeTransferPacket) {
+      const content = payload?.content && typeof payload.content === "object" ? payload.content : payload;
+      elements.nodeTransferPacket.textContent = prettyJson(content || {});
+    }
+  }
+
+  function clearNodeTransferDetail(message) {
+    const text = message || "No transfer selected.";
+    if (elements.nodeTransferMeta) elements.nodeTransferMeta.textContent = text;
+    if (elements.nodeTransferPacket) elements.nodeTransferPacket.textContent = "{}";
+  }
+
+  async function loadNodeTransferDetail(key) {
+    const selectedKey = String(key || "").trim();
+    if (!selectedKey) {
+      clearNodeTransferDetail("No transfer selected.");
+      return;
+    }
+    const entry = nodeTransferEntryForKey(selectedKey);
+    if (elements.nodeTransferStatus) {
+      elements.nodeTransferStatus.textContent = "Loading transfer " + (entry?.name || selectedKey) + "...";
+    }
+    const payload = String(entry?.storage || "") === "eval"
+      ? await fetchJson(API.evalArtifact + "?runId=" + encodeURIComponent(entry.runId || "") + "&artifactId=" + encodeURIComponent(entry.artifactId || ""))
+      : await fetchJson(API.artifact + "?name=" + encodeURIComponent(entry?.name || selectedKey));
+    setNodeTransferDetail(payload);
+    if (elements.nodeTransferStatus) {
+      const status = payload?.content?.status || "transfer";
+      const ok = payload?.content?.integrityCheck?.ok === true ? "checksum ok" : "checksum failed";
+      elements.nodeTransferStatus.textContent = "Viewing " + status + " node transfer, " + ok + ".";
+    }
+  }
+
+  function syncNodeTransferSelector(transfers) {
+    if (!elements.nodeTransferSelect) return;
+    nodeTransferState.transfers = Array.isArray(transfers) ? transfers : [];
+    if (!nodeTransferState.transfers.length) {
+      elements.nodeTransferSelect.innerHTML = `<option value="">No transfers captured</option>`;
+      nodeTransferState.selectedName = "";
+      clearNodeTransferDetail("No node transfers have been captured yet.");
+      if (elements.nodeTransferStatus) {
+        elements.nodeTransferStatus.textContent = "No node transfers captured.";
+      }
+      return;
+    }
+    if (!nodeTransferState.selectedName || !nodeTransferState.transfers.some((entry) => nodeTransferKey(entry) === nodeTransferState.selectedName)) {
+      nodeTransferState.selectedName = nodeTransferKey(nodeTransferState.transfers[0]);
+    }
+    elements.nodeTransferSelect.innerHTML = nodeTransferState.transfers.map((entry) => {
+      const key = nodeTransferKey(entry);
+      return `<option value="${escapeHtml(key)}">${escapeHtml(nodeTransferLabel(entry))}</option>`;
+    }).join("");
+    elements.nodeTransferSelect.value = nodeTransferState.selectedName;
+    loadNodeTransferDetail(nodeTransferState.selectedName).catch(function (error) {
+      if (elements.nodeTransferStatus) {
+        elements.nodeTransferStatus.textContent = "Transfer load failed: " + String(error.message || error);
+      }
+    });
+  }
+
+  async function loadNodeTransfers() {
+    if (!elements.nodeTransferSelect) return;
+    if (elements.nodeTransferStatus) {
+      elements.nodeTransferStatus.textContent = "Loading node transfer ledger...";
+    }
+    const payload = await fetchJson(API.history);
+    nodeTransferState.loaded = true;
+    syncNodeTransferSelector(Array.isArray(payload?.nodeTransfers) ? payload.nodeTransfers : []);
+  }
+
+  function failedCallLabel(entry) {
+    const bits = [
+      String(entry?.storage || "") === "eval" ? "eval " + String(entry?.runId || "").trim() : "live",
+      String(entry?.failureKind || "failed"),
+      providerLabel(entry?.provider || ""),
+      modelLabel(entry?.provider || "", entry?.model || ""),
+      String(entry?.worker || entry?.target || "").trim(),
+      entry?.modifiedAt ? formatTimestamp(entry.modifiedAt) : "",
+    ].filter(Boolean);
+    return bits.join(" | ") || String(entry?.name || "failed call");
+  }
+
+  function failedCallKey(entry) {
+    if (String(entry?.storage || "") === "eval") {
+      return ["eval", entry?.runId || "", entry?.artifactId || ""].map((part) => encodeURIComponent(String(part))).join("|");
+    }
+    return ["live", entry?.name || ""].map((part) => encodeURIComponent(String(part))).join("|");
+  }
+
+  function failedCallEntryForKey(key) {
+    const selected = String(key || "");
+    return failedCallState.failures.find((entry) => failedCallKey(entry) === selected)
+      || failedCallState.failures.find((entry) => String(entry?.name || "") === selected)
+      || null;
+  }
+
+  function renderFailedCallMeta(payload) {
+    const summary = payload?.summary || {};
+    const content = payload?.content || {};
+    const rows = [
+      ["Artifact", payload?.name || ""],
+      ["Storage", payload?.storage || ""],
+      ["Run", payload?.content?.runId || payload?.summary?.runId || payload?.runId || ""],
+      ["Artifact ID", payload?.artifactId || ""],
+      ["Kind", summary.failureKind || content.failureKind || ""],
+      ["Pass status", summary.passStatus || content.passStatus || ""],
+      ["Passed to next", (summary.passedToNextNode ?? content.passedToNextNode) === true ? "yes" : "no"],
+      ["Handoff note", summary.handoffNote || content.handoffNote || ""],
+      ["Target", summary.target || content.target || ""],
+      ["Provider", providerLabel(summary.provider || content.provider || "")],
+      ["Model", modelLabel(summary.provider || content.provider || "", summary.model || content.model || "") || summary.model || content.model || ""],
+      ["Schema", content.schemaName || ""],
+      ["Response", summary.responseId || content.responseId || ""],
+      ["Captured", content.capturedAt || payload?.modifiedAt || ""],
+      ["Raw bytes", String((content.rawOutputText || "").length)],
+      ["Error", summary.error || content.error || ""],
+    ].filter((row) => String(row[1] || "").trim());
+    const successor = summary.acceptedSuccessor || content.acceptedSuccessor || null;
+    if (successor && typeof successor === "object") {
+      rows.splice(3, 0, ["Accepted successor", [successor.kind, successor.name || successor.artifactId].filter(Boolean).join(" | ")]);
+    }
+    return rows.map(([label, value]) => `
+      <div class="replacement-fail-meta-row">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+    `).join("") || "No failure metadata captured.";
+  }
+
+  function renderFailedCallIngestion(payload) {
+    const content = payload?.content || {};
+    const ingestion = content.ingestion && typeof content.ingestion === "object" ? content.ingestion : {};
+    const packet = {
+      failureKind: content.failureKind || payload?.summary?.failureKind || "",
+      parseError: ingestion.parseError || content.error || "",
+      rawLength: ingestion.rawLength ?? (content.rawOutputText || "").length,
+      candidateKind: ingestion.candidateKind || "",
+      candidateParseError: ingestion.candidateParseError || "",
+      candidateParsedType: ingestion.candidateParsedType || "",
+      candidateKeys: ingestion.candidateKeys || [],
+      candidateJsonText: ingestion.candidateJsonText || "",
+    };
+    return prettyJson(packet);
+  }
+
+  function renderFailedCallPacket(payload) {
+    const content = payload?.content || {};
+    return prettyJson({
+      artifact: {
+        name: payload?.name || "",
+        storage: payload?.storage || "",
+        modifiedAt: payload?.modifiedAt || "",
+        size: payload?.size || 0,
+      },
+      summary: payload?.summary || {},
+      passStatus: content.passStatus || payload?.summary?.passStatus || "",
+      passedToNextNode: content.passedToNextNode ?? payload?.summary?.passedToNextNode ?? false,
+      acceptedSuccessor: payload?.summary?.acceptedSuccessor || content.acceptedSuccessor || null,
+      nodeTransferArtifact: content.nodeTransferArtifact || payload?.summary?.nodeTransferArtifact || null,
+      ingestion: content.ingestion || {},
+      responseMeta: content.responseMeta || {},
+      rawProviderResponse: content.rawProviderResponse || null,
+    });
+  }
+
+  function setFailedCallDetail(payload) {
+    if (elements.failedCallMeta) {
+      elements.failedCallMeta.innerHTML = renderFailedCallMeta(payload);
+    }
+    if (elements.failedCallIngestion) {
+      elements.failedCallIngestion.textContent = renderFailedCallIngestion(payload);
+    }
+    if (elements.failedCallRaw) {
+      elements.failedCallRaw.textContent = String(payload?.content?.rawOutputText || "No raw provider text was captured for this failure.");
+    }
+    if (elements.failedCallPacket) {
+      elements.failedCallPacket.textContent = renderFailedCallPacket(payload);
+    }
+  }
+
+  function clearFailedCallDetail(message) {
+    const text = message || "No failed call selected.";
+    if (elements.failedCallMeta) elements.failedCallMeta.textContent = text;
+    if (elements.failedCallIngestion) elements.failedCallIngestion.textContent = text;
+    if (elements.failedCallRaw) elements.failedCallRaw.textContent = text;
+    if (elements.failedCallPacket) elements.failedCallPacket.textContent = "{}";
+  }
+
+  async function loadFailedCallDetail(key) {
+    const selectedKey = String(key || "").trim();
+    if (!selectedKey) {
+      clearFailedCallDetail("No failed call selected.");
+      return;
+    }
+    const entry = failedCallEntryForKey(selectedKey);
+    if (elements.failedCallStatus) {
+      elements.failedCallStatus.textContent = "Loading " + (entry?.name || selectedKey) + "...";
+    }
+    const payload = String(entry?.storage || "") === "eval"
+      ? await fetchJson(API.evalArtifact + "?runId=" + encodeURIComponent(entry.runId || "") + "&artifactId=" + encodeURIComponent(entry.artifactId || ""))
+      : await fetchJson(API.artifact + "?name=" + encodeURIComponent(entry?.name || selectedKey));
+    setFailedCallDetail(payload);
+    if (elements.failedCallStatus) {
+      const kind = payload?.summary?.failureKind || payload?.content?.failureKind || "failed";
+      const source = String(entry?.storage || payload?.storage || "") === "eval" ? "eval run " + String(entry?.runId || "") : "live ledger";
+      elements.failedCallStatus.textContent = "Viewing " + kind + " artifact from " + source + ".";
+    }
+  }
+
+  function syncFailedCallSelector(failures) {
+    if (!elements.failedCallSelect) return;
+    failedCallState.failures = Array.isArray(failures) ? failures : [];
+    if (!failedCallState.failures.length) {
+      elements.failedCallSelect.innerHTML = `<option value="">No failed calls captured</option>`;
+      failedCallState.selectedName = "";
+      clearFailedCallDetail("No failed provider calls have been captured yet.");
+      if (elements.failedCallStatus) {
+        elements.failedCallStatus.textContent = "No failed calls captured.";
+      }
+      return;
+    }
+    if (!failedCallState.selectedName || !failedCallState.failures.some((entry) => failedCallKey(entry) === failedCallState.selectedName)) {
+      failedCallState.selectedName = failedCallKey(failedCallState.failures[0]);
+    }
+    elements.failedCallSelect.innerHTML = failedCallState.failures.map((entry) => {
+      const key = failedCallKey(entry);
+      return `<option value="${escapeHtml(key)}">${escapeHtml(failedCallLabel(entry))}</option>`;
+    }).join("");
+    elements.failedCallSelect.value = failedCallState.selectedName;
+    loadFailedCallDetail(failedCallState.selectedName).catch(function (error) {
+      if (elements.failedCallStatus) {
+        elements.failedCallStatus.textContent = "Failed call load failed: " + String(error.message || error);
+      }
+    });
+  }
+
+  async function loadFailedCalls() {
+    if (!elements.failedCallSelect) return;
+    if (elements.failedCallStatus) {
+      elements.failedCallStatus.textContent = "Loading failed call ledger...";
+    }
+    const payload = await fetchJson(API.history);
+    const failures = Array.isArray(payload?.failedCalls)
+      ? payload.failedCalls
+      : (Array.isArray(payload?.artifacts) ? payload.artifacts.filter((entry) => entry?.kind === "failed_call") : []);
+    failedCallState.loaded = true;
+    syncFailedCallSelector(failures);
+  }
+
   function renderScoreRunMeta(run, sessions) {
     if (!run) return "No judged runs available.";
     const summary = run.summary || {};
@@ -1010,6 +1493,27 @@
       if (target === "repo") {
         window.setTimeout(refreshActiveInspector, 40);
       }
+      if (target === "review" && !failedCallState.loaded) {
+        loadFailedCalls().catch(function (error) {
+          if (elements.failedCallStatus) {
+            elements.failedCallStatus.textContent = "Failed call ledger failed to load: " + String(error.message || error);
+          }
+        });
+      }
+      if (target === "review" && !handoffState.loaded) {
+        loadHandoffs().catch(function (error) {
+          if (elements.handoffStatus) {
+            elements.handoffStatus.textContent = "Handoff ledger failed to load: " + String(error.message || error);
+          }
+        });
+      }
+      if (target === "review" && !nodeTransferState.loaded) {
+        loadNodeTransfers().catch(function (error) {
+          if (elements.nodeTransferStatus) {
+            elements.nodeTransferStatus.textContent = "Node transfer ledger failed to load: " + String(error.message || error);
+          }
+        });
+      }
       if (target === "scores" && !scoreState.loaded) {
         loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
           if (elements.scoreStatus) {
@@ -1120,6 +1624,82 @@
       loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
         if (elements.scoreStatus) {
           elements.scoreStatus.textContent = "Score sessions failed to refresh: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.failedCallRefreshBtn) {
+    elements.failedCallRefreshBtn.addEventListener("click", function () {
+      failedCallState.loaded = false;
+      loadFailedCalls().catch(function (error) {
+        if (elements.failedCallStatus) {
+          elements.failedCallStatus.textContent = "Failed call ledger refresh failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.handoffRefreshBtn) {
+    elements.handoffRefreshBtn.addEventListener("click", function () {
+      handoffState.loaded = false;
+      loadHandoffs().catch(function (error) {
+        if (elements.handoffStatus) {
+          elements.handoffStatus.textContent = "Handoff ledger refresh failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.handoffCreateBtn) {
+    elements.handoffCreateBtn.addEventListener("click", function () {
+      createHandoffPacket().catch(function (error) {
+        if (elements.handoffStatus) {
+          elements.handoffStatus.textContent = "Handoff creation failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.handoffSelect) {
+    elements.handoffSelect.addEventListener("change", function () {
+      handoffState.selectedName = String(elements.handoffSelect.value || "");
+      loadHandoffDetail(handoffState.selectedName).catch(function (error) {
+        if (elements.handoffStatus) {
+          elements.handoffStatus.textContent = "Handoff load failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.nodeTransferRefreshBtn) {
+    elements.nodeTransferRefreshBtn.addEventListener("click", function () {
+      nodeTransferState.loaded = false;
+      loadNodeTransfers().catch(function (error) {
+        if (elements.nodeTransferStatus) {
+          elements.nodeTransferStatus.textContent = "Node transfer ledger refresh failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.nodeTransferSelect) {
+    elements.nodeTransferSelect.addEventListener("change", function () {
+      nodeTransferState.selectedName = String(elements.nodeTransferSelect.value || "");
+      loadNodeTransferDetail(nodeTransferState.selectedName).catch(function (error) {
+        if (elements.nodeTransferStatus) {
+          elements.nodeTransferStatus.textContent = "Transfer load failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.failedCallSelect) {
+    elements.failedCallSelect.addEventListener("change", function () {
+      failedCallState.selectedName = String(elements.failedCallSelect.value || "");
+      loadFailedCallDetail(failedCallState.selectedName).catch(function (error) {
+        if (elements.failedCallStatus) {
+          elements.failedCallStatus.textContent = "Failed call load failed: " + String(error.message || error);
         }
       });
     });

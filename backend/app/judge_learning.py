@@ -1097,6 +1097,7 @@ def learn_from_eval_runs(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     paths = storage.project_paths(Path(root))
+    normalized_bank = knowledgebase.safe_bank_id(bank_id)
     selected_run_ids = [str(run_id).strip() for run_id in (run_ids or []) if str(run_id).strip()]
     if not selected_run_ids:
         selected_run_ids = latest_eval_run_ids(paths.root, latest)
@@ -1143,7 +1144,7 @@ def learn_from_eval_runs(
     records = [
         build_learning_record(
             root=paths.root,
-            bank_id=knowledgebase.safe_bank_id(bank_id),
+            bank_id=normalized_bank,
             run_ids=entry["runIds"],
             case=entry["case"],
             scenario=entry["scenario"],
@@ -1155,22 +1156,22 @@ def learn_from_eval_runs(
     ]
     records.sort(key=lambda item: (str((item.get("metadata") or {}).get("learning.scenarioId") or ""), str((item.get("metadata") or {}).get("learning.failureClass") or "")))
 
-    write_result = {"inserted": 0, "updated": 0, "unchanged": 0, "path": str(knowledgebase.bank_records_path(paths.root, bank_id))}
+    write_result = {"inserted": 0, "updated": 0, "unchanged": 0, "path": str(knowledgebase.bank_records_path(paths.root, normalized_bank))}
     if not dry_run:
-        write_result = upsert_records(paths.root, knowledgebase.safe_bank_id(bank_id), records)
-    librarian = librarian_review(paths.root, bank_id, write=not dry_run)
+        write_result = upsert_records(paths.root, normalized_bank, records)
 
-    return {
-        "schemaVersion": SCHEMA_VERSION,
-        "generatedAt": utc_now(),
-        "dryRun": bool(dry_run),
-        "bankId": knowledgebase.safe_bank_id(bank_id),
-        "runIds": selected_run_ids,
-        "scoreFilesSeen": score_files_seen,
-        "scoreFilesLearned": score_files_learned,
-        "learnedRecordCount": len(records),
-        "write": write_result,
-        "librarian": {
+    event_ledger = write_result.get("eventLedger") if isinstance(write_result.get("eventLedger"), dict) else {}
+    persistence_changed = bool(
+        write_result.get("inserted", 0)
+        or write_result.get("updated", 0)
+        or event_ledger.get("inserted", 0)
+        or event_ledger.get("updated", 0)
+    )
+    should_review_library = bool(records) if dry_run else persistence_changed
+    if should_review_library:
+        librarian = librarian_review(paths.root, normalized_bank, write=not dry_run)
+        librarian_summary = {
+            "status": "reviewed",
             "bankId": librarian.get("bankId"),
             "learnedRecordCount": librarian.get("learnedRecordCount"),
             "groupCount": librarian.get("groupCount"),
@@ -1181,7 +1182,26 @@ def learn_from_eval_runs(
             "eventLedger": librarian.get("eventLedger"),
             "storageDuplication": librarian.get("storageDuplication"),
             "path": librarian.get("path"),
-        },
+        }
+    else:
+        librarian_summary = {
+            "status": "skipped",
+            "reason": "no_learning_delta",
+            "bankId": normalized_bank,
+            "path": str(librarian_index_path(paths.root, normalized_bank)),
+        }
+
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "generatedAt": utc_now(),
+        "dryRun": bool(dry_run),
+        "bankId": normalized_bank,
+        "runIds": selected_run_ids,
+        "scoreFilesSeen": score_files_seen,
+        "scoreFilesLearned": score_files_learned,
+        "learnedRecordCount": len(records),
+        "write": write_result,
+        "librarian": librarian_summary,
         "warnings": warnings,
         "records": [
             {

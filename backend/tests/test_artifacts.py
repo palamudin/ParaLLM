@@ -72,3 +72,18 @@ class ArtifactWriteTests(unittest.TestCase):
         self.assertTrue(target.is_file())
         self.assertEqual(json.loads(target.read_text(encoding="utf-8")), payload)
         self.assertEqual(meta["category"], "checkpoints")
+
+    def test_write_json_artifact_compacts_names_for_nested_local_paths(self) -> None:
+        payload = {"hello": "route"}
+        root = self.root
+        while len(str(root / "data" / "node_transfers")) < 195:
+            root = root / "nested-eval-segment"
+        requested_name = "nt_task_" + ("source-to-target-" * 6) + "123456789000.json"
+
+        meta = artifacts.write_json_artifact(root, "node_transfers", requested_name, payload)
+        target = root / "data" / "node_transfers" / meta["name"]
+
+        self.assertNotEqual(meta["name"], requested_name)
+        self.assertLessEqual(len(str(target)), artifacts.MAX_FILESYSTEM_ARTIFACT_PATH)
+        self.assertTrue(target.is_file())
+        self.assertEqual(artifacts.read_json_artifact(root, "node_transfers", requested_name), payload)

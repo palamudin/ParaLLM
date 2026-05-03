@@ -6,7 +6,7 @@
   <title>ParaLLM</title>
   <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
-  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260501-004" />
+  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260502-001" />
   <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
   <link rel="stylesheet" href="assets/repo-review.css?v=20260501-003" />
 </head>
@@ -106,7 +106,6 @@
                   <label for="previewRuntimeMode">Runtime mode</label>
                   <select id="previewRuntimeMode" class="form-select form-select-sm">
                     <option value="live" selected>Live</option>
-                    <option value="mock">Mock</option>
                   </select>
                 </div>
 
@@ -607,31 +606,92 @@
             </div>
           </div>
 
-          <div class="replacement-grid replacement-grid-two">
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
-                <h4>Exact prompt</h4>
+          <section class="replacement-surface replacement-handoff-ledger">
+            <div class="replacement-surface-head replacement-review-toolbar">
+              <div>
+                <div class="replacement-surface-kicker">Handoff</div>
+                <h4>Operator packet</h4>
               </div>
-            </section>
+              <div class="replacement-review-actions">
+                <select id="handoffSelect" class="form-select form-select-sm" aria-label="Handoff packet selector">
+                  <option value="">No handoffs loaded</option>
+                </select>
+                <button type="button" id="handoffCreateBtn" class="btn btn-primary btn-sm">Create</button>
+                <button type="button" id="handoffRefreshBtn" class="btn btn-outline-info btn-sm">Refresh</button>
+              </div>
+            </div>
+            <div id="handoffStatus" class="replacement-inline-note">Open Review to load durable handoff packets.</div>
+            <div class="replacement-grid replacement-fail-grid">
+              <section class="replacement-fail-panel">
+                <div class="replacement-surface-kicker">Resume summary</div>
+                <div id="handoffMeta" class="replacement-fail-meta">No handoff selected.</div>
+              </section>
+              <section class="replacement-fail-panel replacement-fail-panel-wide">
+                <div class="replacement-surface-kicker">Machine packet</div>
+                <pre id="handoffPacket" class="replacement-code-block">{}</pre>
+              </section>
+            </div>
+          </section>
 
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
-                <h4>Exact response</h4>
+          <section class="replacement-surface replacement-transfer-ledger">
+            <div class="replacement-surface-head replacement-review-toolbar">
+              <div>
+                <div class="replacement-surface-kicker">Transfer gate</div>
+                <h4>Node handoff integrity</h4>
               </div>
-            </section>
+              <div class="replacement-review-actions">
+                <select id="nodeTransferSelect" class="form-select form-select-sm" aria-label="Node transfer selector">
+                  <option value="">No transfers loaded</option>
+                </select>
+                <button type="button" id="nodeTransferRefreshBtn" class="btn btn-outline-info btn-sm">Refresh</button>
+              </div>
+            </div>
+            <div id="nodeTransferStatus" class="replacement-inline-note">Open Review to load node transfer checks.</div>
+            <div class="replacement-grid replacement-fail-grid">
+              <section class="replacement-fail-panel">
+                <div class="replacement-surface-kicker">Gate summary</div>
+                <div id="nodeTransferMeta" class="replacement-fail-meta">No transfer selected.</div>
+              </section>
+              <section class="replacement-fail-panel replacement-fail-panel-wide">
+                <div class="replacement-surface-kicker">CRC / SHA packet</div>
+                <pre id="nodeTransferPacket" class="replacement-code-block">{}</pre>
+              </section>
+            </div>
+          </section>
 
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
-                <h4>Normalized answer</h4>
+          <section class="replacement-surface replacement-fail-ledger">
+            <div class="replacement-surface-head replacement-review-toolbar">
+              <div>
+                <div class="replacement-surface-kicker">Failed</div>
+                <h4>Provider call ledger</h4>
               </div>
-            </section>
-
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
-                <h4>Actuation trace</h4>
+              <div class="replacement-review-actions">
+                <select id="failedCallSelect" class="form-select form-select-sm" aria-label="Failed call selector">
+                  <option value="">No failed calls loaded</option>
+                </select>
+                <button type="button" id="failedCallRefreshBtn" class="btn btn-outline-info btn-sm">Refresh</button>
               </div>
-            </section>
-          </div>
+            </div>
+            <div id="failedCallStatus" class="replacement-inline-note">Open Review to load failed provider calls.</div>
+            <div class="replacement-grid replacement-fail-grid">
+              <section class="replacement-fail-panel">
+                <div class="replacement-surface-kicker">Failure summary</div>
+                <div id="failedCallMeta" class="replacement-fail-meta">No failed call selected.</div>
+              </section>
+              <section class="replacement-fail-panel">
+                <div class="replacement-surface-kicker">Malformed JSON ingestion</div>
+                <pre id="failedCallIngestion" class="replacement-code-block">No malformed payload selected.</pre>
+              </section>
+              <section class="replacement-fail-panel replacement-fail-panel-wide">
+                <div class="replacement-surface-kicker">Raw provider text</div>
+                <pre id="failedCallRaw" class="replacement-code-block">No raw payload selected.</pre>
+              </section>
+              <section class="replacement-fail-panel replacement-fail-panel-wide">
+                <div class="replacement-surface-kicker">AI/debug packet</div>
+                <pre id="failedCallPacket" class="replacement-code-block">{}</pre>
+              </section>
+            </div>
+          </section>
         </section>
 
         <section class="replacement-view" data-view-panel="scores" hidden>
@@ -747,6 +807,6 @@
 
   <script src="assets/repo-review.js?v=20260501-003"></script>
   <script src="assets/fractal-memory.js?v=20260501-003"></script>
-  <script src="assets/replacement-shell.js?v=20260501-004"></script>
+  <script src="assets/replacement-shell.js?v=20260502-001"></script>
 </body>
 </html>

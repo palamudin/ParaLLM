@@ -309,7 +309,7 @@ def run_python_smoke(root: Path) -> None:
     run_command([sys.executable, str(smoke_script)], root, "Python control-plane smoke")
 
 
-def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_first: bool) -> Dict[str, Any]:
+def run_live_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_first: bool) -> Dict[str, Any]:
     if restart_runtime_first:
         restart_runtime(runtime_url)
 
@@ -343,7 +343,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
             if len(draft_workers) < 3 or str(draft_workers[2].get("type") or "") != "security":
                 raise QAError("Draft worker roster did not preserve the requested lane template.")
 
-            qa_print("Starting reversible mock smoke task")
+            qa_print("Starting reversible live smoke task")
             start = request_json(
                 api_url(base_url, "task_start"),
                 method="POST",
@@ -352,7 +352,7 @@ def run_mock_smoke(root: Path, base_url: str, runtime_url: str, restart_runtime_
                     "constraints": "[]",
                     "sessionContext": "",
                     "workers": json.dumps(draft_workers),
-                    "executionMode": "mock",
+                    "executionMode": "live",
                     "model": "gpt-5-mini",
                     "summarizerModel": "gpt-5-mini",
                     "reasoningEffort": "low",

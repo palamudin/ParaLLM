@@ -17,6 +17,7 @@ from runtime.engine import (
     RuntimeErrorWithCode,
     coerce_confidence_value,
     flatten_output_payload_text,
+    looks_like_incomplete_structured_output,
     normalize_front_answer,
     parse_structured_output_text,
     provider_capability_profile,
@@ -266,6 +267,19 @@ class RuntimeAuthTests(unittest.TestCase):
             attempts = runtime.build_output_token_attempts(0, "summarizer")
 
         self.assertEqual(attempts, [0])
+
+    def test_explicit_provider_caps_use_model_capacity_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            attempts = runtime.build_output_token_attempts(
+                0,
+                "commander_review",
+                provider="deepseek",
+                model="deepseek-v4-flash",
+                require_explicit_max=True,
+            )
+
+        self.assertEqual(attempts, [384_000])
 
     def test_target_timeout_modes_resolve_default_user_and_auto_profiles(self) -> None:
         manual = {
@@ -932,6 +946,89 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(usage["outputTokens"], 9)
         self.assertEqual(usage["reasoningTokens"], 4)
 
+    def test_minimax_malformed_json_failure_is_persisted_for_review(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["verdict"],
+            "properties": {
+                "verdict": {"type": "string"},
+            },
+        }
+        malformed_text = "0645260f38c63ca7db5abd54e3df163a\n\n<think>not json</think>\nfinal: no object"
+        payload = {
+            "id": "chatcmpl-min-bad-json",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": malformed_text,
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 7, "total_tokens": 16},
+            "base_resp": {"status_code": 0, "status_msg": ""},
+        }
+
+        def fake_urlopen(request, timeout=1800):
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                with self.assertRaises(RuntimeErrorWithCode) as context:
+                    runtime.invoke_provider_json(
+                        provider="minimax",
+                        api_key="minimax-test-key",
+                        model="MiniMax-M2.7",
+                        reasoning_effort="low",
+                        instructions="Return JSON only.",
+                        input_text="Return malformed JSON.",
+                        schema_name="minimax_bad_json",
+                        schema=schema,
+                        target_kind="commander_review",
+                        task_id="t-test-minimax-failed-call",
+                    )
+            failed_artifact = getattr(context.exception, "failed_call_artifact", None)
+            self.assertIsInstance(failed_artifact, dict)
+            failed_files = sorted((Path(tmpdir) / "data" / "failed_calls").glob("*.json"))
+            self.assertEqual(len(failed_files), 1)
+            saved = json.loads(failed_files[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["artifactType"], "failed_call")
+        self.assertEqual(saved["provider"], "minimax")
+        self.assertEqual(saved["failureKind"], "malformed_json")
+        self.assertEqual(saved["taskId"], "t-test-minimax-failed-call")
+        self.assertEqual(saved["rawOutputText"], malformed_text)
+        self.assertEqual(saved["ingestion"]["rawLength"], len(malformed_text))
+
+    def test_flattener_empty_output_is_persisted_for_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            flattened = runtime.flatten_output_for_artifact(
+                {},
+                "summary_output",
+                provider="minimax",
+                model="MiniMax-M2.7",
+                task_id="t-test-flattener",
+                target_kind="summarizer",
+                schema_name="loop_summary_multi",
+                raw_output_text="{}",
+                response_id="resp-flat-empty",
+            )
+            failed_files = sorted((Path(tmpdir) / "data" / "failed_calls").glob("*.json"))
+            self.assertEqual(flattened, "")
+            self.assertEqual(len(failed_files), 1)
+            saved = json.loads(failed_files[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["artifactType"], "failed_call")
+        self.assertEqual(saved["failureKind"], "flattener_empty")
+        self.assertEqual(saved["provider"], "minimax")
+        self.assertEqual(saved["targetNode"], "summarizer")
+        self.assertFalse(saved["passedToNextNode"])
+
     def test_invoke_provider_json_supports_deepseek_openai_compat_wrapper_flattening(self) -> None:
         schema = {
             "type": "object",
@@ -960,9 +1057,11 @@ class RuntimeAuthTests(unittest.TestCase):
             },
         }
         seen_urls: list[str] = []
+        seen_bodies: list[dict] = []
 
         def fake_urlopen(request, timeout=1800):
             seen_urls.append(str(request.full_url))
+            seen_bodies.append(json.loads(request.data.decode("utf-8")))
             return _FakeHTTPResponse(payload)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -984,6 +1083,83 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(result.parsed, {"answer": "DeepSeek wrapper reply"})
         self.assertEqual(result.output_text, json.dumps({"answer": "DeepSeek wrapper reply"}))
         self.assertEqual(seen_urls, ["https://api.deepseek.com/chat/completions"])
+        self.assertEqual(seen_bodies[0]["max_tokens"], 384_000)
+        self.assertEqual(result.effective_max_output_tokens, 384_000)
+
+    def test_deepseek_malformed_json_failure_is_persisted_for_review(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["verdict"],
+            "properties": {
+                "verdict": {"type": "string"},
+            },
+        }
+        malformed_text = '{"verdict": "ship", "notes": ["missing close"'
+        payload = {
+            "id": "chatcmpl-deep-bad-json",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": malformed_text,
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 7, "total_tokens": 16},
+        }
+
+        def fake_urlopen(request, timeout=1800):
+            return _FakeHTTPResponse(payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                with self.assertRaises(RuntimeErrorWithCode) as context:
+                    runtime.invoke_provider_json(
+                        provider="deepseek",
+                        api_key="deepseek-test-key",
+                        model="deepseek-v4-flash",
+                        reasoning_effort="low",
+                        instructions="Return JSON only.",
+                        input_text="Return malformed JSON.",
+                        schema_name="deepseek_bad_json",
+                        schema=schema,
+                        target_kind="commander_review",
+                        task_id="t-test-failed-call",
+                    )
+            failed_artifact = getattr(context.exception, "failed_call_artifact", None)
+            self.assertIsInstance(failed_artifact, dict)
+            failed_files = sorted((Path(tmpdir) / "data" / "failed_calls").glob("*.json"))
+            self.assertEqual(len(failed_files), 1)
+            saved = json.loads(failed_files[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["artifactType"], "failed_call")
+        self.assertEqual(saved["failureKind"], "malformed_json")
+        self.assertEqual(saved["taskId"], "t-test-failed-call")
+        self.assertEqual(saved["rawOutputText"], malformed_text)
+        self.assertEqual(saved["ingestion"]["rawLength"], len(malformed_text))
+
+    def test_node_transfer_artifact_filename_stays_compact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            packet = runtime.write_node_transfer_artifact(
+                task_id="te-test-transfer",
+                source_node="deepseek:provider_ingress",
+                target_nodes=["commander_review", "summarizer"],
+                payload={"answer": "ok", "evidence": ["one", "two"]},
+            )
+            artifact_name = packet["artifact"]["name"]
+            saved_path = Path(tmpdir) / "data" / "node_transfers" / artifact_name
+
+            self.assertLessEqual(len(artifact_name), 52)
+            self.assertTrue(artifact_name.startswith("nt_tetesttransf_"))
+            self.assertTrue(saved_path.exists())
+            self.assertEqual(packet["sourceNode"], "deepseek:provider_ingress")
+            self.assertEqual(packet["targetNodes"], ["commander_review", "summarizer"])
+            self.assertEqual(packet["routeLabel"]["source"], "deepseek-provider_ingress")
 
     def test_invoke_provider_json_supports_deepseek_anthropic_fallback_transport(self) -> None:
         schema = {
@@ -1167,6 +1343,80 @@ Line two",
         parsed = parse_structured_output_text('json\\n{"answer":"ok"}')
         self.assertEqual(parsed, {"answer": "ok"})
 
+    def test_parse_structured_output_text_extracts_minimax_thinking_preamble_json(self) -> None:
+        payload = (
+            "0645260f38c63ca7db5abd54e3df163a\n\n"
+            "<think>I will reason in prose before the object.</think>\n"
+            "{\"taskId\":\"te-c4176d\",\"round\":1,\"stance\":\"caution\"}"
+        )
+        parsed = parse_structured_output_text(payload)
+        self.assertEqual(parsed["taskId"], "te-c4176d")
+        self.assertEqual(parsed["stance"], "caution")
+
+    def test_parse_structured_output_text_skips_minimax_schema_echo_before_payload(self) -> None:
+        payload = (
+            "<think>MiniMax displays its reasoning first.</think>\n\n"
+            '{"type":"object","additionalProperties":false,"required":["taskId","round"],'
+            '"properties":{"taskId":{"type":"string"},"round":{"type":"integer"}}}}\n\n'
+            '{"taskId":"msp-rmm-powershell-incident-001","round":1,'
+            '"frontAnswer":{"answer":"Request confirmation of package provenance and any known compromise disclosures.",'
+            '"stance":"act","leadDirection":"contain","adversarialPressure":"none","confidenceNote":"medium"},'
+            '"summarizerOpinion":{"stance":"act","because":"multi-tenant RMM risk",'
+            '"uncertainty":"root cause still open","integrationMode":"gated"},'
+            '"sourceWorkers":[]}'
+        )
+        parsed = parse_structured_output_text(payload)
+        self.assertEqual(parsed["taskId"], "msp-rmm-powershell-incident-001")
+        self.assertIn("package provenance", parsed["frontAnswer"]["answer"])
+        self.assertEqual(parsed["summarizerOpinion"]["integrationMode"], "gated")
+
+    def test_parse_structured_output_text_skips_minimax_direct_schema_payload_echo(self) -> None:
+        payload = (
+            "<think>MiniMax echoed the requested direct-answer shape first.</think>\n\n"
+            '{"answer":{"type":"string"},"stance":{"type":"string"},"confidenceNote":{"type":"string"}}\n\n'
+            '{"answer":"Run the first-hour incident bridge with per-customer ownership.",'
+            '"stance":"contain safely","confidenceNote":"medium"}'
+        )
+        parsed = parse_structured_output_text(payload)
+        self.assertEqual(parsed["answer"], "Run the first-hour incident bridge with per-customer ownership.")
+        self.assertEqual(parsed["stance"], "contain safely")
+
+    def test_parse_structured_output_text_prefers_real_payload_over_placeholder(self) -> None:
+        payload = (
+            "<think>MiniMax emitted a placeholder before final JSON.</think>\n"
+            '{"answer":"...\\n...","stance":"...","confidenceNote":"..."}\n'
+            '{"answer":"Run the first-hour incident bridge with per-customer ownership and evidence capture.",'
+            '"stance":"contain safely","confidenceNote":"medium"}'
+        )
+        parsed = parse_structured_output_text(payload)
+        self.assertIn("evidence capture", parsed["answer"])
+        self.assertNotEqual(parsed["answer"], "...\n...")
+
+    def test_parse_structured_output_text_prefers_full_judge_payload_over_nested_scores(self) -> None:
+        payload = (
+            '{"scores":{"decisiveness":8,"tradeoffHandling":8,"objectionAbsorption":7,'
+            '"actionability":8,"singleVoice":9,"overallQuality":3},'
+            '"verdict":"Structured but misses tenant ownership.",'
+            '"strongestStrength":"Clear containment sequencing.",'
+            '"strongestWeakness":"Per-customer incident ownership is missing.",'
+            '"rationale":"The score is low because a hard MSP governance gate is absent."}'
+        )
+        parsed = parse_structured_output_text(payload)
+        self.assertIn("scores", parsed)
+        self.assertEqual(parsed["scores"]["overallQuality"], 3)
+        self.assertIn("tenant ownership", parsed["verdict"])
+
+    def test_parse_structured_output_text_rejects_truncated_judge_payload_instead_of_nested_scores(self) -> None:
+        payload = (
+            '{"scores":{"decisiveness":9,"tradeoffHandling":9,"objectionAbsorption":10,'
+            '"actionability":9,"singleVoice":10,"overallQuality":9},'
+            '"verdict":"Strong plan.",'
+            '"strongestWeakness":'
+        )
+        with self.assertRaises(RuntimeErrorWithCode):
+            parse_structured_output_text(payload)
+        self.assertTrue(looks_like_incomplete_structured_output(payload))
+
     def test_normalize_front_answer_falls_back_to_answer_draft_when_front_answer_missing(self) -> None:
         normalized = normalize_front_answer(
             {},
@@ -1296,7 +1546,7 @@ Line two",
             def fake_invoke_provider_json(**kwargs):
                 captured["instructions"] = kwargs["instructions"]
                 captured["input_text"] = kwargs["input_text"]
-                parsed = runtime.new_mock_commander(task, runtime_config, 1, constraints, prior_summary)
+                parsed = runtime.new_offline_fixture_commander(task, runtime_config, 1, constraints, prior_summary)
                 return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
 
             with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
@@ -1391,7 +1641,7 @@ Line two",
             def fake_invoke_provider_json(**kwargs):
                 captured["instructions"] = kwargs["instructions"]
                 captured["input_text"] = kwargs["input_text"]
-                parsed = runtime.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
+                parsed = runtime.new_offline_fixture_commander_review(task, commander_checkpoint, workers, worker_state)
                 return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
 
             with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
@@ -1488,7 +1738,7 @@ Line two",
                 captured["instructions"] = kwargs["instructions"]
                 captured["input_text"] = kwargs["input_text"]
                 captured["schema"] = kwargs["schema"]
-                parsed = runtime.new_mock_commander_review(task, commander_checkpoint, workers, worker_state)
+                parsed = runtime.new_offline_fixture_commander_review(task, commander_checkpoint, workers, worker_state)
                 return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
 
             with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
@@ -1643,7 +1893,7 @@ Line two",
             def fake_invoke_provider_json(**kwargs):
                 captured["instructions"] = kwargs["instructions"]
                 captured["input_text"] = kwargs["input_text"]
-                parsed = runtime.new_mock_summary(
+                parsed = runtime.new_offline_fixture_summary(
                     task,
                     commander_checkpoint,
                     commander_review_checkpoint,
@@ -1780,7 +2030,7 @@ Line two",
                 captured["instructions"] = kwargs["instructions"]
                 captured["input_text"] = kwargs["input_text"]
                 captured["schema"] = kwargs["schema"]
-                parsed = runtime.new_mock_summary(
+                parsed = runtime.new_offline_fixture_summary(
                     task,
                     commander_checkpoint,
                     commander_review_checkpoint,
@@ -1854,7 +2104,7 @@ Line two",
                 }
             )
             line_catalog = runtime.build_summary_line_catalog(worker_state, workers, max_items_per_worker=10)
-            summary_payload = runtime.new_mock_summary(
+            summary_payload = runtime.new_offline_fixture_summary(
                 task,
                 commander_checkpoint,
                 commander_review_checkpoint,
@@ -1905,7 +2155,7 @@ Line two",
             self.assertIn("Live API call failed; retrying live call.", steps_text)
             self.assertNotIn("falling back to mock", steps_text)
 
-    def test_run_summarizer_raises_after_retry_exhaustion_without_mock(self) -> None:
+    def test_run_summarizer_raises_after_retry_exhaustion_without_synthetic_output(self) -> None:
         task, commander_checkpoint, commander_review_checkpoint, _workers, worker_state, runtime_config = self._build_summary_ready_fixture()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1939,8 +2189,8 @@ Line two",
             paths = storage.project_paths(Path(tmpdir))
             self.assertEqual(list(paths.outputs.glob("*summary_round001_output.json")), [])
             steps_text = paths.steps.read_text(encoding="utf-8")
-            self.assertIn("Live API call failed after retries; no mock fallback was used.", steps_text)
-            self.assertNotIn("falling back to mock", steps_text)
+            self.assertIn("Live API call failed after retries; no synthetic output was used.", steps_text)
+            self.assertNotIn("synthetic output was used.", steps_text.replace("no synthetic output was used.", ""))
 
     def test_full_workers_mode_controls_worker_packet_scope(self) -> None:
         task = {
@@ -1994,7 +2244,7 @@ Line two",
                         "instructions": kwargs["instructions"],
                         "input_text": kwargs["input_text"],
                     }
-                    parsed = runtime.new_mock_checkpoint(
+                    parsed = runtime.new_offline_fixture_checkpoint(
                         task,
                         worker,
                         runtime_config,
@@ -2059,7 +2309,7 @@ Line two",
 
             def fake_invoke_provider_json(**kwargs):
                 captured["instructions"] = kwargs["instructions"]
-                parsed = runtime.new_mock_direct_baseline_answer(task)
+                parsed = runtime.new_offline_fixture_direct_baseline_answer(task)
                 return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
 
             with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
@@ -2099,7 +2349,7 @@ Line two",
 
             def fake_invoke_provider_json(**kwargs):
                 captured["instructions"] = kwargs["instructions"]
-                parsed = runtime.new_mock_direct_baseline_answer(task)
+                parsed = runtime.new_offline_fixture_direct_baseline_answer(task)
                 return self._stub_openai_result(parsed, kwargs.get("max_output_tokens", 400))
 
             with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):

@@ -55,7 +55,49 @@
       ],
       "sessionContext": "Multi-tenant MSP RMM incident with suspected vendor-plugin compromise, audit-log integrity gap, regulated customers, and 24/7 service continuity risk.",
       "checks": {
-        "requireLive": true
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "control-plane-distrust",
+            "label": "Control-plane distrust",
+            "anyOf": ["do not trust", "distrust", "untrusted", "out-of-band", "out of band"]
+          },
+          {
+            "id": "evidence-first",
+            "label": "Evidence preservation before destructive action",
+            "anyOf": ["preserve evidence", "evidence", "export", "snapshot", "forensic"]
+          },
+          {
+            "id": "per-customer-ownership",
+            "label": "Per-customer incident ownership",
+            "anyOf": ["per-customer", "per customer", "per-client", "per client", "per-tenant", "per tenant", "tenant-specific"]
+          },
+          {
+            "id": "internal-major-incident",
+            "label": "Internal major incident coordination",
+            "anyOf": ["major incident", "internal incident", "incident bridge", "coordination"]
+          },
+          {
+            "id": "tenant-safe-comms",
+            "label": "Tenant-safe communications",
+            "anyOf": ["tenant-specific", "customer-specific", "cross-tenant", "do not disclose", "separate customer", "per-customer"]
+          },
+          {
+            "id": "decision-gates",
+            "label": "Threshold-based decision gates",
+            "anyOf": ["decision gate", "gates", "threshold", "criteria"]
+          },
+          {
+            "id": "authority-escalation",
+            "label": "Authority escalation",
+            "anyOf": ["wake", "escalate", "senior", "incident lead"]
+          },
+          {
+            "id": "vendor-escalation",
+            "label": "Vendor escalation",
+            "anyOf": ["vendor escalation", "vendor support", "vendor bridge", "vendor"]
+          }
+        ]
       }
     },
     {
@@ -71,7 +113,44 @@
       ],
       "sessionContext": "MSP backup-management control-plane incident involving possible credential/session theft, destructive queued jobs, active customer restores, and vendor uncertainty.",
       "checks": {
-        "requireLive": true
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "portal-distrust",
+            "label": "Backup portal distrust",
+            "anyOf": ["do not trust", "distrust", "untrusted", "out-of-band", "out of band"]
+          },
+          {
+            "id": "evidence-first",
+            "label": "Evidence preservation before queue modification",
+            "anyOf": ["preserve evidence", "evidence", "export", "snapshot", "audit"]
+          },
+          {
+            "id": "restore-continuity",
+            "label": "Active restore continuity",
+            "anyOf": ["restore availability", "active restore", "restoring", "restore continuity", "two clients"]
+          },
+          {
+            "id": "per-customer-ownership",
+            "label": "Per-customer incident ownership",
+            "anyOf": ["per-customer", "per customer", "per-client", "per client", "per-tenant", "per tenant", "tenant-specific"]
+          },
+          {
+            "id": "decision-gates",
+            "label": "Threshold-based decision gates",
+            "anyOf": ["decision gate", "gates", "threshold", "criteria"]
+          },
+          {
+            "id": "authority-escalation",
+            "label": "Authority escalation",
+            "anyOf": ["wake", "escalate", "senior", "incident lead"]
+          },
+          {
+            "id": "vendor-escalation",
+            "label": "Vendor escalation",
+            "anyOf": ["vendor escalation", "vendor support", "vendor bridge", "vendor"]
+          }
+        ]
       }
     },
     {
@@ -87,7 +166,39 @@
       ],
       "sessionContext": "Multi-tenant MSP identity/SaaS incident with OAuth abuse indicators, mailbox persistence, customer communications pressure, and access-continuity tradeoffs.",
       "checks": {
-        "requireLive": true
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "tenant-safe-comms",
+            "label": "Tenant-safe communications",
+            "anyOf": ["tenant-specific", "customer-specific", "cross-tenant", "do not disclose", "separate customer", "per-customer"]
+          },
+          {
+            "id": "evidence-first",
+            "label": "Identity/SaaS evidence preservation before destructive action",
+            "anyOf": ["preserve evidence", "evidence", "export", "audit", "sign-in", "token"]
+          },
+          {
+            "id": "per-customer-ownership",
+            "label": "Per-customer incident ownership",
+            "anyOf": ["per-customer", "per customer", "per-client", "per client", "per-tenant", "per tenant", "tenant-specific"]
+          },
+          {
+            "id": "access-continuity",
+            "label": "Access continuity protection",
+            "anyOf": ["night-shift", "night shift", "access continuity", "continuous operations", "lock out"]
+          },
+          {
+            "id": "decision-gates",
+            "label": "Threshold-based decision gates",
+            "anyOf": ["decision gate", "gates", "threshold", "criteria"]
+          },
+          {
+            "id": "legal-compliance",
+            "label": "Legal/compliance escalation",
+            "anyOf": ["legal", "compliance", "regulatory"]
+          }
+        ]
       }
     }
   ]

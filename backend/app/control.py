@@ -202,9 +202,7 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     reasoning_effort = str(current.get("reasoningEffort", default["reasoningEffort"])).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = str(default["reasoningEffort"])
-    execution_mode = str(current.get("executionMode", default["executionMode"])).strip()
-    if execution_mode not in {"live", "mock"}:
-        execution_mode = str(default["executionMode"])
+    execution_mode = "live"
     provider = normalize_provider_id(str(current.get("provider", default["provider"])), str(default["provider"]))
     model = normalize_model_id(
         str(current.get("model", default["model"])),
@@ -330,7 +328,7 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         "objective": str(task.get("objective", default["objective"])).strip(),
         "constraints": list(normalize_string_list(task.get("constraints", default["constraints"]))),
         "sessionContext": str(task.get("sessionContext", default["sessionContext"])).strip(),
-        "executionMode": str(runtime.get("executionMode", default["executionMode"])).strip(),
+        "executionMode": "live",
         "provider": provider,
         "model": model,
         "summarizerProvider": summarizer_provider,
@@ -874,9 +872,10 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     budget_targets_input = _parse_json_like(payload.get("budgetTargets"), {})
     target_timeouts_input = _parse_json_like(payload.get("targetTimeouts"), {})
 
-    execution_mode = str(payload.get("executionMode", "live")).strip()
-    if execution_mode not in {"live", "mock"}:
-        execution_mode = "live"
+    requested_execution_mode = str(payload.get("executionMode", "live")).strip().lower() or "live"
+    if requested_execution_mode != "live":
+        raise RuntimeErrorWithCode("Only live execution mode is supported. Configure a real provider/key instead of a synthetic run.", 400)
+    execution_mode = "live"
     provider = normalize_provider_id(str(payload.get("provider", DEFAULT_PROVIDER_ID)), DEFAULT_PROVIDER_ID)
     model = normalize_model_id(str(payload.get("model", default_model_for_provider(provider))), default_model_for_provider(provider), provider)
     summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider", provider)), provider)
