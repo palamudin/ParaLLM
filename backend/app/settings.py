@@ -39,6 +39,7 @@ from runtime.engine import (
     normalize_dynamic_spinup_config,
     normalize_front_mode,
     normalize_github_tool_config,
+    normalize_knowledgebase_config,
     normalize_harness_config,
     normalize_model_id,
     normalize_ollama_base_url,
@@ -243,6 +244,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     current_research = normalize_research_config(runtime_config.get("research") if isinstance(runtime_config.get("research"), dict) else {})
     current_local_files = control.normalize_local_file_tool_config(runtime_config.get("localFiles") if isinstance(runtime_config.get("localFiles"), dict) else {})
     current_github_tools = control.normalize_github_tool_config(runtime_config.get("githubTools") if isinstance(runtime_config.get("githubTools"), dict) else {})
+    current_knowledgebase = normalize_knowledgebase_config(runtime_config.get("knowledgebase") if isinstance(runtime_config.get("knowledgebase"), dict) else {"enabled": False})
     current_dynamic_spinup = normalize_dynamic_spinup_config(runtime_config.get("dynamicSpinup") if isinstance(runtime_config.get("dynamicSpinup"), dict) else {})
     current_vetting = normalize_vetting_config(runtime_config.get("vetting") if isinstance(runtime_config.get("vetting"), dict) else {})
     current_loop = control.normalize_loop_preferences(active_task.get("preferredLoop") if isinstance(active_task.get("preferredLoop"), dict) else {})
@@ -362,6 +364,18 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "repos": payload.get("githubAllowedRepos", current_github_tools["repos"]),
         }
     )
+    knowledgebase_payload = control._parse_json_like(payload.get("knowledgebase"), current_knowledgebase)
+    knowledgebase = normalize_knowledgebase_config(
+        {
+            **(knowledgebase_payload if isinstance(knowledgebase_payload, dict) else current_knowledgebase),
+            "enabled": payload.get(
+                "knowledgebaseEnabled",
+                knowledgebase_payload.get("enabled", current_knowledgebase["enabled"])
+                if isinstance(knowledgebase_payload, dict)
+                else current_knowledgebase["enabled"],
+            ),
+        }
+    )
     feature_alignment = control.align_provider_runtime_features(provider, research, local_files, github_tools)
     research = feature_alignment["research"]
     local_files = feature_alignment["localFiles"]
@@ -404,6 +418,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["research"] = research
         task_runtime["localFiles"] = local_files
         task_runtime["githubTools"] = github_tools
+        task_runtime["knowledgebase"] = knowledgebase
         task_runtime["dynamicSpinup"] = dynamic_spinup
         task_runtime["vetting"] = vetting
         task["runtime"] = task_runtime
@@ -450,6 +465,8 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "localFileRoots": local_files["roots"],
                 "githubToolsEnabled": github_tools["enabled"],
                 "githubAllowedRepos": github_tools["repos"],
+                "knowledgebaseEnabled": knowledgebase["enabled"],
+                "knowledgebase": knowledgebase,
                 "dynamicSpinupEnabled": dynamic_spinup["enabled"],
                 "vettingEnabled": vetting["enabled"],
                 "directHarness": direct_harness,
@@ -491,6 +508,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "research": research,
             "localFiles": local_files,
             "githubTools": github_tools,
+            "knowledgebase": knowledgebase,
             "dynamicSpinup": dynamic_spinup,
             "vetting": vetting,
             "preferredLoop": preferred_loop,
@@ -523,6 +541,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "research": research,
         "localFiles": local_files,
         "githubTools": github_tools,
+        "knowledgebase": knowledgebase,
         "dynamicSpinup": dynamic_spinup,
         "vetting": vetting,
         "preferredLoop": preferred_loop,

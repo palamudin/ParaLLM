@@ -101,9 +101,171 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("assets/replacement-shell.js", response.text)
         self.assertIn("Run contract", response.text)
+        self.assertIn('id="previewRunThread"', response.text)
+        self.assertIn('class="igs-chat-canvas"', response.text)
+        self.assertIn('id="previewLaneGrid"', response.text)
+        self.assertIn('id="previewStepLog"', response.text)
         self.assertIn("Math2Code", response.text)
+        self.assertNotIn("Live answer viewport", response.text)
         self.assertIn('href="/index_old.html"', response.text)
         self.assertNotIn('id="headerApiMode"', response.text)
+
+    def test_home_panels_expose_collapse_controls_except_chat_viewport(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="previewHomeCollapsedPills"', response.text)
+        for panel in ("contract", "lanes", "trace", "supporting", "math2code"):
+            self.assertIn(f'data-home-panel="{panel}"', response.text)
+            self.assertIn(f'data-home-collapse-toggle="{panel}"', response.text)
+        self.assertIn('data-home-panel="chat"', response.text)
+        self.assertNotIn('data-home-collapse-toggle="chat"', response.text)
+
+    def test_home_composer_uses_tool_menu_and_arrow_send_control(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="previewComposerToolMenuToggle"', response.text)
+        self.assertIn('id="previewComposerToolMenu"', response.text)
+        self.assertIn('id="previewComposerFileInput"', response.text)
+        self.assertIn('data-composer-tool-action="upload"', response.text)
+        self.assertIn('data-composer-tool-action="web-search"', response.text)
+        self.assertIn('data-composer-tool-action="memory"', response.text)
+        self.assertIn('class="igs-send-icon"', response.text)
+        self.assertIn('aria-label="Send prompt"', response.text)
+        self.assertNotIn('>Send</button>', response.text)
+
+    def test_run_contract_drawer_uses_pill_controls_and_summary_chips(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('class="igs-control-bay"', response.text)
+        self.assertIn('class="igs-control-pack igs-control-pack-routing"', response.text)
+        self.assertIn('class="igs-control-stack igs-runtime-stack"', response.text)
+        self.assertIn('class="igs-control-pack igs-control-pack-models"', response.text)
+        self.assertIn('class="igs-control-pack igs-control-pack-execution"', response.text)
+        self.assertIn('class="igs-control-tile', response.text)
+        self.assertIn('class="igs-control-tile igs-control-tile-provider"', response.text)
+        self.assertIn('data-contract-control-tile="Worker provider"', response.text)
+        self.assertIn('class="igs-provider-led"', response.text)
+        self.assertNotIn('igs-control-glyph', response.text)
+        self.assertNotIn('igs-control-led', response.text)
+        self.assertIn('data-contract-control-tile="Runtime mode"', response.text)
+        self.assertIn('class="igs-contract-telemetry"', response.text)
+        self.assertIn('data-contract-pill-select="Worker default model"', response.text)
+        self.assertIn('class="igs-native-pill-select"', response.text)
+        self.assertIn('class="igs-summary-pill-grid"', response.text)
+        self.assertIn('class="igs-summary-pill"', response.text)
+
+    def test_run_contract_uses_toggles_for_modes_and_boolean_controls(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-select-cycle="previewRuntimeMode"', response.text)
+        self.assertIn('data-cycle-values="live,eval,judge"', response.text)
+        self.assertIn('data-cycle-press-levels="none,half,full"', response.text)
+        self.assertIn('data-select-cycle="previewContextMode"', response.text)
+        self.assertIn('data-cycle-values="weighted,full"', response.text)
+        self.assertIn('data-select-cycle="previewDirectBaselineMode"', response.text)
+        self.assertIn('data-cycle-values="off,single,both"', response.text)
+        self.assertIn('data-press-level="none"', response.text)
+        for control_id in ("previewVettingEnabled", "previewResearchMode", "previewMemoryMode"):
+            self.assertIn(f'data-select-toggle="{control_id}"', response.text)
+            self.assertIn(f'data-toggle-target="{control_id}"', response.text)
+        self.assertIn('data-state-tooltip-delay="100"', response.text)
+        self.assertNotIn('data-state-tooltip-delay="2000"', response.text)
+        self.assertIn('data-state-label="', response.text)
+        self.assertIn('class="igs-control-tile igs-state-tile', response.text)
+        self.assertIn('class="igs-state-text"', response.text)
+        self.assertNotIn('igs-state-segment', response.text)
+        self.assertNotIn('class="igs-state-button', response.text)
+        self.assertNotIn('data-contract-pill-select="Runtime mode"', response.text)
+        self.assertNotIn('data-contract-pill-select="Worker context"', response.text)
+        self.assertNotIn('data-contract-pill-select="Single-thread baseline"', response.text)
+        self.assertNotIn('data-contract-pill-select="Summarizer vetting"', response.text)
+        self.assertNotIn('data-contract-pill-select="Research"', response.text)
+        self.assertNotIn('data-contract-pill-select="Fractal memory"', response.text)
+        self.assertNotIn('igs-toggle-switch-track', response.text)
+
+    def test_run_contract_controls_use_intrinsic_visual_widths(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        css = (root / "assets" / "replacement-shell.css").read_text(encoding="utf-8")
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertIn("flex: 0 1 auto;", css)
+        self.assertIn("width: fit-content;", css)
+        self.assertIn("--pill-control-width", css)
+        self.assertIn(".igs-state-tile::after", css)
+        self.assertIn("transition-delay: 100ms;", css)
+        self.assertIn(".igs-control-stack", css)
+        self.assertIn(".igs-control-pack {", css)
+        self.assertIn("background: transparent;", css)
+        self.assertIn(".igs-home-contract .igs-control-tile::before,", css)
+        self.assertIn(".igs-home-contract .igs-control-tile:not(.igs-state-tile)::after", css)
+        self.assertIn("display: none;", css)
+        self.assertIn(".igs-home-contract .igs-control-tile:active", css)
+        self.assertIn("transform: translateY(2px) scale(0.986);", css)
+        self.assertIn("translate: 0 2px;", css)
+        self.assertIn("scale: 0.986;", css)
+        self.assertIn("rgba(255, 255, 255, 0.055)", css)
+        self.assertIn("color-mix(in srgb, var(--control-accent, var(--rs-accent)) 8%, #070d15)", css)
+        self.assertIn("0 0 18px color-mix(in srgb, var(--control-accent, var(--rs-accent)) 34%, transparent)", css)
+        self.assertIn("text-shadow: 0 0 9px color-mix(in srgb, var(--control-accent, var(--rs-accent)) 46%, transparent)", css)
+        self.assertIn('.igs-state-tile[data-press-level="half"]', css)
+        self.assertIn('transform: translateY(1px) scale(0.993);', css)
+        self.assertIn("translate: 0 1px;", css)
+        self.assertIn("scale: 0.993;", css)
+        self.assertIn('.igs-state-tile[data-press-level="full"]', css)
+        self.assertIn(".igs-state-tile[data-state-tone=\"both\"]", css)
+        self.assertIn("--control-accent: #4ea1ff;", css)
+        self.assertIn(".igs-home-contract .igs-control-tile-provider:hover", css)
+        self.assertIn("cursor: default;", css)
+        self.assertIn(".igs-home-contract .igs-control-tile-provider .igs-segment-btn", css)
+        self.assertIn('html[data-bs-theme="light"] .igs-home-contract', css)
+        self.assertIn('html[data-bs-theme="light"] .igs-home-contract .igs-control-bay', css)
+        self.assertIn('html[data-bs-theme="light"] .igs-home-contract .igs-control-tile', css)
+        self.assertIn('html[data-bs-theme="light"] .igs-home-contract .igs-control-tile-provider', css)
+        self.assertIn('html[data-bs-theme="light"] .igs-send-button', css)
+        self.assertIn('html[data-bs-theme="light"] .igs-send-button.is-answer-now', css)
+        self.assertIn(".igs-control-pack-execution .igs-control-tile", css)
+        self.assertIn("font-size: 0.68rem;", css)
+        self.assertIn("pressLevelForCycleButton", js)
+        self.assertIn('button.dataset.pressLevel = pressLevel;', js)
+        self.assertIn('button.setAttribute("aria-pressed", pressLevel === "half" ? "mixed" : active ? "true" : "false");', js)
+        self.assertIn("syncContractPillIntrinsicWidth", js)
+        self.assertIn("contractSelectOptionMeasureLabel", js)
+        self.assertIn("syncSelectToggleButtons", js)
+        self.assertIn("syncSelectCycleButtons", js)
+        self.assertIn("frontEvalRuns", js)
+        self.assertIn("frontJudgeRuns", js)
+
+    def test_debug_view_exposes_old_shell_operations(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        for control_id in (
+            "debugRefreshState",
+            "debugResetSession",
+            "debugClearSessionArchives",
+            "debugRunRound",
+            "debugRunLoop",
+            "debugSummarize",
+            "debugCancelLoop",
+            "debugResetState",
+            "debugTargetControls",
+            "debugExportCurrentSession",
+            "debugJobHistory",
+            "debugRoundHistory",
+            "debugSessionArchives",
+            "debugStepLog",
+            "debugEventLog",
+        ):
+            self.assertIn(f'id="{control_id}"', response.text)
 
     def test_legacy_shell_route_serves_old_shell(self) -> None:
         client = TestClient(create_app())
@@ -122,6 +284,11 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("assets/replacement-shell.js", response.text)
         self.assertIn("Run contract", response.text)
+        self.assertIn('id="previewRunThread"', response.text)
+        self.assertIn('class="igs-chat-canvas"', response.text)
+        self.assertIn('id="previewLaneGrid"', response.text)
+        self.assertIn('id="previewStepLog"', response.text)
+        self.assertNotIn("Live answer viewport", response.text)
         self.assertIn("Open legacy shell", response.text)
         self.assertIn('href="/index_old.html"', response.text)
 

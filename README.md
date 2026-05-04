@@ -147,7 +147,11 @@ Current skill layers:
 ### UI
 
 - Chat-first `Home`
-- Compact runtime profile controls on the front dash
+- Home run contract drawer with an operator-panel control surface for runtime mode, engine, provider bay, model picks, worker context, baseline path, vetting, research, and fractal memory
+- Whole-button controls replace form-like nested selectors where possible; two-state buttons use flat/full press states, while three-state controls use flat/half/full press depth
+- Provider selection is presented as a non-pressable bay that contains the vendor selector buttons, not as another clickable worker-direction control
+- Unified dark-blue control identity with blue/light-blue gloss, shadowing, glow, and engraved labels across the run contract
+- Floating chat composer with inline tool menu, text field, and arrow/send state so the answer viewport can read as the Home canvas instead of a nested widget
 - Collapsible admin-style sidebar
 - Review workspace for trace/artifact inspection
 - Replacement app shell with repo inspector and MSP knowledgebase views
@@ -165,6 +169,7 @@ Current skill layers:
 - Runtime-selectable worker context routing: `Light Workers` keeps full context on the main thread while adversarial lanes receive weighted digests; `Full Workers` sends the broader packet to workers too
 - Runtime-selectable answer path: `Off` keeps the normal pressurized loop, `Single only` runs one direct baseline answer, and `Both compare` runs the direct baseline in parallel with the pressurized loop using its own provider/model lane
 - Runtime profiles now tune model mix, reasoning effort, auto-loop depth, and spend wall for `Low` / `Mid` / `High` / `Ultra`
+- Runtime-selectable research, summarizer vetting, and fractal-memory switches are surfaced before send so optional internals stay explicit instead of leaking into every answer path
 - OpenAI live runs now request server-side input autocompression, and oversized prompt packets are locally compacted before provider calls when needed
 - Native MSP knowledgebase endpoints now expose local `retain` / `recall` / `reflect` verbs with JSONL memory banks and a runtime-log fallback, so memory can bolt on without becoming a hard dependency
 - Live commander, worker, review, and summarizer dispatch now receive a compact optional MSP knowledgebase recall packet before forming their prompt; `runtime.knowledgebase.scope` can be `shared`, `lane`, `runtime`, `strict`, or `off`, with lane scope falling back to shared/runtime readout when its private trail is empty
@@ -476,8 +481,9 @@ Only masked previews are shown in the UI. Raw keys stay in provider-specific env
 ### Home
 
 - Write the prompt
-- Stage worker lanes
-- Pick a cost/depth profile
+- Open the run contract drawer when you need to alter runtime mode, engine, provider/model split, worker context, direct baseline, research, vetting, or memory
+- Treat provider selection as a bay of vendor buttons; the worker-provider container itself is only visual grouping
+- Pick a cost/depth profile and verify the `This send will` summary chips before sending
 - Send once and read a single front-channel answer
 
 ### Review
@@ -596,6 +602,11 @@ The next work is not to imitate another project. It is to make ParaLLM better at
 - `Scheduler and Provider Lanes`
   - promote live, eval, judge, repo scan, memory reflection, and provider-call work into first-class scheduled jobs
   - add clearer queue state, cancellation, retry policy, rate-limit behavior, and key leasing per provider pool
+- `Vendor Callback Harvesting`
+  - capture full provider envelopes, streaming deltas, tool callbacks, exposed reasoning/thinking summaries, usage/cost/cache metrics, safety/refusal signals, and structured error metadata as first-class internal artifacts
+  - keep the public answer separate from internal reasoning evidence, with Review-side provenance, redaction controls, and provider/terms-aware retention policy
+  - normalize shared value across vendors without flattening away vendor-specific signals; thinking-heavy/output-light responses should still be useful for memory, judging, merge debugging, and harness tuning
+  - add eval checks that score retained callback value separately from final user text, so a one-word final answer backed by two pages of exposed reasoning is not treated as an empty run
 - `Self-Improving Repo Intelligence`
   - let the repo inspector produce prioritized refactor, performance, test, and risk queues for both humans and AI agents
   - cache expensive graph layers separately: file inventory, parsed symbols, import/call graph, hotspots, AI readout, and rendered layout

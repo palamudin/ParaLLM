@@ -205,6 +205,32 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["budgetTargets"]["commander"]["maxTotalTokens"], 0)
         self.assertEqual(draft["budgetTargets"]["worker"]["maxTotalTokens"], 0)
         self.assertEqual(draft["budgetTargets"]["summarizer"]["maxTotalTokens"], 0)
+        self.assertFalse(draft["knowledgebaseEnabled"])
+        self.assertFalse(draft["knowledgebase"]["enabled"])
+
+    def test_create_task_defaults_memory_off_and_honors_switch(self) -> None:
+        control.create_task({"objective": "No ambient memory by default."}, self.root)
+        state = storage.read_state_payload(storage.project_paths(self.root))
+
+        self.assertFalse(state["activeTask"]["runtime"]["knowledgebase"]["enabled"])
+        self.assertFalse(state["draft"]["knowledgebaseEnabled"])
+
+        control.create_task(
+            {
+                "objective": "Use the MSP memory bank deliberately.",
+                "knowledgebaseEnabled": "1",
+                "knowledgebase": '{"bankId":"msp-knowledgebase","includeRuntime":false,"includePersistent":true,"tags":["msp"]}',
+            },
+            self.root,
+        )
+        state = storage.read_state_payload(storage.project_paths(self.root))
+
+        self.assertTrue(state["activeTask"]["runtime"]["knowledgebase"]["enabled"])
+        self.assertEqual(state["activeTask"]["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
+        self.assertFalse(state["activeTask"]["runtime"]["knowledgebase"]["includeRuntime"])
+        self.assertTrue(state["activeTask"]["runtime"]["knowledgebase"]["includePersistent"])
+        self.assertEqual(state["activeTask"]["runtime"]["knowledgebase"]["tags"], ["msp"])
+        self.assertTrue(state["draft"]["knowledgebaseEnabled"])
 
     def test_create_task_writes_state_snapshot_and_logs(self) -> None:
         result = control.create_task(

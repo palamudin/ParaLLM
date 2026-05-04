@@ -892,6 +892,7 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
     step_report = read_recent_jsonl_report(paths.steps, 400)
     event_report = read_recent_jsonl_report(paths.events, 200)
     state["executionHealth"] = build_execution_health(state, paths, step_report=step_report)
+    hydrate_missing_state_from_output_artifacts(state, paths)
     contract_warnings = [
         str(item).strip()
         for item in (state.get("contractWarnings") or [])
@@ -914,6 +915,106 @@ def read_state_payload(paths: Optional[Paths] = None) -> Dict[str, Any]:
         state["activeTask"] = enriched_task
     state["dispatch"] = current_dispatch_state(state, jobs)
     return state
+
+
+def output_artifact_state_payload(content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(content, dict):
+        return None
+    output = content.get("output")
+    if isinstance(output, dict):
+        payload = copy.deepcopy(output)
+    else:
+        flattened = str(content.get("flattenedOutputText") or content.get("rawOutputText") or "").strip()
+        if not flattened:
+            return None
+        payload = {"output": flattened}
+    for key in ("taskId", "target", "round", "step", "provider", "model", "mode", "responseId"):
+        if key in content and key not in payload:
+            payload[key] = copy.deepcopy(content.get(key))
+    return payload
+
+
+def hydrate_missing_state_from_output_artifacts(state: Dict[str, Any], paths: Paths) -> None:
+    active_task = state.get("activeTask") if isinstance(state.get("activeTask"), dict) else None
+    task_id = str((active_task or {}).get("taskId") or "").strip()
+    if not task_id:
+        return
+    needs_top_level = any(state.get(field) is None for field in ("commander", "commanderReview", "directBaseline", "summary"))
+    worker_state = state.get("workers") if isinstance(state.get("workers"), dict) else {}
+    worker_ids = [
+        str(worker.get("id") or "").strip()
+        for worker in ((active_task or {}).get("workers") or [])
+        if isinstance(worker, dict) and str(worker.get("id") or "").strip()
+    ]
+    needs_workers = any(worker_state.get(worker_id) is None for worker_id in worker_ids) if worker_ids else False
+    if not needs_top_level and not needs_workers:
+        return
+
+    field_candidates: Dict[str, Dict[str, Any]] = {}
+    worker_candidates: Dict[str, Dict[str, Any]] = {}
+    kind_to_field = {
+        "commander_output": "commander",
+        "commander_review_output": "commanderReview",
+        "direct_baseline_output": "directBaseline",
+        "summary_output": "summary",
+        "summary_partial_output": "summary",
+    }
+    kind_priority = {
+        "summary_output": 2,
+        "summary_partial_output": 1,
+        "commander_output": 1,
+        "commander_review_output": 1,
+        "direct_baseline_output": 1,
+        "worker_output": 1,
+    }
+
+    def candidate_rank(entry: Dict[str, Any]) -> tuple:
+        return (
+            int(entry.get("roundOrStep") or 0),
+            int(kind_priority.get(str(entry.get("kind") or ""), 0)),
+            str(entry.get("modifiedAt") or ""),
+        )
+
+    for artifact_file in artifacts.list_json_artifacts(paths.root, ["outputs"]):
+        name = str(artifact_file.get("name") or "")
+        content = artifacts.read_json_artifact(paths.root, "outputs", name)
+        entry = build_artifact_history_entry(
+            name,
+            str(artifact_file.get("modifiedAt") or ""),
+            int(artifact_file.get("size") or 0),
+            content,
+        )
+        if not isinstance(entry, dict) or str(entry.get("taskId") or "") != task_id:
+            continue
+        payload = output_artifact_state_payload(content)
+        if payload is None:
+            continue
+        kind = str(entry.get("kind") or "")
+        rank = candidate_rank(entry)
+        if kind == "worker_output":
+            worker_id = str(entry.get("worker") or payload.get("workerId") or payload.get("target") or "").strip()
+            if not worker_id or (worker_ids and worker_id not in worker_ids):
+                continue
+            existing = worker_candidates.get(worker_id)
+            if existing is None or rank > existing["rank"]:
+                worker_candidates[worker_id] = {"rank": rank, "payload": payload}
+            continue
+        field = kind_to_field.get(kind)
+        if not field:
+            continue
+        existing = field_candidates.get(field)
+        if existing is None or rank > existing["rank"]:
+            field_candidates[field] = {"rank": rank, "payload": payload}
+
+    for field, candidate in field_candidates.items():
+        if state.get(field) is None:
+            state[field] = candidate["payload"]
+    if worker_candidates:
+        next_workers = dict(worker_state)
+        for worker_id, candidate in worker_candidates.items():
+            if next_workers.get(worker_id) is None:
+                next_workers[worker_id] = candidate["payload"]
+        state["workers"] = next_workers
 
 
 def read_task_state_payload(task_id: str, paths: Optional[Paths] = None) -> Optional[Dict[str, Any]]:

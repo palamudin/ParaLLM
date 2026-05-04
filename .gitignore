@@ -36,3 +36,4 @@ backend/tests/__pycache__/
 *.pyc
 *.zip
 tmp/
+.venv/

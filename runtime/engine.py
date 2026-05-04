@@ -5618,9 +5618,16 @@ class LoopRuntime:
 
     def render_knowledgebase_prompt_block(self, packet: Dict[str, Any]) -> str:
         projected = self.project_knowledgebase_prompt_packet(packet)
+        if not projected.get("enabled") or not projected.get("available"):
+            return ""
         prompt_packet = self.project_targeted_sop_prompt_packet(projected)
-        return (
+        heading = (
             "MSP knowledgebase recall (optional background, never a core dependency):\n"
+            if prompt_packet.get("intent") == "targeted_usecase_sop_recall"
+            else "Knowledgebase recall (optional background, never a core dependency):\n"
+        )
+        return (
+            heading
             + json.dumps(prompt_packet, ensure_ascii=False, indent=2)
             + "\n\n"
             "Memory handling rule: use this as supporting context only. Current user input, current constraints, live tool evidence, and inspected files override stale or conflicting memory.\n\n"
@@ -5636,24 +5643,6 @@ class LoopRuntime:
         ).lower()
         if any(trigger in task_text for trigger in MSP_CONTRADICTION_GATE_TRIGGERS):
             return True
-        if not isinstance(prompt_packet, dict):
-            return False
-        for key in ("baselinePackets", "adaptivePackets", "sopPackets"):
-            packets = prompt_packet.get(key)
-            if not isinstance(packets, list):
-                continue
-            for packet in packets:
-                if not isinstance(packet, dict):
-                    continue
-                packet_text = " ".join(
-                    [
-                        str(packet.get("title") or ""),
-                        str(packet.get("useCase") or ""),
-                        " ".join(normalize_string_array_preserve_items(packet.get("eventTypes", []))),
-                    ]
-                ).lower()
-                if "msp" in packet_text or "tenant" in packet_text:
-                    return True
         return False
 
     def msp_final_gate_applies(self, gate: Dict[str, Any], task_text: str) -> bool:
@@ -5735,6 +5724,22 @@ class LoopRuntime:
         round_number: Optional[int] = None,
     ) -> Dict[str, Any]:
         runtime_config = runtime if isinstance(runtime, dict) else self.get_task_runtime(task)
+        knowledgebase_config = normalize_knowledgebase_config(
+            runtime_config.get("knowledgebase") if isinstance(runtime_config.get("knowledgebase"), dict) else {}
+        )
+        if not knowledgebase_config.get("enabled"):
+            return {
+                "schemaVersion": "contradiction-memory/v1",
+                "intent": "cross_round_final_answer_gate",
+                "enabled": False,
+                "coreDependency": False,
+                "round": int(round_number or ((commander_review_checkpoint or {}).get("round", 0) if isinstance(commander_review_checkpoint, dict) else 0) or 0),
+                "source": "disabled_by_runtime_knowledgebase_switch",
+                "openContradictions": [],
+                "sopObligations": [],
+                "finalAnswerGates": [],
+                "fallbackPolicy": "Runtime knowledgebase memory is disabled for this task.",
+            }
         if not isinstance(knowledgebase_packet, dict):
             knowledgebase_packet = self.build_knowledgebase_recall_packet(
                 task,
@@ -5790,18 +5795,17 @@ class LoopRuntime:
             add_items(checkpoint.get("uncertainty", []), 2, 180)
             add_items(checkpoint.get("detriments", []), 1, 180)
 
-        task_text = " ".join(
+        task_trigger_text = " ".join(
             [
                 str(task.get("objective") or ""),
                 str(task.get("sessionContext") or ""),
                 " ".join(normalize_string_array_preserve_items(task.get("constraints", []))),
-                json.dumps(prompt_packet, ensure_ascii=False),
             ]
         ).lower()
         final_gates: List[Dict[str, Any]] = []
         if self.task_matches_msp_contradiction_gate(task, prompt_packet):
             for gate in MSP_FINAL_ANSWER_GATES:
-                if self.msp_final_gate_applies(gate, task_text):
+                if self.msp_final_gate_applies(gate, task_trigger_text):
                     final_gates.append(
                         {
                             "id": gate["id"],

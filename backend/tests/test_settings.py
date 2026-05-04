@@ -130,6 +130,8 @@ class SettingsTests(unittest.TestCase):
                 "localFileRoots": ".,runtime",
                 "githubToolsEnabled": 1,
                 "githubAllowedRepos": "palamudin/ParaLLM",
+                "knowledgebaseEnabled": 1,
+                "knowledgebase": {"bankId": "msp-knowledgebase", "includeRuntime": False, "includePersistent": True, "tags": ["msp"]},
                 "dynamicSpinupEnabled": 1,
                 "vettingEnabled": 0,
             },
@@ -157,6 +159,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["targetTimeouts"]["workerDefault"], 120)
         self.assertEqual(result["targetTimeouts"]["workers"]["A"], 80)
         self.assertEqual(result["preferredLoop"]["rounds"], 5)
+        self.assertTrue(result["knowledgebase"]["enabled"])
+        self.assertEqual(result["knowledgebase"]["bankId"], "msp-knowledgebase")
+        self.assertFalse(result["knowledgebase"]["includeRuntime"])
+        self.assertEqual(result["knowledgebase"]["tags"], ["msp"])
 
         state = storage.read_state_payload(storage.project_paths(self.root))
         self.assertEqual(state["activeTask"]["runtime"]["provider"], "ollama")
@@ -196,9 +202,14 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(state["activeTask"]["runtime"]["research"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["localFiles"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["githubTools"]["enabled"])
+        self.assertTrue(state["activeTask"]["runtime"]["knowledgebase"]["enabled"])
+        self.assertEqual(state["activeTask"]["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
+        self.assertFalse(state["activeTask"]["runtime"]["knowledgebase"]["includeRuntime"])
         self.assertFalse(state["draft"]["researchEnabled"])
         self.assertTrue(state["draft"]["localFilesEnabled"])
         self.assertTrue(state["draft"]["githubToolsEnabled"])
+        self.assertTrue(state["draft"]["knowledgebaseEnabled"])
+        self.assertEqual(state["draft"]["knowledgebase"]["bankId"], "msp-knowledgebase")
 
         scoped = storage.read_task_state_payload(state["activeTask"]["taskId"], storage.project_paths(self.root))
         self.assertIsNotNone(scoped)
@@ -209,8 +220,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(scoped["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(scoped["activeTask"]["runtime"]["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(scoped["activeTask"]["runtime"]["targetTimeouts"]["workers"]["A"], 80)
+        self.assertTrue(scoped["activeTask"]["runtime"]["knowledgebase"]["enabled"])
+        self.assertEqual(scoped["activeTask"]["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
         self.assertEqual(scoped["draft"]["provider"], "ollama")
         self.assertEqual(scoped["draft"]["summarizerProvider"], "openai")
+        self.assertTrue(scoped["draft"]["knowledgebaseEnabled"])
 
     def test_set_provider_instances_persists_local_provider_pool(self) -> None:
         result = settings.set_provider_instances(

@@ -115,7 +115,7 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertFalse(packet["enabled"])
         self.assertFalse(packet["available"])
         self.assertFalse(packet["coreDependency"])
-        self.assertIn('"coreDependency": false', rendered)
+        self.assertEqual(rendered, "")
 
     def test_sop_recall_renders_targeted_packet_without_full_text_dump(self) -> None:
         long_reference_text = "FULL_REFERENCE_TEXT_SHOULD_STAY_OUT_OF_PROMPT " * 80
@@ -256,12 +256,139 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertTrue(projected["adaptivePackets"])
         self.assertEqual(projected["retrievalPolicy"]["baselineCount"], 1)
 
+    def test_default_live_recall_does_not_pull_msp_learning_into_non_msp_prompt(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "msp-knowledgebase",
+                "tags": ["msp", "judge-learning"],
+                "items": [
+                    {
+                        "title": "Learned: RMM control-plane incident scar",
+                        "content": "A strong answer must be executable under pressure with tenant-safe RMM gates.",
+                        "type": "runbook",
+                        "metadata": {
+                            "learning.kind": "judge-score-failure-class",
+                            "learning.failureClass": "operator-efficiency",
+                            "learning.scenarioId": "rmm-control-plane",
+                            "learning.missCount": 99,
+                            "learning.adaptiveWeight": 10.0,
+                        },
+                        "sop": {
+                            "schemaVersion": "msp-learned-sop/v1",
+                            "useCase": "RMM control-plane incident: First-hour operator efficiency",
+                            "eventTypes": ["rmm", "control-plane", "tenant"],
+                            "firstActions": ["Open tenant incident gates"],
+                            "decisionGates": ["Do not trust the RMM console"],
+                        },
+                    }
+                ],
+            },
+        )
+        task = {
+            "taskId": "t-philosophy",
+            "objective": "Tell me how it sits internally to have multiple reasoning threads shape your external position.",
+        }
+
+        packet = self.runtime.build_knowledgebase_recall_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            "summarizer",
+            label="Summarizer",
+            role="final_answer",
+            focus="final user-facing synthesis",
+        )
+        rendered = self.runtime.render_knowledgebase_prompt_block(packet)
+
+        self.assertTrue(all(hit.get("bankId") != "msp-knowledgebase" for hit in packet["hits"]))
+        self.assertNotIn("msp-knowledgebase", rendered)
+        self.assertNotIn("targeted_usecase_sop_recall", rendered)
+        self.assertNotIn("MSP knowledgebase recall", rendered)
+
+    def test_default_live_recall_does_not_pull_runtime_msp_howto_into_non_msp_prompt(self) -> None:
+        docs_dir = self.root / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        (docs_dir / "eval-subject-howto-msp-101.md").write_text(
+            "MSP Knowledgebase How-To: RMM and tenant incident gates must stay scoped to MSP prompts.",
+            encoding="utf-8",
+        )
+        task = {
+            "taskId": "t-philosophy-runtime-howto",
+            "objective": "Tell me how it sits internally to have multiple reasoning threads shape your external position.",
+            "runtime": {"knowledgebase": {"enabled": True, "includeRuntime": True, "includePersistent": False}},
+        }
+
+        packet = self.runtime.build_knowledgebase_recall_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            "summarizer",
+            label="Summarizer",
+            role="final_answer",
+            focus="final user-facing synthesis",
+        )
+        rendered = self.runtime.render_knowledgebase_prompt_block(packet)
+
+        self.assertNotIn("runtime_msp_howto", {hit.get("id") for hit in packet["hits"]})
+        self.assertNotIn("MSP Knowledgebase How-To", rendered)
+        self.assertNotIn("MSP high-risk incidents", rendered)
+        self.assertNotIn("RMM and tenant incident gates", rendered)
+
+    def test_non_msp_task_does_not_activate_final_gates_from_recalled_msp_packet(self) -> None:
+        task = {
+            "taskId": "t-philosophy-gate",
+            "objective": "Explain how parallel reasoning threads shape one external answer.",
+        }
+        recalled_msp_packet = {
+            "schemaVersion": "parallm-native-knowledgebase/v0",
+            "enabled": True,
+            "available": True,
+            "target": "summarizer",
+            "hits": [
+                {
+                    "id": "mem_rmm",
+                    "title": "Learned: RMM control-plane incident scar",
+                    "sop": {
+                        "useCase": "RMM control-plane incident: First-hour operator efficiency",
+                        "eventTypes": ["rmm", "tenant", "control-plane"],
+                        "firstActions": ["Open tenant incident gates"],
+                    },
+                    "memoryLayer": "adaptive",
+                }
+            ],
+            "aiPacket": {"selectedEvidenceIds": ["mem_rmm"], "contextText": "RMM tenant gates"},
+        }
+        commander_review = {
+            "taskId": "t-philosophy-gate",
+            "round": 1,
+            "requiredDecisionGates": ["Do not overstate subjective feeling."],
+            "evidenceOrCommsRisks": ["Low-level arbitration details may be sensitive."],
+        }
+
+        packet = self.runtime.build_contradiction_memory_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            commander_review,
+            {},
+            [],
+            recalled_msp_packet,
+            round_number=1,
+        )
+        summary = {"frontAnswer": {"answer": "Parallel reasoning can refine one answer without implying subjective feeling."}}
+
+        fixed = self.runtime.apply_contradiction_memory_final_gates(summary, packet)
+
+        self.assertEqual(packet["finalAnswerGates"], [])
+        self.assertEqual(
+            fixed["frontAnswer"]["answer"],
+            "Parallel reasoning can refine one answer without implying subjective feeling.",
+        )
+
     def test_contradiction_memory_backstop_adds_missing_msp_tenant_owner_gate(self) -> None:
         task = {
             "taskId": "t-backup-gap",
             "objective": "Backup portal deletion jobs are queued across fourteen MSP customers during active restores.",
             "constraints": ["Preserve evidence.", "Keep customer communications separated."],
-            "runtime": {"knowledgebase": {"enabled": False}},
+            "runtime": {"knowledgebase": {"enabled": True}},
             "workers": [{"id": "A", "label": "Sceptic", "role": "adversarial", "focus": "MSP evidence gaps", "model": "gpt-5-mini"}],
         }
         worker_state = {
@@ -334,7 +461,7 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         task = {
             "taskId": "t-backup-covered",
             "objective": "Backup deletion jobs hit several MSP client tenants.",
-            "runtime": {"knowledgebase": {"enabled": False}},
+            "runtime": {"knowledgebase": {"enabled": True}},
         }
         packet = self.runtime.build_contradiction_memory_packet(
             task,

@@ -24,6 +24,7 @@ from runtime.engine import (
     default_dynamic_spinup_config,
     default_github_tool_config,
     default_local_file_tool_config,
+    default_knowledgebase_config,
     default_ollama_base_url,
     default_ollama_timeout_profile,
     default_research_config,
@@ -44,6 +45,7 @@ from runtime.engine import (
     normalize_github_repos,
     normalize_github_tool_config,
     normalize_harness_config,
+    normalize_knowledgebase_config,
     normalize_local_file_roots,
     normalize_local_file_tool_config,
     normalize_model_id,
@@ -122,6 +124,7 @@ def default_draft_state() -> Dict[str, Any]:
     local_files = default_local_file_tool_config()
     github_tools = default_github_tool_config()
     dynamic_spinup = default_dynamic_spinup_config()
+    knowledgebase = {**default_knowledgebase_config(), "enabled": False}
     return {
         "objective": "",
         "constraints": [],
@@ -155,6 +158,8 @@ def default_draft_state() -> Dict[str, Any]:
         "localFileRoots": local_files["roots"],
         "githubToolsEnabled": github_tools["enabled"],
         "githubAllowedRepos": github_tools["repos"],
+        "knowledgebaseEnabled": knowledgebase["enabled"],
+        "knowledgebase": knowledgebase,
         "dynamicSpinupEnabled": dynamic_spinup["enabled"],
         "vettingEnabled": True,
         "directHarness": default_direct_harness(),
@@ -198,6 +203,16 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     )
     dynamic_spinup = normalize_dynamic_spinup_config(
         {"enabled": current.get("dynamicSpinupEnabled", default["dynamicSpinupEnabled"])}
+    )
+    current_knowledgebase = current.get("knowledgebase") if isinstance(current.get("knowledgebase"), dict) else {}
+    knowledgebase = normalize_knowledgebase_config(
+        {
+            **current_knowledgebase,
+            "enabled": current.get(
+                "knowledgebaseEnabled",
+                current_knowledgebase.get("enabled", default["knowledgebaseEnabled"]),
+            ),
+        }
     )
     reasoning_effort = str(current.get("reasoningEffort", default["reasoningEffort"])).strip()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
@@ -281,6 +296,8 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "localFileRoots": feature_alignment["localFiles"]["roots"],
         "githubToolsEnabled": feature_alignment["githubTools"]["enabled"],
         "githubAllowedRepos": feature_alignment["githubTools"]["repos"],
+        "knowledgebaseEnabled": knowledgebase["enabled"],
+        "knowledgebase": knowledgebase,
         "dynamicSpinupEnabled": dynamic_spinup["enabled"],
         "vettingEnabled": coerce_bool(current.get("vettingEnabled", default["vettingEnabled"]), bool(default["vettingEnabled"])),
         "directHarness": normalize_harness_config(
@@ -318,6 +335,7 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
     github_tools = normalize_github_tool_config(runtime.get("githubTools") if isinstance(runtime.get("githubTools"), dict) else {})
     dynamic_spinup = normalize_dynamic_spinup_config(runtime.get("dynamicSpinup") if isinstance(runtime.get("dynamicSpinup"), dict) else {})
     vetting = normalize_vetting_config(runtime.get("vetting") if isinstance(runtime.get("vetting"), dict) else {})
+    knowledgebase = normalize_knowledgebase_config(runtime.get("knowledgebase") if isinstance(runtime.get("knowledgebase"), dict) else {"enabled": False})
     provider = normalize_provider_id(str(runtime.get("provider", default["provider"])), str(default["provider"]))
     model = normalize_model_id(str(runtime.get("model", default["model"])), default_model_for_provider(provider), provider)
     summarizer = task.get("summarizer") if isinstance(task.get("summarizer"), dict) else {}
@@ -369,6 +387,8 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         "localFileRoots": local_files["roots"],
         "githubToolsEnabled": github_tools["enabled"],
         "githubAllowedRepos": github_tools["repos"],
+        "knowledgebaseEnabled": knowledgebase["enabled"],
+        "knowledgebase": knowledgebase,
         "dynamicSpinupEnabled": dynamic_spinup["enabled"],
         "vettingEnabled": vetting["enabled"],
         "directHarness": normalize_harness_config(
@@ -804,6 +824,7 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
     engine_graph = _parse_json_like(payload.get("engineGraph"), existing_draft["engineGraph"])
     provider_routing = _parse_json_like(payload.get("providerRouting"), existing_draft["providerRouting"])
     ollama_timeout_profile = _parse_json_like(payload.get("ollamaTimeoutProfile"), existing_draft["ollamaTimeoutProfile"])
+    knowledgebase_input = _parse_json_like(payload.get("knowledgebase"), existing_draft.get("knowledgebase", {}))
     draft = normalize_draft_state(
         {
             **existing_draft,
@@ -839,6 +860,13 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "localFileRoots": payload.get("localFileRoots", existing_draft["localFileRoots"]),
             "githubToolsEnabled": payload.get("githubToolsEnabled", existing_draft["githubToolsEnabled"]),
             "githubAllowedRepos": payload.get("githubAllowedRepos", existing_draft["githubAllowedRepos"]),
+            "knowledgebaseEnabled": payload.get(
+                "knowledgebaseEnabled",
+                knowledgebase_input.get("enabled", existing_draft["knowledgebaseEnabled"])
+                if isinstance(knowledgebase_input, dict)
+                else existing_draft["knowledgebaseEnabled"],
+            ),
+            "knowledgebase": knowledgebase_input if isinstance(knowledgebase_input, dict) else existing_draft["knowledgebase"],
             "dynamicSpinupEnabled": payload.get("dynamicSpinupEnabled", existing_draft["dynamicSpinupEnabled"]),
             "vettingEnabled": payload.get("vettingEnabled", existing_draft["vettingEnabled"]),
             "directHarness": direct_harness if isinstance(direct_harness, dict) else existing_draft["directHarness"],
@@ -871,6 +899,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     summarizer_harness_input = _parse_json_like(payload.get("summarizerHarness"), {})
     budget_targets_input = _parse_json_like(payload.get("budgetTargets"), {})
     target_timeouts_input = _parse_json_like(payload.get("targetTimeouts"), {})
+    knowledgebase_input = _parse_json_like(payload.get("knowledgebase"), {})
 
     requested_execution_mode = str(payload.get("executionMode", "live")).strip().lower() or "live"
     if requested_execution_mode != "live":
@@ -944,6 +973,15 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     vetting = normalize_vetting_config(
         {"enabled": payload.get("vettingEnabled", default_vetting_config()["enabled"])}
     )
+    knowledgebase = normalize_knowledgebase_config(
+        {
+            **(knowledgebase_input if isinstance(knowledgebase_input, dict) else {}),
+            "enabled": payload.get(
+                "knowledgebaseEnabled",
+                (knowledgebase_input.get("enabled", False) if isinstance(knowledgebase_input, dict) else False),
+            ),
+        }
+    )
     preferred_loop = normalize_loop_preferences(
         {
             "rounds": payload.get("loopRounds", default_loop_preferences()["rounds"]),
@@ -989,6 +1027,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "research": research,
             "localFiles": local_files,
             "githubTools": github_tools,
+            "knowledgebase": knowledgebase,
             "dynamicSpinup": dynamic_spinup,
             "vetting": vetting,
             "pricingSource": PRICING_SOURCE,

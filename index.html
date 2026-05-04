@@ -6,253 +6,288 @@
   <title>ParaLLM</title>
   <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
-  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260502-001" />
+  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260504-007" />
   <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
   <link rel="stylesheet" href="assets/repo-review.css?v=20260501-003" />
 </head>
-<body class="replacement-shell-body">
-  <div class="replacement-shell-app">
-    <aside class="replacement-sidebar" aria-label="Primary">
-      <div class="replacement-sidebar-topbar">
-        <div class="replacement-brand">
-          <div class="replacement-brand-mark">P</div>
-          <div class="replacement-brand-copy">
-            <div class="replacement-kicker">ParaLLM</div>
+<body class="igs-shell-body">
+  <div class="igs-shell-app">
+    <aside class="igs-sidebar" aria-label="Primary">
+      <div class="igs-sidebar-topbar">
+        <div class="igs-brand">
+          <div class="igs-brand-mark">P</div>
+          <div class="igs-brand-copy">
+            <div class="igs-kicker">ParaLLM</div>
             <h1>ParaLLM</h1>
             <p>Steered operator workspace</p>
           </div>
         </div>
-        <button type="button" id="replacementSidebarToggle" class="replacement-sidebar-toggle" aria-expanded="true" aria-controls="replacementSidebarNav" aria-label="Collapse sidebar" title="Collapse sidebar">
-          <span class="replacement-sidebar-toggle-icon" aria-hidden="true"></span>
+        <button type="button" id="replacementSidebarToggle" class="igs-sidebar-toggle" aria-expanded="true" aria-controls="replacementSidebarNav" aria-label="Collapse sidebar" title="Collapse sidebar">
+          <span class="igs-sidebar-toggle-icon" aria-hidden="true"></span>
         </button>
       </div>
 
-      <div class="replacement-sidebar-section-head">
-        <span class="replacement-section-label">Workspace</span>
-        <div class="replacement-theme-toggle" role="group" aria-label="Color theme">
-          <button type="button" class="replacement-theme-btn is-active" data-theme-option="dark" aria-pressed="true">Dark</button>
-          <button type="button" class="replacement-theme-btn" data-theme-option="light" aria-pressed="false">Light</button>
+      <div class="igs-sidebar-section-head">
+        <span class="igs-section-label">Workspace</span>
+        <div class="igs-theme-toggle" role="group" aria-label="Color theme">
+          <button type="button" class="igs-theme-btn is-active" data-theme-option="dark" aria-pressed="true">Dark</button>
+          <button type="button" class="igs-theme-btn" data-theme-option="light" aria-pressed="false">Light</button>
         </div>
       </div>
 
-      <nav id="replacementSidebarNav" class="replacement-nav">
-        <button type="button" class="replacement-nav-btn is-active" data-view-target="home" aria-current="page">Home</button>
-        <button type="button" class="replacement-nav-btn" data-view-target="repo">Repo</button>
-        <button type="button" class="replacement-nav-btn" data-view-target="review">Review</button>
-        <button type="button" class="replacement-nav-btn" data-view-target="scores">Scores</button>
-        <button type="button" class="replacement-nav-btn" data-view-target="settings">Settings</button>
-        <button type="button" class="replacement-nav-btn" data-view-target="debug">Debug</button>
+      <nav id="replacementSidebarNav" class="igs-nav">
+        <button type="button" class="igs-nav-btn is-active" data-view-target="home" aria-current="page">Home</button>
+        <button type="button" class="igs-nav-btn" data-view-target="repo">Repo</button>
+        <button type="button" class="igs-nav-btn" data-view-target="review">Review</button>
+        <button type="button" class="igs-nav-btn" data-view-target="scores">Scores</button>
+        <button type="button" class="igs-nav-btn" data-view-target="settings">Settings</button>
+        <button type="button" class="igs-nav-btn" data-view-target="debug">Debug</button>
       </nav>
 
-      <div class="replacement-sidebar-meta">
-        <a class="replacement-link-btn" href="/index_old.html">Open legacy shell</a>
+      <div class="igs-sidebar-meta">
+        <a class="igs-link-btn" href="/index_old.html">Open legacy shell</a>
       </div>
     </aside>
 
-    <div class="replacement-main">
-      <section class="replacement-status-strip" aria-label="Run status">
-        <div class="replacement-status-chip">
-          <span class="replacement-status-label">Task</span>
-          <span id="previewHeaderTask" class="replacement-status-value">staged draft</span>
+    <div class="igs-main">
+      <section class="igs-status-strip" aria-label="Run status">
+        <div class="igs-status-chip">
+          <span class="igs-status-label">Task</span>
+          <span id="previewHeaderTask" class="igs-status-value">staged draft</span>
         </div>
-        <div class="replacement-status-chip">
-          <span class="replacement-status-label">Runtime</span>
-          <span id="previewHeaderRuntime" class="replacement-status-value">Live</span>
+        <div class="igs-status-chip">
+          <span class="igs-status-label">Runtime</span>
+          <span id="previewHeaderRuntime" class="igs-status-value">Live</span>
         </div>
-        <div class="replacement-status-chip">
-          <span class="replacement-status-label">Baseline</span>
-          <span id="previewHeaderBaseline" class="replacement-status-value">Off</span>
+        <div class="igs-status-chip">
+          <span class="igs-status-label">Baseline</span>
+          <span id="previewHeaderBaseline" class="igs-status-value">Off</span>
         </div>
-        <div class="replacement-status-chip">
-          <span class="replacement-status-label">Provider</span>
-          <span id="previewHeaderProvider" class="replacement-status-value">DeepSeek</span>
+        <div class="igs-status-chip">
+          <span class="igs-status-label">Provider</span>
+          <span id="previewHeaderProvider" class="igs-status-value">DeepSeek</span>
         </div>
-        <div class="replacement-status-chip">
-          <span class="replacement-status-label">Vetting</span>
-          <span id="previewHeaderVetting" class="replacement-status-value">On</span>
+        <div class="igs-status-chip">
+          <span class="igs-status-label">Vetting</span>
+          <span id="previewHeaderVetting" class="igs-status-value">On</span>
         </div>
-        <div class="replacement-status-chip">
-          <span class="replacement-status-label">Progress</span>
-          <span id="previewHeaderProgress" class="replacement-status-value">0 / 0</span>
+        <div class="igs-status-chip">
+          <span class="igs-status-label">Progress</span>
+          <span id="previewHeaderProgress" class="igs-status-value">0 / 0</span>
         </div>
-        <div class="replacement-status-chip">
-          <span class="replacement-status-label">Elapsed</span>
-          <span id="previewHeaderElapsed" class="replacement-status-value">n/a</span>
+        <div class="igs-status-chip">
+          <span class="igs-status-label">Elapsed</span>
+          <span id="previewHeaderElapsed" class="igs-status-value">n/a</span>
         </div>
       </section>
 
-      <main class="replacement-view-stack">
-        <section class="replacement-view is-active" data-view-panel="home">
-          <div class="replacement-view-head">
+      <main class="igs-view-stack">
+        <section class="igs-view is-active" data-view-panel="home">
+          <div class="igs-view-head">
             <div>
-              <div class="replacement-kicker">Actuation surface</div>
-              <h3>Home</h3>
+              <div class="igs-kicker">Actuation surface</div>
             </div>
+            <div id="previewHomeCollapsedPills" class="igs-home-collapse-tray" aria-label="Collapsed Home panels" hidden></div>
           </div>
 
-          <div class="replacement-home-layout">
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
+          <div class="igs-home-workspace">
+            <div id="previewHomeDrawer" class="igs-home-drawer" aria-label="Home app drawer">
+            <section class="igs-surface igs-home-contract" data-home-panel="contract">
+              <div class="igs-surface-head">
                 <div>
-                  <div class="replacement-surface-kicker">Primary</div>
+                  <div class="igs-surface-kicker">Primary</div>
                   <h4>Run contract</h4>
                 </div>
-                <span class="replacement-pill">Visible by default</span>
+                <button type="button" class="igs-pill igs-collapse-pill" data-home-collapse-toggle="contract" aria-expanded="true">Visible by default</button>
               </div>
-              <div id="previewDraftState" class="replacement-inline-note" aria-live="polite">Loading staged draft...</div>
-
-              <div class="replacement-control-grid">
-                <div class="replacement-field">
-                  <label for="previewRuntimeMode">Runtime mode</label>
-                  <select id="previewRuntimeMode" class="form-select form-select-sm">
-                    <option value="live" selected>Live</option>
-                  </select>
+              <div class="igs-control-bay">
+                <div class="igs-control-bay-readout">
+                  <div class="igs-surface-kicker">Draft state</div>
+                  <div id="previewDraftState" class="igs-inline-note" aria-live="polite">Loading staged draft...</div>
                 </div>
 
-                <div class="replacement-field">
-                  <label>Engine</label>
-                  <div class="replacement-segment" role="group" aria-label="Engine">
-                    <button type="button" class="replacement-segment-btn is-active" data-group="engine" data-value="v2" aria-pressed="true">V2</button>
-                    <button type="button" class="replacement-segment-btn" data-group="engine" data-value="v1" aria-pressed="false">V1</button>
+                <div class="igs-control-grid">
+                  <div class="igs-control-pack igs-control-pack-routing" data-control-pack="routing">
+                    <div class="igs-control-stack igs-runtime-stack">
+                      <select id="previewRuntimeMode" class="igs-native-pill-select">
+                        <option value="live" selected>Live</option>
+                        <option value="eval">Eval</option>
+                        <option value="judge">Judge</option>
+                      </select>
+                      <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Runtime mode" data-control-tone="cyan" data-control-state="online" data-select-cycle="previewRuntimeMode" data-cycle-values="live,eval,judge" data-cycle-press-levels="none,half,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Live" data-state-tone="live" aria-pressed="false" aria-label="Runtime mode: Live"><span class="igs-state-text">Runtime mode</span></button>
+
+                      <select id="previewEngineVersion" class="igs-native-pill-select">
+                        <option value="v2" selected>V2</option>
+                        <option value="v1">V1</option>
+                      </select>
+                      <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Engine" data-control-tone="blue" data-control-state="info" data-select-cycle="previewEngineVersion" data-cycle-values="v2,v1" data-cycle-press-levels="none,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="V2" data-state-tone="v2" aria-pressed="false" aria-label="Engine: V2"><span class="igs-state-text">Engine</span></button>
+                    </div>
+
+                    <div class="igs-control-tile igs-control-tile-provider" data-contract-control-tile="Worker provider" data-control-tone="green" data-control-state="online">
+                      <div class="igs-control-tile-head">
+                        <label>Worker provider</label>
+                      </div>
+                      <div class="igs-segment igs-segment-wrap igs-provider-segment" role="group" aria-label="Provider">
+                        <button type="button" class="igs-segment-btn is-active" data-group="provider" data-value="deepseek" aria-pressed="true"><span class="igs-provider-led" aria-hidden="true"></span><span>DeepSeek</span></button>
+                        <button type="button" class="igs-segment-btn" data-group="provider" data-value="openai" aria-pressed="false"><span class="igs-provider-led" aria-hidden="true"></span><span>OpenAI</span></button>
+                        <button type="button" class="igs-segment-btn" data-group="provider" data-value="anthropic" aria-pressed="false"><span class="igs-provider-led" aria-hidden="true"></span><span>Anthropic</span></button>
+                        <button type="button" class="igs-segment-btn" data-group="provider" data-value="xai" aria-pressed="false"><span class="igs-provider-led" aria-hidden="true"></span><span>xAI</span></button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="igs-control-pack igs-control-pack-models" data-control-pack="models">
+                    <div class="igs-control-tile igs-select-tile igs-control-tile-wide" data-contract-control-tile="Worker default model" data-control-tone="green" data-control-state="online">
+                      <div class="igs-control-tile-head">
+                        <label for="previewWorkerModel">Worker default model</label>
+                      </div>
+                      <select id="previewWorkerModel" class="igs-native-pill-select" data-contract-pill-select="Worker default model"></select>
+                    </div>
+
+                    <div class="igs-control-tile igs-select-tile" data-contract-control-tile="Summarizer provider" data-control-tone="purple" data-control-state="online">
+                      <div class="igs-control-tile-head">
+                        <label for="previewSummarizerProvider">Summarizer provider</label>
+                      </div>
+                      <select id="previewSummarizerProvider" class="igs-native-pill-select" data-contract-pill-select="Summarizer provider">
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="xai">xAI</option>
+                      </select>
+                    </div>
+
+                    <div class="igs-control-tile igs-select-tile igs-control-tile-wide" data-contract-control-tile="Summarizer model" data-control-tone="purple" data-control-state="online">
+                      <div class="igs-control-tile-head">
+                        <label for="previewSummarizerModel">Summarizer model</label>
+                      </div>
+                      <select id="previewSummarizerModel" class="igs-native-pill-select" data-contract-pill-select="Summarizer model"></select>
+                    </div>
+                  </div>
+
+                  <div class="igs-control-pack igs-control-pack-execution" data-control-pack="execution">
+                    <select id="previewContextMode" class="igs-native-pill-select">
+                      <option value="weighted" selected>Light</option>
+                      <option value="full">Full</option>
+                    </select>
+                    <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Worker context" data-control-tone="teal" data-control-state="online" data-select-cycle="previewContextMode" data-cycle-values="weighted,full" data-cycle-press-levels="none,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Light" data-state-tone="light" aria-pressed="false" aria-label="Worker context: Light"><span class="igs-state-text">Worker context</span></button>
+
+                    <select id="previewDirectBaselineMode" class="igs-native-pill-select">
+                      <option value="off" selected>Off</option>
+                      <option value="single">Single only</option>
+                      <option value="both">Both compare</option>
+                    </select>
+                    <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Single-thread baseline" data-control-tone="amber" data-control-state="warning" data-select-cycle="previewDirectBaselineMode" data-cycle-values="off,single,both" data-cycle-press-levels="none,half,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Off" data-state-tone="off" aria-pressed="false" aria-label="Single-thread baseline: Off"><span class="igs-state-text">Single-thread baseline</span></button>
+
+                    <select id="previewVettingEnabled" class="igs-native-pill-select">
+                      <option value="1" selected>On</option>
+                      <option value="0">Off</option>
+                    </select>
+                    <button type="button" class="igs-control-tile igs-state-tile igs-binary-state is-active" data-contract-control-tile="Summarizer vetting" data-control-tone="blue" data-control-state="info" data-select-toggle="previewVettingEnabled" data-toggle-target="previewVettingEnabled" data-toggle-on="1" data-toggle-off="0" data-press-level="full" data-state-tooltip-delay="100" data-state-label="On" data-state-tone="on" aria-pressed="true" aria-label="Summarizer vetting: On"><span class="igs-state-text">Summarizer vetting</span></button>
+
+                    <select id="previewResearchMode" class="igs-native-pill-select">
+                      <option value="0" selected>Off</option>
+                      <option value="1">On</option>
+                    </select>
+                    <button type="button" class="igs-control-tile igs-state-tile igs-binary-state" data-contract-control-tile="Research" data-control-tone="orange" data-control-state="warning" data-select-toggle="previewResearchMode" data-toggle-target="previewResearchMode" data-toggle-on="1" data-toggle-off="0" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Off" data-state-tone="off" aria-pressed="false" aria-label="Research: Off"><span class="igs-state-text">Research</span></button>
+
+                    <select id="previewMemoryMode" class="igs-native-pill-select">
+                      <option value="0" selected>Off</option>
+                      <option value="1">On</option>
+                    </select>
+                    <button type="button" class="igs-control-tile igs-state-tile igs-binary-state" data-contract-control-tile="Fractal memory" data-control-tone="amber" data-control-state="warning" data-select-toggle="previewMemoryMode" data-toggle-target="previewMemoryMode" data-toggle-on="1" data-toggle-off="0" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Off" data-state-tone="off" aria-pressed="false" aria-label="Fractal memory: Off"><span class="igs-state-text">Fractal memory</span></button>
                   </div>
                 </div>
 
-                <div class="replacement-field">
-                  <label>Worker provider</label>
-                  <div class="replacement-segment replacement-segment-wrap" role="group" aria-label="Provider">
-                    <button type="button" class="replacement-segment-btn is-active" data-group="provider" data-value="deepseek" aria-pressed="true">DeepSeek</button>
-                    <button type="button" class="replacement-segment-btn" data-group="provider" data-value="openai" aria-pressed="false">OpenAI</button>
-                    <button type="button" class="replacement-segment-btn" data-group="provider" data-value="anthropic" aria-pressed="false">Anthropic</button>
-                    <button type="button" class="replacement-segment-btn" data-group="provider" data-value="xai" aria-pressed="false">xAI</button>
+                <aside class="igs-contract-telemetry" aria-live="polite">
+                  <div class="igs-contract-summary">
+                    <div class="igs-surface-kicker">This send will</div>
+                    <div class="igs-summary-pill-grid">
+                      <div class="igs-summary-pill">
+                        <span class="igs-summary-label">Path</span>
+                        <span id="previewSummaryPath" class="igs-summary-value">Para only</span>
+                      </div>
+                      <div class="igs-summary-pill">
+                        <span class="igs-summary-label">Limits</span>
+                        <span id="previewSummaryLimits" class="igs-summary-value">3 rounds, $5 spend wall</span>
+                      </div>
+                      <div class="igs-summary-pill">
+                        <span class="igs-summary-label">Research</span>
+                        <span id="previewSummaryResearch" class="igs-summary-value">Off</span>
+                      </div>
+                      <div class="igs-summary-pill">
+                        <span class="igs-summary-label">Memory</span>
+                        <span id="previewSummaryMemory" class="igs-summary-value">Off</span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-
-                <div class="replacement-field">
-                  <label for="previewWorkerModel">Worker default model</label>
-                  <select id="previewWorkerModel" class="form-select form-select-sm"></select>
-                </div>
-
-                <div class="replacement-field">
-                  <label for="previewSummarizerProvider">Summarizer provider</label>
-                  <select id="previewSummarizerProvider" class="form-select form-select-sm">
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="xai">xAI</option>
-                  </select>
-                </div>
-
-                <div class="replacement-field">
-                  <label for="previewSummarizerModel">Summarizer model</label>
-                  <select id="previewSummarizerModel" class="form-select form-select-sm"></select>
-                </div>
-
-                <div class="replacement-field">
-                  <label for="previewContextMode">Worker context</label>
-                  <select id="previewContextMode" class="form-select form-select-sm">
-                    <option value="weighted" selected>Light workers</option>
-                    <option value="full">Full workers</option>
-                  </select>
-                </div>
-
-                <div class="replacement-field">
-                  <label for="previewDirectBaselineMode">Single-thread baseline</label>
-                  <select id="previewDirectBaselineMode" class="form-select form-select-sm">
-                    <option value="off" selected>Off</option>
-                    <option value="single">Single only</option>
-                    <option value="both">Both compare</option>
-                  </select>
-                </div>
-
-                <div class="replacement-field">
-                  <label for="previewVettingEnabled">Summarizer vetting</label>
-                  <select id="previewVettingEnabled" class="form-select form-select-sm">
-                    <option value="1" selected>On</option>
-                    <option value="0">Off</option>
-                  </select>
-                </div>
-
-                <div class="replacement-field">
-                  <label for="previewResearchMode">Research</label>
-                  <select id="previewResearchMode" class="form-select form-select-sm">
-                    <option value="0" selected>Off</option>
-                    <option value="1">On</option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="replacement-contract-summary" aria-live="polite">
-                <div class="replacement-surface-kicker">This send will</div>
-                <div class="replacement-summary-list">
-                  <div class="replacement-summary-item">
-                    <span class="replacement-summary-label">Path</span>
-                    <span id="previewSummaryPath" class="replacement-summary-value">Para only</span>
-                  </div>
-                  <div class="replacement-summary-item">
-                    <span class="replacement-summary-label">Limits</span>
-                    <span id="previewSummaryLimits" class="replacement-summary-value">3 rounds, $5 spend wall</span>
-                  </div>
-                  <div class="replacement-summary-item">
-                    <span class="replacement-summary-label">Research</span>
-                    <span id="previewSummaryResearch" class="replacement-summary-value">Off</span>
-                  </div>
-                </div>
+                </aside>
               </div>
             </section>
 
-            <section class="replacement-surface replacement-surface-grow">
-              <div class="replacement-surface-head">
-                <div>
-                  <div class="replacement-surface-kicker">Primary</div>
-                  <h4>Conversation</h4>
+            <aside class="igs-home-sidecar" aria-label="Live run internals">
+              <section class="igs-surface igs-lane-surface" data-home-panel="lanes">
+                <div class="igs-surface-head">
+                  <div>
+                    <div class="igs-surface-kicker">Internals</div>
+                    <h4>Lane status</h4>
+                  </div>
+                  <button type="button" class="igs-pill igs-pill-muted igs-collapse-pill" data-home-collapse-toggle="lanes" aria-expanded="true">Live</button>
                 </div>
-                <span class="replacement-pill">Send stays visible</span>
-              </div>
-
-              <div class="replacement-thread">
-                <article class="replacement-message replacement-message-user">
-                  <div class="replacement-message-role">Staged objective</div>
-                  <p id="previewObjectiveMirror">The staged objective will appear here once the draft loads.</p>
-                </article>
-              </div>
-
-              <div class="replacement-composer">
-                <label for="previewObjective" class="replacement-composer-label">Objective</label>
-                <textarea id="previewObjective" class="form-control" rows="5" placeholder="Ask ParaLLM to investigate, compare, or summarize."></textarea>
-                <div class="replacement-composer-actions">
-                  <button type="button" id="previewSendPrompt" class="btn btn-primary btn-sm">Send</button>
+                <div id="previewLaneGrid" class="igs-lane-grid">
+                  <div class="igs-inline-note">No active lanes yet.</div>
                 </div>
-              </div>
-            </section>
+              </section>
 
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
+              <section class="igs-surface igs-trace-surface" data-home-panel="trace">
+                <div class="igs-surface-head">
+                  <div>
+                    <div class="igs-surface-kicker">Background</div>
+                    <h4>Trace output</h4>
+                  </div>
+                  <button type="button" class="igs-pill igs-pill-muted igs-collapse-pill" data-home-collapse-toggle="trace" aria-expanded="true">Steps / events</button>
+                </div>
+                <div id="previewTraceSummary" class="igs-inline-note">Waiting for scheduler activity.</div>
+                <div class="igs-log-grid">
+                  <section class="igs-log-pane">
+                    <div class="igs-surface-kicker">Step log</div>
+                    <pre id="previewStepLog" class="igs-code-block">No steps loaded.</pre>
+                  </section>
+                  <section class="igs-log-pane">
+                    <div class="igs-surface-kicker">Event log</div>
+                    <pre id="previewEventLog" class="igs-code-block">No events loaded.</pre>
+                  </section>
+                </div>
+              </section>
+            </aside>
+
+            <section class="igs-surface igs-home-supporting" data-home-panel="supporting">
+              <div class="igs-surface-head">
                 <div>
-                  <div class="replacement-surface-kicker">Secondary</div>
+                  <div class="igs-surface-kicker">Secondary</div>
                   <h4>Supporting controls</h4>
                 </div>
-                <span class="replacement-pill replacement-pill-muted">Not first</span>
+                <button type="button" class="igs-pill igs-pill-muted igs-collapse-pill" data-home-collapse-toggle="supporting" aria-expanded="true">Not first</button>
               </div>
 
-              <div class="replacement-support-grid">
-                <article class="replacement-mini-card">
+              <div class="igs-support-grid">
+                <article class="igs-mini-card">
                   <h5>Session context</h5>
-                  <textarea id="previewSessionContext" class="form-control form-control-sm replacement-compact-textarea" rows="4" placeholder="Optional context carried with the objective."></textarea>
+                  <textarea id="previewSessionContext" class="form-control form-control-sm igs-compact-textarea" rows="4" placeholder="Optional context carried with the objective."></textarea>
                 </article>
-                <article class="replacement-mini-card">
+                <article class="igs-mini-card">
                   <h5>Constraints</h5>
-                  <textarea id="previewConstraints" class="form-control form-control-sm replacement-compact-textarea" rows="4" placeholder="One constraint per line."></textarea>
+                  <textarea id="previewConstraints" class="form-control form-control-sm igs-compact-textarea" rows="4" placeholder="One constraint per line."></textarea>
                 </article>
-                <article class="replacement-mini-card">
+                <article class="igs-mini-card">
                   <h5>Operational limits</h5>
-                  <div class="replacement-mini-form">
+                  <div class="igs-mini-form">
                     <label for="previewLoopRounds">Auto loop rounds</label>
                     <input id="previewLoopRounds" type="number" min="1" max="12" class="form-control form-control-sm" />
                     <label for="previewMaxCostUsd">Spend wall (USD)</label>
                     <input id="previewMaxCostUsd" type="number" min="0" step="0.1" class="form-control form-control-sm" />
                   </div>
                 </article>
-                <article class="replacement-mini-card">
+                <article class="igs-mini-card">
                   <h5>Provider posture</h5>
                   <ul>
                     <li>OpenAI: primary</li>
@@ -266,17 +301,17 @@
               </div>
             </section>
 
-            <section class="replacement-surface replacement-math2code">
-              <div class="replacement-surface-head">
+            <section class="igs-surface igs-math2code" data-home-panel="math2code">
+              <div class="igs-surface-head">
                 <div>
-                  <div class="replacement-surface-kicker">Reference</div>
+                  <div class="igs-surface-kicker">Reference</div>
                   <h4>Math2Code</h4>
                 </div>
-                <span class="replacement-pill replacement-pill-muted">GLSL / JS</span>
+                <button type="button" class="igs-pill igs-pill-muted igs-collapse-pill" data-home-collapse-toggle="math2code" aria-expanded="true">GLSL / JS</button>
               </div>
 
-              <div class="replacement-math2code-table-wrap">
-                <table class="replacement-math2code-table" data-ai-readout="math2code-reference">
+              <div class="igs-math2code-table-wrap">
+                <table class="igs-math2code-table" data-ai-readout="math2code-reference">
                   <thead>
                     <tr>
                       <th>Meaning</th>
@@ -339,24 +374,58 @@
                 </table>
               </div>
 
-              <details class="replacement-math2code-ai">
+              <details class="igs-math2code-ai">
                 <summary>AI readout</summary>
-                <pre class="replacement-code-block">{"purpose":"Translate common math notation into shader or runtime code patterns.","rows":["vector -> vec constructors","matrix -> column-major constructors","norm -> length/normalize","sigma/product -> loops or reductions","piecewise -> step/mix or branch","range clamp -> clamp","logic -> boolean operators"]}</pre>
+                <pre class="igs-code-block">{"purpose":"Translate common math notation into shader or runtime code patterns.","rows":["vector -> vec constructors","matrix -> column-major constructors","norm -> length/normalize","sigma/product -> loops or reductions","piecewise -> step/mix or branch","range clamp -> clamp","logic -> boolean operators"]}</pre>
               </details>
+            </section>
+            </div>
+
+            <section class="igs-chat-canvas" data-home-panel="chat">
+              <div id="previewRunThread" class="igs-thread igs-run-thread" aria-live="polite">
+                <article class="igs-message igs-message-user">
+                  <div class="igs-message-role">Staged objective</div>
+                  <p id="previewObjectiveMirror">The staged objective will appear here once the draft loads.</p>
+                </article>
+              </div>
+
+              <div class="igs-composer igs-chat-composer">
+                <label for="previewObjective" class="igs-composer-label">Objective</label>
+                <div class="igs-composer-row">
+                  <div class="igs-composer-tool-launcher">
+                    <button type="button" id="previewComposerToolMenuToggle" class="igs-composer-tool-toggle" aria-expanded="false" aria-controls="previewComposerToolMenu" aria-label="Open tools">+</button>
+                    <div id="previewComposerToolMenu" class="igs-composer-tool-menu" role="menu" hidden>
+                      <button type="button" class="igs-composer-tool-action" data-composer-tool-action="upload" role="menuitem">Upload files</button>
+                      <button type="button" class="igs-composer-tool-action" data-composer-tool-action="web-search" role="menuitem">Web search off</button>
+                      <button type="button" class="igs-composer-tool-action" data-composer-tool-action="memory" role="menuitem">Fractal memory off</button>
+                      <button type="button" class="igs-composer-tool-action" data-composer-tool-action="local-files" role="menuitem">Local files off</button>
+                      <button type="button" class="igs-composer-tool-action" data-composer-tool-action="github-tools" role="menuitem">GitHub tools off</button>
+                      <button type="button" class="igs-composer-tool-action" data-composer-tool-action="vetting" role="menuitem">Vetting on</button>
+                    </div>
+                    <input id="previewComposerFileInput" type="file" multiple hidden />
+                  </div>
+                  <textarea id="previewObjective" class="form-control" rows="1" placeholder="Ask ParaLLM to investigate, compare, or summarize."></textarea>
+                  <button type="button" id="previewSendPrompt" class="igs-send-button" aria-label="Send prompt" title="Send prompt">
+                    <span class="igs-send-icon" aria-hidden="true">↑</span>
+                    <span class="igs-send-text">Send prompt</span>
+                  </button>
+                </div>
+                <div id="previewComposerAttachmentList" class="igs-composer-attachment-list" hidden></div>
+              </div>
             </section>
           </div>
         </section>
 
-        <section class="replacement-view replacement-view-repo" data-view-panel="repo" hidden>
-            <div class="replacement-inspector-toolbar" aria-label="Inspector mode">
-              <div class="replacement-inspector-switch" role="group">
-                <button type="button" class="replacement-inspector-mode-btn is-active" data-inspector-mode="repo" aria-pressed="true">Repo</button>
-                <button type="button" class="replacement-inspector-mode-btn" data-inspector-mode="memory" aria-pressed="false">Knowledgebase</button>
+        <section class="igs-view igs-view-repo" data-view-panel="repo" hidden>
+            <div class="igs-inspector-toolbar" aria-label="Inspector mode">
+              <div class="igs-inspector-switch" role="group">
+                <button type="button" class="igs-inspector-mode-btn is-active" data-inspector-mode="repo" aria-pressed="true">Repo</button>
+                <button type="button" class="igs-inspector-mode-btn" data-inspector-mode="memory" aria-pressed="false">Knowledgebase</button>
               </div>
-              <div class="replacement-inspector-note">Repo graph for code structure. MSP Knowledgebase for advisor trails, eval rubrics, and evidence-linked recall.</div>
+              <div class="igs-inspector-note">Repo graph for code structure. MSP Knowledgebase for advisor trails, eval rubrics, and evidence-linked recall.</div>
             </div>
 
-            <div class="replacement-repo-host repo-review-root" data-inspector-panel="repo">
+            <div class="igs-repo-host repo-review-root" data-inspector-panel="repo">
               <div class="app">
                 <div class="repo-toolbar">
                   <div class="panel-tabs" role="group" aria-label="Repo panels">
@@ -470,7 +539,7 @@
               </div>
             </div>
 
-            <div class="replacement-fractal-host repo-review-root" data-inspector-panel="memory" hidden>
+            <div class="igs-fractal-host repo-review-root" data-inspector-panel="memory" hidden>
               <div class="app fm-app" data-fractal-memory>
                 <div class="repo-toolbar">
                   <div class="panel-tabs" role="group" aria-label="Knowledgebase panels">
@@ -598,21 +667,21 @@
             </div>
         </section>
 
-        <section class="replacement-view" data-view-panel="review" hidden>
-          <div class="replacement-view-head">
+        <section class="igs-view" data-view-panel="review" hidden>
+          <div class="igs-view-head">
             <div>
-              <div class="replacement-kicker">Truth surface</div>
+              <div class="igs-kicker">Truth surface</div>
               <h3>Review</h3>
             </div>
           </div>
 
-          <section class="replacement-surface replacement-handoff-ledger">
-            <div class="replacement-surface-head replacement-review-toolbar">
+          <section class="igs-surface igs-handoff-ledger">
+            <div class="igs-surface-head igs-review-toolbar">
               <div>
-                <div class="replacement-surface-kicker">Handoff</div>
+                <div class="igs-surface-kicker">Handoff</div>
                 <h4>Operator packet</h4>
               </div>
-              <div class="replacement-review-actions">
+              <div class="igs-review-actions">
                 <select id="handoffSelect" class="form-select form-select-sm" aria-label="Handoff packet selector">
                   <option value="">No handoffs loaded</option>
                 </select>
@@ -620,129 +689,129 @@
                 <button type="button" id="handoffRefreshBtn" class="btn btn-outline-info btn-sm">Refresh</button>
               </div>
             </div>
-            <div id="handoffStatus" class="replacement-inline-note">Open Review to load durable handoff packets.</div>
-            <div class="replacement-grid replacement-fail-grid">
-              <section class="replacement-fail-panel">
-                <div class="replacement-surface-kicker">Resume summary</div>
-                <div id="handoffMeta" class="replacement-fail-meta">No handoff selected.</div>
+            <div id="handoffStatus" class="igs-inline-note">Open Review to load durable handoff packets.</div>
+            <div class="igs-grid igs-fail-grid">
+              <section class="igs-fail-panel">
+                <div class="igs-surface-kicker">Resume summary</div>
+                <div id="handoffMeta" class="igs-fail-meta">No handoff selected.</div>
               </section>
-              <section class="replacement-fail-panel replacement-fail-panel-wide">
-                <div class="replacement-surface-kicker">Machine packet</div>
-                <pre id="handoffPacket" class="replacement-code-block">{}</pre>
+              <section class="igs-fail-panel igs-fail-panel-wide">
+                <div class="igs-surface-kicker">Machine packet</div>
+                <pre id="handoffPacket" class="igs-code-block">{}</pre>
               </section>
             </div>
           </section>
 
-          <section class="replacement-surface replacement-transfer-ledger">
-            <div class="replacement-surface-head replacement-review-toolbar">
+          <section class="igs-surface igs-transfer-ledger">
+            <div class="igs-surface-head igs-review-toolbar">
               <div>
-                <div class="replacement-surface-kicker">Transfer gate</div>
+                <div class="igs-surface-kicker">Transfer gate</div>
                 <h4>Node handoff integrity</h4>
               </div>
-              <div class="replacement-review-actions">
+              <div class="igs-review-actions">
                 <select id="nodeTransferSelect" class="form-select form-select-sm" aria-label="Node transfer selector">
                   <option value="">No transfers loaded</option>
                 </select>
                 <button type="button" id="nodeTransferRefreshBtn" class="btn btn-outline-info btn-sm">Refresh</button>
               </div>
             </div>
-            <div id="nodeTransferStatus" class="replacement-inline-note">Open Review to load node transfer checks.</div>
-            <div class="replacement-grid replacement-fail-grid">
-              <section class="replacement-fail-panel">
-                <div class="replacement-surface-kicker">Gate summary</div>
-                <div id="nodeTransferMeta" class="replacement-fail-meta">No transfer selected.</div>
+            <div id="nodeTransferStatus" class="igs-inline-note">Open Review to load node transfer checks.</div>
+            <div class="igs-grid igs-fail-grid">
+              <section class="igs-fail-panel">
+                <div class="igs-surface-kicker">Gate summary</div>
+                <div id="nodeTransferMeta" class="igs-fail-meta">No transfer selected.</div>
               </section>
-              <section class="replacement-fail-panel replacement-fail-panel-wide">
-                <div class="replacement-surface-kicker">CRC / SHA packet</div>
-                <pre id="nodeTransferPacket" class="replacement-code-block">{}</pre>
+              <section class="igs-fail-panel igs-fail-panel-wide">
+                <div class="igs-surface-kicker">CRC / SHA packet</div>
+                <pre id="nodeTransferPacket" class="igs-code-block">{}</pre>
               </section>
             </div>
           </section>
 
-          <section class="replacement-surface replacement-fail-ledger">
-            <div class="replacement-surface-head replacement-review-toolbar">
+          <section class="igs-surface igs-fail-ledger">
+            <div class="igs-surface-head igs-review-toolbar">
               <div>
-                <div class="replacement-surface-kicker">Failed</div>
+                <div class="igs-surface-kicker">Failed</div>
                 <h4>Provider call ledger</h4>
               </div>
-              <div class="replacement-review-actions">
+              <div class="igs-review-actions">
                 <select id="failedCallSelect" class="form-select form-select-sm" aria-label="Failed call selector">
                   <option value="">No failed calls loaded</option>
                 </select>
                 <button type="button" id="failedCallRefreshBtn" class="btn btn-outline-info btn-sm">Refresh</button>
               </div>
             </div>
-            <div id="failedCallStatus" class="replacement-inline-note">Open Review to load failed provider calls.</div>
-            <div class="replacement-grid replacement-fail-grid">
-              <section class="replacement-fail-panel">
-                <div class="replacement-surface-kicker">Failure summary</div>
-                <div id="failedCallMeta" class="replacement-fail-meta">No failed call selected.</div>
+            <div id="failedCallStatus" class="igs-inline-note">Open Review to load failed provider calls.</div>
+            <div class="igs-grid igs-fail-grid">
+              <section class="igs-fail-panel">
+                <div class="igs-surface-kicker">Failure summary</div>
+                <div id="failedCallMeta" class="igs-fail-meta">No failed call selected.</div>
               </section>
-              <section class="replacement-fail-panel">
-                <div class="replacement-surface-kicker">Malformed JSON ingestion</div>
-                <pre id="failedCallIngestion" class="replacement-code-block">No malformed payload selected.</pre>
+              <section class="igs-fail-panel">
+                <div class="igs-surface-kicker">Malformed JSON ingestion</div>
+                <pre id="failedCallIngestion" class="igs-code-block">No malformed payload selected.</pre>
               </section>
-              <section class="replacement-fail-panel replacement-fail-panel-wide">
-                <div class="replacement-surface-kicker">Raw provider text</div>
-                <pre id="failedCallRaw" class="replacement-code-block">No raw payload selected.</pre>
+              <section class="igs-fail-panel igs-fail-panel-wide">
+                <div class="igs-surface-kicker">Raw provider text</div>
+                <pre id="failedCallRaw" class="igs-code-block">No raw payload selected.</pre>
               </section>
-              <section class="replacement-fail-panel replacement-fail-panel-wide">
-                <div class="replacement-surface-kicker">AI/debug packet</div>
-                <pre id="failedCallPacket" class="replacement-code-block">{}</pre>
+              <section class="igs-fail-panel igs-fail-panel-wide">
+                <div class="igs-surface-kicker">AI/debug packet</div>
+                <pre id="failedCallPacket" class="igs-code-block">{}</pre>
               </section>
             </div>
           </section>
         </section>
 
-        <section class="replacement-view" data-view-panel="scores" hidden>
-          <div class="replacement-view-head">
+        <section class="igs-view" data-view-panel="scores" hidden>
+          <div class="igs-view-head">
             <div>
-              <div class="replacement-kicker">Decision surface</div>
+              <div class="igs-kicker">Decision surface</div>
               <h3>Scores</h3>
             </div>
           </div>
 
-          <section class="replacement-surface replacement-score-controls">
-            <div class="replacement-surface-head">
+          <section class="igs-surface igs-score-controls">
+            <div class="igs-surface-head">
               <div>
-                <div class="replacement-surface-kicker">Judged sessions</div>
+                <div class="igs-surface-kicker">Judged sessions</div>
                 <h4>Run selector</h4>
               </div>
               <button type="button" id="scoreRefreshBtn" class="btn btn-outline-light btn-sm">Refresh</button>
             </div>
-            <div class="replacement-score-select-grid">
-              <label class="replacement-field" for="scoreRunSelect">
+            <div class="igs-score-select-grid">
+              <label class="igs-field" for="scoreRunSelect">
                 <span>Run</span>
                 <select id="scoreRunSelect" class="form-select form-select-sm"></select>
               </label>
-              <label class="replacement-field" for="scoreSessionSelect">
+              <label class="igs-field" for="scoreSessionSelect">
                 <span>Session viewed</span>
                 <select id="scoreSessionSelect" class="form-select form-select-sm"></select>
               </label>
             </div>
-            <div id="scoreRunMeta" class="replacement-inline-note">Loading judged sessions...</div>
+            <div id="scoreRunMeta" class="igs-inline-note">Loading judged sessions...</div>
           </section>
 
-          <div id="scoreStatus" class="replacement-inline-note">Pick a run and session to compare Direct and Summarizer judge outputs.</div>
+          <div id="scoreStatus" class="igs-inline-note">Pick a run and session to compare Direct and Summarizer judge outputs.</div>
 
-          <div id="scoreCompareDetail" class="replacement-score-detail">
-            <div class="replacement-grid replacement-grid-three">
-              <section class="replacement-surface replacement-surface-winner">
-                <div class="replacement-surface-head">
+          <div id="scoreCompareDetail" class="igs-score-detail">
+            <div class="igs-grid igs-grid-three">
+              <section class="igs-surface igs-surface-winner">
+                <div class="igs-surface-head">
                   <h4>Summarizer</h4>
-                  <span class="replacement-pill replacement-pill-success">To judge</span>
+                  <span class="igs-pill igs-pill-success">To judge</span>
                 </div>
               </section>
 
-              <section class="replacement-surface replacement-surface-runner">
-                <div class="replacement-surface-head">
+              <section class="igs-surface igs-surface-runner">
+                <div class="igs-surface-head">
                   <h4>Direct</h4>
-                  <span class="replacement-pill replacement-pill-warn">To judge</span>
+                  <span class="igs-pill igs-pill-warn">To judge</span>
                 </div>
               </section>
 
-              <section class="replacement-surface">
-                <div class="replacement-surface-head">
+              <section class="igs-surface">
+                <div class="igs-surface-head">
                   <h4>Judge</h4>
                 </div>
               </section>
@@ -750,53 +819,115 @@
           </div>
         </section>
 
-        <section class="replacement-view" data-view-panel="settings" hidden>
-          <div class="replacement-view-head">
+        <section class="igs-view" data-view-panel="settings" hidden>
+          <div class="igs-view-head">
             <div>
-              <div class="replacement-kicker">Configuration surface</div>
+              <div class="igs-kicker">Configuration surface</div>
               <h3>Settings</h3>
             </div>
           </div>
 
-          <div class="replacement-grid replacement-grid-three">
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
+          <div class="igs-grid igs-grid-three">
+            <section class="igs-surface">
+              <div class="igs-surface-head">
                 <h4>Provider access</h4>
               </div>
             </section>
 
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
+            <section class="igs-surface">
+              <div class="igs-surface-head">
                 <h4>Runtime profile</h4>
               </div>
             </section>
 
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
+            <section class="igs-surface">
+              <div class="igs-surface-head">
                 <h4>Tools and limits</h4>
               </div>
             </section>
           </div>
         </section>
 
-        <section class="replacement-view" data-view-panel="debug" hidden>
-          <div class="replacement-view-head">
+        <section class="igs-view" data-view-panel="debug" hidden>
+          <div class="igs-view-head">
             <div>
-              <div class="replacement-kicker">Secondary surface</div>
+              <div class="igs-kicker">Secondary surface</div>
               <h3>Debug</h3>
             </div>
           </div>
 
-          <div class="replacement-grid replacement-grid-two">
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
-                <h4>Session operations</h4>
+          <div class="igs-grid igs-grid-two">
+            <section class="igs-surface igs-debug-operations">
+              <div class="igs-surface-head igs-review-toolbar">
+                <div>
+                  <div class="igs-surface-kicker">Debug / controls</div>
+                  <h4>Operations</h4>
+                </div>
+                <button type="button" id="debugRefreshState" class="btn btn-outline-light btn-sm">Refresh</button>
+              </div>
+              <div id="debugOperationStatus" class="igs-inline-note">Open Debug to operate the active session.</div>
+              <div class="igs-debug-action-grid">
+                <button type="button" id="debugResetSession" class="btn btn-outline-light btn-sm">Reset Session</button>
+                <button type="button" id="debugClearSessionArchives" class="btn btn-outline-light btn-sm">Clear Session Archives</button>
+                <button type="button" id="debugRunRound" class="btn btn-primary btn-sm">Run Round</button>
+                <button type="button" id="debugRunLoop" class="btn btn-primary btn-sm">Run Auto Loop</button>
+                <button type="button" id="debugSummarize" class="btn btn-outline-info btn-sm">Summarize</button>
+                <button type="button" id="debugCancelLoop" class="btn btn-outline-warning btn-sm">Cancel Loop</button>
+                <button type="button" id="debugResetState" class="btn btn-outline-danger btn-sm igs-danger-action">Reset State</button>
+              </div>
+              <div class="igs-surface-kicker">Active task targets</div>
+              <div id="debugTargetControls" class="igs-debug-target-controls">No active task.</div>
+            </section>
+
+            <section class="igs-surface igs-debug-history">
+              <div class="igs-surface-head igs-review-toolbar">
+                <div>
+                  <div class="igs-surface-kicker">Debug / history</div>
+                  <h4>Jobs and archives</h4>
+                </div>
+                <button type="button" id="debugExportCurrentSession" class="btn btn-outline-info btn-sm">Export current</button>
+              </div>
+              <div id="debugHistoryStatus" class="igs-inline-note">Open Debug to load jobs, rounds, and archived sessions.</div>
+              <div class="igs-debug-stack">
+                <section class="igs-debug-list-panel">
+                  <div class="igs-surface-kicker">Jobs</div>
+                  <div id="debugJobHistory" class="igs-debug-list">No jobs loaded.</div>
+                </section>
+                <section class="igs-debug-list-panel">
+                  <div class="igs-surface-kicker">Rounds</div>
+                  <div id="debugRoundHistory" class="igs-debug-list">No rounds loaded.</div>
+                </section>
+                <section class="igs-debug-list-panel">
+                  <div class="igs-surface-kicker">Session archives</div>
+                  <div id="debugSessionArchives" class="igs-debug-list">No archives loaded.</div>
+                </section>
+                <section class="igs-debug-list-panel">
+                  <div class="igs-surface-kicker">Export preview</div>
+                  <pre id="debugExportPreview" class="igs-code-block">No export loaded.</pre>
+                </section>
               </div>
             </section>
 
-            <section class="replacement-surface">
-              <div class="replacement-surface-head">
-                <h4>Logs and traces</h4>
+            <section class="igs-surface igs-debug-wide">
+              <div class="igs-surface-head">
+                <div>
+                  <div class="igs-surface-kicker">Background</div>
+                  <h4>Logs and traces</h4>
+                </div>
+              </div>
+              <div class="igs-log-grid igs-debug-log-grid">
+                <section class="igs-log-pane">
+                  <div class="igs-surface-kicker">Scheduler</div>
+                  <div id="debugSchedulerEvents" class="igs-debug-list">No scheduler activity yet.</div>
+                </section>
+                <section class="igs-log-pane">
+                  <div class="igs-surface-kicker">Step log</div>
+                  <pre id="debugStepLog" class="igs-code-block">No data.</pre>
+                </section>
+                <section class="igs-log-pane">
+                  <div class="igs-surface-kicker">Event log</div>
+                  <pre id="debugEventLog" class="igs-code-block">No data.</pre>
+                </section>
               </div>
             </section>
           </div>
@@ -807,6 +938,6 @@
 
   <script src="assets/repo-review.js?v=20260501-003"></script>
   <script src="assets/fractal-memory.js?v=20260501-003"></script>
-  <script src="assets/replacement-shell.js?v=20260502-001"></script>
+  <script src="assets/replacement-shell.js?v=20260504-006"></script>
 </body>
 </html>

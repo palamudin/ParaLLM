@@ -2,7 +2,21 @@
   const API = {
     state: "/v1/state",
     draft: "/v1/draft",
+    frontEvalRuns: "/v1/front/eval/runs",
     frontLiveRuns: "/v1/front/live/runs",
+    frontJudgeRuns: "/v1/front/judge/runs",
+    targetsBackground: "/v1/targets/background",
+    rounds: "/v1/rounds",
+    loops: "/v1/loops",
+    loopsCancel: "/v1/loops/cancel",
+    jobsManage: "/v1/jobs/manage",
+    stateReset: "/v1/state/reset",
+    sessionReset: "/v1/session/reset",
+    sessionArchivesClear: "/v1/session/archives/clear",
+    sessionReplay: "/v1/session/replay",
+    sessionExport: "/v1/session/export",
+    events: "/v1/events",
+    steps: "/v1/steps",
     evalHistory: "/v1/evals/history",
     evalArtifact: "/v1/evals/artifact",
     history: "/v1/history",
@@ -14,34 +28,42 @@
     openai: {
       label: "OpenAI",
       models: [
-        { value: "gpt-5-mini", label: "GPT-5 Mini" },
-        { value: "gpt-5.4", label: "GPT-5.4" },
-        { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+        { value: "gpt-5-mini", label: "GPT-5 Mini", shortLabel: "GPT-5 Mini" },
+        { value: "gpt-5.4", label: "GPT-5.4", shortLabel: "GPT-5.4" },
+        { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", shortLabel: "GPT-5.4 Mini" },
       ],
     },
     deepseek: {
       label: "DeepSeek",
       models: [
-        { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
-        { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
-        { value: "deepseek-chat", label: "DeepSeek Chat (Legacy)" },
+        { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", shortLabel: "V4 Flash" },
+        { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro", shortLabel: "V4 Pro" },
+        { value: "deepseek-chat", label: "DeepSeek Chat (Legacy)", shortLabel: "Chat Legacy" },
       ],
     },
     anthropic: {
       label: "Anthropic",
       models: [
-        { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-        { value: "claude-opus-4-7", label: "Claude Opus 4.7" },
+        { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", shortLabel: "Sonnet 4.6" },
+        { value: "claude-opus-4-7", label: "Claude Opus 4.7", shortLabel: "Opus 4.7" },
       ],
     },
     xai: {
       label: "xAI",
       models: [
-        { value: "grok-4.20-reasoning", label: "Grok 4.20 Reasoning" },
-        { value: "grok-4-1-fast-reasoning", label: "Grok 4.1 Fast Reasoning" },
+        { value: "grok-4.20-reasoning", label: "Grok 4.20 Reasoning", shortLabel: "Grok 4.20" },
+        { value: "grok-4-1-fast-reasoning", label: "Grok 4.1 Fast Reasoning", shortLabel: "Grok 4.1 Fast" },
       ],
     },
   };
+
+  const COMPOSER_ATTACHMENT_LIMIT = 4;
+  const COMPOSER_ATTACHMENT_MAX_BYTES = 180000;
+  const COMPOSER_ATTACHMENT_MAX_CHARS = 6000;
+  const COMPOSER_SUPPORTED_EXTENSIONS = [
+    ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
+    ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
+  ];
 
   const runtimeState = {
     backendState: null,
@@ -53,6 +75,9 @@
   const shellState = {
     sidebarCollapsed: false,
     inspectorMode: "repo",
+    homeCollapsedPanels: new Set(),
+    composerToolMenuOpen: false,
+    stagedAttachments: [],
   };
   const scoreState = {
     selectedRunId: "",
@@ -82,14 +107,31 @@
   const viewPanels = Array.from(document.querySelectorAll("[data-view-panel]"));
   const themeButtons = Array.from(document.querySelectorAll("[data-theme-option]"));
   const groupedButtons = Array.from(document.querySelectorAll("[data-group]"));
+  const selectToggleButtons = Array.from(document.querySelectorAll("[data-select-toggle]"));
+  const selectCycleButtons = Array.from(document.querySelectorAll("[data-select-cycle]"));
   const inspectorModeButtons = Array.from(document.querySelectorAll("[data-inspector-mode]"));
   const inspectorPanels = Array.from(document.querySelectorAll("[data-inspector-panel]"));
+  const homePanels = Array.from(document.querySelectorAll("[data-home-panel]"));
+  const homeCollapseButtons = Array.from(document.querySelectorAll("[data-home-collapse-toggle]"));
+  const composerToolActions = Array.from(document.querySelectorAll("[data-composer-tool-action]"));
+  const contractNativeSelects = Array.from(document.querySelectorAll("[data-contract-pill-select]"));
+  const HOME_COLLAPSE_STORAGE_KEY = "igsShell.homeCollapsedPanels";
+  const HOME_COLLAPSE_DEFAULT_VERSION_KEY = "igsShell.homeCollapsedPanelsDefaultVersion";
+  const HOME_COLLAPSE_DEFAULT_VERSION = "20260504-fields-collapsed-v1";
+  const HOME_COLLAPSIBLE_PANELS = [
+    { id: "contract", label: "Run contract", side: "left" },
+    { id: "lanes", label: "Lane status", side: "right" },
+    { id: "trace", label: "Trace output", side: "right" },
+    { id: "supporting", label: "Supporting controls", side: "left" },
+    { id: "math2code", label: "Math2Code", side: "left" },
+  ];
 
   const elements = {
-    shellApp: document.querySelector(".replacement-shell-app"),
+    shellApp: document.querySelector(".igs-shell-app"),
     sidebarToggle: document.getElementById("replacementSidebarToggle"),
     draftState: document.getElementById("previewDraftState"),
     runtimeMode: document.getElementById("previewRuntimeMode"),
+    engineVersion: document.getElementById("previewEngineVersion"),
     workerModel: document.getElementById("previewWorkerModel"),
     summarizerProvider: document.getElementById("previewSummarizerProvider"),
     summarizerModel: document.getElementById("previewSummarizerModel"),
@@ -97,6 +139,7 @@
     directBaselineMode: document.getElementById("previewDirectBaselineMode"),
     vettingEnabled: document.getElementById("previewVettingEnabled"),
     researchMode: document.getElementById("previewResearchMode"),
+    memoryMode: document.getElementById("previewMemoryMode"),
     objective: document.getElementById("previewObjective"),
     objectiveMirror: document.getElementById("previewObjectiveMirror"),
     sessionContext: document.getElementById("previewSessionContext"),
@@ -104,10 +147,27 @@
     loopRounds: document.getElementById("previewLoopRounds"),
     maxCostUsd: document.getElementById("previewMaxCostUsd"),
     sendPrompt: document.getElementById("previewSendPrompt"),
+    sendIcon: document.querySelector("#previewSendPrompt .igs-send-icon"),
+    sendText: document.querySelector("#previewSendPrompt .igs-send-text"),
+    composerToolMenuToggle: document.getElementById("previewComposerToolMenuToggle"),
+    composerToolMenu: document.getElementById("previewComposerToolMenu"),
+    composerFileInput: document.getElementById("previewComposerFileInput"),
+    composerAttachmentList: document.getElementById("previewComposerAttachmentList"),
     contractNarrative: document.getElementById("previewContractNarrative"),
+    runActivity: document.getElementById("previewRunActivity"),
+    runThread: document.getElementById("previewRunThread"),
+    laneGrid: document.getElementById("previewLaneGrid"),
+    homeLayout: document.querySelector(".igs-home-workspace"),
+    homeDrawer: document.getElementById("previewHomeDrawer"),
+    homeSidecar: document.querySelector(".igs-home-sidecar"),
+    homeCollapsedPills: document.getElementById("previewHomeCollapsedPills"),
+    traceSummary: document.getElementById("previewTraceSummary"),
+    stepLog: document.getElementById("previewStepLog"),
+    eventLog: document.getElementById("previewEventLog"),
     summaryPath: document.getElementById("previewSummaryPath"),
     summaryLimits: document.getElementById("previewSummaryLimits"),
     summaryResearch: document.getElementById("previewSummaryResearch"),
+    summaryMemory: document.getElementById("previewSummaryMemory"),
     headerTask: document.getElementById("previewHeaderTask"),
     headerRuntime: document.getElementById("previewHeaderRuntime"),
     headerBaseline: document.getElementById("previewHeaderBaseline"),
@@ -139,6 +199,25 @@
     nodeTransferStatus: document.getElementById("nodeTransferStatus"),
     nodeTransferMeta: document.getElementById("nodeTransferMeta"),
     nodeTransferPacket: document.getElementById("nodeTransferPacket"),
+    debugRefreshState: document.getElementById("debugRefreshState"),
+    debugResetSession: document.getElementById("debugResetSession"),
+    debugClearSessionArchives: document.getElementById("debugClearSessionArchives"),
+    debugRunRound: document.getElementById("debugRunRound"),
+    debugRunLoop: document.getElementById("debugRunLoop"),
+    debugSummarize: document.getElementById("debugSummarize"),
+    debugCancelLoop: document.getElementById("debugCancelLoop"),
+    debugResetState: document.getElementById("debugResetState"),
+    debugOperationStatus: document.getElementById("debugOperationStatus"),
+    debugTargetControls: document.getElementById("debugTargetControls"),
+    debugExportCurrentSession: document.getElementById("debugExportCurrentSession"),
+    debugHistoryStatus: document.getElementById("debugHistoryStatus"),
+    debugJobHistory: document.getElementById("debugJobHistory"),
+    debugRoundHistory: document.getElementById("debugRoundHistory"),
+    debugSessionArchives: document.getElementById("debugSessionArchives"),
+    debugExportPreview: document.getElementById("debugExportPreview"),
+    debugSchedulerEvents: document.getElementById("debugSchedulerEvents"),
+    debugStepLog: document.getElementById("debugStepLog"),
+    debugEventLog: document.getElementById("debugEventLog"),
   };
 
   function applySidebarState(collapsed) {
@@ -182,7 +261,7 @@
       panel.hidden = !active;
     });
     try {
-      window.localStorage.setItem("replacementShell.inspectorMode", nextMode);
+      window.localStorage.setItem("igsShell.inspectorMode", nextMode);
     } catch (_) {}
     window.setTimeout(refreshActiveInspector, 40);
   }
@@ -230,6 +309,22 @@
     return response.json();
   }
 
+  async function fetchText(url, options) {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      throw new Error(response.status + " " + response.statusText);
+    }
+    return response.text();
+  }
+
+  function jsonPostOptions(payload) {
+    return {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    };
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -245,12 +340,209 @@
     return text.length <= limit ? text : text.slice(0, limit - 3).trimEnd() + "...";
   }
 
+  function boolValue(value, fallback) {
+    if (value === undefined || value === null || value === "") return Boolean(fallback);
+    return value === true || value === "1" || value === 1;
+  }
+
+  function fileExtension(name) {
+    const match = String(name || "").toLowerCase().match(/\.[^.\\/]+$/);
+    return match ? match[0] : "";
+  }
+
+  function supportedComposerFile(file) {
+    return COMPOSER_SUPPORTED_EXTENSIONS.includes(fileExtension(file?.name));
+  }
+
+  function formatFileSize(bytes) {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) return "0 B";
+    if (value < 1024) return Math.round(value) + " B";
+    if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10 * 1024 ? 1 : 0) + " KB";
+    return (value / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function buildAttachmentId(prefix) {
+    return String(prefix || "file") + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+  }
+
+  function stageComposerAttachment(attachment) {
+    const deduped = shellState.stagedAttachments.filter((entry) => !(entry.name === attachment.name && entry.text === attachment.text));
+    shellState.stagedAttachments = deduped.concat([attachment]).slice(-COMPOSER_ATTACHMENT_LIMIT);
+    renderComposerTools();
+  }
+
+  function removeComposerAttachment(attachmentId) {
+    shellState.stagedAttachments = shellState.stagedAttachments.filter((attachment) => attachment.id !== attachmentId);
+    renderComposerTools();
+  }
+
+  function buildAttachmentContextBlock() {
+    if (!shellState.stagedAttachments.length) return "";
+    const blocks = ["Attached source files for this request. Treat them as user-provided context:"];
+    shellState.stagedAttachments.forEach((attachment) => {
+      blocks.push(
+        "File: " + attachment.name + " (" + formatFileSize(attachment.size) + (attachment.truncated ? ", truncated" : "") + ")",
+        attachment.text
+      );
+    });
+    return blocks.join("\n\n");
+  }
+
+  function buildSendSessionContext(baseSessionContext) {
+    const sections = [String(baseSessionContext || "").trim()].filter(Boolean);
+    const attachmentBlock = buildAttachmentContextBlock();
+    if (attachmentBlock) {
+      sections.push(attachmentBlock);
+    }
+    return sections.join("\n\n---\n\n");
+  }
+
+  function homePanelConfig(panelId) {
+    return HOME_COLLAPSIBLE_PANELS.find((panel) => panel.id === panelId) || null;
+  }
+
+  function defaultHomeCollapsedPanelIds() {
+    return HOME_COLLAPSIBLE_PANELS.map((panel) => panel.id);
+  }
+
+  function readHomeCollapsedPanels() {
+    try {
+      const defaultVersion = window.localStorage.getItem(HOME_COLLAPSE_DEFAULT_VERSION_KEY);
+      const stored = window.localStorage.getItem(HOME_COLLAPSE_STORAGE_KEY);
+      if (defaultVersion !== HOME_COLLAPSE_DEFAULT_VERSION || stored === null) {
+        const defaults = defaultHomeCollapsedPanelIds();
+        window.localStorage.setItem(HOME_COLLAPSE_STORAGE_KEY, JSON.stringify(defaults));
+        window.localStorage.setItem(HOME_COLLAPSE_DEFAULT_VERSION_KEY, HOME_COLLAPSE_DEFAULT_VERSION);
+        return defaults;
+      }
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return defaultHomeCollapsedPanelIds();
+      return parsed
+        .map((panelId) => String(panelId || "").trim())
+        .filter((panelId) => Boolean(homePanelConfig(panelId)));
+    } catch (_) {
+      return defaultHomeCollapsedPanelIds();
+    }
+  }
+
+  function persistHomeCollapsedPanels() {
+    try {
+      window.localStorage.setItem(HOME_COLLAPSE_STORAGE_KEY, JSON.stringify(Array.from(shellState.homeCollapsedPanels)));
+      window.localStorage.setItem(HOME_COLLAPSE_DEFAULT_VERSION_KEY, HOME_COLLAPSE_DEFAULT_VERSION);
+    } catch (_) {}
+  }
+
+  function homeSideEmpty(side) {
+    return HOME_COLLAPSIBLE_PANELS
+      .filter((panel) => panel.side === side)
+      .every((panel) => shellState.homeCollapsedPanels.has(panel.id));
+  }
+
+  function homeDrawerEmpty() {
+    return HOME_COLLAPSIBLE_PANELS.every((panel) => shellState.homeCollapsedPanels.has(panel.id));
+  }
+
+  function renderHomeCollapsedPills() {
+    if (!elements.homeCollapsedPills) return;
+    const collapsed = HOME_COLLAPSIBLE_PANELS.filter((panel) => shellState.homeCollapsedPanels.has(panel.id));
+    elements.homeCollapsedPills.hidden = collapsed.length === 0;
+    elements.homeCollapsedPills.innerHTML = collapsed.map((panel) => `
+      <button type="button" class="igs-pill igs-pill-muted igs-home-restore-pill" data-home-collapse-restore="${escapeHtml(panel.id)}" aria-label="Show ${escapeHtml(panel.label)}">
+        ${escapeHtml(panel.label)}
+      </button>
+    `).join("");
+    elements.homeCollapsedPills.querySelectorAll("[data-home-collapse-restore]").forEach((button) => {
+      button.addEventListener("click", function () {
+        setHomePanelCollapsed(button.getAttribute("data-home-collapse-restore"), false);
+      });
+    });
+  }
+
+  function applyHomePanelCollapseState() {
+    homePanels.forEach((panel) => {
+      const panelId = String(panel.getAttribute("data-home-panel") || "").trim();
+      const collapsed = panelId !== "chat" && shellState.homeCollapsedPanels.has(panelId);
+      panel.hidden = collapsed;
+      panel.classList.toggle("is-home-panel-collapsed", collapsed);
+    });
+    homeCollapseButtons.forEach((button) => {
+      const panelId = String(button.getAttribute("data-home-collapse-toggle") || "").trim();
+      const config = homePanelConfig(panelId);
+      const collapsed = shellState.homeCollapsedPanels.has(panelId);
+      button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      button.setAttribute("title", config ? `Hide ${config.label}` : "Hide panel");
+    });
+    if (elements.homeSidecar) {
+      elements.homeSidecar.hidden = homeSideEmpty("right");
+    }
+    if (elements.homeDrawer) {
+      elements.homeDrawer.hidden = homeDrawerEmpty();
+    }
+    if (elements.homeLayout) {
+      elements.homeLayout.classList.toggle("is-drawer-empty", homeDrawerEmpty());
+      elements.homeLayout.classList.toggle("is-drawer-left-empty", homeSideEmpty("left"));
+      elements.homeLayout.classList.toggle("is-drawer-right-empty", homeSideEmpty("right"));
+    }
+    renderHomeCollapsedPills();
+  }
+
+  function setHomePanelCollapsed(panelId, collapsed) {
+    const normalized = String(panelId || "").trim();
+    if (!homePanelConfig(normalized)) return;
+    if (collapsed) {
+      shellState.homeCollapsedPanels.add(normalized);
+    } else {
+      shellState.homeCollapsedPanels.delete(normalized);
+    }
+    persistHomeCollapsedPanels();
+    applyHomePanelCollapseState();
+  }
+
   function prettyJson(value) {
     try {
       return JSON.stringify(value, null, 2);
     } catch (_) {
       return String(value ?? "");
     }
+  }
+
+  function firstText() {
+    for (let index = 0; index < arguments.length; index += 1) {
+      const value = arguments[index];
+      if (typeof value === "string") {
+        const text = value.trim();
+        if (text) return text;
+      } else if (Array.isArray(value)) {
+        const text = value.map((item) => firstText(item)).filter(Boolean).join("\n");
+        if (text.trim()) return text.trim();
+      } else if (value && typeof value === "object") {
+        const text = firstText(
+          value.answer,
+          value.publicAnswer,
+          value.output,
+          value.text,
+          value.answerDraft,
+          value.observation,
+          value.stance,
+          value.because,
+          value.confidenceNote
+        );
+        if (text) return text;
+      }
+    }
+    return "";
+  }
+
+  function shortStatus(value, fallback) {
+    const text = String(value || fallback || "").trim();
+    return text || "idle";
+  }
+
+  function tailLines(text, maxLines) {
+    const lines = String(text || "").split(/\r?\n/).filter((line) => line.trim());
+    const count = Math.max(12, Number(maxLines || 60));
+    return lines.slice(-count).join("\n") || "No data.";
   }
 
   function formatTimestamp(value) {
@@ -273,6 +565,7 @@
       const option = document.createElement("option");
       option.value = optionConfig.value;
       option.textContent = optionConfig.label;
+      option.dataset.pillDisplay = optionConfig.shortLabel || optionConfig.label;
       select.appendChild(option);
       if (!previousValue && index === 0) {
         select.value = optionConfig.value;
@@ -283,6 +576,7 @@
     } else if (options[0]) {
       select.value = options[0].value;
     }
+    syncContractPillSelect(select);
   }
 
   function setGroupedButton(group, value) {
@@ -302,22 +596,309 @@
     return active ? active.getAttribute("data-value") : fallback;
   }
 
+  function syncSelectToggleButtons(selectId) {
+    selectToggleButtons.forEach((button) => {
+      const targetId = String(button.getAttribute("data-select-toggle") || "").trim();
+      if (selectId && targetId !== selectId) return;
+      const select = targetId ? document.getElementById(targetId) : null;
+      if (!select) return;
+      const onValue = button.getAttribute("data-toggle-on");
+      const offValue = button.getAttribute("data-toggle-off");
+      const isBinaryToggle = onValue !== null && offValue !== null;
+      const active = isBinaryToggle
+        ? String(select.value) === String(onValue)
+        : String(select.value) === String(button.getAttribute("data-value") || "");
+      const pressLevel = active ? "full" : "none";
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.dataset.toggleState = active ? "on" : "off";
+      button.dataset.pressLevel = pressLevel;
+      button.dataset.stateTone = active ? "on" : "off";
+      const stateLabel = active ? "On" : "Off";
+      button.dataset.stateLabel = stateLabel;
+      button.setAttribute("aria-label", `${contractControlName(button)}: ${stateLabel}`);
+      if (isBinaryToggle) {
+        button.dataset.stateLabel = stateLabel;
+      }
+    });
+  }
+
+  function cycleValuesForButton(button) {
+    return String(button?.getAttribute("data-cycle-values") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+
+  function optionLabelForValue(select, value) {
+    const match = Array.from(select?.options || []).find((option) => String(option.value) === String(value));
+    return String(match?.textContent || value || "Off").trim();
+  }
+
+  function pressLevelForCycleButton(button, value) {
+    const values = cycleValuesForButton(button);
+    const levels = String(button?.getAttribute("data-cycle-press-levels") || "")
+      .split(",")
+      .map((level) => level.trim().toLowerCase())
+      .filter(Boolean);
+    const index = values.findIndex((item) => String(item) === String(value));
+    if (index < 0) return "none";
+    if (levels[index]) return levels[index];
+    if (values.length >= 3) return index === 0 ? "none" : index === 1 ? "half" : "full";
+    if (values.length === 2) return index === 0 ? "none" : "full";
+    return index === 0 ? "none" : "full";
+  }
+
+  function stateToneFor(targetId, value) {
+    const normalized = String(value || "").toLowerCase();
+    if (targetId === "previewRuntimeMode") return normalized || "live";
+    if (targetId === "previewEngineVersion") return normalized || "v2";
+    if (targetId === "previewContextMode") return normalized === "weighted" ? "light" : normalized;
+    if (targetId === "previewDirectBaselineMode") return normalized || "off";
+    return normalized === "1" || normalized === "on" ? "on" : "off";
+  }
+
+  function isVisuallyActiveState(targetId, value) {
+    const normalized = String(value || "").toLowerCase();
+    if (targetId === "previewDirectBaselineMode") return normalized !== "off";
+    if (targetId === "previewVettingEnabled" || targetId === "previewResearchMode" || targetId === "previewMemoryMode") {
+      return normalized === "1" || normalized === "on";
+    }
+    return Boolean(normalized);
+  }
+
+  function contractControlName(button) {
+    const tileName = button?.closest("[data-contract-control-tile]")?.getAttribute("data-contract-control-tile");
+    const textName = String(button?.querySelector(".igs-state-text")?.textContent || "").trim();
+    return tileName || textName || "Control";
+  }
+
+  function syncSelectCycleButtons(selectId) {
+    selectCycleButtons.forEach((button) => {
+      const targetId = String(button.getAttribute("data-select-cycle") || "").trim();
+      if (selectId && targetId !== selectId) return;
+      const select = targetId ? document.getElementById(targetId) : null;
+      if (!select) return;
+      const stateLabel = optionLabelForValue(select, select.value);
+      const stateTone = stateToneFor(targetId, select.value);
+      const pressLevel = pressLevelForCycleButton(button, select.value);
+      const active = pressLevel !== "none" && isVisuallyActiveState(targetId, select.value);
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", pressLevel === "half" ? "mixed" : active ? "true" : "false");
+      button.dataset.stateLabel = stateLabel;
+      button.dataset.stateTone = stateTone;
+      button.dataset.pressLevel = pressLevel;
+      button.setAttribute("aria-label", `${contractControlName(button)}: ${stateLabel}`);
+    });
+  }
+
+  function setSelectFromToggleButton(button) {
+    const targetId = String(button?.getAttribute("data-select-toggle") || "").trim();
+    const select = targetId ? document.getElementById(targetId) : null;
+    if (!select) return;
+    const onValue = button.getAttribute("data-toggle-on");
+    const offValue = button.getAttribute("data-toggle-off");
+    const nextValue = onValue !== null && offValue !== null
+      ? (String(select.value) === String(onValue) ? String(offValue) : String(onValue))
+      : String(button.getAttribute("data-value") || "");
+    if (!nextValue && nextValue !== "0") return;
+    select.value = nextValue;
+    syncSelectToggleButtons(targetId);
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function setSelectFromCycleButton(button) {
+    const targetId = String(button?.getAttribute("data-select-cycle") || "").trim();
+    const select = targetId ? document.getElementById(targetId) : null;
+    if (!select) return;
+    const values = cycleValuesForButton(button);
+    if (!values.length) return;
+    const currentIndex = values.findIndex((value) => String(value) === String(select.value));
+    const nextValue = values[(currentIndex + 1 + values.length) % values.length];
+    select.value = nextValue;
+    syncSelectCycleButtons(targetId);
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function contractSelectOptionLabel(select) {
+    const option = select?.selectedOptions?.[0] || null;
+    return String(option?.textContent || select?.value || "Select").trim() || "Select";
+  }
+
+  function contractSelectDisplayLabel(select) {
+    const option = select?.selectedOptions?.[0] || null;
+    return String(option?.dataset?.pillDisplay || option?.textContent || select?.value || "Select").trim() || "Select";
+  }
+
+  function contractSelectOptionMeasureLabel(select) {
+    return Array.from(select?.options || []).reduce((longest, option) => {
+      const label = String(option?.dataset?.pillDisplay || option?.textContent || option?.value || "").trim();
+      return label.length > longest.length ? label : longest;
+    }, contractSelectDisplayLabel(select));
+  }
+
+  function syncContractPillIntrinsicWidth(select) {
+    const wrapper = contractPillSelectFor(select);
+    if (!select || !wrapper) return;
+    const label = contractSelectOptionMeasureLabel(select);
+    const width = Math.min(30, Math.max(8, Array.from(label).length + 4));
+    const cssWidth = width + "ch";
+    wrapper.style.setProperty("--pill-control-width", cssWidth);
+    wrapper.closest(".igs-control-tile")?.style.setProperty("--pill-control-width", cssWidth);
+  }
+
+  function contractPillSelectFor(select) {
+    return select?.nextElementSibling?.classList?.contains("igs-pill-select")
+      ? select.nextElementSibling
+      : null;
+  }
+
+  function closeContractPillSelects(exceptWrapper) {
+    contractNativeSelects.forEach((select) => {
+      const wrapper = contractPillSelectFor(select);
+      if (!wrapper || wrapper === exceptWrapper) return;
+      wrapper.classList.remove("is-open");
+      const trigger = wrapper.querySelector(".igs-pill-select-trigger");
+      const menu = wrapper.querySelector(".igs-pill-select-menu");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+      if (menu) menu.hidden = true;
+    });
+  }
+
+  function syncContractPillSelect(select) {
+    const wrapper = contractPillSelectFor(select);
+    if (!select || !wrapper) return;
+    const trigger = wrapper.querySelector(".igs-pill-select-trigger");
+    const value = wrapper.querySelector(".igs-pill-select-value");
+    const tile = wrapper.closest(".igs-control-tile");
+    const label = String(select.getAttribute("data-contract-pill-select") || select.id || "Control");
+    syncContractPillIntrinsicWidth(select);
+    if (trigger) {
+      trigger.setAttribute("aria-label", label + ": " + contractSelectOptionLabel(select));
+    }
+    if (tile) {
+      tile.classList.add("igs-select-tile");
+      tile.setAttribute("role", "button");
+      tile.setAttribute("tabindex", select.disabled ? "-1" : "0");
+      tile.setAttribute("aria-haspopup", "listbox");
+      tile.setAttribute("aria-label", label + ": " + contractSelectOptionLabel(select));
+    }
+    if (value) {
+      value.textContent = contractSelectDisplayLabel(select);
+    }
+    wrapper.classList.toggle("is-disabled", select.disabled);
+    tile?.classList.toggle("is-disabled", select.disabled);
+  }
+
+  function renderContractPillMenu(select) {
+    const wrapper = contractPillSelectFor(select);
+    if (!select || !wrapper) return;
+    const menu = wrapper.querySelector(".igs-pill-select-menu");
+    if (!menu) return;
+    const selectedValue = String(select.value || "");
+    menu.innerHTML = Array.from(select.options || []).map((option) => {
+      const value = String(option.value || "");
+      const label = String(option.textContent || value || "Option").trim();
+      const active = value === selectedValue;
+      return `
+        <button type="button" class="igs-pill-select-option${active ? " is-active" : ""}" role="option" aria-selected="${active ? "true" : "false"}" data-pill-select-value="${escapeHtml(value)}">
+          ${escapeHtml(label)}
+        </button>
+      `;
+    }).join("");
+  }
+
+  function setContractPillSelectOpen(select, open) {
+    const wrapper = contractPillSelectFor(select);
+    if (!wrapper || select.disabled) return;
+    const shouldOpen = Boolean(open);
+    closeContractPillSelects(shouldOpen ? wrapper : null);
+    renderContractPillMenu(select);
+    wrapper.classList.toggle("is-open", shouldOpen);
+    const trigger = wrapper.querySelector(".igs-pill-select-trigger");
+    const menu = wrapper.querySelector(".igs-pill-select-menu");
+    if (trigger) trigger.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+    wrapper.closest(".igs-control-tile")?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+    if (menu) menu.hidden = !shouldOpen;
+  }
+
+  function installContractPillSelects() {
+    contractNativeSelects.forEach((select) => {
+      if (contractPillSelectFor(select)) {
+        syncContractPillSelect(select);
+        return;
+      }
+      const label = String(select.getAttribute("data-contract-pill-select") || select.id || "Control");
+      const wrapper = document.createElement("div");
+      wrapper.className = "igs-pill-select";
+      wrapper.setAttribute("data-pill-select-control", select.id || "");
+      wrapper.innerHTML = `
+        <div class="igs-pill-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <strong class="igs-pill-select-value">${escapeHtml(contractSelectDisplayLabel(select))}</strong>
+        </div>
+        <div class="igs-pill-select-menu" role="listbox" hidden></div>
+      `;
+      select.insertAdjacentElement("afterend", wrapper);
+      const tile = wrapper.closest(".igs-control-tile");
+      if (tile) {
+        tile.classList.add("igs-select-tile");
+        tile.addEventListener("click", function (event) {
+          if (event.target.closest(".igs-pill-select-menu")) return;
+          event.preventDefault();
+          setContractPillSelectOpen(select, !wrapper.classList.contains("is-open"));
+        });
+        tile.addEventListener("keydown", function (event) {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          if (event.target.closest(".igs-pill-select-menu")) return;
+          event.preventDefault();
+          setContractPillSelectOpen(select, !wrapper.classList.contains("is-open"));
+        });
+      }
+      wrapper.querySelector(".igs-pill-select-trigger")?.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        setContractPillSelectOpen(select, !wrapper.classList.contains("is-open"));
+      });
+      wrapper.querySelector(".igs-pill-select-menu")?.addEventListener("click", function (event) {
+        const button = event.target.closest("[data-pill-select-value]");
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        select.value = String(button.getAttribute("data-pill-select-value") || "");
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        syncContractPillSelect(select);
+        setContractPillSelectOpen(select, false);
+      });
+      select.addEventListener("change", function () {
+        syncContractPillSelect(select);
+      });
+      syncContractPillSelect(select);
+    });
+  }
+
+  function syncContractPillSelects() {
+    contractNativeSelects.forEach(syncContractPillSelect);
+  }
+
   function installMainWorkbenchPanes() {
-    document.querySelectorAll(".replacement-surface").forEach((surface) => {
+    document.querySelectorAll(".igs-surface").forEach((surface) => {
       if (surface.dataset.shellWorkbenchPane === "1") {
         return;
       }
-      const handle = surface.querySelector(":scope > .replacement-surface-head");
+      const handle = surface.querySelector(":scope > .igs-surface-head");
       if (!handle) {
         return;
       }
       surface.dataset.shellWorkbenchPane = "1";
-      surface.classList.add("replacement-workbench-pane");
+      surface.classList.add("igs-workbench-pane");
       handle.addEventListener("pointerdown", (event) => {
         if (event.button !== 0 || event.target.closest("button,a,input,select,textarea,label")) {
           return;
         }
-        const view = surface.closest(".replacement-view");
+        const view = surface.closest(".igs-view");
         if (!view) {
           return;
         }
@@ -374,8 +955,8 @@
   function currentControlState() {
     const workerProvider = selectedGroupedValue("provider", "openai");
     return {
-      executionMode: "live",
-      engineVersion: selectedGroupedValue("engine", "v1"),
+      executionMode: String(elements.runtimeMode.value || "live"),
+      engineVersion: String(elements.engineVersion?.value || selectedGroupedValue("engine", "v1")),
       provider: workerProvider,
       model: String(elements.workerModel.value || ""),
       summarizerProvider: String(elements.summarizerProvider.value || workerProvider),
@@ -384,6 +965,7 @@
       directBaselineMode: String(elements.directBaselineMode.value || "off"),
       vettingEnabled: String(elements.vettingEnabled.value || "1"),
       researchEnabled: String(elements.researchMode.value || "0"),
+      knowledgebaseEnabled: String(elements.memoryMode?.value || "0"),
       objective: String(elements.objective.value || "").trim(),
       sessionContext: String(elements.sessionContext.value || "").trim(),
       constraints: splitLines(elements.constraints.value),
@@ -402,12 +984,13 @@
         ? "also prepare a separate single-thread baseline run on the same provider and model"
         : "skip the single-thread baseline";
     const researchLabel = control.researchEnabled === "1" ? "on" : "off";
+    const memoryLabel = control.knowledgebaseEnabled === "1" ? "on" : "off";
     const vettingLabel = control.vettingEnabled === "1" ? "summarizer vetting on" : "summarizer vetting off";
     const contextLabel = control.contextMode === "full" ? "full worker packets" : "weighted worker packets";
 
     if (elements.contractNarrative) {
       elements.contractNarrative.textContent =
-        `Run the ${control.engineVersion.toUpperCase()} engine live with ${providerLabel(control.provider)} / ${workerModelLabel} for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} on the final answer lane, ${baselineLabel}, use ${contextLabel}, keep research ${researchLabel}, and leave ${vettingLabel}.`;
+        `Run the ${control.engineVersion.toUpperCase()} engine in ${control.executionMode} mode with ${providerLabel(control.provider)} / ${workerModelLabel} for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} on the final answer lane, ${baselineLabel}, use ${contextLabel}, keep research ${researchLabel}, keep fractal memory ${memoryLabel}, and leave ${vettingLabel}.`;
     }
 
     elements.summaryPath.textContent =
@@ -418,8 +1001,12 @@
           : "Para only";
     elements.summaryLimits.textContent = `${control.loopRounds} rounds, $${control.maxCostUsd.toFixed(1)} spend wall`;
     elements.summaryResearch.textContent = control.researchEnabled === "1" ? "On" : "Off";
+    if (elements.summaryMemory) {
+      elements.summaryMemory.textContent = control.knowledgebaseEnabled === "1" ? "On" : "Off";
+    }
 
-    elements.headerRuntime.textContent = "Live";
+    elements.headerRuntime.textContent =
+      control.executionMode === "judge" ? "Judge" : (control.executionMode === "eval" ? "Eval" : "Live");
     elements.headerBaseline.textContent =
       control.directBaselineMode === "both"
         ? "Both compare"
@@ -428,7 +1015,107 @@
           : "Off";
     elements.headerProvider.textContent = `${providerLabel(control.provider)} / ${workerModelLabel}`;
     elements.headerVetting.textContent = control.vettingEnabled === "1" ? "On" : "Off";
-    elements.objectiveMirror.textContent = control.objective || "No staged objective yet.";
+    if (elements.objectiveMirror && elements.objectiveMirror.isConnected) {
+      elements.objectiveMirror.textContent = control.objective || "No staged objective yet.";
+    }
+    renderComposerTools();
+    renderLiveViewport(runtimeState.backendState || { draft: runtimeState.draft || {} });
+  }
+
+  function draftFlag(name, fallback) {
+    return boolValue(runtimeState.draft?.[name], fallback);
+  }
+
+  function setDraftFlag(name, enabled) {
+    runtimeState.draft = Object.assign({}, runtimeState.draft || {});
+    runtimeState.draft[name] = Boolean(enabled);
+  }
+
+  function setComposerMenuOpen(open) {
+    shellState.composerToolMenuOpen = Boolean(open);
+    renderComposerTools();
+  }
+
+  function composerToolState(action) {
+    if (action === "web-search") return elements.researchMode.value === "1";
+    if (action === "memory") return elements.memoryMode?.value === "1";
+    if (action === "local-files") return draftFlag("localFilesEnabled", true);
+    if (action === "github-tools") return draftFlag("githubToolsEnabled", false);
+    if (action === "vetting") return elements.vettingEnabled.value !== "0";
+    if (action === "upload") return shellState.stagedAttachments.length > 0;
+    return false;
+  }
+
+  function composerToolLabel(action, active) {
+    if (action === "upload") {
+      return shellState.stagedAttachments.length
+        ? `Upload files (${shellState.stagedAttachments.length} staged)`
+        : "Upload files";
+    }
+    if (action === "web-search") return active ? "Web search on" : "Web search off";
+    if (action === "memory") return active ? "Fractal memory on" : "Fractal memory off";
+    if (action === "local-files") return active ? "Local files on" : "Local files off";
+    if (action === "github-tools") return active ? "GitHub tools on" : "GitHub tools off";
+    if (action === "vetting") return active ? "Vetting on" : "Vetting off";
+    return action;
+  }
+
+  function renderComposerAttachments() {
+    if (!elements.composerAttachmentList) return;
+    elements.composerAttachmentList.hidden = shellState.stagedAttachments.length === 0;
+    elements.composerAttachmentList.innerHTML = shellState.stagedAttachments.map((attachment) => `
+      <span class="igs-composer-attachment-chip">
+        ${escapeHtml(attachment.name)} · ${escapeHtml(formatFileSize(attachment.size))}
+        <button type="button" class="igs-composer-attachment-remove" data-attachment-id="${escapeHtml(attachment.id)}" aria-label="Remove ${escapeHtml(attachment.name)}">x</button>
+      </span>
+    `).join("");
+  }
+
+  function renderComposerTools() {
+    if (elements.composerToolMenu) {
+      elements.composerToolMenu.hidden = !shellState.composerToolMenuOpen;
+    }
+    if (elements.composerToolMenuToggle) {
+      elements.composerToolMenuToggle.classList.toggle("is-active", shellState.composerToolMenuOpen || shellState.stagedAttachments.length > 0);
+      elements.composerToolMenuToggle.setAttribute("aria-expanded", shellState.composerToolMenuOpen ? "true" : "false");
+      elements.composerToolMenuToggle.setAttribute(
+        "title",
+        shellState.stagedAttachments.length ? `${shellState.stagedAttachments.length} file(s) staged` : "Open tools"
+      );
+    }
+    composerToolActions.forEach((button) => {
+      const action = String(button.getAttribute("data-composer-tool-action") || "");
+      const active = composerToolState(action);
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.textContent = composerToolLabel(action, active);
+    });
+    renderComposerAttachments();
+  }
+
+  function toggleComposerTool(action) {
+    if (action === "upload") {
+      setComposerMenuOpen(false);
+      elements.composerFileInput?.click();
+      return;
+    }
+    if (action === "web-search") {
+      elements.researchMode.value = elements.researchMode.value === "1" ? "0" : "1";
+      syncSelectToggleButtons("previewResearchMode");
+    } else if (action === "memory" && elements.memoryMode) {
+      elements.memoryMode.value = elements.memoryMode.value === "1" ? "0" : "1";
+      syncSelectToggleButtons("previewMemoryMode");
+    } else if (action === "local-files") {
+      setDraftFlag("localFilesEnabled", !draftFlag("localFilesEnabled", true));
+    } else if (action === "github-tools") {
+      setDraftFlag("githubToolsEnabled", !draftFlag("githubToolsEnabled", false));
+    } else if (action === "vetting") {
+      elements.vettingEnabled.value = elements.vettingEnabled.value === "1" ? "0" : "1";
+      syncSelectToggleButtons("previewVettingEnabled");
+    }
+    setComposerMenuOpen(false);
+    updateNarrative();
+    queueDraftSave();
   }
 
   function syncHeaderFromBackend(state) {
@@ -441,7 +1128,538 @@
     elements.headerElapsed.textContent = String(loop?.status || "idle") === "idle" ? "n/a" : String(loop?.status || "running");
   }
 
-  function draftPayloadForSave() {
+  function runMessageHtml(kind, role, text, meta) {
+    const normalized = String(text || "").trim();
+    if (!normalized) return "";
+    return `
+      <article class="igs-message igs-run-message igs-run-message-${escapeHtml(kind || "system")}">
+        <div class="igs-message-role">
+          <span>${escapeHtml(role || "Message")}</span>
+          ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+        </div>
+        <p>${escapeHtml(normalized)}</p>
+      </article>
+    `;
+  }
+
+  function runLaneCardHtml(label, status, text, tone) {
+    return `
+      <article class="igs-lane-card igs-lane-card-${escapeHtml(tone || "idle")}">
+        <div class="igs-lane-card-head">
+          <strong>${escapeHtml(label || "Lane")}</strong>
+          <span>${escapeHtml(shortStatus(status, "idle"))}</span>
+        </div>
+        <p>${escapeHtml(truncateText(text || "No output captured yet.", 300))}</p>
+      </article>
+    `;
+  }
+
+  function activeTargetLabels(loop) {
+    const targets = Array.isArray(loop?.activeTargets) ? loop.activeTargets : [];
+    return targets.map((target) => {
+      if (typeof target === "string") return target;
+      return String(target?.targetLabel || target?.target || target?.id || "").trim();
+    }).filter(Boolean);
+  }
+
+  function activeDispatchTargets(dispatch) {
+    const jobs = Array.isArray(dispatch?.activeJobs) ? dispatch.activeJobs : [];
+    const legacyTargets = Array.isArray(dispatch?.activeTargets) ? dispatch.activeTargets : [];
+    return jobs.concat(legacyTargets).map((target) => {
+      if (typeof target === "string") {
+        return { id: target, label: target, status: "" };
+      }
+      return {
+        id: String(target?.target || target?.id || target?.targetLabel || "").trim(),
+        label: String(target?.targetLabel || target?.target || target?.id || "").trim(),
+        status: String(target?.status || target?.schedulerState || "").trim(),
+      };
+    }).filter((target) => target.id || target.label);
+  }
+
+  function isRunBusy(loop) {
+    const status = String(loop?.status || "").toLowerCase();
+    return status === "running" || status === "queued" || activeTargetLabels(loop).length > 0;
+  }
+
+  function hasActiveDispatchTarget(state, target) {
+    const normalized = String(target || "").toLowerCase();
+    return activeTargetLabels(state?.loop || {}).some((activeTarget) => String(activeTarget || "").toLowerCase() === normalized)
+      || activeDispatchTargets(state?.dispatch || {}).some((activeTarget) => (
+        String(activeTarget.id || "").toLowerCase() === normalized
+        || String(activeTarget.label || "").toLowerCase() === normalized
+      ));
+  }
+
+  function answerNowReady(state) {
+    const task = state?.activeTask || null;
+    const commander = state?.commander || task?.stateCommander || null;
+    return !!task && Number(commander?.round || 0) > 0;
+  }
+
+  function updateComposerActionButton(state) {
+    if (!elements.sendPrompt || !elements.sendIcon || !elements.sendText) return;
+    const partialAnswerActive = hasActiveDispatchTarget(state, "answer_now");
+    const ready = answerNowReady(state);
+    const mode = partialAnswerActive ? "answering" : (ready ? "answer-now" : "send");
+    elements.sendPrompt.dataset.composerActionMode = mode;
+    elements.sendPrompt.disabled = partialAnswerActive;
+    elements.sendPrompt.classList.toggle("is-answer-now", mode !== "send");
+    if (mode === "answering") {
+      elements.sendIcon.textContent = "";
+      elements.sendText.textContent = "Answering";
+      elements.sendPrompt.setAttribute("aria-label", "Answer now is running");
+      elements.sendPrompt.setAttribute("title", "Answer now is running");
+    } else if (mode === "answer-now") {
+      elements.sendIcon.textContent = "";
+      elements.sendText.textContent = "Answer now";
+      elements.sendPrompt.setAttribute("aria-label", "Answer now");
+      elements.sendPrompt.setAttribute("title", "Queue a partial answer from the current live run");
+    } else {
+      elements.sendIcon.textContent = "↑";
+      elements.sendText.textContent = "Send prompt";
+      elements.sendPrompt.setAttribute("aria-label", "Send prompt");
+      elements.sendPrompt.setAttribute("title", "Send prompt");
+    }
+  }
+
+  function summaryAnswerText(summary) {
+    return firstText(summary?.frontAnswer?.answer, summary?.frontAnswer, summary?.answer, summary?.publicAnswer, summary?.output);
+  }
+
+  function directAnswerText(directBaseline) {
+    return firstText(directBaseline?.answer?.answer, directBaseline?.answer, directBaseline?.output);
+  }
+
+  function renderLiveViewport(state) {
+    if (!elements.runThread || !elements.laneGrid) return;
+    const task = state?.activeTask || null;
+    const draft = state?.draft || {};
+    const loop = state?.loop || {};
+    const workers = Array.isArray(task?.workers) && task.workers.length
+      ? task.workers
+      : (Array.isArray(draft?.workers) ? draft.workers : []);
+    const workerState = state?.workers && typeof state.workers === "object" ? state.workers : {};
+    const objective = firstText(task?.objective, draft?.objective, currentControlState().objective);
+    const loopStatus = shortStatus(loop?.status, "idle");
+    const lastMessage = firstText(loop?.lastMessage, state?.dispatch?.lastMessage);
+    const activeTargets = activeTargetLabels(loop);
+    const busy = isRunBusy(loop);
+
+    if (elements.runActivity) {
+      elements.runActivity.textContent = task
+        ? [
+            `Task ${task.taskId || "active"}`,
+            `loop ${loopStatus}`,
+            activeTargets.length ? `active ${activeTargets.join(", ")}` : "",
+            lastMessage
+          ].filter(Boolean).join(" | ")
+        : "No live run is active.";
+      elements.runActivity.classList.toggle("is-active", busy);
+    }
+    if (elements.traceSummary) {
+      elements.traceSummary.textContent = [
+        `Loop: ${loopStatus}`,
+        loop?.jobId ? `Job: ${loop.jobId}` : "",
+        lastMessage
+      ].filter(Boolean).join(" | ") || "Waiting for scheduler activity.";
+    }
+
+    const messages = [];
+    if (objective) {
+      messages.push(runMessageHtml("user", task ? "User prompt" : "Staged objective", objective, task?.runtime?.executionMode || "draft"));
+    }
+
+    const finalAnswer = summaryAnswerText(state?.summary);
+    const baselineAnswer = directAnswerText(state?.directBaseline);
+    if (finalAnswer) {
+      messages.push(runMessageHtml("assistant", "Assistant", finalAnswer, "summarizer output"));
+    } else if (baselineAnswer) {
+      messages.push(runMessageHtml("assistant", "Assistant", baselineAnswer, "single-thread baseline"));
+    } else if (task) {
+      messages.push(runMessageHtml(
+        "system",
+        busy ? "Runtime" : "Runtime",
+        busy ? "The live lanes are running. Background lane output is visible on the right as it lands." : "No final answer artifact is captured for this task yet.",
+        busy ? "working" : loopStatus
+      ));
+    } else {
+      messages.push(runMessageHtml("system", "Runtime", "Stage an objective and press Send to start the live lane stack.", "idle"));
+    }
+    elements.runThread.innerHTML = messages.join("");
+
+    const laneCards = [];
+    laneCards.push(runLaneCardHtml(
+      "Commander",
+      state?.commander ? "completed" : (activeTargets.some((target) => /commander/i.test(target)) ? "running" : "waiting"),
+      firstText(state?.commander?.answerDraft, state?.commander),
+      state?.commander ? "done" : "idle"
+    ));
+    workers.forEach((worker) => {
+      const checkpoint = workerState?.[worker.id];
+      laneCards.push(runLaneCardHtml(
+        worker.label || worker.id || "Worker",
+        checkpoint ? "completed" : (activeTargets.some((target) => target === worker.id || target.includes(worker.id)) ? "running" : "waiting"),
+        firstText(
+          checkpoint?.observation,
+          checkpoint?.detriments,
+          checkpoint?.benefits,
+          checkpoint?.uncertainty,
+          checkpoint
+        ),
+        checkpoint ? "done" : "idle"
+      ));
+    });
+    laneCards.push(runLaneCardHtml(
+      "Commander review",
+      state?.commanderReview ? "completed" : (activeTargets.some((target) => /review/i.test(target)) ? "running" : "waiting"),
+      firstText(
+        state?.commanderReview?.answerDraft,
+        state?.commanderReview?.requiredDecisionGates,
+        state?.commanderReview?.evidenceOrCommsRisks,
+        state?.commanderReview
+      ),
+      state?.commanderReview ? "done" : "idle"
+    ));
+    laneCards.push(runLaneCardHtml(
+      "Summarizer",
+      state?.summary ? "completed" : (activeTargets.some((target) => /summarizer|final/i.test(target)) ? "running" : "waiting"),
+      finalAnswer || firstText(state?.summary?.summarizerOpinion, state?.summary),
+      state?.summary ? "done" : "idle"
+    ));
+    if (state?.directBaseline) {
+      laneCards.push(runLaneCardHtml("Direct baseline", "completed", baselineAnswer, "done"));
+    }
+    elements.laneGrid.innerHTML = laneCards.join("");
+    updateComposerActionButton(state);
+  }
+
+  async function loadRunLogs() {
+    const [steps, events] = await Promise.all([
+      fetchText(API.steps),
+      fetchText(API.events),
+    ]);
+    const stepText = tailLines(steps, 80);
+    const eventText = tailLines(events, 80);
+    if (elements.stepLog) {
+      elements.stepLog.textContent = stepText;
+    }
+    if (elements.eventLog) {
+      elements.eventLog.textContent = eventText;
+    }
+    if (elements.debugStepLog) {
+      elements.debugStepLog.textContent = stepText;
+    }
+    if (elements.debugEventLog) {
+      elements.debugEventLog.textContent = eventText;
+    }
+  }
+
+  function activeTaskForDebug(state) {
+    const task = state?.activeTask || null;
+    if (!task) return null;
+    return Object.assign({}, task, {
+      workers: Array.isArray(task.workers) ? task.workers : (Array.isArray(state?.draft?.workers) ? state.draft.workers : []),
+      stateWorkers: state?.workers || {},
+      stateCommander: state?.commander || null,
+      stateCommanderReview: state?.commanderReview || null,
+      directBaseline: state?.directBaseline || null,
+      summary: state?.summary || null,
+    });
+  }
+
+  function debugWorkspaceBusy(state) {
+    const loopStatus = String(state?.loop?.status || "").toLowerCase();
+    const dispatchStatus = String(state?.dispatch?.status || "").toLowerCase();
+    return ["queued", "running"].includes(loopStatus)
+      || ["queued", "running"].includes(dispatchStatus)
+      || activeTargetLabels(state?.loop || {}).length > 0;
+  }
+
+  function debugTargetButtonHtml(target, label, disabled) {
+    return `<button type="button" class="btn btn-outline-light btn-sm" data-debug-target="${escapeHtml(target)}"${disabled ? " disabled" : ""}>${escapeHtml(label)}</button>`;
+  }
+
+  function renderDebugTargetControls(state) {
+    if (!elements.debugTargetControls) return;
+    const task = activeTaskForDebug(state);
+    if (!task?.taskId) {
+      elements.debugTargetControls.innerHTML = `<div class="igs-debug-card">No active task.</div>`;
+      return;
+    }
+
+    const busy = debugWorkspaceBusy(state);
+    const commanderRound = Number(state?.commander?.round || task?.stateCommander?.round || 0);
+    const reviewReady = !!state?.commanderReview;
+    const summaryReady = reviewReady || !!state?.summary;
+    const workers = Array.isArray(task.workers) ? task.workers : [];
+    const directMode = String(task?.runtime?.directBaselineMode || state?.draft?.directBaselineMode || "off").toLowerCase();
+    const activeAnswerNow = hasActiveDispatchTarget(state, "answer_now");
+    const cards = [];
+
+    if (directMode !== "off") {
+      cards.push(`
+        <article class="igs-debug-card">
+          <div class="igs-debug-card-title">Single-thread baseline</div>
+          <div class="igs-debug-card-meta">${escapeHtml(state?.directBaseline ? "Baseline captured." : "Manual baseline target.")}</div>
+          <div class="igs-debug-card-actions">
+            ${debugTargetButtonHtml("direct_baseline", "Run baseline", busy || !!state?.directBaseline)}
+          </div>
+        </article>
+      `);
+    }
+
+    cards.push(`
+      <article class="igs-debug-card">
+        <div class="igs-debug-card-title">Commander</div>
+        <div class="igs-debug-card-meta">${escapeHtml(commanderRound > 0 ? "Round " + commanderRound : "Ready for round 1")}</div>
+        <div class="igs-debug-card-actions">
+          ${debugTargetButtonHtml("commander", "Run commander", busy)}
+        </div>
+      </article>
+    `);
+
+    workers.forEach((worker) => {
+      const workerId = String(worker?.id || "").trim();
+      if (!workerId) return;
+      const checkpoint = state?.workers?.[workerId] || null;
+      const label = worker.label || worker.type || worker.role || workerId;
+      cards.push(`
+        <article class="igs-debug-card">
+          <div class="igs-debug-card-title">${escapeHtml(workerId + " | " + label)}</div>
+          <div class="igs-debug-card-meta">${escapeHtml(checkpoint ? "Checkpoint step " + String(checkpoint.step || 0) : "No checkpoint yet.")}</div>
+          <div class="igs-debug-card-actions">
+            ${debugTargetButtonHtml(workerId, "Run " + workerId, busy || commanderRound <= 0)}
+          </div>
+        </article>
+      `);
+    });
+
+    cards.push(`
+      <article class="igs-debug-card">
+        <div class="igs-debug-card-title">Commander Review</div>
+        <div class="igs-debug-card-meta">${escapeHtml(reviewReady ? "Review checkpoint captured." : "Waiting on commander-aligned workers.")}</div>
+        <div class="igs-debug-card-actions">
+          ${debugTargetButtonHtml("commander_review", "Run review", busy || commanderRound <= 0)}
+        </div>
+      </article>
+    `);
+
+    cards.push(`
+      <article class="igs-debug-card">
+        <div class="igs-debug-card-title">Summarizer</div>
+        <div class="igs-debug-card-meta">${escapeHtml(summaryReady ? "Ready to produce final or partial answer." : "Waiting on review/checkpoints.")}</div>
+        <div class="igs-debug-card-actions">
+          ${debugTargetButtonHtml("summarizer", "Summarize", busy || !summaryReady)}
+          ${debugTargetButtonHtml("answer_now", "Answer Now", !answerNowReady(state) || activeAnswerNow)}
+        </div>
+      </article>
+    `);
+
+    elements.debugTargetControls.innerHTML = cards.join("");
+  }
+
+  function renderDebugSchedulerEvents(state) {
+    if (!elements.debugSchedulerEvents) return;
+    const task = activeTaskForDebug(state);
+    const loop = state?.loop || {};
+    const dispatch = state?.dispatch || {};
+    if (!task?.taskId) {
+      elements.debugSchedulerEvents.innerHTML = `<div class="igs-debug-card">No active task.</div>`;
+      return;
+    }
+    const activeTargets = activeTargetLabels(loop);
+    const dispatchTargets = activeDispatchTargets(dispatch);
+    const cards = [
+      `
+        <article class="igs-debug-card">
+          <div class="igs-debug-card-title">${escapeHtml(task.taskId)}</div>
+          <div class="igs-debug-card-meta">${escapeHtml("Loop " + String(loop.status || "idle") + " | " + Number(loop.completedRounds || 0) + "/" + Number(loop.totalRounds || 0) + " rounds")}</div>
+        </article>
+      `,
+    ];
+    activeTargets.forEach((target) => {
+      cards.push(`
+        <article class="igs-debug-card is-active">
+          <div class="igs-debug-card-title">${escapeHtml(target)}</div>
+          <div class="igs-debug-card-meta">Active loop target.</div>
+        </article>
+      `);
+    });
+    dispatchTargets.forEach((target) => {
+      const label = target.label || target.id || "dispatch";
+      cards.push(`
+        <article class="igs-debug-card is-active">
+          <div class="igs-debug-card-title">${escapeHtml(label)}</div>
+          <div class="igs-debug-card-meta">${escapeHtml(String(target.status || dispatch.status || "dispatch"))}</div>
+        </article>
+      `);
+    });
+    elements.debugSchedulerEvents.innerHTML = cards.join("");
+  }
+
+  function renderDebugState(state) {
+    renderDebugTargetControls(state);
+    renderDebugSchedulerEvents(state);
+  }
+
+  function debugHistoryCard(title, meta, actionsHtml) {
+    return `
+      <article class="igs-debug-card">
+        <div class="igs-debug-card-title">${escapeHtml(title || "Entry")}</div>
+        <div class="igs-debug-card-meta">${escapeHtml(meta || "No metadata.")}</div>
+        ${actionsHtml ? `<div class="igs-debug-card-actions">${actionsHtml}</div>` : ""}
+      </article>
+    `;
+  }
+
+  function renderDebugJobHistory(payload) {
+    if (!elements.debugJobHistory) return;
+    const warnings = Array.isArray(payload?.contractWarnings) ? payload.contractWarnings.filter(Boolean) : [];
+    const cards = [];
+    warnings.forEach((warning) => {
+      cards.push(debugHistoryCard("Telemetry note", warning, ""));
+    });
+    if (payload?.recoveryWarning) {
+      cards.push(debugHistoryCard("Recovery note", payload.recoveryWarning, ""));
+    }
+    const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+    if (!jobs.length) {
+      cards.push(debugHistoryCard("Queue policy", "No recent jobs yet. Background loops and target dispatches will appear here.", ""));
+      elements.debugJobHistory.innerHTML = cards.join("");
+      return;
+    }
+    jobs.forEach((job) => {
+      const isTarget = String(job?.jobType || "loop") === "target";
+      const title = isTarget
+        ? ((job?.target === "answer_now" ? "Answer Now" : "Dispatch " + String(job?.target || "target")) + " | " + String(job?.taskId || job?.jobId || "job"))
+        : (String(job?.objective || job?.taskId || job?.jobId || "Loop job"));
+      const meta = [
+        "Status " + String(job?.status || "unknown"),
+        isTarget ? "target " + String(job?.target || "target") : "rounds " + Number(job?.completedRounds || 0) + "/" + Number(job?.rounds || 0),
+        "attempt " + Number(job?.attempt || 1),
+        job?.lastMessage ? "note " + job.lastMessage : "",
+        job?.error ? "error " + job.error : "",
+      ].filter(Boolean).join(" | ");
+      const actions = [];
+      if (job?.canResume) actions.push(`<button type="button" class="btn btn-outline-info btn-sm" data-debug-job-action="resume" data-job-id="${escapeHtml(job.jobId || "")}">Resume</button>`);
+      if (job?.canRetry) actions.push(`<button type="button" class="btn btn-outline-light btn-sm" data-debug-job-action="retry" data-job-id="${escapeHtml(job.jobId || "")}">Retry</button>`);
+      if (job?.canCancel) actions.push(`<button type="button" class="btn btn-outline-danger btn-sm" data-debug-job-action="cancel" data-job-id="${escapeHtml(job.jobId || "")}">Cancel</button>`);
+      cards.push(debugHistoryCard(title, meta, actions.join("")));
+    });
+    elements.debugJobHistory.innerHTML = cards.join("");
+  }
+
+  function renderDebugRoundHistory(rounds) {
+    if (!elements.debugRoundHistory) return;
+    const entries = Array.isArray(rounds) ? rounds : [];
+    if (!entries.length) {
+      elements.debugRoundHistory.innerHTML = debugHistoryCard("No round history yet", "Round artifacts will appear after commander, worker, review, or summary output is captured.", "");
+      return;
+    }
+    elements.debugRoundHistory.innerHTML = entries.map((roundEntry) => {
+      const artifacts = [
+        roundEntry?.commanderArtifact?.name ? "commander " + roundEntry.commanderArtifact.name : "",
+        roundEntry?.commanderReviewArtifact?.name ? "review " + roundEntry.commanderReviewArtifact.name : "",
+        roundEntry?.summaryArtifact?.name ? "summary " + roundEntry.summaryArtifact.name : "",
+        Array.isArray(roundEntry?.workerArtifacts) && roundEntry.workerArtifacts.length ? String(roundEntry.workerArtifacts.length) + " worker artifacts" : "",
+      ].filter(Boolean).join(" | ");
+      return debugHistoryCard(
+        "Round " + String(roundEntry?.round || 0) + " | " + String(roundEntry?.taskId || "task"),
+        [truncateText(roundEntry?.objective || "No objective recorded.", 120), "captured " + String(roundEntry?.capturedAt || "n/a"), artifacts].filter(Boolean).join(" | "),
+        ""
+      );
+    }).join("");
+  }
+
+  function renderDebugSessionArchives(sessions) {
+    if (!elements.debugSessionArchives) return;
+    const entries = Array.isArray(sessions) ? sessions : [];
+    if (!entries.length) {
+      elements.debugSessionArchives.innerHTML = debugHistoryCard("No session archives yet", "Reset Session will archive the current workspace before clearing it.", "");
+      return;
+    }
+    elements.debugSessionArchives.innerHTML = entries.map((session) => {
+      const file = String(session?.file || "");
+      const actions = `
+        <button type="button" class="btn btn-outline-info btn-sm" data-debug-export-archive="${escapeHtml(file)}">Preview export</button>
+        <button type="button" class="btn btn-outline-warning btn-sm" data-debug-replay-archive="${escapeHtml(file)}">Replay</button>
+      `;
+      return debugHistoryCard(
+        file || "archive",
+        ["task " + String(session?.taskId || "none"), "archived " + String(session?.archivedAt || "n/a"), "reason " + String(session?.reason || "unspecified")].join(" | "),
+        actions
+      );
+    }).join("");
+  }
+
+  function syncDebugArchiveClearButton(history) {
+    if (!elements.debugClearSessionArchives) return;
+    const count = Number(history?.sessionArchiveCount || 0);
+    elements.debugClearSessionArchives.disabled = count <= 0;
+    elements.debugClearSessionArchives.textContent = count > 0 ? "Clear Session Archives (" + count + ")" : "Clear Session Archives";
+  }
+
+  async function loadDebugHistory() {
+    if (!elements.debugJobHistory) return;
+    if (elements.debugHistoryStatus) {
+      elements.debugHistoryStatus.textContent = "Loading jobs, rounds, and archived sessions...";
+    }
+    const payload = await fetchJson(API.history);
+    renderDebugJobHistory(payload);
+    renderDebugRoundHistory(payload?.rounds);
+    renderDebugSessionArchives(payload?.sessions);
+    syncDebugArchiveClearButton(payload);
+    if (elements.debugHistoryStatus) {
+      const jobCount = Array.isArray(payload?.jobs) ? payload.jobs.length : 0;
+      const roundCount = Array.isArray(payload?.rounds) ? payload.rounds.length : 0;
+      const sessionCount = Number(payload?.sessionArchiveCount || 0);
+      elements.debugHistoryStatus.textContent = "Loaded " + jobCount + " jobs, " + roundCount + " rounds, " + sessionCount + " archived sessions.";
+    }
+  }
+
+  async function loadDebugExportPreview(archiveFile) {
+    if (!elements.debugExportPreview) return;
+    const file = String(archiveFile || "").trim();
+    elements.debugExportPreview.textContent = file ? "Loading " + file + "..." : "Loading current session export...";
+    const query = file ? "?archiveFile=" + encodeURIComponent(file) : "";
+    const payload = await fetchJson(API.sessionExport + query);
+    elements.debugExportPreview.textContent = prettyJson(payload);
+    if (elements.debugHistoryStatus) {
+      elements.debugHistoryStatus.textContent = file ? "Previewing archived session " + file + "." : "Previewing current session export.";
+    }
+  }
+
+  async function refreshDebugSurface() {
+    if (elements.debugOperationStatus) {
+      elements.debugOperationStatus.textContent = "Refreshing Debug...";
+    }
+    await Promise.all([
+      loadState({ hydrate: false }),
+      loadDebugHistory(),
+      loadRunLogs(),
+    ]);
+    if (elements.debugOperationStatus) {
+      elements.debugOperationStatus.textContent = "Debug refreshed.";
+    }
+  }
+
+  async function runDebugOperation(url, payload, successText, options) {
+    const settings = Object.assign({ hydrate: false }, options || {});
+    if (elements.debugOperationStatus) {
+      elements.debugOperationStatus.textContent = "Sending " + successText.toLowerCase() + "...";
+    }
+    const response = await fetchJson(url, jsonPostOptions(payload));
+    if (elements.debugOperationStatus) {
+      elements.debugOperationStatus.textContent = successText + ".";
+    }
+    await loadState({ hydrate: settings.hydrate });
+    await loadDebugHistory();
+    return response;
+  }
+
+  function draftPayloadForSave(options) {
+    const settings = Object.assign({ includeAttachments: false }, options || {});
     const control = currentControlState();
     const existing = runtimeState.draft ? clone(runtimeState.draft) : {};
     const summarizerHarness = existing.summarizerHarness || { concision: "balanced", instruction: "" };
@@ -450,11 +1668,13 @@
       instruction: "Prefer the most detailed factual response the evidence supports. Be concrete, complete, and explicit about uncertainty.",
     };
     const providerRouting = existing.providerRouting || { ollama: { selectionMode: "single", judgeMode: "prefer_distinct" } };
+    const existingKnowledgebase = existing.knowledgebase && typeof existing.knowledgebase === "object" ? existing.knowledgebase : {};
+    const knowledgebaseEnabled = control.knowledgebaseEnabled === "1";
 
     return {
       objective: control.objective,
       constraints: control.constraints,
-      sessionContext: control.sessionContext,
+      sessionContext: settings.includeAttachments ? buildSendSessionContext(control.sessionContext) : control.sessionContext,
       executionMode: control.executionMode,
       frontMode: "full",
       engineVersion: control.engineVersion,
@@ -486,6 +1706,8 @@
       localFileRoots: Array.isArray(existing.localFileRoots) ? existing.localFileRoots : ["."],
       githubToolsEnabled: existing.githubToolsEnabled === true,
       githubAllowedRepos: Array.isArray(existing.githubAllowedRepos) ? existing.githubAllowedRepos : [],
+      knowledgebaseEnabled: knowledgebaseEnabled,
+      knowledgebase: Object.assign({}, existingKnowledgebase, { enabled: knowledgebaseEnabled }),
       dynamicSpinupEnabled: existing.dynamicSpinupEnabled === true,
       vettingEnabled: control.vettingEnabled === "1",
       loopRounds: control.loopRounds,
@@ -495,7 +1717,7 @@
   }
 
   function liveRunPayload() {
-    const draftPayload = draftPayloadForSave();
+    const draftPayload = draftPayloadForSave({ includeAttachments: true });
     return Object.assign({}, draftPayload, {
       sessionContext: draftPayload.sessionContext,
       workers: Array.isArray(draftPayload.workers) ? draftPayload.workers : [],
@@ -529,6 +1751,7 @@
     const workerProvider = selectedGroupedValue("provider", "openai");
     populateSelect(elements.workerModel, modelOptions(workerProvider), elements.workerModel.value || runtimeState.draft?.model || "");
     populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value || workerProvider), elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "");
+    syncContractPillSelects();
   }
 
   function hydrateControls(draft, state) {
@@ -536,8 +1759,12 @@
     runtimeState.backendState = state;
     runtimeState.draft = clone(draft);
 
-    elements.runtimeMode.value = "live";
-    setGroupedButton("engine", String(draft.engineVersion || "v1"));
+    elements.runtimeMode.value = String(draft.executionMode || "live");
+    if (elements.engineVersion) {
+      elements.engineVersion.value = String(draft.engineVersion || "v1");
+    } else {
+      setGroupedButton("engine", String(draft.engineVersion || "v1"));
+    }
     setGroupedButton("provider", String(draft.provider || "openai"));
     elements.summarizerProvider.value = String(draft.summarizerProvider || draft.provider || "openai");
     fillModelsForCurrentProviders();
@@ -547,6 +1774,11 @@
     elements.directBaselineMode.value = String(draft.directBaselineMode || "off");
     elements.vettingEnabled.value = toBoolString(draft.vettingEnabled);
     elements.researchMode.value = draft.researchEnabled ? "1" : "0";
+    if (elements.memoryMode) {
+      elements.memoryMode.value = draft.knowledgebaseEnabled ? "1" : "0";
+    }
+    syncSelectToggleButtons();
+    syncSelectCycleButtons();
     elements.objective.value = String(draft.objective || "");
     elements.sessionContext.value = String(draft.sessionContext || "");
     elements.constraints.value = Array.isArray(draft.constraints) ? draft.constraints.join("\n") : "";
@@ -554,6 +1786,7 @@
     elements.maxCostUsd.value = String(Number(draft.maxCostUsd || 0));
 
     syncHeaderFromBackend(state);
+    syncContractPillSelects();
     updateNarrative();
     runtimeState.controlsLoaded = true;
     elements.draftState.textContent = "Loaded staged draft from /v1/state.";
@@ -569,6 +1802,16 @@
       runtimeState.backendState = state;
       syncHeaderFromBackend(state);
     }
+    renderLiveViewport(state);
+    renderDebugState(state);
+    loadRunLogs().catch(function (error) {
+      if (elements.traceSummary) {
+        elements.traceSummary.textContent = "Trace load failed: " + String(error.message || error);
+      }
+      if (elements.debugOperationStatus) {
+        elements.debugOperationStatus.textContent = "Trace load failed: " + String(error.message || error);
+      }
+    });
   }
 
   async function sendPrompt() {
@@ -577,13 +1820,39 @@
       elements.draftState.textContent = "Objective is required before Send.";
       return;
     }
-    elements.draftState.textContent = "Queueing live run...";
-    const response = await fetchJson(API.frontLiveRuns, {
+    const executionMode = String(payload.executionMode || "live").toLowerCase();
+    const runEndpoint = executionMode === "eval"
+      ? API.frontEvalRuns
+      : (executionMode === "judge" ? API.frontJudgeRuns : API.frontLiveRuns);
+    const runLabel = executionMode === "eval" ? "eval" : (executionMode === "judge" ? "judge" : "live");
+    elements.draftState.textContent = "Queueing " + runLabel + " run...";
+    if (elements.runActivity) {
+      elements.runActivity.textContent = "Queueing " + runLabel + " run...";
+      elements.runActivity.classList.add("is-active");
+    }
+    const response = await fetchJson(runEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    elements.draftState.textContent = `Front live queued: ${String(response?.runId || "run created")}`;
+    elements.draftState.textContent = `Front ${runLabel} queued: ${String(response?.runId || "run created")}`;
+    shellState.stagedAttachments = [];
+    renderComposerTools();
+    await loadState({ hydrate: false });
+  }
+
+  async function queueAnswerNow() {
+    const state = runtimeState.backendState || {};
+    if (!answerNowReady(state) || hasActiveDispatchTarget(state, "answer_now")) {
+      return;
+    }
+    updateComposerActionButton(Object.assign({}, state, { loop: Object.assign({}, state.loop || {}, { activeTargets: ["answer_now"] }) }));
+    await fetchJson(API.targetsBackground, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "answer_now" }),
+    });
+    elements.draftState.textContent = "Answer now queued.";
     await loadState({ hydrate: false });
   }
 
@@ -761,9 +2030,9 @@
       { label: "Control", value: control },
     ];
     return `
-      <div class="replacement-score-metrics">
+      <div class="igs-score-metrics">
         ${metrics.map((metric) => `
-          <div class="replacement-score-metric">
+          <div class="igs-score-metric">
             <span>${escapeHtml(metric.label)}</span>
             <strong>${escapeHtml(formatScore(metric.value))}</strong>
           </div>
@@ -786,22 +2055,22 @@
       const text = truncateText(value, 320);
       if (text) {
         rows.push(`
-          <div class="replacement-score-note">
+          <div class="igs-score-note">
             <span>${escapeHtml(label)}</span>
             <p>${escapeHtml(text)}</p>
           </div>
         `);
       }
     });
-    return rows.length ? `<div class="replacement-score-notes">${rows.join("")}</div>` : "";
+    return rows.length ? `<div class="igs-score-notes">${rows.join("")}</div>` : "";
   }
 
   function renderScoreLaneCard(lane, tone) {
     if (!lane) {
       return `
-        <section class="replacement-surface replacement-score-card ${escapeHtml(tone || "")}">
-          <div class="replacement-surface-head"><h4>Direct -> Judge</h4></div>
-          <div class="replacement-inline-note">No comparable direct answer was found for this session.</div>
+        <section class="igs-surface igs-score-card ${escapeHtml(tone || "")}">
+          <div class="igs-surface-head"><h4>Direct -> Judge</h4></div>
+          <div class="igs-inline-note">No comparable direct answer was found for this session.</div>
         </section>
       `;
     }
@@ -812,19 +2081,19 @@
       lane.status,
     ].filter(Boolean);
     return `
-      <section class="replacement-surface replacement-score-card ${escapeHtml(tone || "")}">
-        <div class="replacement-surface-head">
+      <section class="igs-surface igs-score-card ${escapeHtml(tone || "")}">
+        <div class="igs-surface-head">
           <div>
-            <div class="replacement-surface-kicker">${escapeHtml(lane.kind === "para" ? "Summarizer output" : "Direct output")}</div>
+            <div class="igs-surface-kicker">${escapeHtml(lane.kind === "para" ? "Summarizer output" : "Direct output")}</div>
             <h4>${escapeHtml(lane.label)}</h4>
           </div>
-          <span class="replacement-pill ${lane.kind === "para" ? "replacement-pill-success" : "replacement-pill-warn"}">To judge</span>
+          <span class="igs-pill ${lane.kind === "para" ? "igs-pill-success" : "igs-pill-warn"}">To judge</span>
         </div>
-        <div class="replacement-score-meta">${escapeHtml(metaBits.join(" | ") || "No metadata")}</div>
+        <div class="igs-score-meta">${escapeHtml(metaBits.join(" | ") || "No metadata")}</div>
         ${renderScoreMetricStrip(lane)}
         ${renderJudgeReadout(lane)}
-        <div class="replacement-score-answer">
-          <div class="replacement-score-answer-label">Answer text sent to judge</div>
+        <div class="igs-score-answer">
+          <div class="igs-score-answer-label">Answer text sent to judge</div>
           <pre>${escapeHtml(lane.answer || "No answer captured.")}</pre>
         </div>
       </section>
@@ -837,11 +2106,11 @@
       ? session.constraints.map((item) => String(item || "").trim()).filter(Boolean)
       : [];
     return `
-      <section class="replacement-score-question-bubble" aria-label="User question">
-        <div class="replacement-message-role">User question</div>
+      <section class="igs-score-question-bubble" aria-label="User question">
+        <div class="igs-message-role">User question</div>
         <p>${escapeHtml(question || "No user question recorded for this judged session.")}</p>
         ${constraints.length ? `
-          <div class="replacement-score-question-constraints">
+          <div class="igs-score-question-constraints">
             ${constraints.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
           </div>
         ` : ""}
@@ -884,29 +2153,29 @@
       session?.judge?.status ? ("run " + session.judge.status) : "",
     ].filter(Boolean);
     return `
-      <section class="replacement-surface replacement-score-judge">
-        <div class="replacement-surface-head">
+      <section class="igs-surface igs-score-judge">
+        <div class="igs-surface-head">
           <div>
-            <div class="replacement-surface-kicker">Judge comparison</div>
+            <div class="igs-surface-kicker">Judge comparison</div>
             <h4>Score side by side</h4>
           </div>
-          <span class="replacement-pill replacement-pill-muted">${escapeHtml(metaBits.join(" | ") || "Judge")}</span>
+          <span class="igs-pill igs-pill-muted">${escapeHtml(metaBits.join(" | ") || "Judge")}</span>
         </div>
-        <div class="replacement-score-delta-grid">
-          <div class="replacement-score-delta">
+        <div class="igs-score-delta-grid">
+          <div class="igs-score-delta">
             <span>Quality delta</span>
             <strong>${escapeHtml(deltaQuality == null ? "n/a" : (deltaQuality >= 0 ? "+" : "") + deltaQuality.toFixed(1))}</strong>
           </div>
-          <div class="replacement-score-delta">
+          <div class="igs-score-delta">
             <span>Health delta</span>
             <strong>${escapeHtml(deltaHealth == null ? "n/a" : (deltaHealth >= 0 ? "+" : "") + deltaHealth.toFixed(1))}</strong>
           </div>
-          <div class="replacement-score-delta">
+          <div class="igs-score-delta">
             <span>Session</span>
             <strong>${escapeHtml("r" + String(session?.replicate || 1))}</strong>
           </div>
         </div>
-        <details class="replacement-score-packet">
+        <details class="igs-score-packet">
           <summary>AI score packet</summary>
           <pre>${escapeHtml(JSON.stringify(packet, null, 2))}</pre>
         </details>
@@ -916,16 +2185,16 @@
 
   function renderScoreSession(session) {
     if (!session) {
-      return `<div class="replacement-inline-note">No comparable judged sessions found in this run.</div>`;
+      return `<div class="igs-inline-note">No comparable judged sessions found in this run.</div>`;
     }
     return `
-      <section class="replacement-score-session-head">
+      <section class="igs-score-session-head">
         <div>
-          <div class="replacement-kicker">${escapeHtml(session.caseId || "case")}</div>
+          <div class="igs-kicker">${escapeHtml(session.caseId || "case")}</div>
           <h4>${escapeHtml(session.caseTitle || "Judged session")}</h4>
         </div>
       </section>
-      <div class="replacement-score-lane-grid">
+      <div class="igs-score-lane-grid">
         ${renderScoreQuestionBubble(session)}
         ${renderScoreLaneCard(session.para, "primary")}
         ${renderScoreLaneCard(session.direct, "secondary")}
@@ -963,10 +2232,10 @@
     ].filter((row) => String(row[1] || "").trim());
     const objective = String(task.objective || "").trim();
     const objectiveRow = objective
-      ? `<div class="replacement-fail-meta-row replacement-fail-meta-row-wide"><span>Objective</span><strong>${escapeHtml(truncateText(objective, 420))}</strong></div>`
+      ? `<div class="igs-fail-meta-row igs-fail-meta-row-wide"><span>Objective</span><strong>${escapeHtml(truncateText(objective, 420))}</strong></div>`
       : "";
     const rowsHtml = rows.map(([label, value]) => `
-      <div class="replacement-fail-meta-row">
+      <div class="igs-fail-meta-row">
         <span>${escapeHtml(label)}</span>
         <strong>${escapeHtml(value)}</strong>
       </div>
@@ -1112,7 +2381,7 @@
       ["Error", content?.error || ""],
     ].filter((row) => String(row[1] || "").trim());
     return rows.map(([label, value]) => `
-      <div class="replacement-fail-meta-row">
+      <div class="igs-fail-meta-row">
         <span>${escapeHtml(label)}</span>
         <strong>${escapeHtml(value)}</strong>
       </div>
@@ -1245,7 +2514,7 @@
       rows.splice(3, 0, ["Accepted successor", [successor.kind, successor.name || successor.artifactId].filter(Boolean).join(" | ")]);
     }
     return rows.map(([label, value]) => `
-      <div class="replacement-fail-meta-row">
+      <div class="igs-fail-meta-row">
         <span>${escapeHtml(label)}</span>
         <strong>${escapeHtml(value)}</strong>
       </div>
@@ -1453,8 +2722,8 @@
 
   function persistScoreSelection() {
     try {
-      window.localStorage.setItem("replacementShell.scoreRunId", scoreState.selectedRunId || "");
-      window.localStorage.setItem("replacementShell.scoreSessionId", scoreState.selectedSessionId || "");
+      window.localStorage.setItem("igsShell.scoreRunId", scoreState.selectedRunId || "");
+      window.localStorage.setItem("igsShell.scoreSessionId", scoreState.selectedSessionId || "");
     } catch (_) {}
   }
 
@@ -1521,6 +2790,13 @@
           }
         });
       }
+      if (target === "debug") {
+        refreshDebugSurface().catch(function (error) {
+          if (elements.debugOperationStatus) {
+            elements.debugOperationStatus.textContent = "Debug refresh failed: " + String(error.message || error);
+          }
+        });
+      }
     });
   });
 
@@ -1534,11 +2810,18 @@
     elements.sidebarToggle.addEventListener("click", function () {
       applySidebarState(!shellState.sidebarCollapsed);
       try {
-        window.localStorage.setItem("replacementShell.sidebarCollapsed", shellState.sidebarCollapsed ? "1" : "0");
+        window.localStorage.setItem("igsShell.sidebarCollapsed", shellState.sidebarCollapsed ? "1" : "0");
       } catch (_) {}
       window.setTimeout(refreshActiveInspector, 60);
     });
   }
+
+  homeCollapseButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      const panelId = button.getAttribute("data-home-collapse-toggle");
+      setHomePanelCollapsed(panelId, true);
+    });
+  });
 
   themeButtons.forEach((button) => {
     button.addEventListener("click", function () {
@@ -1577,8 +2860,21 @@
     });
   });
 
+  selectToggleButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      setSelectFromToggleButton(button);
+    });
+  });
+
+  selectCycleButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      setSelectFromCycleButton(button);
+    });
+  });
+
   [
     elements.runtimeMode,
+    elements.engineVersion,
     elements.workerModel,
     elements.summarizerProvider,
     elements.summarizerModel,
@@ -1586,6 +2882,7 @@
     elements.directBaselineMode,
     elements.vettingEnabled,
     elements.researchMode,
+    elements.memoryMode,
     elements.objective,
     elements.sessionContext,
     elements.constraints,
@@ -1600,6 +2897,13 @@
       if (element === elements.summarizerProvider) {
         populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "");
       }
+      if (element.matches?.("[data-contract-pill-select]")) {
+        syncContractPillSelect(element);
+      }
+      if (element.id) {
+        syncSelectToggleButtons(element.id);
+        syncSelectCycleButtons(element.id);
+      }
       updateNarrative();
       queueDraftSave();
     });
@@ -1607,16 +2911,235 @@
       if (element === elements.summarizerProvider) {
         populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "");
       }
+      if (element.matches?.("[data-contract-pill-select]")) {
+        syncContractPillSelect(element);
+      }
+      if (element.id) {
+        syncSelectToggleButtons(element.id);
+        syncSelectCycleButtons(element.id);
+      }
       updateNarrative();
       queueDraftSave();
     });
   });
 
-  elements.sendPrompt.addEventListener("click", function () {
-    sendPrompt().catch(function (error) {
-      elements.draftState.textContent = "Send failed: " + String(error.message || error);
+  if (elements.composerToolMenuToggle) {
+    elements.composerToolMenuToggle.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      setComposerMenuOpen(!shellState.composerToolMenuOpen);
+    });
+  }
+
+  composerToolActions.forEach((button) => {
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleComposerTool(button.getAttribute("data-composer-tool-action"));
     });
   });
+
+  if (elements.composerFileInput) {
+    elements.composerFileInput.setAttribute("accept", COMPOSER_SUPPORTED_EXTENSIONS.join(","));
+    elements.composerFileInput.addEventListener("change", async function () {
+      const files = Array.from(elements.composerFileInput.files || []);
+      elements.composerFileInput.value = "";
+      if (!files.length) return;
+      const remainingSlots = Math.max(0, COMPOSER_ATTACHMENT_LIMIT - shellState.stagedAttachments.length);
+      const selectedFiles = files.slice(0, remainingSlots);
+      const rejected = [];
+      for (const file of selectedFiles) {
+        if (!supportedComposerFile(file)) {
+          rejected.push(file.name + " unsupported");
+          continue;
+        }
+        if (Number(file.size || 0) > COMPOSER_ATTACHMENT_MAX_BYTES) {
+          rejected.push(file.name + " over " + formatFileSize(COMPOSER_ATTACHMENT_MAX_BYTES));
+          continue;
+        }
+        try {
+          const rawText = await file.text();
+          stageComposerAttachment({
+            id: buildAttachmentId("file"),
+            name: file.name,
+            size: Number(file.size || rawText.length || 0),
+            type: file.type || "text/plain",
+            text: rawText.slice(0, COMPOSER_ATTACHMENT_MAX_CHARS),
+            truncated: rawText.length > COMPOSER_ATTACHMENT_MAX_CHARS,
+            addedAt: new Date().toISOString(),
+          });
+        } catch (_) {
+          rejected.push(file.name + " unreadable");
+        }
+      }
+      if (files.length > selectedFiles.length) {
+        rejected.push("Only " + COMPOSER_ATTACHMENT_LIMIT + " files can be staged");
+      }
+      if (rejected.length) {
+        elements.draftState.textContent = "File staging skipped: " + rejected.join(", ");
+      } else {
+        elements.draftState.textContent = "File context staged for next send.";
+      }
+    });
+  }
+
+  if (elements.composerAttachmentList) {
+    elements.composerAttachmentList.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-attachment-id]");
+      if (!button) return;
+      removeComposerAttachment(button.getAttribute("data-attachment-id"));
+    });
+  }
+
+  document.addEventListener("click", function (event) {
+    if (!shellState.composerToolMenuOpen) return;
+    if (event.target.closest(".igs-composer-tool-launcher")) return;
+    setComposerMenuOpen(false);
+  });
+
+  document.addEventListener("click", function (event) {
+    if (event.target.closest(".igs-pill-select, .igs-select-tile")) return;
+    closeContractPillSelects();
+  });
+
+  elements.sendPrompt.addEventListener("click", function () {
+    const mode = elements.sendPrompt.dataset.composerActionMode || "send";
+    const action = mode === "answer-now" ? queueAnswerNow() : sendPrompt();
+    action.catch(function (error) {
+      elements.draftState.textContent = (mode === "answer-now" ? "Answer now failed: " : "Send failed: ") + String(error.message || error);
+      updateComposerActionButton(runtimeState.backendState || {});
+    });
+  });
+
+  if (elements.debugRefreshState) {
+    elements.debugRefreshState.addEventListener("click", function () {
+      refreshDebugSurface().catch(function (error) {
+        if (elements.debugOperationStatus) {
+          elements.debugOperationStatus.textContent = "Debug refresh failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.debugRunRound) {
+    elements.debugRunRound.addEventListener("click", function () {
+      runDebugOperation(API.rounds, {}, "Round dispatch queued").catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Run round failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugRunLoop) {
+    elements.debugRunLoop.addEventListener("click", function () {
+      const control = currentControlState();
+      const delayMs = Number(runtimeState.draft?.loopDelayMs || 1000) || 1000;
+      runDebugOperation(API.loops, { rounds: control.loopRounds, delayMs }, "Auto loop queued").catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Run auto loop failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugSummarize) {
+    elements.debugSummarize.addEventListener("click", function () {
+      runDebugOperation(API.targetsBackground, { target: "summarizer" }, "Summarizer queued").catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Summarizer failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugCancelLoop) {
+    elements.debugCancelLoop.addEventListener("click", function () {
+      runDebugOperation(API.loopsCancel, {}, "Cancel sent").catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Cancel loop failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugResetSession) {
+    elements.debugResetSession.addEventListener("click", function () {
+      if (!window.confirm("Reset active session and archive the current workspace?")) return;
+      runDebugOperation(API.sessionReset, {}, "Session reset", { hydrate: true }).catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Session reset failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugClearSessionArchives) {
+    elements.debugClearSessionArchives.addEventListener("click", function () {
+      if (!window.confirm("Delete saved session archives? This cannot be undone.")) return;
+      runDebugOperation(API.sessionArchivesClear, {}, "Session archives cleared").catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Session archive clear failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugResetState) {
+    elements.debugResetState.addEventListener("click", function () {
+      if (!window.confirm("Reset state and clear the active task?")) return;
+      runDebugOperation(API.stateReset, {}, "State reset", { hydrate: true }).catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "State reset failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugTargetControls) {
+    elements.debugTargetControls.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-debug-target]");
+      if (!button || button.disabled) return;
+      const target = String(button.getAttribute("data-debug-target") || "").trim();
+      if (!target) return;
+      runDebugOperation(
+        API.targetsBackground,
+        { target },
+        target === "answer_now" ? "Partial answer queued" : "Target queued"
+      ).catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Target dispatch failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugExportCurrentSession) {
+    elements.debugExportCurrentSession.addEventListener("click", function () {
+      loadDebugExportPreview("").catch(function (error) {
+        if (elements.debugHistoryStatus) elements.debugHistoryStatus.textContent = "Session export failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugSessionArchives) {
+    elements.debugSessionArchives.addEventListener("click", function (event) {
+      const exportButton = event.target.closest("[data-debug-export-archive]");
+      if (exportButton) {
+        loadDebugExportPreview(exportButton.getAttribute("data-debug-export-archive")).catch(function (error) {
+          if (elements.debugHistoryStatus) elements.debugHistoryStatus.textContent = "Archived session export failed: " + String(error.message || error);
+        });
+        return;
+      }
+      const replayButton = event.target.closest("[data-debug-replay-archive]");
+      if (!replayButton) return;
+      const archiveFile = String(replayButton.getAttribute("data-debug-replay-archive") || "").trim();
+      if (!archiveFile || !window.confirm("Replay " + archiveFile + " into the active workspace?")) return;
+      runDebugOperation(API.sessionReplay, { archiveFile }, "Archived session replayed", { hydrate: true }).catch(function (error) {
+        if (elements.debugHistoryStatus) elements.debugHistoryStatus.textContent = "Archived session replay failed: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.debugJobHistory) {
+    elements.debugJobHistory.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-debug-job-action]");
+      if (!button) return;
+      const action = String(button.getAttribute("data-debug-job-action") || "").trim();
+      const jobId = String(button.getAttribute("data-job-id") || "").trim();
+      if (!action || !jobId) return;
+      const successText = action === "resume"
+        ? "Interrupted loop resumed"
+        : (action === "retry" ? "Loop queued for retry" : "Job cancelled");
+      runDebugOperation(API.jobsManage, { action, jobId }, successText).catch(function (error) {
+        if (elements.debugOperationStatus) elements.debugOperationStatus.textContent = "Job action failed: " + String(error.message || error);
+      });
+    });
+  }
 
   if (elements.scoreRefreshBtn) {
     elements.scoreRefreshBtn.addEventListener("click", function () {
@@ -1731,20 +3254,25 @@
   window.addEventListener("pointermove", onMainWorkbenchPaneMove);
   window.addEventListener("pointerup", endMainWorkbenchPaneDrag);
 
+  installContractPillSelects();
   fillModelsForCurrentProviders();
+  syncSelectToggleButtons();
+  syncSelectCycleButtons();
   try {
-    applySidebarState(window.localStorage.getItem("replacementShell.sidebarCollapsed") === "1");
+    applySidebarState(window.localStorage.getItem("igsShell.sidebarCollapsed") === "1");
   } catch (_) {
     applySidebarState(false);
   }
   try {
-    setInspectorMode(window.localStorage.getItem("replacementShell.inspectorMode") || "repo");
+    setInspectorMode(window.localStorage.getItem("igsShell.inspectorMode") || "repo");
   } catch (_) {
     setInspectorMode("repo");
   }
+  shellState.homeCollapsedPanels = new Set(readHomeCollapsedPanels());
+  applyHomePanelCollapseState();
   try {
-    scoreState.selectedRunId = window.localStorage.getItem("replacementShell.scoreRunId") || "";
-    scoreState.selectedSessionId = window.localStorage.getItem("replacementShell.scoreSessionId") || "";
+    scoreState.selectedRunId = window.localStorage.getItem("igsShell.scoreRunId") || "";
+    scoreState.selectedSessionId = window.localStorage.getItem("igsShell.scoreSessionId") || "";
   } catch (_) {}
   loadState({ hydrate: true }).catch(function (error) {
     elements.draftState.textContent = "Load failed: " + String(error.message || error);

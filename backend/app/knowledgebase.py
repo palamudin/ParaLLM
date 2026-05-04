@@ -60,6 +60,26 @@ MSP_MAJOR_INCIDENT_TERMS = {
     "after-hours",
     "overnight",
 }
+MSP_AMBIENT_RECALL_TERMS = {
+    "msp",
+    "mssp",
+    "tenant",
+    "tenants",
+    "multi-tenant",
+    "rmm",
+    "psa",
+    "backup",
+    "restore",
+    "restoring",
+    "oauth",
+    "entra",
+    "ransomware",
+    "severity",
+    "sev-1",
+    "after-hours",
+    "overnight",
+    "control-plane",
+}
 
 
 @dataclass(frozen=True)
@@ -493,7 +513,7 @@ def runtime_records(root: Path | str, *, max_events: int = 80, max_steps: int = 
             normalize_record(
                 {
                     "id": "runtime_msp_howto",
-                    "bankId": DEFAULT_BANK_ID,
+                    "bankId": MSP_BANK_ID,
                     "title": "MSP Knowledgebase How-To",
                     "type": "runbook",
                     "source": "runtime_fallback",
@@ -622,6 +642,29 @@ def baseline_reason(record: Dict[str, Any], query: str, query_terms: List[str], 
             return reason
         return ""
     return reason
+
+
+def has_msp_recall_context(query: str, query_terms: List[str], wanted_tags: List[str], bank_id: str) -> bool:
+    if bank_id == MSP_BANK_ID:
+        return True
+    tag_set = {str(tag or "").lower() for tag in wanted_tags}
+    if "msp" in tag_set or "mssp" in tag_set:
+        return True
+    terms = set(query_terms)
+    if terms & MSP_AMBIENT_RECALL_TERMS:
+        return True
+    query_lower = str(query or "").lower()
+    return any(
+        phrase in query_lower
+        for phrase in (
+            "managed service provider",
+            "managed services provider",
+            "managed service",
+            "customer tenant",
+            "customer tenants",
+            "control plane",
+        )
+    )
 
 
 def baseline_priority(record: Dict[str, Any]) -> int:
@@ -773,9 +816,15 @@ def recall(
         filtered.append(record)
 
     query_terms = tokenize(query)
+    allow_ambient_msp = has_msp_recall_context(query, query_terms, wanted_tags, bank_id)
     scored: List[Dict[str, Any]] = []
     baseline_scored: List[Dict[str, Any]] = []
     for record in filtered:
+        record_bank_id = str(record.get("bankId") or "")
+        record_tags = {str(tag).strip().lower() for tag in record.get("tags") or [] if str(tag).strip()}
+        record_is_msp = record_bank_id == MSP_BANK_ID or "msp" in record_tags or str(record.get("id") or "") == "runtime_msp_howto"
+        if record_is_msp and bank_id != MSP_BANK_ID and not allow_ambient_msp:
+            continue
         score, parts = record_score(record, query, query_terms, wanted_tags)
         reason = baseline_reason(record, query, query_terms, wanted_tags, bank_id)
         enriched = {**record, "score": round(score, 4), "scoreParts": parts}
@@ -825,6 +874,12 @@ def recall(
         f"[{index}] {hit.get('title')} ({hit.get('type')}, {hit.get('sourceId')}): {sop_context_line(hit)}"
         for index, hit in enumerate(selected, start=1)
     ]
+    selected_has_msp = any(hit.get("bankId") == MSP_BANK_ID or "msp" in (hit.get("tags") or []) for hit in selected)
+    baseline_policy = (
+        "MSP high-risk incidents reserve mandatory baseline SOP packets before adaptive recall fills the remaining slots."
+        if selected_has_msp or allow_ambient_msp or bank_id == MSP_BANK_ID
+        else "Use targeted baseline packets only when the current task context explicitly matches their domain."
+    )
     return {
         "schemaVersion": SCHEMA_VERSION,
         "query": query,
@@ -843,7 +898,7 @@ def recall(
             "baselineCount": sum(1 for hit in selected if hit.get("memoryLayer") == "baseline"),
             "adaptiveCount": sum(1 for hit in selected if hit.get("memoryLayer") == "adaptive"),
             "supportingCount": sum(1 for hit in selected if hit.get("memoryLayer") == "supporting"),
-            "baselinePolicy": "MSP high-risk incidents reserve mandatory baseline SOP packets before adaptive recall fills the remaining slots.",
+            "baselinePolicy": baseline_policy,
         },
         "hits": [
             {

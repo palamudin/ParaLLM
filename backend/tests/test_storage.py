@@ -213,6 +213,86 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["frontAnswer"]["answer"], "Scoped answer.")
         self.assertEqual(payload["activeTask"]["stateCommander"]["round"], 1)
 
+    def test_read_state_payload_hydrates_missing_live_fields_from_latest_output_artifacts(self) -> None:
+        task_id = "t-20260504-095109-4a8e7a"
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": task_id,
+                    "objective": "Show the completed run in the viewport.",
+                    "workers": [{"id": "A", "label": "Proponent"}, {"id": "B", "label": "Sceptic"}],
+                },
+                "commander": None,
+                "commanderReview": None,
+                "workers": {"A": None, "B": None},
+                "summary": None,
+                "directBaseline": None,
+                "loop": {"status": "completed", "completedRounds": 3, "lastMessage": "Completed 3 round(s)."},
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_commander_round003_output.json",
+            {
+                "artifactType": "commander_output",
+                "taskId": task_id,
+                "target": "commander",
+                "round": 3,
+                "output": {"round": 3, "answerDraft": "Commander draft visible."},
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_A_step003_output.json",
+            {
+                "artifactType": "worker_output",
+                "taskId": task_id,
+                "target": "A",
+                "step": 3,
+                "output": {"workerId": "A", "step": 3, "observation": "Worker A visible."},
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_B_step003_output.json",
+            {
+                "artifactType": "worker_output",
+                "taskId": task_id,
+                "target": "B",
+                "step": 3,
+                "output": {"workerId": "B", "step": 3, "observation": "Worker B visible."},
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_commander_review_round003_output.json",
+            {
+                "artifactType": "commander_review_output",
+                "taskId": task_id,
+                "target": "commander_review",
+                "round": 3,
+                "output": {"round": 3, "courseDecision": "maintain", "answerDraft": "Review visible."},
+            },
+        )
+        self.write_json(
+            self.paths.outputs / f"{task_id}_summary_round003_output.json",
+            {
+                "artifactType": "summary_output",
+                "taskId": task_id,
+                "target": "summarizer",
+                "round": 3,
+                "output": {"round": 3, "frontAnswer": {"answer": "Final answer visible."}},
+            },
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        self.assertEqual(payload["commander"]["answerDraft"], "Commander draft visible.")
+        self.assertEqual(payload["workers"]["A"]["observation"], "Worker A visible.")
+        self.assertEqual(payload["workers"]["B"]["observation"], "Worker B visible.")
+        self.assertEqual(payload["commanderReview"]["courseDecision"], "maintain")
+        self.assertEqual(payload["summary"]["frontAnswer"]["answer"], "Final answer visible.")
+        self.assertEqual(payload["activeTask"]["stateCommander"]["answerDraft"], "Commander draft visible.")
+        self.assertEqual(payload["activeTask"]["stateWorkers"]["A"]["observation"], "Worker A visible.")
+        self.assertEqual(payload["activeTask"]["summary"]["frontAnswer"]["answer"], "Final answer visible.")
+
     def test_read_state_payload_surfaces_execution_health_from_recent_steps(self) -> None:
         self.write_json(
             self.paths.state,
