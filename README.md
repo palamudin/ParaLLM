@@ -678,104 +678,84 @@ The next serious tuning work is:
 - scheduler visibility for live, eval, judge, repo scan, memory, and provider-call jobs
 - repo/knowledgebase UI tightening so the same surface works for operators and AI agents
 
-## Status
+## Evaluation Evidence
 
-Blind external vetting snapshots are grouped by judge provider/model so cross-provider reads stay explicit. Public timing is intentionally omitted here; local benchmark artifacts still track latency and speed-adjusted scores while the sample size grows.
+This section is written for technical and governance review. It separates historical research signal from current publishable score claims, and it states the scoring gate before presenting results.
 
-The published tables below are `Council judging` snapshots:
-- one answer pack
-- many judges
-- same blind answers scored by multiple provider families
+### Scoring Method
 
-The harness also supports `provider_owned` judging as a separate benchmark mode:
-- one provider family generates the Para variants
-- one direct baseline from that same provider family
-- the same provider family judges the pack
+ParaLLM compares a single-thread `Direct` answer against a `Para` answer produced by the live orchestration path. A publishable Para answer must come from the final live summarizer output after commander, worker, review, and merge stages. The judge receives blind, uncropped answer payloads and scores the completed answer, not internal notes or partial traces.
 
-That split still matters. `Council` tells us whether different model families independently prefer the pressured answer set. `provider_owned` tells us how each vendor's own reasoning stack evaluates its own Para-vs-direct contest.
+Two judging modes are tracked:
 
-### Benchmark Reset
+- `Council`: the same blind answer pack is scored by one or more judge families so cross-provider preference can be compared.
+- `provider_owned`: one provider family generates Direct and Para answers, then that provider family judges its own blinded pack.
 
-Published benchmark tables were retired on `2026-04-27` after the new uncropped `Scores` surface proved that some judged runs still contained fallback, placeholder, or incomplete Para outputs.
+Primary metrics:
 
-The old publication is preserved as a historical milestone here:
-- [BENCHMARK_SCORES_OLD.md](BENCHMARK_SCORES_OLD.md)
-- [archived summary rollup](data/benchmarks/vetting/_old/summary_20260427_pre_verification_reset.json)
-- [archived latest blind run snapshot](data/benchmarks/vetting/_old/latest_20260427_pre_verification_reset.json)
+- `Quality`: domain correctness, safety, sequencing, and completeness for the scenario.
+- `Health`: readability, coherence, and user-facing answer integrity.
+- `Control`: Para-only orchestration discipline, especially whether final synthesis preserved evidence gates and rejected unsafe shortcuts.
+- `Deterministic`: suite-specific hard checks. These are rule checks, not model opinion.
 
-Those archived tables are useful research signal, but they are no longer the canonical README benchmark claim.
+### Publication Gate
 
-### Score Regimes
+A score table is publishable only when all of the following are true:
 
-Current score publication separates `constrained` and `unconstrained` runs.
+- `Direct` uses the complete direct live answer.
+- `Para` uses the complete final live summarizer answer.
+- the judge sees complete uncropped payloads from both sides.
+- fallback, placeholder, cropped, or non-live artifacts are excluded.
+- run errors, failed provider arms, quota failures, and malformed judge outputs are disclosed.
+- constrained and unconstrained regimes are not merged into one headline claim.
 
-The old tables are preserved as historical `constrained` tests: both Direct and Para were judged under answer-shaping constraints, and some retired runs predated the full live-output verification gate. They are useful research signal, but they are not directly comparable to the new unconstrained table.
+Pass/fail language in this README means:
 
-The active publication gate is:
-- `Para` must be fed from the final live summarizer output, not fallback, placeholder, or cropped internal state
-- `Direct` must be fed from the full direct live answer, not a shortened proxy
-- `Judge` must see complete uncropped payloads from both sides
-- runs with `mode != live`, placeholder text, or fallback artifacts do not qualify for README publication
-- new score tables should record both `constrained` and `unconstrained` regimes when both runs exist for the same scenario
+- `Publication pass`: artifacts are complete enough to quote as score evidence.
+- `Quality pass`: Para beats Direct on the declared quality comparison for the scenario and regime.
+- `Diagnostic fail`: the run is valid evidence of a weakness, but not a positive benchmark claim.
+- `Operational fail`: provider/runtime execution failed before a clean score could be produced.
 
-Latest verified live stability runs are summarized in [2026-05-01 MSP RMM OpenAI Mini Stability Runs](docs/eval-results/2026-05-01-msp-rmm-openai-mini.md).
+### Archived Score Evidence
 
-Latest hard-mode cross-provider shakeout is summarized in [2026-05-01 MSP Critical Council Hard Sweep](docs/eval-results/2026-05-01-msp-critical-council-hard-openai-judge.md). That run is useful operational signal, but not a clean score claim: it includes provider-arm failures and configuration findings.
+The pre-reset score publication is archived here:
 
-Latest memory-enabled hard-mode scoring is summarized in [2026-05-02 MSP Baseline/Adaptive Memory Scoring](docs/eval-results/2026-05-02-msp-baseline-adaptive-memory.md).
+- [Archived benchmark summary](BENCHMARK_SCORES_OLD.md)
+- [Archived summary rollup](data/benchmarks/vetting/_old/summary_20260427_pre_verification_reset.json)
+- [Archived latest blind run snapshot](data/benchmarks/vetting/_old/latest_20260427_pre_verification_reset.json)
 
-Latest basis council/provider-owned sweep is summarized in [2026-05-02 MSP Basis Council and Provider-Owned Sweep](docs/eval-results/2026-05-02-msp-basis-council-provider-owned.md).
+Those results remain useful only as historical constrained evidence. They were produced under short-form answer-shaping constraints, including five-paragraph style limits, and before advanced memory utilization was active. They also predate the current uncropped live-output verification gate. Treat them as valid for their original constrained review context, not as current benchmark truth.
 
-Latest focused rub test is summarized in [2026-05-02 OpenAI 5.4 Rub Test: Backup/Identity](docs/eval-results/2026-05-02-openai54-rub-test-backup-identity.md).
+### Current Score Position
 
-Latest contradiction-memory validation is summarized in [2026-05-02 DeepSeek Contradiction Memory Validation](docs/eval-results/2026-05-02-deepseek-contradiction-memory-validation.md).
+Current review position as of `2026-05-05`: ParaLLM has strong positive evidence on RMM/control-plane incident scenarios, but the broader MSP quality thesis remains under active validation. The latest hard-case runs found that memory and contradiction gates are improving the internals, while final synthesis still needs stricter merge discipline before a larger corporate benchmark claim.
 
-| Field | Value |
-| --- | --- |
-| Date | `2026-05-02` |
-| Run id | `judge-openai54-baseline-adaptive-20260502-112054` |
-| Scenario pack | `msp-critical-council-hard` |
-| Generation provider/model | `openai` / `gpt-5.4` |
-| Judge provider/model | `openai` / `gpt-5.4` |
-| Memory mode | baseline/adaptive MSP knowledgebase recall for both arms |
-| Replicates | `1` per arm/case |
-| Error count | `0` |
-| Total tokens / estimated cost | `183,053` / `$1.664687` |
-| Judge learning | `48` new score events; event ledger `321 -> 369` |
+| Evidence | Status | What It Proves | Review Link |
+| --- | --- | --- | --- |
+| OpenAI mini RMM stability, constrained and unconstrained | Publication pass; quality pass | Para beat Direct in every replicate on the RMM PowerShell first-hour response scenario. | [2026-05-01 MSP RMM OpenAI Mini Stability Runs](docs/eval-results/2026-05-01-msp-rmm-openai-mini.md) |
+| OpenAI 5.4 baseline/adaptive memory hard suite | Publication pass; memory validation pass | Targeted baseline/adaptive MSP recall improved average quality and actionability without dumping the full knowledgebase into every prompt. | [2026-05-02 MSP Baseline/Adaptive Memory Scoring](docs/eval-results/2026-05-02-msp-baseline-adaptive-memory.md) |
+| Cross-provider basis sweep | Diagnostic fail for broad proof | Infrastructure was usable across providers, but same-provider judges preferred Direct in most backup and identity cases. | [2026-05-02 MSP Basis Council and Provider-Owned Sweep](docs/eval-results/2026-05-02-msp-basis-council-provider-owned.md) |
+| OpenAI 5.4 backup/identity rub test | Diagnostic fail for Para backup synthesis | Direct scored `9/9/9` on the backup case; Para scored `9/5/6` and lost explicit per-tenant ownership and evidence handling in final synthesis. | [2026-05-02 OpenAI 5.4 Rub Test: Backup/Identity](docs/eval-results/2026-05-02-openai54-rub-test-backup-identity.md) |
+| DeepSeek contradiction-memory validation | Feature validation pass; operational caution | Contradiction memory and final-answer gates fired, but later DeepSeek retries failed strict JSON parsing before clean quality scoring. | [2026-05-02 DeepSeek Contradiction Memory Validation](docs/eval-results/2026-05-02-deepseek-contradiction-memory-validation.md) |
 
-| Metric | Previous memory run | Baseline/adaptive run | Delta |
+Current publishable RMM score:
+
+| Regime | Arm | Replicates | Quality Mean | Quality Range | Health Mean | Control Mean | Result |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- |
+| Constrained | `direct-openai-mini-open` | `5` | `3.60` | `2-6` | `8.20` | `n/a` | baseline |
+| Constrained | `para-openai-mini-critical-double--loops-1` | `5` | `7.20` | `4-9` | `8.80` | `7.20` | Para quality pass |
+| Unconstrained | `direct-openai-mini-unconstrained` | `5` | `2.00` | `2-2` | `8.40` | `n/a` | baseline |
+| Unconstrained | `para-openai-mini-unconstrained-double--loops-1` | `5` | `6.60` | `4-8` | `8.20` | `6.40` | Para quality pass |
+
+Current memory-enabled hard-suite score:
+
+| Metric | Previous Memory Run | Baseline/Adaptive Run | Delta |
 | --- | ---: | ---: | ---: |
 | Average overall quality | `8.33` | `8.67` | `+0.34` |
 | Average actionability | `8.50` | `9.17` | `+0.67` |
 | Average answer health | `9.50` | `9.33` | `-0.17` |
 | Average control | `9.00` | `7.67` | `-1.33` |
 
-Current read: baseline/adaptive recall fixed the backup-console direct-answer collapse from the prior memory run, but Para still needs a stronger final merge check for explicit per-tenant incident ownership and fallback paths when normal vendor or coordination channels are unavailable.
+Review conclusion: the current scoring record supports continued development and internal review, not a broad external performance claim. The next clean benchmark should rerun the backup/identity hard cases after final merge gates and contradiction memory are exercised under stable provider JSON handling.
 
-The follow-up basis sweep across provider families reached the same conclusion more sharply: the infrastructure is good enough to proceed, but the quality thesis was not ready for a larger proof run. Same-provider judges preferred Direct in most backup and identity cases, while Para remained strongest on RMM/control-plane cases. That led to cross-round contradiction memory plus final merge gates before another expensive scoring cycle.
-
-The focused OpenAI 5.4 rub test confirmed the failure mode: backup Direct scored `9/9/9`, while backup Para scored `9/5/6` and repeatedly lost explicit named per-tenant ownership/evidence handling in final synthesis. The identity half did not run because OpenAI quota was exhausted. Contradiction memory now addresses that specific merge failure, and the next broad score pass should measure whether it improves Para without inflating prompt burn or creating rote answers.
-
-| Field | Value |
-| --- | --- |
-| Date | `2026-05-01` |
-| Scenario | MSP RMM PowerShell spike across 12 SMB clients, first-hour response |
-| Generation provider/model | `openai` / `gpt-5-mini` |
-| Judge provider/model | `openai` / `gpt-5.4` |
-| Constrained run id | `judge-20260501-105629+0000-d6a1cc` |
-| Unconstrained run id | `judge-20260501-111907+0000-d5db95` |
-| Replicates | `5` per arm per regime |
-| Error count | `0` in both runs |
-| Live/fallback status | live only; synthetic fallback excluded |
-| Total tokens / estimated cost | constrained `153,102` / `$0.105828`; unconstrained `138,904` / `$0.088030` |
-
-| Regime | Arm | Deterministic | Quality mean | Quality sd | Quality min-max | Health mean | Control mean |
-| --- | --- | ---: | ---: | ---: | --- | ---: | ---: |
-| Constrained | `direct-openai-mini-open` | `5/5` | `3.60` | `1.36` | `2-6` | `8.20` | `n/a` |
-| Constrained | `para-openai-mini-critical-double--loops-1` | `5/5` | `7.20` | `1.72` | `4-9` | `8.80` | `7.20` |
-| Unconstrained | `direct-openai-mini-unconstrained` | `5/5` | `2.00` | `0.00` | `2-2` | `8.40` | `n/a` |
-| Unconstrained | `para-openai-mini-unconstrained-double--loops-1` | `5/5` | `6.60` | `1.36` | `4-8` | `8.20` | `6.40` |
-
-Current read: Para won every quality replicate in both regimes, but the remaining failure target is control-plane sequencing. Some Para answers still allow too much use of the suspected RMM console before evidence export.
-
-Use [scripts/vetting_manifest.provider_owned.example.json](scripts/vetting_manifest.provider_owned.example.json) as the starting shape for fresh provider-family-native reruns, and keep the score tables split by constraint regime.
+Use [scripts/vetting_manifest.provider_owned.example.json](scripts/vetting_manifest.provider_owned.example.json) as the starting shape for fresh provider-family-native reruns.
