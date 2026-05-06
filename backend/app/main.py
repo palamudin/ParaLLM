@@ -14,7 +14,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - helpful runtime error
 
 from runtime.engine import RuntimeErrorWithCode
 
-from . import config, control, dispatch, evals, infrastructure, jobs, judge_learning, knowledgebase, memory_graph, repo_graph, sessions, settings, storage
+from . import codex_lanes, config, control, dispatch, evals, infrastructure, jobs, judge_learning, knowledgebase, memory_graph, repo_graph, sessions, settings, storage
 
 
 async def request_payload(request: Request) -> dict[str, object]:
@@ -308,6 +308,11 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)
 
+    @app.post("/v1/auth/requirements")
+    async def post_auth_requirements(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        return JSONResponse(control.auth_requirements_status(payload, paths.root))
+
     @app.post("/v1/auth/mode")
     async def post_auth_mode(request: Request) -> JSONResponse:
         payload = await request_payload(request)
@@ -329,6 +334,29 @@ def create_app(root: Path | None = None) -> FastAPI:
         except RuntimeErrorWithCode as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return JSONResponse(result)
+
+    @app.get("/v1/codex/limits")
+    def get_codex_limits(model: str = "") -> JSONResponse:
+        return JSONResponse(codex_lanes.codex_limits_status(paths.root, model=model))
+
+    @app.post("/v1/codex/limits/manual")
+    async def post_codex_manual_limits(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        return JSONResponse(codex_lanes.save_manual_codex_limits(paths.root, payload))
+
+    @app.get("/v1/codex/auth")
+    def get_codex_auth() -> JSONResponse:
+        return JSONResponse(codex_lanes.codex_auth_status(paths.root))
+
+    @app.post("/v1/codex/auth")
+    async def post_codex_auth(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        return JSONResponse(codex_lanes.save_codex_auth_policy(paths.root, payload))
+
+    @app.post("/v1/codex/lanes/run")
+    async def post_codex_lane_run(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        return JSONResponse(codex_lanes.run_codex_arm(paths.root, payload))
 
     @app.get("/v1/state")
     def get_state() -> JSONResponse:

@@ -9,6 +9,7 @@ data/evals/*
 !data/evals/suites/*.json
 data/evals/runs/
 data/outputs/
+data/failed_calls/
 data/sessions/
 data/handoffs/
 data/node_transfers/
@@ -36,4 +37,5 @@ backend/tests/__pycache__/
 *.pyc
 *.zip
 tmp/
+.qa/
 .venv/

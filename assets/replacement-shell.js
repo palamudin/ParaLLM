@@ -22,16 +22,39 @@
     history: "/v1/history",
     artifact: "/v1/artifact",
     handoffs: "/v1/handoffs",
+    authStatus: "/v1/auth/status",
+    authKeys: "/v1/auth/keys",
+    authRequirements: "/v1/auth/requirements",
+    codexLimits: "/v1/codex/limits",
+    codexLimitsManual: "/v1/codex/limits/manual",
+    codexAuth: "/v1/codex/auth",
+    codexLaneRun: "/v1/codex/lanes/run",
   };
+
+  const OPENAI_API_MODEL_SOURCE = "openai_api";
+  const OPENAI_CODEX_MODEL_SOURCE = "codex_auth";
+  const OPENAI_API_MODEL_TRANSPORT = "openai_responses";
+  const OPENAI_CODEX_MODEL_TRANSPORT = "codex_cli";
+
+  const OPENAI_BASE_MODELS = [
+    { value: "openai:gpt-5-mini", model: "gpt-5-mini", label: "GPT-5 Mini", shortLabel: "GPT-5 Mini", source: "openai_api", sourceLabel: "API key", transport: "openai_responses" },
+    { value: "openai:gpt-5.4", model: "gpt-5.4", label: "GPT-5.4", shortLabel: "GPT-5.4", source: "openai_api", sourceLabel: "API key", transport: "openai_responses" },
+    { value: "openai:gpt-5.4-mini", model: "gpt-5.4-mini", label: "GPT-5.4 Mini", shortLabel: "GPT-5.4 Mini", source: "openai_api", sourceLabel: "API key", transport: "openai_responses" },
+  ];
+
+  const OPENAI_CODEX_FALLBACK_MODELS = [
+    { value: "codex:gpt-5.5", model: "gpt-5.5", label: "GPT-5.5", shortLabel: "GPT-5.5", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
+    { value: "codex:gpt-5.4", model: "gpt-5.4", label: "GPT-5.4", shortLabel: "GPT-5.4", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
+    { value: "codex:gpt-5.4-mini", model: "gpt-5.4-mini", label: "GPT-5.4 Mini", shortLabel: "GPT-5.4 Mini", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
+    { value: "codex:gpt-5.3-codex", model: "gpt-5.3-codex", label: "GPT-5.3 Codex", shortLabel: "5.3 Codex", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
+    { value: "codex:gpt-5.3-codex-spark", model: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", shortLabel: "5.3 Spark", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
+    { value: "codex:gpt-5.2", model: "gpt-5.2", label: "GPT-5.2", shortLabel: "GPT-5.2", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
+  ];
 
   const providerCatalog = {
     openai: {
       label: "OpenAI",
-      models: [
-        { value: "gpt-5-mini", label: "GPT-5 Mini", shortLabel: "GPT-5 Mini" },
-        { value: "gpt-5.4", label: "GPT-5.4", shortLabel: "GPT-5.4" },
-        { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", shortLabel: "GPT-5.4 Mini" },
-      ],
+      models: mergeModelOptions(OPENAI_BASE_MODELS, OPENAI_CODEX_FALLBACK_MODELS),
     },
     deepseek: {
       label: "DeepSeek",
@@ -60,6 +83,8 @@
   const COMPOSER_ATTACHMENT_LIMIT = 4;
   const COMPOSER_ATTACHMENT_MAX_BYTES = 180000;
   const COMPOSER_ATTACHMENT_MAX_CHARS = 6000;
+  const TEXTAREA_MIN_HEIGHT_PX = 48;
+  const TEXTAREA_MAX_VISIBLE_ROWS = 7;
   const COMPOSER_SUPPORTED_EXTENSIONS = [
     ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
     ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
@@ -69,6 +94,9 @@
     backendState: null,
     draft: null,
     saveTimer: null,
+    codexLimits: null,
+    codexLimitsTimer: null,
+    authRequirements: null,
     controlsLoaded: false,
   };
 
@@ -85,6 +113,12 @@
     payload: null,
     sessions: [],
     loaded: false,
+  };
+  const sessionBrowserState = {
+    loaded: false,
+    selectedKey: "current",
+    entries: [],
+    exportPayload: null,
   };
   const failedCallState = {
     loaded: false,
@@ -136,12 +170,13 @@
     summarizerProvider: document.getElementById("previewSummarizerProvider"),
     summarizerModel: document.getElementById("previewSummarizerModel"),
     contextMode: document.getElementById("previewContextMode"),
+    reasoningEffort: document.getElementById("previewReasoningEffort"),
     directBaselineMode: document.getElementById("previewDirectBaselineMode"),
     vettingEnabled: document.getElementById("previewVettingEnabled"),
     researchMode: document.getElementById("previewResearchMode"),
     memoryMode: document.getElementById("previewMemoryMode"),
     objective: document.getElementById("previewObjective"),
-    objectiveMirror: document.getElementById("previewObjectiveMirror"),
+    composerRow: document.querySelector(".igs-chat-composer .igs-composer-row"),
     sessionContext: document.getElementById("previewSessionContext"),
     constraints: document.getElementById("previewConstraints"),
     loopRounds: document.getElementById("previewLoopRounds"),
@@ -166,6 +201,7 @@
     eventLog: document.getElementById("previewEventLog"),
     summaryPath: document.getElementById("previewSummaryPath"),
     summaryLimits: document.getElementById("previewSummaryLimits"),
+    summaryReasoning: document.getElementById("previewSummaryReasoning"),
     summaryResearch: document.getElementById("previewSummaryResearch"),
     summaryMemory: document.getElementById("previewSummaryMemory"),
     headerTask: document.getElementById("previewHeaderTask"),
@@ -181,6 +217,15 @@
     scoreRunMeta: document.getElementById("scoreRunMeta"),
     scoreStatus: document.getElementById("scoreStatus"),
     scoreCompareDetail: document.getElementById("scoreCompareDetail"),
+    sessionSearch: document.getElementById("sessionSearch"),
+    sessionRefreshBtn: document.getElementById("sessionRefreshBtn"),
+    sessionStatus: document.getElementById("sessionStatus"),
+    sessionList: document.getElementById("sessionList"),
+    sessionDetailMeta: document.getElementById("sessionDetailMeta"),
+    sessionThread: document.getElementById("sessionThread"),
+    sessionRawExport: document.getElementById("sessionRawExport"),
+    sessionPreviewCurrentBtn: document.getElementById("sessionPreviewCurrentBtn"),
+    sessionReplayBtn: document.getElementById("sessionReplayBtn"),
     failedCallSelect: document.getElementById("failedCallSelect"),
     failedCallRefreshBtn: document.getElementById("failedCallRefreshBtn"),
     failedCallStatus: document.getElementById("failedCallStatus"),
@@ -218,6 +263,21 @@
     debugSchedulerEvents: document.getElementById("debugSchedulerEvents"),
     debugStepLog: document.getElementById("debugStepLog"),
     debugEventLog: document.getElementById("debugEventLog"),
+    authRequirementModal: document.getElementById("authRequirementModal"),
+    authRequirementClose: document.getElementById("authRequirementClose"),
+    authRequirementBody: document.getElementById("authRequirementBody"),
+    authRequirementProvider: document.getElementById("authRequirementProvider"),
+    authRequirementKeyInput: document.getElementById("authRequirementKeyInput"),
+    authRequirementSaveKey: document.getElementById("authRequirementSaveKey"),
+    authRequirementCodexSignIn: document.getElementById("authRequirementCodexSignIn"),
+    authRequirementStatus: document.getElementById("authRequirementStatus"),
+    settingsCodexAuthMode: document.getElementById("settingsCodexAuthMode"),
+    settingsCodexAuthSave: document.getElementById("settingsCodexAuthSave"),
+    settingsCodexModel: document.getElementById("settingsCodexModel"),
+    settingsCodexArmRun: document.getElementById("settingsCodexArmRun"),
+    settingsCodexArmStatus: document.getElementById("settingsCodexArmStatus"),
+    settingsCodexRefresh: document.getElementById("settingsCodexRefresh"),
+    settingsCodexLimits: document.getElementById("settingsCodexLimits"),
   };
 
   function applySidebarState(collapsed) {
@@ -270,13 +330,200 @@
     return providerCatalog[String(providerId || "").trim()]?.label || String(providerId || "unknown");
   }
 
+  function mergeModelOptions() {
+    const merged = [];
+    const seen = new Set();
+    Array.from(arguments).forEach((list) => {
+      (Array.isArray(list) ? list : []).forEach((model) => {
+        const value = String(model?.value || "").trim();
+        if (!value || seen.has(value)) return;
+        seen.add(value);
+        merged.push({
+          value,
+          model: String(model.model || parseModelSelection(value).model || value).trim(),
+          label: String(model.label || value).trim(),
+          shortLabel: String(model.shortLabel || model.label || value).trim(),
+          source: normalizeModelSource(model.source),
+          sourceLabel: String(model.sourceLabel || sourceLabelForModelSource(model.source)).trim(),
+          transport: String(model.transport || transportForModelSource(model.source)).trim(),
+        });
+      });
+    });
+    return merged;
+  }
+
+  function normalizeModelSource(source) {
+    const normalized = String(source || "").trim().toLowerCase();
+    if (normalized === OPENAI_CODEX_MODEL_SOURCE || normalized === "codex" || normalized === "codex_cli") {
+      return OPENAI_CODEX_MODEL_SOURCE;
+    }
+    return OPENAI_API_MODEL_SOURCE;
+  }
+
+  function sourceLabelForModelSource(source) {
+    return normalizeModelSource(source) === OPENAI_CODEX_MODEL_SOURCE ? "Codex" : "API key";
+  }
+
+  function transportForModelSource(source) {
+    return normalizeModelSource(source) === OPENAI_CODEX_MODEL_SOURCE ? OPENAI_CODEX_MODEL_TRANSPORT : OPENAI_API_MODEL_TRANSPORT;
+  }
+
+  function sourcePrefixForModelSource(source) {
+    return normalizeModelSource(source) === OPENAI_CODEX_MODEL_SOURCE ? "codex" : "openai";
+  }
+
+  function modelSelectionValue(modelId, source) {
+    const model = String(modelId || "").trim();
+    if (!model) return "";
+    return sourcePrefixForModelSource(source) + ":" + model;
+  }
+
+  function parseModelSelection(value) {
+    const raw = String(value || "").trim();
+    const match = raw.match(/^(openai|codex):(.+)$/i);
+    if (!match) {
+      return {
+        value: raw,
+        model: raw,
+        source: OPENAI_API_MODEL_SOURCE,
+        transport: OPENAI_API_MODEL_TRANSPORT,
+      };
+    }
+    const source = normalizeModelSource(match[1]);
+    return {
+      value: raw,
+      model: String(match[2] || "").trim(),
+      source,
+      transport: transportForModelSource(source),
+    };
+  }
+
+  function modelOptionDisplayLabel(optionConfig) {
+    const label = String(optionConfig?.label || optionConfig?.model || optionConfig?.value || "").trim();
+    const hasSourceLabel = Boolean(optionConfig?.source || optionConfig?.sourceLabel);
+    const sourceLabel = hasSourceLabel ? String(optionConfig?.sourceLabel || sourceLabelForModelSource(optionConfig?.source)).trim() : "";
+    return sourceLabel ? `${label} · ${sourceLabel}` : label;
+  }
+
+  function modelOptionPillLabel(optionConfig) {
+    const label = String(optionConfig?.shortLabel || optionConfig?.label || optionConfig?.model || optionConfig?.value || "").trim();
+    const hasSourceLabel = Boolean(optionConfig?.source || optionConfig?.sourceLabel);
+    const sourceLabel = hasSourceLabel ? String(optionConfig?.sourceLabel || sourceLabelForModelSource(optionConfig?.source)).trim() : "";
+    return sourceLabel ? `${label} · ${sourceLabel}` : label;
+  }
+
+  function modelOptionMatches(optionConfig, selectedValue, selectedSource) {
+    const raw = String(selectedValue || "").trim();
+    if (!optionConfig || !raw) return false;
+    if (String(optionConfig.value || "") === raw) return true;
+    const parsed = parseModelSelection(raw);
+    const desiredSource = normalizeModelSource(selectedSource || parsed.source);
+    return String(optionConfig.model || optionConfig.value || "").trim() === parsed.model
+      && normalizeModelSource(optionConfig.source) === desiredSource;
+  }
+
+  function resolveModelOptionValue(options, selectedValue, selectedSource) {
+    const models = Array.isArray(options) ? options : [];
+    const match = models.find((option) => modelOptionMatches(option, selectedValue, selectedSource));
+    return match ? match.value : (models[0]?.value || "");
+  }
+
+  function selectedModelOption(select) {
+    return select?.selectedOptions?.[0] || null;
+  }
+
+  function selectedModelId(select) {
+    const option = selectedModelOption(select);
+    return String(option?.dataset?.modelId || parseModelSelection(select?.value).model || "").trim();
+  }
+
+  function selectedModelSource(select) {
+    const option = selectedModelOption(select);
+    return normalizeModelSource(option?.dataset?.modelSource || parseModelSelection(select?.value).source);
+  }
+
+  function displayLabelForCodexModel(modelId, displayName) {
+    const raw = String(displayName || modelId || "").trim();
+    if (!raw) return "";
+    return raw
+      .replace(/^gpt-/i, "GPT-")
+      .replace(/-codex-spark$/i, " Codex Spark")
+      .replace(/-codex$/i, " Codex")
+      .replace(/-mini$/i, " Mini");
+  }
+
+  function shortLabelForCodexModel(modelId, displayName) {
+    const label = displayLabelForCodexModel(modelId, displayName);
+    return label.replace(/^GPT-/, "GPT-");
+  }
+
+  function isVisibleCodexCatalogModel(entry) {
+    const model = String(entry?.model || "").trim().toLowerCase();
+    if (!model) return false;
+    if (String(entry?.visibility || "").trim().toLowerCase() === "hide") return false;
+    return model.startsWith("gpt-5") || model.includes("codex");
+  }
+
+  function codexCatalogModelOption(entry) {
+    const model = String(entry?.model || "").trim();
+    const label = displayLabelForCodexModel(model, entry?.displayName);
+    return {
+      value: modelSelectionValue(model, OPENAI_CODEX_MODEL_SOURCE),
+      model,
+      label,
+      shortLabel: shortLabelForCodexModel(model, label),
+      source: OPENAI_CODEX_MODEL_SOURCE,
+      sourceLabel: "Codex",
+      transport: OPENAI_CODEX_MODEL_TRANSPORT,
+    };
+  }
+
+  function refreshOpenAIModelSelects(previousWorker, previousSummarizer) {
+    const workerProvider = selectedGroupedValue("provider", "openai");
+    if (workerProvider === "openai" && elements.workerModel) {
+      populateSelect(
+        elements.workerModel,
+        modelOptions("openai"),
+        previousWorker || elements.workerModel.value || runtimeState.draft?.model || "",
+        runtimeState.draft?.modelSource
+      );
+    }
+    if (elements.summarizerProvider && elements.summarizerProvider.value === "openai" && elements.summarizerModel) {
+      populateSelect(
+        elements.summarizerModel,
+        modelOptions("openai"),
+        previousSummarizer || elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "",
+        runtimeState.draft?.summarizerModelSource
+      );
+    }
+  }
+
+  function mergeCodexCatalogIntoOpenAIModels(status) {
+    const catalogModels = status?.catalog && Array.isArray(status.catalog.models) ? status.catalog.models : [];
+    const codexOptions = catalogModels.filter(isVisibleCodexCatalogModel).map(codexCatalogModelOption);
+    const nextModels = mergeModelOptions(OPENAI_BASE_MODELS, OPENAI_CODEX_FALLBACK_MODELS, codexOptions);
+    const currentModels = providerCatalog.openai.models || [];
+    const currentKey = currentModels.map((model) => model.value).join("|");
+    const nextKey = nextModels.map((model) => model.value).join("|");
+    if (currentKey === nextKey) return;
+    const previousWorker = elements.workerModel?.value || "";
+    const previousSummarizer = elements.summarizerModel?.value || "";
+    providerCatalog.openai.models = nextModels;
+    refreshOpenAIModelSelects(previousWorker, previousSummarizer);
+    syncContractPillSelects();
+    updateNarrative();
+  }
+
   function modelOptions(providerId) {
     return providerCatalog[String(providerId || "").trim()]?.models || [];
   }
 
-  function modelLabel(providerId, modelId) {
-    const match = modelOptions(providerId).find((model) => model.value === modelId);
-    return match ? match.label : String(modelId || "");
+  function modelLabel(providerId, modelId, modelSource) {
+    const options = modelOptions(providerId);
+    const match = options.find((model) => modelOptionMatches(model, modelId, modelSource));
+    if (match) return modelOptionDisplayLabel(match);
+    const parsed = parseModelSelection(modelId);
+    return String(parsed.model || modelId || "");
   }
 
   function toBoolString(value) {
@@ -360,6 +607,112 @@
     if (value < 1024) return Math.round(value) + " B";
     if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10 * 1024 ? 1 : 0) + " KB";
     return (value / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function closeAuthRequirementModal() {
+    if (elements.authRequirementModal) {
+      elements.authRequirementModal.hidden = true;
+    }
+  }
+
+  function authConsumerLabel(consumer) {
+    return [
+      String(consumer?.label || consumer?.role || "Model arm").trim(),
+      String(consumer?.provider || "").trim(),
+      String(consumer?.model || "").trim(),
+      String(consumer?.modelSource || "").trim() === OPENAI_CODEX_MODEL_SOURCE ? "Codex" : "",
+    ].filter(Boolean).join(" · ");
+  }
+
+  function renderAuthRequirementModal(status) {
+    runtimeState.authRequirements = status || {};
+    if (!elements.authRequirementModal || !elements.authRequirementBody) return;
+    const missing = Array.isArray(status?.missing) ? status.missing : [];
+    const apiMissing = missing.filter((item) => String(item?.kind || "") === "api_key");
+    elements.authRequirementBody.innerHTML = missing.length
+      ? missing.map((item) => `
+        <section class="igs-auth-missing-card">
+          <strong>${escapeHtml(item.label || item.domain || "Provider access")}</strong>
+          <p>${escapeHtml(item.message || "This selected model source needs credentials before Para can run it.")}</p>
+          <div class="igs-auth-consumer-list">
+            ${(Array.isArray(item.consumers) ? item.consumers : []).map((consumer) => `<span>${escapeHtml(authConsumerLabel(consumer))}</span>`).join("")}
+          </div>
+        </section>
+      `).join("")
+      : `<section class="igs-auth-missing-card"><strong>Provider access ready</strong><p>All selected model arms have usable authentication.</p></section>`;
+
+    if (elements.authRequirementProvider) {
+      elements.authRequirementProvider.innerHTML = apiMissing.map((item) => (
+        `<option value="${escapeHtml(item.provider || "")}">${escapeHtml(item.label || item.provider || "")}</option>`
+      )).join("");
+      elements.authRequirementProvider.disabled = apiMissing.length === 0;
+    }
+    const hasApiMissing = apiMissing.length > 0;
+    const hasCodexMissing = missing.some((item) => String(item?.kind || "") === "chatgpt_auth");
+    if (elements.authRequirementKeyInput) {
+      elements.authRequirementKeyInput.disabled = !hasApiMissing;
+      elements.authRequirementKeyInput.value = "";
+      elements.authRequirementKeyInput.placeholder = hasApiMissing ? "Paste provider key" : "No API key needed for this missing item";
+    }
+    if (elements.authRequirementSaveKey) {
+      elements.authRequirementSaveKey.disabled = !hasApiMissing;
+    }
+    if (elements.authRequirementCodexSignIn) {
+      elements.authRequirementCodexSignIn.disabled = !hasCodexMissing;
+    }
+    if (elements.authRequirementStatus) {
+      elements.authRequirementStatus.textContent = missing.length
+        ? "Run paused until provider access is ready."
+        : "Provider access is ready.";
+    }
+    elements.authRequirementModal.hidden = false;
+  }
+
+  async function saveMissingAuthKey() {
+    if (!elements.authRequirementProvider || !elements.authRequirementKeyInput) return;
+    const provider = String(elements.authRequirementProvider.value || "").trim();
+    const key = String(elements.authRequirementKeyInput.value || "").trim();
+    if (!provider || !key) {
+      if (elements.authRequirementStatus) elements.authRequirementStatus.textContent = "Pick a provider and paste a key first.";
+      return;
+    }
+    if (elements.authRequirementSaveKey) elements.authRequirementSaveKey.disabled = true;
+    if (elements.authRequirementStatus) elements.authRequirementStatus.textContent = "Saving provider key...";
+    try {
+      await fetchJson(API.authKeys, jsonPostOptions({ provider, appendKey: key }));
+      elements.authRequirementKeyInput.value = "";
+      if (elements.authRequirementStatus) elements.authRequirementStatus.textContent = "Key saved. Rechecking provider access...";
+      if (runtimeState.authRequirementPayload) {
+        await ensureAuthRequirementsReady(runtimeState.authRequirementPayload, { silentWhenReady: true });
+      }
+    } catch (error) {
+      if (elements.authRequirementStatus) elements.authRequirementStatus.textContent = "Key save failed: " + String(error.message || error);
+    } finally {
+      if (elements.authRequirementSaveKey) elements.authRequirementSaveKey.disabled = false;
+    }
+  }
+
+  function openCodexAuthHelp() {
+    if (elements.authRequirementStatus) {
+      elements.authRequirementStatus.textContent = "Use Settings > Codex agent arm to inherit your existing ChatGPT auth or choose a Para-managed ChatGPT sign-in. API key mode is separate platform billing.";
+    }
+    if (elements.settingsCodexAuthMode) {
+      elements.settingsCodexAuthMode.focus();
+    }
+  }
+
+  async function ensureAuthRequirementsReady(payload, options) {
+    const settings = Object.assign({ silentWhenReady: false }, options || {});
+    runtimeState.authRequirementPayload = clone(payload || {});
+    const status = await fetchJson(API.authRequirements, jsonPostOptions(payload || {}));
+    runtimeState.authRequirements = status;
+    if (status?.ready) {
+      if (!settings.silentWhenReady) closeAuthRequirementModal();
+      else closeAuthRequirementModal();
+      return true;
+    }
+    renderAuthRequirementModal(status);
+    return false;
   }
 
   function buildAttachmentId(prefix) {
@@ -558,21 +911,392 @@
     });
   }
 
-  function populateSelect(select, options, selectedValue) {
+  function formatKnownNumber(value) {
+    const number = Number(value || 0);
+    if (!Number.isFinite(number) || number <= 0) return "unknown";
+    return Math.round(number).toLocaleString();
+  }
+
+  function formatObservedNumber(value) {
+    const number = Number(value || 0);
+    if (!Number.isFinite(number)) return "0";
+    return Math.round(number).toLocaleString();
+  }
+
+  function formatShortNumber(value) {
+    const number = Number(value || 0);
+    if (!Number.isFinite(number) || number <= 0) return "0";
+    if (number >= 1_000_000_000) return (number / 1_000_000_000).toFixed(number >= 10_000_000_000 ? 0 : 1).replace(/\.0$/, "") + "b";
+    if (number >= 1_000_000) return (number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "m";
+    if (number >= 1_000) return (number / 1_000).toFixed(number >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k";
+    return Math.round(number).toLocaleString();
+  }
+
+  function formatUsd(value, decimals) {
+    const number = Number(value || 0);
+    const places = Number.isFinite(Number(decimals)) ? Number(decimals) : 4;
+    if (!Number.isFinite(number)) return "$0";
+    return "$" + number.toFixed(places).replace(/\.?0+$/, "");
+  }
+
+  function codexSourceLink(url, label) {
+    const href = String(url || "").trim();
+    const text = String(label || "source").trim();
+    if (!href) return escapeHtml(text);
+    return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
+  }
+
+  function codexManualChips(record) {
+    if (!record) return "";
+    if (typeof record === "string" || typeof record === "number" || typeof record === "boolean") {
+      const text = String(record).trim();
+      return text ? `<span>${escapeHtml(text)}</span>` : "";
+    }
+    if (!record || typeof record !== "object" || Array.isArray(record)) return "";
+    return Object.entries(record)
+      .filter(([, value]) => value !== null && value !== undefined && typeof value !== "object" && String(value).trim())
+      .slice(0, 8)
+      .map(([key, value]) => `<span><em>${escapeHtml(key)}</em> ${escapeHtml(String(value))}</span>`)
+      .join("");
+  }
+
+  function hasCodexManualDetails(record) {
+    if (!record) return false;
+    if (typeof record === "string" || typeof record === "number" || typeof record === "boolean") {
+      return Boolean(String(record).trim());
+    }
+    if (typeof record !== "object" || Array.isArray(record)) return false;
+    return Object.entries(record).some(([key, value]) => {
+      if (String(key).toLowerCase() === "label") return false;
+      return value !== null && value !== undefined && typeof value !== "object" && Boolean(String(value).trim());
+    });
+  }
+
+  function renderCodexMetric(label, value, note, tone) {
+    return `
+      <div class="igs-codex-limit-metric ${tone ? "is-" + escapeHtml(tone) : ""}">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+        ${note ? `<small>${escapeHtml(note)}</small>` : ""}
+      </div>
+    `;
+  }
+
+  function codexManualEditorTemplate(status) {
+    const selectedModel = String(status?.selectedModel || elements.settingsCodexModel?.value || "gpt-5.5");
+    const manual = status?.manualAccountLimits || {};
+    const general = manual.general && typeof manual.general === "object"
+      ? manual.general
+      : { label: "Codex account", limit: "", resetWindow: "", notes: "" };
+    const currentModel = manual.models && typeof manual.models === "object" && manual.models[selectedModel]
+      ? manual.models[selectedModel]
+      : { limit: "", resetWindow: "", notes: "" };
+    return JSON.stringify({
+      general: {
+        label: String(general.label || "Codex account"),
+        limit: String(general.limit || ""),
+        resetWindow: String(general.resetWindow || ""),
+        notes: String(general.notes || ""),
+      },
+      models: {
+        [selectedModel]: {
+          limit: String(currentModel.limit || ""),
+          resetWindow: String(currentModel.resetWindow || ""),
+          notes: String(currentModel.notes || ""),
+        },
+      },
+    }, null, 2);
+  }
+
+  function bindCodexManualEditor(status) {
+    if (!elements.settingsCodexLimits) return;
+    const textarea = elements.settingsCodexLimits.querySelector("#settingsCodexManualJson");
+    const button = elements.settingsCodexLimits.querySelector("#settingsCodexManualSave");
+    const message = elements.settingsCodexLimits.querySelector("#settingsCodexManualStatus");
+    if (!textarea || !button) return;
+    textarea.value = codexManualEditorTemplate(status);
+    button.addEventListener("click", function () {
+      let payload;
+      try {
+        payload = JSON.parse(textarea.value || "{}");
+      } catch (error) {
+        if (message) message.textContent = "Manual snapshot is not valid JSON.";
+        return;
+      }
+      button.disabled = true;
+      if (message) message.textContent = "Saving...";
+      fetchJson(API.codexLimitsManual, jsonPostOptions(payload))
+        .then(() => loadCodexLimits())
+        .catch((error) => {
+          if (message) message.textContent = "Save failed: " + String(error.message || error);
+        })
+        .finally(() => {
+          button.disabled = false;
+        });
+    });
+  }
+
+  function renderCodexLimitsStatus(payload) {
+    if (!elements.settingsCodexLimits) return;
+    const status = payload && typeof payload === "object" ? payload : {};
+    const selectedModel = String(status.selectedModel || elements.settingsCodexModel?.value || "gpt-5.5");
+    const auth = status.auth || {};
+    const catalog = status.catalog || {};
+    const catalogModel = catalog.selectedModel || {};
+    const pricing = status.pricing || {};
+    const publicLimits = status.publicModelLimits || {};
+    const tiers = Array.isArray(publicLimits.tiers) ? publicLimits.tiers : [];
+    const projectRateLimits = status.projectRateLimits || {};
+    const manual = status.manualAccountLimits || {};
+    const manualGeneral = manual.general || manual.codex || manual.account || null;
+    const manualModel = manual.models && typeof manual.models === "object" ? manual.models[selectedModel] : null;
+    const measured = status.measured || {};
+    const smoke = measured.lastSmoke || {};
+    const catalogReasoning = Array.isArray(catalogModel.supportedReasoningLevels)
+      ? catalogModel.supportedReasoningLevels.join(", ")
+      : "";
+    const manualGeneralChips = hasCodexManualDetails(manualGeneral) ? codexManualChips(manualGeneral) : "";
+    const manualModelChips = hasCodexManualDetails(manualModel) ? codexManualChips(manualModel) : "";
+    const authPolicyMode = String(auth?.policy?.mode || "inherit_chatgpt");
+    if (elements.settingsCodexAuthMode && elements.settingsCodexAuthMode.value !== authPolicyMode) {
+      elements.settingsCodexAuthMode.value = authPolicyMode;
+    }
+
+    elements.settingsCodexLimits.innerHTML = `
+      <div class="igs-codex-limit-badges" aria-label="Codex evidence sources">
+        <span class="is-info">OpenAI agent arm</span>
+        <span class="${auth.known ? "is-live" : "is-muted"}">${auth.known ? "Codex auth ready" : "Codex auth missing"}</span>
+        <span class="is-info">${escapeHtml(authPolicyMode.replace(/_/g, " "))}</span>
+        <span class="${catalog.exists ? "is-live" : "is-muted"}">${catalog.exists ? "Local catalog loaded" : "No local model catalog"}</span>
+        <span class="is-info">Docs snapshot</span>
+        <span class="${manualGeneralChips || manualModelChips ? "is-live" : "is-muted"}">${manualGeneralChips || manualModelChips ? "Manual account snapshot" : "Manual snapshot empty"}</span>
+        <span class="is-info">Measured smoke</span>
+      </div>
+
+      <div class="igs-codex-limit-grid">
+        <section class="igs-codex-limit-card">
+          <div class="igs-codex-card-head">
+            <span>Arm model</span>
+            <strong>${escapeHtml(catalogModel.displayName || selectedModel)}</strong>
+          </div>
+          <div class="igs-codex-metric-grid">
+            ${renderCodexMetric("Catalog context", formatKnownNumber(catalogModel.contextWindow), "tokens")}
+            ${renderCodexMetric("Max context", formatKnownNumber(catalogModel.maxContextWindow), "tokens")}
+            ${renderCodexMetric("Default reasoning", catalogModel.defaultReasoningLevel || "unknown", catalogReasoning ? catalogReasoning : "")}
+            ${renderCodexMetric("API flag", catalogModel.supportedInApi ? "supported" : "unknown", catalogModel.visibility || "")}
+          </div>
+          <div class="igs-codex-auth-line">
+            <span>Auth</span>
+            <strong>${escapeHtml(auth.known ? (auth.mode || "available") : "unknown")}</strong>
+            <small>${escapeHtml(auth.known ? (auth.source || "auth.json present") : "No Codex auth file visible to this backend process.")}</small>
+          </div>
+          <p>${escapeHtml(catalogModel.description || "Codex arm uses local Codex CLI automation with user Codex config enabled by default.")}</p>
+          <p>${escapeHtml(auth.note || "Presence-only auth check.")}</p>
+        </section>
+
+        <section class="igs-codex-limit-card">
+          <div class="igs-codex-card-head">
+            <span>Public model caps</span>
+            <strong>${escapeHtml(publicLimits.rateLimitClass || "unknown class")}</strong>
+          </div>
+          <div class="igs-codex-metric-grid">
+            ${renderCodexMetric("Context window", formatKnownNumber(publicLimits.contextWindow), "tokens", "accent")}
+            ${renderCodexMetric("Max output", formatKnownNumber(publicLimits.maxOutputTokens), "tokens", "accent")}
+            ${renderCodexMetric("Pricing input", pricing.known ? formatUsd(pricing.inputPer1M, 3) : "unknown", "per 1M")}
+            ${renderCodexMetric("Pricing output", pricing.known ? formatUsd(pricing.outputPer1M, 3) : "unknown", "per 1M")}
+          </div>
+          <div class="igs-codex-tier-strip" aria-label="Public tier limits">
+            ${tiers.length ? tiers.map((tier) => `
+              <span><strong>${escapeHtml(String(tier.tier || "").replace("Tier ", "T"))}</strong> ${escapeHtml(formatShortNumber(tier.rpm))} rpm / ${escapeHtml(formatShortNumber(tier.tpm))} tpm</span>
+            `).join("") : "<span>No tier rows in local snapshot.</span>"}
+          </div>
+          <p>${codexSourceLink(publicLimits.sourceUrl, publicLimits.source || "OpenAI model docs")}.</p>
+        </section>
+
+        <section class="igs-codex-limit-card">
+          <div class="igs-codex-card-head">
+            <span>Account quota</span>
+            <strong>${manualGeneralChips || manualModelChips ? "manual snapshot" : "not captured"}</strong>
+          </div>
+          ${manualGeneralChips ? `
+            <div class="igs-codex-chip-block">
+              <span class="igs-codex-chip-label">General</span>
+              ${manualGeneralChips}
+            </div>
+          ` : ""}
+          ${manualModelChips ? `
+            <div class="igs-codex-chip-block">
+              <span class="igs-codex-chip-label">${escapeHtml(selectedModel)}</span>
+              ${manualModelChips}
+            </div>
+          ` : ""}
+          ${manualGeneralChips || manualModelChips ? "" : `
+            <p>No account-level Codex quota has been saved yet. The UI can show a manual snapshot here because the Codex CLI does not expose those settings in JSONL.</p>
+          `}
+          <p>${escapeHtml(projectRateLimits.note || "Project rate limits require organization/project API credentials.")}</p>
+          <p>${codexSourceLink(projectRateLimits.sourceUrl, projectRateLimits.source || "Admin rate-limit API")}.</p>
+          <details class="igs-codex-manual-editor">
+            <summary>Update manual snapshot</summary>
+            <textarea id="settingsCodexManualJson" spellcheck="false" aria-label="Manual Codex account limit snapshot"></textarea>
+            <div class="igs-codex-editor-actions">
+              <button type="button" class="igs-pill igs-codex-refresh" id="settingsCodexManualSave">Save snapshot</button>
+              <span id="settingsCodexManualStatus" aria-live="polite"></span>
+            </div>
+          </details>
+        </section>
+
+        <section class="igs-codex-limit-card">
+          <div class="igs-codex-card-head">
+            <span>Last local smoke</span>
+            <strong>${escapeHtml(smoke.model || "not run")}</strong>
+          </div>
+          <div class="igs-codex-metric-grid">
+            ${renderCodexMetric("Input", formatObservedNumber(smoke.inputTokens), "tokens")}
+            ${renderCodexMetric("Cached", formatObservedNumber(smoke.cachedInputTokens), "tokens")}
+            ${renderCodexMetric("Output", formatObservedNumber(smoke.outputTokens), "tokens")}
+            ${renderCodexMetric("Est. cost", formatUsd(smoke.estimatedCostUsd, 6), "USD", "accent")}
+          </div>
+          <p>${escapeHtml(measured.note || "Measured usage is local telemetry, not an account quota.")}</p>
+          <small>${escapeHtml(smoke.measuredAt ? "Measured " + formatTimestamp(smoke.measuredAt) : "")}</small>
+        </section>
+      </div>
+    `;
+    bindCodexManualEditor(status);
+  }
+
+  async function loadCodexLimits() {
+    if (!elements.settingsCodexLimits) return;
+    const model = String(elements.settingsCodexModel?.value || "gpt-5.5").trim();
+    elements.settingsCodexLimits.innerHTML = `<div class="igs-inline-note">Refreshing Codex limits for ${escapeHtml(model)}...</div>`;
+    const payload = await fetchJson(API.codexLimits + "?model=" + encodeURIComponent(model));
+    runtimeState.codexLimits = payload;
+    mergeCodexCatalogIntoOpenAIModels(payload);
+    renderCodexLimitsStatus(payload);
+  }
+
+  async function saveCodexAuthMode() {
+    if (!elements.settingsCodexAuthMode) return;
+    const mode = String(elements.settingsCodexAuthMode.value || "inherit_chatgpt").trim();
+    if (elements.settingsCodexAuthSave) elements.settingsCodexAuthSave.disabled = true;
+    if (elements.settingsCodexArmStatus) {
+      elements.settingsCodexArmStatus.textContent = "Saving Codex auth mode...";
+    }
+    try {
+      await fetchJson(API.codexAuth, jsonPostOptions({ mode }));
+      if (elements.settingsCodexArmStatus) {
+        elements.settingsCodexArmStatus.textContent = "Codex auth mode saved.";
+      }
+      queueCodexLimitsLoad();
+    } catch (error) {
+      if (elements.settingsCodexArmStatus) {
+        elements.settingsCodexArmStatus.textContent = "Codex auth save failed: " + String(error.message || error);
+      }
+    } finally {
+      if (elements.settingsCodexAuthSave) elements.settingsCodexAuthSave.disabled = false;
+    }
+  }
+
+  async function runCodexArmSmoke() {
+    if (!elements.settingsCodexArmRun) return;
+    const model = String(elements.settingsCodexModel?.value || "gpt-5.5").trim();
+    const authMode = String(elements.settingsCodexAuthMode?.value || "inherit_chatgpt").trim();
+    const activeProvider = selectedGroupedValue("provider", "openai");
+    if (activeProvider !== "openai") {
+      if (elements.settingsCodexArmStatus) {
+        elements.settingsCodexArmStatus.textContent = "Select OpenAI in the Run contract before launching the Codex agent arm.";
+      }
+      return;
+    }
+    if (authMode === "disabled") {
+      renderAuthRequirementModal({
+        ready: false,
+        missing: [{
+          domain: "codex_chatgpt",
+          kind: "chatgpt_auth",
+          provider: "openai",
+          label: "Codex arm disabled",
+          message: "Codex launches are disabled in Settings.",
+          consumers: [{ role: "codex_arm", label: "Codex agent arm", provider: "openai", model, modelSource: OPENAI_CODEX_MODEL_SOURCE }],
+        }],
+      });
+      return;
+    }
+    const preflightPayload = {
+      provider: "openai",
+      model,
+      modelSource: authMode === "api_key" ? OPENAI_API_MODEL_SOURCE : OPENAI_CODEX_MODEL_SOURCE,
+      summarizerProvider: "openai",
+      summarizerModel: model,
+      summarizerModelSource: authMode === "api_key" ? OPENAI_API_MODEL_SOURCE : OPENAI_CODEX_MODEL_SOURCE,
+    };
+    if (!(await ensureAuthRequirementsReady(preflightPayload))) return;
+    const confirmed = window.confirm("Launch one read-only Codex arm smoke? This may spend Codex/OpenAI tokens.");
+    if (!confirmed) return;
+    elements.settingsCodexArmRun.disabled = true;
+    if (elements.settingsCodexArmStatus) {
+      elements.settingsCodexArmStatus.textContent = "Launching Codex arm through local Codex automation...";
+    }
+    const payload = {
+      laneId: "codex_adversarial",
+      providerFamily: "openai",
+      model,
+      authMode,
+      objective: "Run a read-only Para Codex arm smoke. Inspect the current staged state and return a compact pressure packet; do not edit files.",
+      sandbox: "read-only",
+      disablePlugins: true,
+      timeoutSeconds: 900,
+      maxCostUsd: 0.25,
+    };
+    try {
+      const result = await fetchJson(API.codexLaneRun, jsonPostOptions(payload));
+      if (elements.settingsCodexArmStatus) {
+        const artifact = result?.artifactFile ? " Artifact: " + result.artifactFile : "";
+        elements.settingsCodexArmStatus.textContent = result?.ok
+          ? "Codex arm completed with status " + String(result.status || "unknown") + "." + artifact
+          : "Codex arm did not launch: " + String(result?.message || "rejected");
+      }
+      queueCodexLimitsLoad();
+    } catch (error) {
+      if (elements.settingsCodexArmStatus) {
+        elements.settingsCodexArmStatus.textContent = "Codex arm failed: " + String(error.message || error);
+      }
+    } finally {
+      elements.settingsCodexArmRun.disabled = false;
+    }
+  }
+
+  function queueCodexLimitsLoad() {
+    if (!elements.settingsCodexLimits) return;
+    clearTimeout(runtimeState.codexLimitsTimer);
+    runtimeState.codexLimitsTimer = setTimeout(function () {
+      loadCodexLimits().catch(function (error) {
+        if (elements.settingsCodexLimits) {
+          elements.settingsCodexLimits.innerHTML = `<div class="igs-inline-note">Codex limits failed to load: ${escapeHtml(error.message || error)}</div>`;
+        }
+      });
+    }, 150);
+  }
+
+  function populateSelect(select, options, selectedValue, selectedSource) {
     const previousValue = String(selectedValue || "").trim();
+    const resolvedValue = resolveModelOptionValue(options, previousValue, selectedSource);
     select.innerHTML = "";
     options.forEach((optionConfig, index) => {
       const option = document.createElement("option");
       option.value = optionConfig.value;
-      option.textContent = optionConfig.label;
-      option.dataset.pillDisplay = optionConfig.shortLabel || optionConfig.label;
+      option.textContent = modelOptionDisplayLabel(optionConfig);
+      option.dataset.modelId = String(optionConfig.model || parseModelSelection(optionConfig.value).model || optionConfig.value || "").trim();
+      option.dataset.modelSource = normalizeModelSource(optionConfig.source);
+      option.dataset.transport = String(optionConfig.transport || transportForModelSource(optionConfig.source)).trim();
+      option.dataset.sourceLabel = String(optionConfig.sourceLabel || sourceLabelForModelSource(optionConfig.source)).trim();
+      option.dataset.pillDisplay = modelOptionPillLabel(optionConfig);
       select.appendChild(option);
-      if (!previousValue && index === 0) {
+      if (!resolvedValue && !previousValue && index === 0) {
         select.value = optionConfig.value;
       }
     });
-    if (previousValue && options.some((option) => option.value === previousValue)) {
-      select.value = previousValue;
+    if (resolvedValue) {
+      select.value = resolvedValue;
     } else if (options[0]) {
       select.value = options[0].value;
     }
@@ -654,6 +1378,7 @@
     if (targetId === "previewRuntimeMode") return normalized || "live";
     if (targetId === "previewEngineVersion") return normalized || "v2";
     if (targetId === "previewContextMode") return normalized === "weighted" ? "light" : normalized;
+    if (targetId === "previewReasoningEffort") return normalized || "low";
     if (targetId === "previewDirectBaselineMode") return normalized || "off";
     return normalized === "1" || normalized === "on" ? "on" : "off";
   }
@@ -661,6 +1386,7 @@
   function isVisuallyActiveState(targetId, value) {
     const normalized = String(value || "").toLowerCase();
     if (targetId === "previewDirectBaselineMode") return normalized !== "off";
+    if (targetId === "previewReasoningEffort") return normalized !== "low";
     if (targetId === "previewVettingEnabled" || targetId === "previewResearchMode" || targetId === "previewMemoryMode") {
       return normalized === "1" || normalized === "on";
     }
@@ -958,10 +1684,13 @@
       executionMode: String(elements.runtimeMode.value || "live"),
       engineVersion: String(elements.engineVersion?.value || selectedGroupedValue("engine", "v1")),
       provider: workerProvider,
-      model: String(elements.workerModel.value || ""),
+      model: selectedModelId(elements.workerModel),
+      modelSource: selectedModelSource(elements.workerModel),
       summarizerProvider: String(elements.summarizerProvider.value || workerProvider),
-      summarizerModel: String(elements.summarizerModel.value || ""),
+      summarizerModel: selectedModelId(elements.summarizerModel),
+      summarizerModelSource: selectedModelSource(elements.summarizerModel),
       contextMode: String(elements.contextMode.value || "weighted"),
+      reasoningEffort: String(elements.reasoningEffort?.value || "low"),
       directBaselineMode: String(elements.directBaselineMode.value || "off"),
       vettingEnabled: String(elements.vettingEnabled.value || "1"),
       researchEnabled: String(elements.researchMode.value || "0"),
@@ -976,8 +1705,8 @@
 
   function updateNarrative() {
     const control = currentControlState();
-    const workerModelLabel = modelLabel(control.provider, control.model);
-    const summarizerModelLabel = modelLabel(control.summarizerProvider, control.summarizerModel);
+    const workerModelLabel = modelLabel(control.provider, control.model, control.modelSource);
+    const summarizerModelLabel = modelLabel(control.summarizerProvider, control.summarizerModel, control.summarizerModelSource);
     const baselineLabel = control.directBaselineMode === "both"
       ? "compare against a single-thread baseline on the same provider and model"
       : control.directBaselineMode === "single"
@@ -987,10 +1716,11 @@
     const memoryLabel = control.knowledgebaseEnabled === "1" ? "on" : "off";
     const vettingLabel = control.vettingEnabled === "1" ? "summarizer vetting on" : "summarizer vetting off";
     const contextLabel = control.contextMode === "full" ? "full worker packets" : "weighted worker packets";
+    const reasoningLabel = optionLabelForValue(elements.reasoningEffort, control.reasoningEffort);
 
     if (elements.contractNarrative) {
       elements.contractNarrative.textContent =
-        `Run the ${control.engineVersion.toUpperCase()} engine in ${control.executionMode} mode with ${providerLabel(control.provider)} / ${workerModelLabel} for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} on the final answer lane, ${baselineLabel}, use ${contextLabel}, keep research ${researchLabel}, keep fractal memory ${memoryLabel}, and leave ${vettingLabel}.`;
+        `Run the ${control.engineVersion.toUpperCase()} engine in ${control.executionMode} mode with ${providerLabel(control.provider)} / ${workerModelLabel} for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} on the final answer lane, ${baselineLabel}, use ${contextLabel}, use ${reasoningLabel.toLowerCase()} reasoning, keep research ${researchLabel}, keep fractal memory ${memoryLabel}, and leave ${vettingLabel}.`;
     }
 
     elements.summaryPath.textContent =
@@ -1000,6 +1730,9 @@
           ? "Para + staged direct baseline"
           : "Para only";
     elements.summaryLimits.textContent = `${control.loopRounds} rounds, $${control.maxCostUsd.toFixed(1)} spend wall`;
+    if (elements.summaryReasoning) {
+      elements.summaryReasoning.textContent = reasoningLabel;
+    }
     elements.summaryResearch.textContent = control.researchEnabled === "1" ? "On" : "Off";
     if (elements.summaryMemory) {
       elements.summaryMemory.textContent = control.knowledgebaseEnabled === "1" ? "On" : "Off";
@@ -1015,11 +1748,30 @@
           : "Off";
     elements.headerProvider.textContent = `${providerLabel(control.provider)} / ${workerModelLabel}`;
     elements.headerVetting.textContent = control.vettingEnabled === "1" ? "On" : "Off";
-    if (elements.objectiveMirror && elements.objectiveMirror.isConnected) {
-      elements.objectiveMirror.textContent = control.objective || "No staged objective yet.";
-    }
     renderComposerTools();
     renderLiveViewport(runtimeState.backendState || { draft: runtimeState.draft || {} });
+  }
+
+  function resizeObjectiveTextarea() {
+    const textarea = elements.objective;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const maxHeight = objectiveTextareaMaxHeight(textarea);
+    const nextHeight = Math.max(TEXTAREA_MIN_HEIGHT_PX, Math.min(textarea.scrollHeight || TEXTAREA_MIN_HEIGHT_PX, maxHeight));
+    textarea.style.setProperty("--composer-textarea-height", `${nextHeight}px`);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.scrollTop = textarea.scrollHeight;
+    if (elements.composerRow) {
+      elements.composerRow.classList.toggle("is-expanded", nextHeight > TEXTAREA_MIN_HEIGHT_PX + 4);
+    }
+  }
+
+  function objectiveTextareaMaxHeight(textarea) {
+    const style = window.getComputedStyle ? window.getComputedStyle(textarea) : null;
+    const lineHeight = Number.parseFloat(style?.lineHeight || "") || 22;
+    const paddingTop = Number.parseFloat(style?.paddingTop || "") || 0;
+    const paddingBottom = Number.parseFloat(style?.paddingBottom || "") || 0;
+    return Math.ceil((lineHeight * TEXTAREA_MAX_VISIBLE_ROWS) + paddingTop + paddingBottom);
   }
 
   function draftFlag(name, fallback) {
@@ -1132,11 +1884,7 @@
     const normalized = String(text || "").trim();
     if (!normalized) return "";
     return `
-      <article class="igs-message igs-run-message igs-run-message-${escapeHtml(kind || "system")}">
-        <div class="igs-message-role">
-          <span>${escapeHtml(role || "Message")}</span>
-          ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
-        </div>
+      <article class="igs-message igs-message-${escapeHtml(kind || "system")} igs-run-message igs-run-message-${escapeHtml(kind || "system")}" aria-label="${escapeHtml(role || "Message")}${meta ? " - " + escapeHtml(meta) : ""}">
         <p>${escapeHtml(normalized)}</p>
       </article>
     `;
@@ -1192,6 +1940,9 @@
   }
 
   function answerNowReady(state) {
+    const loop = state?.loop || {};
+    if (hasFinalChatAnswer(state)) return false;
+    if (!isRunBusy(loop)) return false;
     const task = state?.activeTask || null;
     const commander = state?.commander || task?.stateCommander || null;
     return !!task && Number(commander?.round || 0) > 0;
@@ -1199,7 +1950,7 @@
 
   function updateComposerActionButton(state) {
     if (!elements.sendPrompt || !elements.sendIcon || !elements.sendText) return;
-    const partialAnswerActive = hasActiveDispatchTarget(state, "answer_now");
+    const partialAnswerActive = !hasFinalChatAnswer(state) && hasActiveDispatchTarget(state, "answer_now");
     const ready = answerNowReady(state);
     const mode = partialAnswerActive ? "answering" : (ready ? "answer-now" : "send");
     elements.sendPrompt.dataset.composerActionMode = mode;
@@ -1231,6 +1982,52 @@
     return firstText(directBaseline?.answer?.answer, directBaseline?.answer, directBaseline?.output);
   }
 
+  function activeSummaryState(state, task) {
+    const summary = state?.summary && typeof state.summary === "object" ? state.summary : null;
+    if (summary) return summary;
+    const activeTask = task || state?.activeTask || null;
+    return activeTask?.summary && typeof activeTask.summary === "object" ? activeTask.summary : null;
+  }
+
+  function activeDirectBaselineState(state, task) {
+    const directBaseline = state?.directBaseline && typeof state.directBaseline === "object" ? state.directBaseline : null;
+    if (directBaseline) return directBaseline;
+    const activeTask = task || state?.activeTask || null;
+    return activeTask?.directBaseline && typeof activeTask.directBaseline === "object" ? activeTask.directBaseline : null;
+  }
+
+  function hasFinalChatAnswer(state) {
+    const task = state?.activeTask || null;
+    return Boolean(summaryAnswerText(activeSummaryState(state, task)) || directAnswerText(activeDirectBaselineState(state, task)));
+  }
+
+  function buildActiveSessionMessages(state, busy, loopStatus) {
+    const task = state?.activeTask || null;
+    const messages = [];
+    const activeObjective = firstText(task?.objective, task?.prompt, task?.input);
+    if (activeObjective) {
+      messages.push(runMessageHtml("user", "User", activeObjective, task?.runtime?.executionMode || "session"));
+    }
+
+    const finalAnswer = summaryAnswerText(activeSummaryState(state, task));
+    const baselineAnswer = directAnswerText(activeDirectBaselineState(state, task));
+    if (finalAnswer) {
+      messages.push(runMessageHtml("assistant", "Assistant", finalAnswer, "summarizer output"));
+    } else if (baselineAnswer) {
+      messages.push(runMessageHtml("assistant", "Assistant", baselineAnswer, "single-thread baseline"));
+    } else if (task) {
+      messages.push(runMessageHtml(
+        "system",
+        "Runtime",
+        busy ? "The live lanes are running. Background lane output is visible on the right as it lands." : "No final answer artifact is captured for this task yet.",
+        busy ? "working" : loopStatus
+      ));
+    } else {
+      messages.push(runMessageHtml("system", "Runtime", "Stage an objective and press Send to start the live lane stack.", "idle"));
+    }
+    return messages;
+  }
+
   function renderLiveViewport(state) {
     if (!elements.runThread || !elements.laneGrid) return;
     const task = state?.activeTask || null;
@@ -1240,7 +2037,6 @@
       ? task.workers
       : (Array.isArray(draft?.workers) ? draft.workers : []);
     const workerState = state?.workers && typeof state.workers === "object" ? state.workers : {};
-    const objective = firstText(task?.objective, draft?.objective, currentControlState().objective);
     const loopStatus = shortStatus(loop?.status, "idle");
     const lastMessage = firstText(loop?.lastMessage, state?.dispatch?.lastMessage);
     const activeTargets = activeTargetLabels(loop);
@@ -1265,28 +2061,11 @@
       ].filter(Boolean).join(" | ") || "Waiting for scheduler activity.";
     }
 
-    const messages = [];
-    if (objective) {
-      messages.push(runMessageHtml("user", task ? "User prompt" : "Staged objective", objective, task?.runtime?.executionMode || "draft"));
-    }
-
     const finalAnswer = summaryAnswerText(state?.summary);
     const baselineAnswer = directAnswerText(state?.directBaseline);
-    if (finalAnswer) {
-      messages.push(runMessageHtml("assistant", "Assistant", finalAnswer, "summarizer output"));
-    } else if (baselineAnswer) {
-      messages.push(runMessageHtml("assistant", "Assistant", baselineAnswer, "single-thread baseline"));
-    } else if (task) {
-      messages.push(runMessageHtml(
-        "system",
-        busy ? "Runtime" : "Runtime",
-        busy ? "The live lanes are running. Background lane output is visible on the right as it lands." : "No final answer artifact is captured for this task yet.",
-        busy ? "working" : loopStatus
-      ));
-    } else {
-      messages.push(runMessageHtml("system", "Runtime", "Stage an objective and press Send to start the live lane stack.", "idle"));
-    }
+    const messages = buildActiveSessionMessages(state, busy, loopStatus);
     elements.runThread.innerHTML = messages.join("");
+    elements.runThread.scrollTop = elements.runThread.scrollHeight;
 
     const laneCards = [];
     laneCards.push(runLaneCardHtml(
@@ -1630,6 +2409,200 @@
     }
   }
 
+  function sessionStateFromExport(payload) {
+    const archive = payload?.archive && typeof payload.archive === "object" ? payload.archive : null;
+    const sourceState = archive?.state && typeof archive.state === "object"
+      ? archive.state
+      : (payload?.state && typeof payload.state === "object" ? payload.state : {});
+    const state = Object.assign({}, sourceState);
+    if (!state.activeTask && archive) {
+      state.activeTask = {
+        taskId: archive.taskId || "",
+        objective: archive.objective || "",
+        runtime: { executionMode: "archive" },
+      };
+    }
+    return state;
+  }
+
+  function renderSessionExportThread(payload) {
+    const state = sessionStateFromExport(payload);
+    const loopStatus = shortStatus(state?.loop?.status, payload?.source === "archive" ? "archived" : "current");
+    const messages = buildActiveSessionMessages(state, false, loopStatus);
+    return messages.join("") || runMessageHtml("system", "Runtime", "No thread content was found in this session export.", loopStatus);
+  }
+
+  function currentSessionEntry(state) {
+    const activeTask = state?.activeTask && typeof state.activeTask === "object" ? state.activeTask : null;
+    const draft = state?.draft && typeof state.draft === "object" ? state.draft : {};
+    const objective = firstText(activeTask?.objective, draft?.objective, "Current workspace");
+    const answer = firstText(summaryAnswerText(state?.summary), directAnswerText(state?.directBaseline), state?.loop?.lastMessage);
+    return {
+      key: "current",
+      kind: "current",
+      file: "",
+      label: "Current session",
+      taskId: activeTask?.taskId || "active",
+      objective,
+      archivedAt: state?.lastUpdated || "",
+      reason: "live workspace",
+      preview: answer,
+      searchText: ["current", activeTask?.taskId, objective, answer].filter(Boolean).join(" ").toLowerCase(),
+    };
+  }
+
+  function buildSessionBrowserEntries(history, state) {
+    const entries = [currentSessionEntry(state || {})];
+    (Array.isArray(history?.sessions) ? history.sessions : []).forEach((session) => {
+      const file = String(session?.file || "").trim();
+      if (!file) return;
+      const objective = String(session?.objective || "").trim() || "Archived session";
+      const preview = String(session?.carryContextPreview || "").trim();
+      entries.push({
+        key: file,
+        kind: "archive",
+        file,
+        label: file,
+        taskId: String(session?.taskId || "none"),
+        objective,
+        archivedAt: String(session?.archivedAt || session?.createdAt || ""),
+        reason: String(session?.reason || "unspecified"),
+        preview,
+        searchText: [file, session?.taskId, objective, session?.reason, preview].filter(Boolean).join(" ").toLowerCase(),
+      });
+    });
+    return entries;
+  }
+
+  function filteredSessionEntries() {
+    const query = String(elements.sessionSearch?.value || "").trim().toLowerCase();
+    if (!query) return sessionBrowserState.entries;
+    return sessionBrowserState.entries.filter((entry) => String(entry.searchText || "").includes(query));
+  }
+
+  function sessionCardHtml(entry) {
+    const active = String(entry?.key || "") === sessionBrowserState.selectedKey;
+    const badge = entry?.kind === "current" ? "Current" : "Archive";
+    const actions = entry?.kind === "archive"
+      ? `<button type="button" class="btn btn-outline-warning btn-sm" data-session-continue="${escapeHtml(entry.key)}">Continue</button>`
+      : "";
+    return `
+      <article class="igs-session-card${active ? " is-active" : ""}" data-session-key="${escapeHtml(entry.key || "")}">
+        <button type="button" class="igs-session-card-main" data-session-select="${escapeHtml(entry.key || "")}">
+          <span class="igs-session-card-badge">${escapeHtml(badge)}</span>
+          <strong>${escapeHtml(entry.objective || entry.label || "Session")}</strong>
+          <small>${escapeHtml(["task " + String(entry.taskId || "none"), entry.archivedAt || "", entry.reason || ""].filter(Boolean).join(" | "))}</small>
+          ${entry.preview ? `<p>${escapeHtml(truncateText(entry.preview, 180))}</p>` : ""}
+        </button>
+        <div class="igs-session-card-actions">
+          <button type="button" class="btn btn-outline-info btn-sm" data-session-preview="${escapeHtml(entry.key || "")}">View</button>
+          ${actions}
+        </div>
+      </article>
+    `;
+  }
+
+  function renderSessionBrowserList() {
+    if (!elements.sessionList) return;
+    const entries = filteredSessionEntries();
+    if (!entries.length) {
+      elements.sessionList.innerHTML = `<div class="igs-inline-note">No sessions match that search.</div>`;
+      return;
+    }
+    elements.sessionList.innerHTML = entries.map(sessionCardHtml).join("");
+  }
+
+  function selectedSessionEntry() {
+    return sessionBrowserState.entries.find((entry) => entry.key === sessionBrowserState.selectedKey)
+      || sessionBrowserState.entries[0]
+      || null;
+  }
+
+  function renderSessionExport(payload, entry) {
+    if (elements.sessionThread) {
+      elements.sessionThread.innerHTML = renderSessionExportThread(payload);
+    }
+    if (elements.sessionRawExport) {
+      elements.sessionRawExport.textContent = prettyJson(payload || {});
+    }
+    if (elements.sessionDetailMeta) {
+      const source = entry?.kind === "archive" ? "Archived session" : "Current session";
+      elements.sessionDetailMeta.textContent = [
+        source,
+        entry?.taskId ? "task " + entry.taskId : "",
+        entry?.archivedAt || "",
+        entry?.reason ? "reason " + entry.reason : "",
+      ].filter(Boolean).join(" | ") || "Session selected.";
+    }
+    if (elements.sessionReplayBtn) {
+      const replayable = entry?.kind === "archive";
+      elements.sessionReplayBtn.disabled = !replayable;
+      elements.sessionReplayBtn.dataset.sessionReplay = replayable ? String(entry.key || "") : "";
+    }
+  }
+
+  async function loadSessionExport(archiveFile) {
+    const file = String(archiveFile || "").trim();
+    if (elements.sessionStatus) {
+      elements.sessionStatus.textContent = file ? "Loading archived session " + file + "..." : "Loading current session export...";
+    }
+    const query = file ? "?archiveFile=" + encodeURIComponent(file) : "";
+    const payload = await fetchJson(API.sessionExport + query);
+    sessionBrowserState.exportPayload = payload;
+    renderSessionExport(payload, selectedSessionEntry());
+    if (elements.sessionStatus) {
+      elements.sessionStatus.textContent = file ? "Previewing archived session " + file + "." : "Previewing current session.";
+    }
+    return payload;
+  }
+
+  async function selectSessionForPreview(key) {
+    const nextKey = String(key || "current").trim() || "current";
+    sessionBrowserState.selectedKey = nextKey;
+    renderSessionBrowserList();
+    const entry = selectedSessionEntry();
+    await loadSessionExport(entry?.file || "");
+  }
+
+  async function previewCurrentSession() {
+    sessionBrowserState.selectedKey = "current";
+    renderSessionBrowserList();
+    await loadSessionExport("");
+  }
+
+  async function loadSessionBrowser() {
+    if (!elements.sessionList) return;
+    if (elements.sessionStatus) {
+      elements.sessionStatus.textContent = "Loading current and archived sessions...";
+    }
+    const [history, state] = await Promise.all([
+      fetchJson(API.history),
+      fetchJson(API.state),
+    ]);
+    runtimeState.backendState = state || runtimeState.backendState;
+    sessionBrowserState.entries = buildSessionBrowserEntries(history || {}, state || {});
+    sessionBrowserState.loaded = true;
+    if (!sessionBrowserState.entries.some((entry) => entry.key === sessionBrowserState.selectedKey)) {
+      sessionBrowserState.selectedKey = "current";
+    }
+    renderSessionBrowserList();
+    await loadSessionExport(selectedSessionEntry()?.file || "");
+  }
+
+  async function continueSelectedSession(archiveFile) {
+    const file = String(archiveFile || selectedSessionEntry()?.file || "").trim();
+    if (!file) return;
+    if (!window.confirm("Continue from " + file + " in Home?")) return;
+    if (elements.sessionStatus) {
+      elements.sessionStatus.textContent = "Continuing archived session " + file + "...";
+    }
+    await fetchJson(API.sessionReplay, jsonPostOptions({ archiveFile: file }));
+    await loadState({ hydrate: true });
+    sessionBrowserState.selectedKey = "current";
+    await loadSessionBrowser();
+    setActiveView("home");
+  }
+
   async function refreshDebugSurface() {
     if (elements.debugOperationStatus) {
       elements.debugOperationStatus.textContent = "Refreshing Debug...";
@@ -1684,17 +2657,20 @@
       directBaselineMode: control.directBaselineMode,
       provider: control.provider,
       model: control.model,
+      modelSource: control.modelSource,
       summarizerProvider: control.summarizerProvider,
       summarizerModel: control.summarizerModel,
+      summarizerModelSource: control.summarizerModelSource,
       directProvider: control.provider,
       directModel: control.model,
+      directModelSource: control.modelSource,
       directHarness: directHarness,
       summarizerHarness: summarizerHarness,
       ollamaBaseUrl: existing.ollamaBaseUrl || "http://127.0.0.1:11434",
       timeoutMode: existing.timeoutMode || "default",
       ollamaTimeoutProfile: existing.ollamaTimeoutProfile || null,
       targetTimeouts: existing.targetTimeouts || null,
-      reasoningEffort: existing.reasoningEffort || "low",
+      reasoningEffort: control.reasoningEffort,
       maxCostUsd: control.maxCostUsd,
       maxTotalTokens: Number(existing.maxTotalTokens || 0),
       maxOutputTokens: Number(existing.maxOutputTokens || 0),
@@ -1712,7 +2688,7 @@
       vettingEnabled: control.vettingEnabled === "1",
       loopRounds: control.loopRounds,
       loopDelayMs: Number(existing.loopDelayMs || 1000),
-      workers: Array.isArray(existing.workers) ? existing.workers.map((worker) => Object.assign({}, worker, { model: control.model })) : [],
+      workers: Array.isArray(existing.workers) ? existing.workers.map((worker) => Object.assign({}, worker, { model: control.model, modelSource: control.modelSource })) : [],
     };
   }
 
@@ -1747,10 +2723,34 @@
     }, 450);
   }
 
+  function clearComposerAfterSend() {
+    clearTimeout(runtimeState.saveTimer);
+    runtimeState.saveTimer = null;
+    if (elements.objective) {
+      elements.objective.value = "";
+    }
+    if (runtimeState.draft && typeof runtimeState.draft === "object") {
+      runtimeState.draft.objective = "";
+    }
+    shellState.stagedAttachments = [];
+    resizeObjectiveTextarea();
+    renderComposerTools();
+  }
+
   function fillModelsForCurrentProviders() {
     const workerProvider = selectedGroupedValue("provider", "openai");
-    populateSelect(elements.workerModel, modelOptions(workerProvider), elements.workerModel.value || runtimeState.draft?.model || "");
-    populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value || workerProvider), elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "");
+    populateSelect(
+      elements.workerModel,
+      modelOptions(workerProvider),
+      elements.workerModel.value || runtimeState.draft?.model || "",
+      runtimeState.draft?.modelSource
+    );
+    populateSelect(
+      elements.summarizerModel,
+      modelOptions(elements.summarizerProvider.value || workerProvider),
+      elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "",
+      runtimeState.draft?.summarizerModelSource
+    );
     syncContractPillSelects();
   }
 
@@ -1768,9 +2768,12 @@
     setGroupedButton("provider", String(draft.provider || "openai"));
     elements.summarizerProvider.value = String(draft.summarizerProvider || draft.provider || "openai");
     fillModelsForCurrentProviders();
-    elements.workerModel.value = String(draft.model || elements.workerModel.value || "");
-    populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), String(draft.summarizerModel || ""));
+    populateSelect(elements.workerModel, modelOptions(draft.provider || "openai"), String(draft.model || elements.workerModel.value || ""), draft.modelSource);
+    populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), String(draft.summarizerModel || ""), draft.summarizerModelSource);
     elements.contextMode.value = String(draft.contextMode || "weighted");
+    if (elements.reasoningEffort) {
+      elements.reasoningEffort.value = String(draft.reasoningEffort || "low");
+    }
     elements.directBaselineMode.value = String(draft.directBaselineMode || "off");
     elements.vettingEnabled.value = toBoolString(draft.vettingEnabled);
     elements.researchMode.value = draft.researchEnabled ? "1" : "0";
@@ -1780,6 +2783,7 @@
     syncSelectToggleButtons();
     syncSelectCycleButtons();
     elements.objective.value = String(draft.objective || "");
+    resizeObjectiveTextarea();
     elements.sessionContext.value = String(draft.sessionContext || "");
     elements.constraints.value = Array.isArray(draft.constraints) ? draft.constraints.join("\n") : "";
     elements.loopRounds.value = String(draft.loopRounds || 3);
@@ -1798,6 +2802,7 @@
     const draft = state?.draft || {};
     if (settings.hydrate) {
       hydrateControls(draft, state);
+      queueCodexLimitsLoad();
     } else {
       runtimeState.backendState = state;
       syncHeaderFromBackend(state);
@@ -1820,6 +2825,10 @@
       elements.draftState.textContent = "Objective is required before Send.";
       return;
     }
+    if (!(await ensureAuthRequirementsReady(payload))) {
+      elements.draftState.textContent = "Run paused: provider authentication is required.";
+      return;
+    }
     const executionMode = String(payload.executionMode || "live").toLowerCase();
     const runEndpoint = executionMode === "eval"
       ? API.frontEvalRuns
@@ -1836,8 +2845,7 @@
       body: JSON.stringify(payload),
     });
     elements.draftState.textContent = `Front ${runLabel} queued: ${String(response?.runId || "run created")}`;
-    shellState.stagedAttachments = [];
-    renderComposerTools();
+    clearComposerAfterSend();
     await loadState({ hydrate: false });
   }
 
@@ -1854,6 +2862,16 @@
     });
     elements.draftState.textContent = "Answer now queued.";
     await loadState({ hydrate: false });
+  }
+
+  function submitComposerAction() {
+    if (!elements.sendPrompt || elements.sendPrompt.disabled) return;
+    const mode = elements.sendPrompt.dataset.composerActionMode || "send";
+    const action = mode === "answer-now" ? queueAnswerNow() : sendPrompt();
+    action.catch(function (error) {
+      elements.draftState.textContent = (mode === "answer-now" ? "Answer now failed: " : "Send failed: ") + String(error.message || error);
+      updateComposerActionButton(runtimeState.backendState || {});
+    });
   }
 
   function scoreBlockScores(block) {
@@ -2742,61 +3760,72 @@
     syncScoreSelectors(payload || {});
   }
 
-  navButtons.forEach((button) => {
-    button.addEventListener("click", function () {
-      const target = button.getAttribute("data-view-target");
-      navButtons.forEach((item) => {
-        const active = item === button;
-        item.classList.toggle("is-active", active);
-        if (active) {
-          item.setAttribute("aria-current", "page");
-        } else {
-          item.removeAttribute("aria-current");
+  function setActiveView(target) {
+    const nextTarget = String(target || "home").trim() || "home";
+    navButtons.forEach((item) => {
+      const active = item.getAttribute("data-view-target") === nextTarget;
+      item.classList.toggle("is-active", active);
+      if (active) {
+        item.setAttribute("aria-current", "page");
+      } else {
+        item.removeAttribute("aria-current");
+      }
+    });
+    viewPanels.forEach((panel) => {
+      const active = panel.getAttribute("data-view-panel") === nextTarget;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+    });
+    if (nextTarget === "repo") {
+      window.setTimeout(refreshActiveInspector, 40);
+    }
+    if (nextTarget === "review" && !failedCallState.loaded) {
+      loadFailedCalls().catch(function (error) {
+        if (elements.failedCallStatus) {
+          elements.failedCallStatus.textContent = "Failed call ledger failed to load: " + String(error.message || error);
         }
       });
-      viewPanels.forEach((panel) => {
-        const active = panel.getAttribute("data-view-panel") === target;
-        panel.classList.toggle("is-active", active);
-        panel.hidden = !active;
+    }
+    if (nextTarget === "review" && !handoffState.loaded) {
+      loadHandoffs().catch(function (error) {
+        if (elements.handoffStatus) {
+          elements.handoffStatus.textContent = "Handoff ledger failed to load: " + String(error.message || error);
+        }
       });
-      if (target === "repo") {
-        window.setTimeout(refreshActiveInspector, 40);
-      }
-      if (target === "review" && !failedCallState.loaded) {
-        loadFailedCalls().catch(function (error) {
-          if (elements.failedCallStatus) {
-            elements.failedCallStatus.textContent = "Failed call ledger failed to load: " + String(error.message || error);
-          }
-        });
-      }
-      if (target === "review" && !handoffState.loaded) {
-        loadHandoffs().catch(function (error) {
-          if (elements.handoffStatus) {
-            elements.handoffStatus.textContent = "Handoff ledger failed to load: " + String(error.message || error);
-          }
-        });
-      }
-      if (target === "review" && !nodeTransferState.loaded) {
-        loadNodeTransfers().catch(function (error) {
-          if (elements.nodeTransferStatus) {
-            elements.nodeTransferStatus.textContent = "Node transfer ledger failed to load: " + String(error.message || error);
-          }
-        });
-      }
-      if (target === "scores" && !scoreState.loaded) {
-        loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
-          if (elements.scoreStatus) {
-            elements.scoreStatus.textContent = "Score sessions failed to load: " + String(error.message || error);
-          }
-        });
-      }
-      if (target === "debug") {
-        refreshDebugSurface().catch(function (error) {
-          if (elements.debugOperationStatus) {
-            elements.debugOperationStatus.textContent = "Debug refresh failed: " + String(error.message || error);
-          }
-        });
-      }
+    }
+    if (nextTarget === "review" && !nodeTransferState.loaded) {
+      loadNodeTransfers().catch(function (error) {
+        if (elements.nodeTransferStatus) {
+          elements.nodeTransferStatus.textContent = "Node transfer ledger failed to load: " + String(error.message || error);
+        }
+      });
+    }
+    if (nextTarget === "scores" && !scoreState.loaded) {
+      loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
+        if (elements.scoreStatus) {
+          elements.scoreStatus.textContent = "Score sessions failed to load: " + String(error.message || error);
+        }
+      });
+    }
+    if (nextTarget === "sessions" && !sessionBrowserState.loaded) {
+      loadSessionBrowser().catch(function (error) {
+        if (elements.sessionStatus) {
+          elements.sessionStatus.textContent = "Session browser failed to load: " + String(error.message || error);
+        }
+      });
+    }
+    if (nextTarget === "debug") {
+      refreshDebugSurface().catch(function (error) {
+        if (elements.debugOperationStatus) {
+          elements.debugOperationStatus.textContent = "Debug refresh failed: " + String(error.message || error);
+        }
+      });
+    }
+  }
+
+  navButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      setActiveView(button.getAttribute("data-view-target"));
     });
   });
 
@@ -2849,7 +3878,7 @@
         }
         if (previousSummarizerProvider === runtimeState.draft?.provider || previousSummarizerProvider === value) {
           elements.summarizerProvider.value = value;
-          populateSelect(elements.summarizerModel, modelOptions(value), previousSummarizerModel || elements.workerModel.value);
+          populateSelect(elements.summarizerModel, modelOptions(value), previousSummarizerModel || elements.workerModel.value, runtimeState.draft?.summarizerModelSource);
           if (previousSummarizerModel === runtimeState.draft?.model || !previousSummarizerModel) {
             elements.summarizerModel.value = elements.workerModel.value;
           }
@@ -2879,6 +3908,7 @@
     elements.summarizerProvider,
     elements.summarizerModel,
     elements.contextMode,
+    elements.reasoningEffort,
     elements.directBaselineMode,
     elements.vettingEnabled,
     elements.researchMode,
@@ -2892,10 +3922,15 @@
     if (!element) return;
     element.addEventListener("input", function () {
       if (element === elements.objective) {
-        elements.objectiveMirror.textContent = String(elements.objective.value || "").trim() || "No staged objective yet.";
+        resizeObjectiveTextarea();
       }
       if (element === elements.summarizerProvider) {
-        populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "");
+        populateSelect(
+          elements.summarizerModel,
+          modelOptions(elements.summarizerProvider.value),
+          elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "",
+          runtimeState.draft?.summarizerModelSource
+        );
       }
       if (element.matches?.("[data-contract-pill-select]")) {
         syncContractPillSelect(element);
@@ -2909,7 +3944,12 @@
     });
     element.addEventListener("change", function () {
       if (element === elements.summarizerProvider) {
-        populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "");
+        populateSelect(
+          elements.summarizerModel,
+          modelOptions(elements.summarizerProvider.value),
+          elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "",
+          runtimeState.draft?.summarizerModelSource
+        );
       }
       if (element.matches?.("[data-contract-pill-select]")) {
         syncContractPillSelect(element);
@@ -2919,9 +3959,22 @@
         syncSelectCycleButtons(element.id);
       }
       updateNarrative();
+      if (element === elements.objective) {
+        resizeObjectiveTextarea();
+      }
       queueDraftSave();
     });
   });
+
+  if (elements.objective) {
+    elements.objective.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) {
+        return;
+      }
+      event.preventDefault();
+      submitComposerAction();
+    });
+  }
 
   if (elements.composerToolMenuToggle) {
     elements.composerToolMenuToggle.addEventListener("click", function (event) {
@@ -2983,6 +4036,50 @@
     });
   }
 
+  if (elements.settingsCodexModel) {
+    elements.settingsCodexModel.addEventListener("change", queueCodexLimitsLoad);
+  }
+
+  if (elements.settingsCodexAuthSave) {
+    elements.settingsCodexAuthSave.addEventListener("click", function () {
+      saveCodexAuthMode();
+    });
+  }
+
+  if (elements.settingsCodexArmRun) {
+    elements.settingsCodexArmRun.addEventListener("click", function () {
+      runCodexArmSmoke();
+    });
+  }
+
+  if (elements.settingsCodexRefresh) {
+    elements.settingsCodexRefresh.addEventListener("click", function () {
+      queueCodexLimitsLoad();
+    });
+  }
+
+  if (elements.authRequirementClose) {
+    elements.authRequirementClose.addEventListener("click", closeAuthRequirementModal);
+  }
+
+  if (elements.authRequirementModal) {
+    elements.authRequirementModal.addEventListener("click", function (event) {
+      if (event.target === elements.authRequirementModal) {
+        closeAuthRequirementModal();
+      }
+    });
+  }
+
+  if (elements.authRequirementSaveKey) {
+    elements.authRequirementSaveKey.addEventListener("click", function () {
+      saveMissingAuthKey();
+    });
+  }
+
+  if (elements.authRequirementCodexSignIn) {
+    elements.authRequirementCodexSignIn.addEventListener("click", openCodexAuthHelp);
+  }
+
   if (elements.composerAttachmentList) {
     elements.composerAttachmentList.addEventListener("click", function (event) {
       const button = event.target.closest("[data-attachment-id]");
@@ -3003,12 +4100,7 @@
   });
 
   elements.sendPrompt.addEventListener("click", function () {
-    const mode = elements.sendPrompt.dataset.composerActionMode || "send";
-    const action = mode === "answer-now" ? queueAnswerNow() : sendPrompt();
-    action.catch(function (error) {
-      elements.draftState.textContent = (mode === "answer-now" ? "Answer now failed: " : "Send failed: ") + String(error.message || error);
-      updateComposerActionButton(runtimeState.backendState || {});
-    });
+    submitComposerAction();
   });
 
   if (elements.debugRefreshState) {
@@ -3152,6 +4244,64 @@
     });
   }
 
+  if (elements.sessionRefreshBtn) {
+    elements.sessionRefreshBtn.addEventListener("click", function () {
+      sessionBrowserState.loaded = false;
+      loadSessionBrowser().catch(function (error) {
+        if (elements.sessionStatus) {
+          elements.sessionStatus.textContent = "Session browser refresh failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.sessionPreviewCurrentBtn) {
+    elements.sessionPreviewCurrentBtn.addEventListener("click", function () {
+      previewCurrentSession().catch(function (error) {
+        if (elements.sessionStatus) {
+          elements.sessionStatus.textContent = "Current session preview failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.sessionSearch) {
+    elements.sessionSearch.addEventListener("input", function () {
+      renderSessionBrowserList();
+    });
+  }
+
+  if (elements.sessionList) {
+    elements.sessionList.addEventListener("click", function (event) {
+      const continueButton = event.target.closest("[data-session-continue]");
+      if (continueButton) {
+        continueSelectedSession(continueButton.getAttribute("data-session-continue")).catch(function (error) {
+          if (elements.sessionStatus) {
+            elements.sessionStatus.textContent = "Archived session continue failed: " + String(error.message || error);
+          }
+        });
+        return;
+      }
+      const button = event.target.closest("[data-session-select], [data-session-preview]");
+      if (!button) return;
+      selectSessionForPreview(button.getAttribute("data-session-select") || button.getAttribute("data-session-preview")).catch(function (error) {
+        if (elements.sessionStatus) {
+          elements.sessionStatus.textContent = "Session preview failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
+  if (elements.sessionReplayBtn) {
+    elements.sessionReplayBtn.addEventListener("click", function () {
+      continueSelectedSession(elements.sessionReplayBtn.dataset.sessionReplay).catch(function (error) {
+        if (elements.sessionStatus) {
+          elements.sessionStatus.textContent = "Archived session continue failed: " + String(error.message || error);
+        }
+      });
+    });
+  }
+
   if (elements.failedCallRefreshBtn) {
     elements.failedCallRefreshBtn.addEventListener("click", function () {
       failedCallState.loaded = false;
@@ -3258,6 +4408,8 @@
   fillModelsForCurrentProviders();
   syncSelectToggleButtons();
   syncSelectCycleButtons();
+  resizeObjectiveTextarea();
+  window.addEventListener("resize", resizeObjectiveTextarea);
   try {
     applySidebarState(window.localStorage.getItem("igsShell.sidebarCollapsed") === "1");
   } catch (_) {

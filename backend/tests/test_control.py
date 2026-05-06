@@ -113,6 +113,56 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(status["providerGroups"]["openai"]["selectedMode"], "local")
         self.assertEqual(status["providerGroups"]["openai"]["effectiveBackend"], "local_file")
 
+    def test_auth_requirements_groups_missing_provider_keys_by_domain(self) -> None:
+        payload = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4.6",
+            "summarizerProvider": "anthropic",
+            "summarizerModel": "claude-haiku-4.5",
+            "directBaselineMode": "both",
+            "directProvider": "anthropic",
+            "directModel": "claude-sonnet-4.6",
+        }
+
+        with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
+            status = control.auth_requirements_status(payload, self.root)
+
+        self.assertFalse(status["ready"])
+        self.assertEqual(len(status["missing"]), 1)
+        missing = status["missing"][0]
+        self.assertEqual(missing["domain"], "anthropic_api")
+        self.assertEqual(missing["kind"], "api_key")
+        self.assertEqual(missing["provider"], "anthropic")
+        self.assertEqual(missing["action"], "save_api_key")
+        self.assertEqual({consumer["role"] for consumer in missing["consumers"]}, {"worker", "summarizer", "direct_baseline"})
+
+    def test_auth_requirements_accepts_codex_chatgpt_auth_when_model_source_is_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as codex_home:
+            home = Path(codex_home)
+            (home / "auth.json").write_text("{}", encoding="utf-8")
+            payload = {
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "modelSource": "codex_auth",
+                "summarizerProvider": "openai",
+                "summarizerModel": "gpt-5.4-mini",
+                "summarizerModelSource": "openai_api",
+            }
+            (self.root / "Auth.txt").write_text("openai:sk-openai-1234\n", encoding="utf-8")
+
+            with mock.patch.dict(
+                "os.environ",
+                {"CODEX_HOME": str(home), "LOOP_SECRET_BACKEND": "local_file"},
+                clear=False,
+            ):
+                status = control.auth_requirements_status(payload, self.root)
+
+        self.assertTrue(status["ready"])
+        domains = {item["domain"] for item in status["requirements"]}
+        self.assertIn("codex_chatgpt", domains)
+        self.assertIn("openai_api", domains)
+        self.assertEqual(status["missing"], [])
+
     def test_auth_file_path_honors_docker_secret_backend(self) -> None:
         secret_path = self.root / "secrets" / "openai_api_keys"
         previous_backend = os.environ.get("LOOP_SECRET_BACKEND")
@@ -196,6 +246,27 @@ class ControlPlaneTests(unittest.TestCase):
 
         state = storage.read_state_payload(storage.project_paths(self.root))
         self.assertEqual(state["draft"]["objective"], "Map the hosted migration")
+
+    def test_save_draft_preserves_openai_api_key_vs_codex_model_source(self) -> None:
+        result = control.save_draft(
+            {
+                "objective": "Use the Codex arm for one OpenAI-family lane.",
+                "provider": "openai",
+                "model": "gpt-5.5",
+                "modelSource": "codex_auth",
+                "summarizerProvider": "openai",
+                "summarizerModel": "gpt-5.4",
+                "summarizerModelSource": "openai_api",
+            },
+            self.root,
+        )
+
+        draft = result["draft"]
+        self.assertEqual(draft["provider"], "openai")
+        self.assertEqual(draft["model"], "gpt-5.5")
+        self.assertEqual(draft["modelSource"], "codex_auth")
+        self.assertEqual(draft["summarizerModel"], "gpt-5.4")
+        self.assertEqual(draft["summarizerModelSource"], "openai_api")
 
     def test_default_draft_budget_is_cost_only(self) -> None:
         draft = control.default_draft_state()

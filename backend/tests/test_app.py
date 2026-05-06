@@ -62,6 +62,11 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("/v1/memory/learn/evals", paths)
         self.assertIn("/v1/auth/status", paths)
         self.assertIn("/v1/auth/keys", paths)
+        self.assertIn("/v1/auth/requirements", paths)
+        self.assertIn("/v1/codex/limits", paths)
+        self.assertIn("/v1/codex/limits/manual", paths)
+        self.assertIn("/v1/codex/auth", paths)
+        self.assertIn("/v1/codex/lanes/run", paths)
         self.assertIn("/v1/state", paths)
         self.assertIn("/v1/state/reset", paths)
         self.assertIn("/v1/history", paths)
@@ -125,6 +130,9 @@ class AppRouteTests(unittest.TestCase):
     def test_home_composer_uses_tool_menu_and_arrow_send_control(self) -> None:
         client = TestClient(create_app())
         response = client.get("/")
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+        css = (root / "assets" / "replacement-shell.css").read_text(encoding="utf-8")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="previewComposerToolMenuToggle"', response.text)
@@ -135,11 +143,119 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn('data-composer-tool-action="memory"', response.text)
         self.assertIn('class="igs-send-icon"', response.text)
         self.assertIn('aria-label="Send prompt"', response.text)
+        self.assertIn('data-autosize-textarea', response.text)
+        self.assertIn("resizeObjectiveTextarea", js)
+        self.assertIn("TEXTAREA_MAX_VISIBLE_ROWS = 7", js)
+        self.assertIn("--composer-textarea-height", css)
+        self.assertIn("--composer-textarea-max-height", css)
+        self.assertIn("overflow-y: auto", css)
+        self.assertIn("function submitComposerAction", js)
+        self.assertIn('elements.objective.addEventListener("keydown"', js)
+        self.assertIn('event.key !== "Enter"', js)
+        self.assertIn("event.shiftKey", js)
+        self.assertIn("event.isComposing", js)
+        self.assertIn("event.preventDefault();", js)
+        self.assertIn("submitComposerAction();", js)
+        self.assertIn("function clearComposerAfterSend", js)
+        self.assertIn('elements.objective.value = "";', js)
+        self.assertIn("clearTimeout(runtimeState.saveTimer);", js)
+        self.assertIn("resizeObjectiveTextarea();", js)
         self.assertNotIn('>Send</button>', response.text)
+
+    def test_chat_canvas_does_not_echo_draft_objective_above_response_area(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('id="previewObjectiveMirror"', response.text)
+        self.assertNotIn("Staged objective", response.text)
+        self.assertNotIn('"Staged objective"', js)
+
+    def test_chat_thread_rebuilds_active_session_turns(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertIn("function buildActiveSessionMessages", js)
+        self.assertIn("const activeObjective = firstText(task?.objective", js)
+        self.assertIn('runMessageHtml("user", "User", activeObjective', js)
+        self.assertIn('runMessageHtml("assistant", "Assistant", finalAnswer', js)
+        self.assertIn("buildActiveSessionMessages(state, busy, loopStatus)", js)
+
+    def test_chat_transcript_uses_bubbles_without_visible_message_headers(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+        css = (root / "assets" / "replacement-shell.css").read_text(encoding="utf-8")
+
+        self.assertNotIn('<span>${escapeHtml(role || "Message")}</span>', js)
+        self.assertIn('aria-label="${escapeHtml(role || "Message")}', js)
+        self.assertIn('igs-message-${escapeHtml(kind || "system")}', js)
+        self.assertIn(".igs-chat-canvas .igs-message-user", css)
+        self.assertIn(".igs-chat-canvas .igs-run-message-user", css)
+        self.assertIn("justify-self: end", css)
+        self.assertIn("max-width: min(50%, 760px)", css)
+        self.assertIn(".igs-chat-canvas .igs-run-message-assistant", css)
+        self.assertIn("justify-self: stretch", css)
+        self.assertIn("max-width: none", css)
+
+    def test_chat_thread_reads_summary_from_state_or_enriched_active_task(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertIn("function activeSummaryState", js)
+        self.assertIn("activeSummaryState(state, task)", js)
+        self.assertIn("summaryAnswerText(activeSummaryState(state, task))", js)
+
+    def test_composer_radius_decreases_when_textarea_expands(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+        css = (root / "assets" / "replacement-shell.css").read_text(encoding="utf-8")
+
+        self.assertIn("composerRow: document.querySelector", js)
+        self.assertIn('elements.composerRow.classList.toggle("is-expanded"', js)
+        self.assertIn(".igs-composer-row.is-expanded", css)
+        self.assertIn("border-radius: 28px", css)
+        self.assertIn("transition: border-radius", css)
+
+    def test_sessions_surface_exposes_search_preview_and_continue_controls(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-view-target="sessions"', response.text)
+        self.assertIn('data-view-panel="sessions"', response.text)
+        self.assertIn('id="sessionSearch"', response.text)
+        self.assertIn('id="sessionList"', response.text)
+        self.assertIn('id="sessionThread"', response.text)
+        self.assertIn('id="sessionRawExport"', response.text)
+        self.assertIn("async function loadSessionBrowser", js)
+        self.assertIn("function renderSessionBrowserList", js)
+        self.assertIn("function renderSessionExportThread", js)
+        self.assertIn('loadSessionExport("")', js)
+        self.assertIn('nextTarget === "sessions"', js)
+        self.assertIn('id="sessionReplayBtn"', response.text)
+        self.assertIn(">Continue archive</button>", response.text)
+        self.assertIn("async function continueSelectedSession", js)
+        self.assertIn('setActiveView("home")', js)
+
+    def test_composer_answer_now_resets_after_final_output(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertIn("function hasFinalChatAnswer", js)
+        self.assertIn('const partialAnswerActive = !hasFinalChatAnswer(state) && hasActiveDispatchTarget(state, "answer_now");', js)
+        self.assertIn("if (hasFinalChatAnswer(state)) return false;", js)
+        self.assertIn("if (!isRunBusy(loop)) return false;", js)
 
     def test_run_contract_drawer_uses_pill_controls_and_summary_chips(self) -> None:
         client = TestClient(create_app())
         response = client.get("/")
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+        css = (root / "assets" / "replacement-shell.css").read_text(encoding="utf-8")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('class="igs-control-bay"', response.text)
@@ -159,6 +275,13 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn('class="igs-native-pill-select"', response.text)
         self.assertIn('class="igs-summary-pill-grid"', response.text)
         self.assertIn('class="igs-summary-pill"', response.text)
+        self.assertIn('id="previewReasoningEffort"', response.text)
+        self.assertIn('data-contract-control-tile="Reasoning level"', response.text)
+        self.assertIn('id="previewSummaryReasoning"', response.text)
+        self.assertIn("reasoningEffort: control.reasoningEffort", js)
+        self.assertIn('elements.reasoningEffort.value = String(draft.reasoningEffort || "low");', js)
+        self.assertIn("summaryReasoning", js)
+        self.assertIn('[data-state-tone="xhigh"]', css)
 
     def test_run_contract_uses_toggles_for_modes_and_boolean_controls(self) -> None:
         client = TestClient(create_app())
@@ -170,6 +293,9 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn('data-cycle-press-levels="none,half,full"', response.text)
         self.assertIn('data-select-cycle="previewContextMode"', response.text)
         self.assertIn('data-cycle-values="weighted,full"', response.text)
+        self.assertIn('data-select-cycle="previewReasoningEffort"', response.text)
+        self.assertIn('data-cycle-values="low,medium,high,xhigh"', response.text)
+        self.assertIn('data-cycle-press-levels="none,half,full,full"', response.text)
         self.assertIn('data-select-cycle="previewDirectBaselineMode"', response.text)
         self.assertIn('data-cycle-values="off,single,both"', response.text)
         self.assertIn('data-press-level="none"', response.text)
@@ -242,6 +368,66 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("syncSelectCycleButtons", js)
         self.assertIn("frontEvalRuns", js)
         self.assertIn("frontJudgeRuns", js)
+
+    def test_settings_tools_present_codex_as_openai_agent_arm(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Codex agent arm", response.text)
+        self.assertIn('id="settingsCodexArmRun"', response.text)
+        self.assertIn('id="settingsCodexArmStatus"', response.text)
+        self.assertIn('aria-label="Codex arm model"', response.text)
+        self.assertIn('id="settingsCodexAuthMode"', response.text)
+        self.assertIn('id="settingsCodexAuthSave"', response.text)
+        self.assertIn('codexLaneRun: "/v1/codex/lanes/run"', js)
+        self.assertIn('codexAuth: "/v1/codex/auth"', js)
+        self.assertIn('authRequirements: "/v1/auth/requirements"', js)
+        self.assertIn("runCodexArmSmoke", js)
+        self.assertIn("saveCodexAuthMode", js)
+        self.assertIn('providerFamily: "openai"', js)
+        self.assertIn("authMode", js)
+
+    def test_shell_exposes_missing_auth_modal_for_run_preflight(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="authRequirementModal"', response.text)
+        self.assertIn('id="authRequirementProvider"', response.text)
+        self.assertIn('id="authRequirementKeyInput"', response.text)
+        self.assertIn('id="authRequirementSaveKey"', response.text)
+        self.assertIn('id="authRequirementCodexSignIn"', response.text)
+        self.assertIn("ensureAuthRequirementsReady", js)
+        self.assertIn("renderAuthRequirementModal", js)
+        self.assertIn("saveMissingAuthKey", js)
+        self.assertIn("openCodexAuthHelp", js)
+        self.assertIn("sendPrompt", js)
+
+    def test_openai_worker_and_summarizer_model_lists_include_codex_line(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+
+        for model in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2"):
+            self.assertIn(f'model: "{model}"', js)
+        self.assertIn('value: "openai:gpt-5.4"', js)
+        self.assertIn('value: "codex:gpt-5.4"', js)
+        self.assertIn('source: "openai_api"', js)
+        self.assertIn('source: "codex_auth"', js)
+        self.assertIn('sourceLabel: "API key"', js)
+        self.assertIn('sourceLabel: "Codex"', js)
+        self.assertIn("parseModelSelection", js)
+        self.assertIn("selectedModelId", js)
+        self.assertIn("selectedModelSource", js)
+        self.assertIn("modelSource: selectedModelSource(elements.workerModel)", js)
+        self.assertIn("summarizerModelSource: selectedModelSource(elements.summarizerModel)", js)
+        self.assertIn("mergeCodexCatalogIntoOpenAIModels", js)
+        self.assertIn("isVisibleCodexCatalogModel", js)
+        self.assertIn("refreshOpenAIModelSelects", js)
 
     def test_debug_view_exposes_old_shell_operations(self) -> None:
         client = TestClient(create_app())

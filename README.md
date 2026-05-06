@@ -176,6 +176,7 @@ Current skill layers:
 - MSP recall now uses a baseline/adaptive shape: mandatory compact baseline SOP packets provide incident guardrails first, then adaptive judge-learned memories fill the remaining prompt budget; the full rulebook stays inspectable instead of being blindly loaded
 - Repo graph and memory graph endpoints produce operator-readable and AI-readable topology packets without requiring runtime prompts to ingest the whole repo blindly
 - Provider-normalized response parsing keeps direct, Para, and judge artifacts comparable across OpenAI, DeepSeek, Anthropic, xAI, MiniMax, and Ollama paths
+- Read-only OpenAI-family Codex agent arm now stages Para state into `codex exec --json`, persists lane artifacts under `data/outputs`, keeps the low-level adapter ephemeral/read-only, and treats provider RPM/TPM limits as unknown until a direct API path can prove them
 - Task/runtime-scoped Ollama base URL override so remote or dockerized Ollama hosts do not require a control-plane relaunch
 - Multi-endpoint Ollama provider pools via local `providers.txt`, with per-run routing modes `Single endpoint`, `Rotate by run`, and `Mix by lane`
 - Judge-aware Ollama endpoint preference so judge/eval lanes can `Prefer distinct endpoint` when another host is available
@@ -602,6 +603,11 @@ The next work is not to imitate another project. It is to make ParaLLM better at
 - `Scheduler and Provider Lanes`
   - promote live, eval, judge, repo scan, memory reflection, and provider-call work into first-class scheduled jobs
   - add clearer queue state, cancellation, retry policy, rate-limit behavior, and key leasing per provider pool
+- `Codex Specialist Lanes`
+  - wire read-only Codex commander, adversarial, and reliability lanes through the Para artifact contract as an OpenAI-family agent arm, not as a raw model-only worker slot
+  - keep Codex spend visible with local budget gates, JSONL usage parsing, and explicit unknowns for provider-side RPM/TPM limits
+  - expose Codex arm auth, model caps, local catalog context, measured smoke usage, manual account-limit snapshots, and an operator-triggered read-only smoke in `Settings -> Codex agent arm`
+  - require isolated worktrees, file ownership, and merge review before enabling write-capable Codex builder lanes
 - `Vendor Callback Harvesting`
   - capture full provider envelopes, streaming deltas, tool callbacks, exposed reasoning/thinking summaries, usage/cost/cache metrics, safety/refusal signals, and structured error metadata as first-class internal artifacts
   - keep the public answer separate from internal reasoning evidence, with Review-side provenance, redaction controls, and provider/terms-aware retention policy

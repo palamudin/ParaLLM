@@ -6,7 +6,7 @@
   <title>ParaLLM</title>
   <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
-  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260504-007" />
+  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260506-008" />
   <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
   <link rel="stylesheet" href="assets/repo-review.css?v=20260501-003" />
 </head>
@@ -37,6 +37,7 @@
 
       <nav id="replacementSidebarNav" class="igs-nav">
         <button type="button" class="igs-nav-btn is-active" data-view-target="home" aria-current="page">Home</button>
+        <button type="button" class="igs-nav-btn" data-view-target="sessions">Sessions</button>
         <button type="button" class="igs-nav-btn" data-view-target="repo">Repo</button>
         <button type="button" class="igs-nav-btn" data-view-target="review">Review</button>
         <button type="button" class="igs-nav-btn" data-view-target="scores">Scores</button>
@@ -171,6 +172,14 @@
                     </select>
                     <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Worker context" data-control-tone="teal" data-control-state="online" data-select-cycle="previewContextMode" data-cycle-values="weighted,full" data-cycle-press-levels="none,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Light" data-state-tone="light" aria-pressed="false" aria-label="Worker context: Light"><span class="igs-state-text">Worker context</span></button>
 
+                    <select id="previewReasoningEffort" class="igs-native-pill-select">
+                      <option value="low" selected>Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="xhigh">Extra High</option>
+                    </select>
+                    <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Reasoning level" data-control-tone="blue" data-control-state="info" data-select-cycle="previewReasoningEffort" data-cycle-values="low,medium,high,xhigh" data-cycle-press-levels="none,half,full,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Low" data-state-tone="low" aria-pressed="false" aria-label="Reasoning level: Low"><span class="igs-state-text">Reasoning level</span></button>
+
                     <select id="previewDirectBaselineMode" class="igs-native-pill-select">
                       <option value="off" selected>Off</option>
                       <option value="single">Single only</option>
@@ -209,6 +218,10 @@
                       <div class="igs-summary-pill">
                         <span class="igs-summary-label">Limits</span>
                         <span id="previewSummaryLimits" class="igs-summary-value">3 rounds, $5 spend wall</span>
+                      </div>
+                      <div class="igs-summary-pill">
+                        <span class="igs-summary-label">Reasoning</span>
+                        <span id="previewSummaryReasoning" class="igs-summary-value">Low</span>
                       </div>
                       <div class="igs-summary-pill">
                         <span class="igs-summary-label">Research</span>
@@ -382,12 +395,7 @@
             </div>
 
             <section class="igs-chat-canvas" data-home-panel="chat">
-              <div id="previewRunThread" class="igs-thread igs-run-thread" aria-live="polite">
-                <article class="igs-message igs-message-user">
-                  <div class="igs-message-role">Staged objective</div>
-                  <p id="previewObjectiveMirror">The staged objective will appear here once the draft loads.</p>
-                </article>
-              </div>
+              <div id="previewRunThread" class="igs-thread igs-run-thread" aria-live="polite"></div>
 
               <div class="igs-composer igs-chat-composer">
                 <label for="previewObjective" class="igs-composer-label">Objective</label>
@@ -404,7 +412,7 @@
                     </div>
                     <input id="previewComposerFileInput" type="file" multiple hidden />
                   </div>
-                  <textarea id="previewObjective" class="form-control" rows="1" placeholder="Ask ParaLLM to investigate, compare, or summarize."></textarea>
+                  <textarea id="previewObjective" class="form-control" rows="1" data-autosize-textarea placeholder="Ask ParaLLM to investigate, compare, or summarize."></textarea>
                   <button type="button" id="previewSendPrompt" class="igs-send-button" aria-label="Send prompt" title="Send prompt">
                     <span class="igs-send-icon" aria-hidden="true">↑</span>
                     <span class="igs-send-text">Send prompt</span>
@@ -414,6 +422,51 @@
               </div>
             </section>
           </div>
+        </section>
+
+        <section class="igs-view" data-view-panel="sessions" hidden>
+          <div class="igs-view-head">
+            <div>
+              <div class="igs-kicker">Continuity surface</div>
+              <h3>Sessions</h3>
+            </div>
+            <button type="button" id="sessionRefreshBtn" class="btn btn-outline-light btn-sm">Refresh</button>
+          </div>
+
+          <section class="igs-surface igs-session-browser">
+            <div class="igs-session-toolbar">
+              <label class="igs-field" for="sessionSearch">
+                <span>Search sessions</span>
+                <input id="sessionSearch" type="search" spellcheck="false" placeholder="Objective, task id, archive file, answer text" />
+              </label>
+              <div id="sessionStatus" class="igs-inline-note" aria-live="polite">Open Sessions to load current and archived runs.</div>
+            </div>
+
+            <div class="igs-session-layout">
+              <aside class="igs-session-list-panel" aria-label="Session list">
+                <div class="igs-surface-kicker">Thread index</div>
+                <div id="sessionList" class="igs-session-list">No sessions loaded.</div>
+              </aside>
+
+              <section class="igs-session-detail" aria-label="Session detail">
+                <div class="igs-session-detail-head">
+                  <div>
+                    <div class="igs-surface-kicker">Selected thread</div>
+                    <div id="sessionDetailMeta" class="igs-session-meta">No session selected.</div>
+                  </div>
+                  <div class="igs-session-actions">
+                    <button type="button" id="sessionPreviewCurrentBtn" class="btn btn-outline-info btn-sm">Preview current</button>
+                    <button type="button" id="sessionReplayBtn" class="btn btn-outline-warning btn-sm" disabled>Continue archive</button>
+                  </div>
+                </div>
+                <div id="sessionThread" class="igs-session-thread">Select a session to preview the thread.</div>
+                <details class="igs-session-export-details">
+                  <summary>Raw export bundle</summary>
+                  <pre id="sessionRawExport" class="igs-code-block">No export loaded.</pre>
+                </details>
+              </section>
+            </div>
+          </section>
         </section>
 
         <section class="igs-view igs-view-repo" data-view-panel="repo" hidden>
@@ -840,9 +893,35 @@
               </div>
             </section>
 
-            <section class="igs-surface">
+            <section class="igs-surface igs-settings-tools-surface">
               <div class="igs-surface-head">
-                <h4>Tools and limits</h4>
+                <div>
+                  <div class="igs-surface-kicker">OpenAI Codex arm</div>
+                  <h4>Codex agent arm</h4>
+                </div>
+                <div class="igs-codex-toolbar" aria-label="Codex arm controls">
+                  <select id="settingsCodexAuthMode" class="igs-codex-model-select" aria-label="Codex auth mode">
+                    <option value="inherit_chatgpt" selected>Inherit ChatGPT auth</option>
+                    <option value="isolated_chatgpt">Para ChatGPT sign-in</option>
+                    <option value="api_key">API key billing mode</option>
+                    <option value="disabled">Disabled</option>
+                  </select>
+                  <button type="button" class="igs-pill igs-codex-refresh" id="settingsCodexAuthSave">Save auth</button>
+                  <select id="settingsCodexModel" class="igs-codex-model-select" aria-label="Codex arm model">
+                    <option value="gpt-5.5" selected>GPT-5.5</option>
+                    <option value="gpt-5.4">GPT-5.4</option>
+                    <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+                    <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
+                    <option value="gpt-5.3-codex-spark">GPT-5.3 Codex Spark</option>
+                    <option value="gpt-5.2">GPT-5.2</option>
+                  </select>
+                  <button type="button" class="igs-pill igs-codex-refresh" id="settingsCodexArmRun">Run read-only smoke</button>
+                  <button type="button" class="igs-pill igs-codex-refresh" id="settingsCodexRefresh">Refresh</button>
+                </div>
+              </div>
+              <div id="settingsCodexArmStatus" class="igs-inline-note" aria-live="polite">Codex arm is idle. It uses OpenAI-family Codex automation, not a model-only worker slot.</div>
+              <div class="igs-codex-limits-panel" id="settingsCodexLimits" aria-live="polite">
+                <div class="igs-inline-note">Loading Codex limits...</div>
               </div>
             </section>
           </div>
@@ -936,8 +1015,34 @@
     </div>
   </div>
 
+  <div id="authRequirementModal" class="igs-auth-modal" hidden role="dialog" aria-modal="true" aria-labelledby="authRequirementTitle">
+    <div class="igs-auth-modal-panel">
+      <div class="igs-auth-modal-head">
+        <div>
+          <div class="igs-surface-kicker">Provider access</div>
+          <h4 id="authRequirementTitle">Authentication required</h4>
+        </div>
+        <button type="button" class="igs-auth-modal-close" id="authRequirementClose" aria-label="Close authentication prompt">x</button>
+      </div>
+      <div id="authRequirementBody" class="igs-auth-modal-body"></div>
+      <div class="igs-auth-action-row">
+        <label class="igs-field igs-auth-provider-field" for="authRequirementProvider">
+          <span>Provider</span>
+          <select id="authRequirementProvider" class="form-select form-select-sm"></select>
+        </label>
+        <label class="igs-field igs-auth-key-field" for="authRequirementKeyInput">
+          <span>API key</span>
+          <input id="authRequirementKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste provider key" />
+        </label>
+        <button type="button" class="igs-pill igs-auth-primary" id="authRequirementSaveKey">Save key</button>
+        <button type="button" class="igs-pill igs-auth-secondary" id="authRequirementCodexSignIn">Codex sign-in</button>
+      </div>
+      <div id="authRequirementStatus" class="igs-inline-note" aria-live="polite"></div>
+    </div>
+  </div>
+
   <script src="assets/repo-review.js?v=20260501-003"></script>
   <script src="assets/fractal-memory.js?v=20260501-003"></script>
-  <script src="assets/replacement-shell.js?v=20260504-006"></script>
+  <script src="assets/replacement-shell.js?v=20260506-008"></script>
 </body>
 </html>

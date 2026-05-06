@@ -317,10 +317,13 @@ def _front_worker_list(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
     provider = str(payload.get("provider") or "openai").strip() or "openai"
     model = str(payload.get("model") or "").strip()
+    model_source = str(payload.get("modelSource") or "openai_api").strip() or "openai_api"
     summarizer_provider = str(payload.get("summarizerProvider") or provider).strip() or provider
     summarizer_model = str(payload.get("summarizerModel") or model).strip() or model
+    summarizer_model_source = str(payload.get("summarizerModelSource") or model_source).strip() or model_source
     direct_provider = str(payload.get("directProvider") or provider).strip() or provider
     direct_model = str(payload.get("directModel") or model).strip() or model
+    direct_model_source = str(payload.get("directModelSource") or model_source).strip() or model_source
     requested_execution_mode = str(payload.get("executionMode") or "live").strip().lower() or "live"
     if requested_execution_mode != "live":
         raise RuntimeErrorWithCode("Front evals only support live execution. Configure a real provider/key before starting the run.", 400)
@@ -331,10 +334,13 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
     runtime_payload = {
         "provider": provider,
         "model": model,
+        "modelSource": model_source,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
+        "summarizerModelSource": summarizer_model_source,
         "directProvider": direct_provider,
         "directModel": direct_model,
+        "directModelSource": direct_model_source,
     }
     return {
         "armId": f"front-eval-{uuid.uuid4().hex[:8]}",
@@ -350,11 +356,14 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
             "directBaselineMode": "both",
             "provider": provider,
             "model": model,
+            "modelSource": model_source,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "directModelSource": direct_model_source,
             "ollamaBaseUrl": payload.get("ollamaBaseUrl"),
             "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
+            "summarizerModelSource": summarizer_model_source,
             "summarizerHarness": _front_summarizer_harness(payload),
             "directHarness": _front_direct_harness(payload),
             "reasoningEffort": str(payload.get("reasoningEffort") or "low").strip() or "low",
@@ -404,8 +413,10 @@ def _build_front_live_run(paths: storage.Paths, run_id: str, task: Dict[str, Any
             "enginePlan": runtime.get("enginePlan") if isinstance(runtime.get("enginePlan"), dict) else None,
             "provider": str(runtime.get("provider") or ""),
             "model": str(runtime.get("model") or ""),
+            "modelSource": str(runtime.get("modelSource") or ""),
             "summarizerProvider": str((task.get("summarizer") or {}).get("provider") or ""),
             "summarizerModel": str((task.get("summarizer") or {}).get("model") or ""),
+            "summarizerModelSource": str((task.get("summarizer") or {}).get("modelSource") or ""),
             "workerCount": len(workers),
             "workers": [
                 {
