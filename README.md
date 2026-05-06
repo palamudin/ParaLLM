@@ -146,7 +146,12 @@ Current skill layers:
 
 ### UI
 
+Current Home operator surface:
+
+![ParaLLM Home operator surface](docs/assets/parallm-home-2026-05-06.png)
+
 - Chat-first `Home`
+- Home answer canvas renders user prompts as compact right-side bubbles while Para output stays full-width and unconstricted for long-form operator synthesis
 - Home run contract drawer with an operator-panel control surface for runtime mode, engine, provider bay, model picks, worker context, baseline path, vetting, research, and fractal memory
 - Whole-button controls replace form-like nested selectors where possible; two-state buttons use flat/full press states, while three-state controls use flat/half/full press depth
 - Provider selection is presented as a non-pressable bay that contains the vendor selector buttons, not as another clickable worker-direction control
@@ -624,6 +629,7 @@ The next work is not to imitate another project. It is to make ParaLLM better at
 - `Operator UI`
   - continue flattening nested controls into draggable/resizable workspaces
   - make repo and knowledgebase views use the same presentation grammar
+  - add paragraph-level feedback so operators can commend, correct, or mark specific answer passages as memory-worthy instead of rating only the whole answer
   - expose every action as something both a human and an AI agent can understand and operate safely
 - `Deployment and Security`
   - keep the stack Python-first and local-first while defining a clean hosted/self-hosted deployment path
