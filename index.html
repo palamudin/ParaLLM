@@ -6,9 +6,9 @@
   <title>ParaLLM</title>
   <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
-  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260506-008" />
+  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260506-012" />
   <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
-  <link rel="stylesheet" href="assets/repo-review.css?v=20260501-003" />
+  <link rel="stylesheet" href="assets/repo-review.css?v=20260507-001" />
 </head>
 <body class="igs-shell-body">
   <div class="igs-shell-app">
@@ -56,21 +56,34 @@
           <span class="igs-status-label">Task</span>
           <span id="previewHeaderTask" class="igs-status-value">staged draft</span>
         </div>
-        <div class="igs-status-chip">
-          <span class="igs-status-label">Runtime</span>
-          <span id="previewHeaderRuntime" class="igs-status-value">Live</span>
-        </div>
-        <div class="igs-status-chip">
-          <span class="igs-status-label">Baseline</span>
-          <span id="previewHeaderBaseline" class="igs-status-value">Off</span>
+        <div class="igs-header-control-cluster" aria-label="Run mode controls">
+          <select id="previewRuntimeMode" class="igs-native-pill-select">
+            <option value="live" selected>Para</option>
+            <option value="eval">Eval</option>
+            <option value="judge">Judge</option>
+          </select>
+          <button type="button" class="igs-header-cycle igs-header-cycle-tri" data-contract-control-tile="Mode" data-control-tone="cyan" data-control-state="online" data-select-cycle="previewRuntimeMode" data-cycle-values="live,eval,judge" data-cycle-press-levels="none,half,full" data-press-level="none" data-state-label="Para" data-state-tone="live" aria-pressed="false" aria-label="Mode: Para"><span class="igs-state-text">Mode</span></button>
+
+          <select id="previewEngineVersion" class="igs-native-pill-select">
+            <option value="v2" selected>V2</option>
+            <option value="v1">V1</option>
+          </select>
+          <button type="button" class="igs-header-cycle" data-contract-control-tile="Engine" data-control-tone="blue" data-control-state="info" data-select-cycle="previewEngineVersion" data-cycle-values="v2,v1" data-cycle-press-levels="none,full" data-press-level="none" data-state-label="V2" data-state-tone="v2" aria-pressed="false" aria-label="Engine: V2"><span class="igs-state-text">Engine</span></button>
+
+          <select id="previewDirectBaselineMode" class="igs-native-pill-select">
+            <option value="off" selected>Off</option>
+            <option value="single">Single</option>
+            <option value="both">Both</option>
+          </select>
+          <button type="button" class="igs-header-cycle igs-header-cycle-tri" data-contract-control-tile="Baseline" data-control-tone="amber" data-control-state="warning" data-select-cycle="previewDirectBaselineMode" data-cycle-values="off,single,both" data-cycle-press-levels="none,half,full" data-press-level="none" data-state-label="Off" data-state-tone="off" aria-pressed="false" aria-label="Baseline: Off"><span class="igs-state-text">Baseline</span></button>
+
+          <span id="previewHeaderRuntime" class="visually-hidden">Para</span>
+          <span id="previewHeaderBaseline" class="visually-hidden">Off</span>
+          <span id="previewHeaderVetting" class="visually-hidden">On</span>
         </div>
         <div class="igs-status-chip">
           <span class="igs-status-label">Provider</span>
           <span id="previewHeaderProvider" class="igs-status-value">DeepSeek</span>
-        </div>
-        <div class="igs-status-chip">
-          <span class="igs-status-label">Vetting</span>
-          <span id="previewHeaderVetting" class="igs-status-value">On</span>
         </div>
         <div class="igs-status-chip">
           <span class="igs-status-label">Progress</span>
@@ -85,10 +98,7 @@
       <main class="igs-view-stack">
         <section class="igs-view is-active" data-view-panel="home">
           <div class="igs-view-head">
-            <div>
-              <div class="igs-kicker">Actuation surface</div>
-            </div>
-            <div id="previewHomeCollapsedPills" class="igs-home-collapse-tray" aria-label="Collapsed Home panels" hidden></div>
+            <div id="previewHomeCollapsedPills" class="igs-home-collapse-tray" aria-label="Home panel controls" hidden></div>
           </div>
 
           <div class="igs-home-workspace">
@@ -109,55 +119,71 @@
 
                 <div class="igs-control-grid">
                   <div class="igs-control-pack igs-control-pack-routing" data-control-pack="routing">
-                    <div class="igs-control-stack igs-runtime-stack">
-                      <select id="previewRuntimeMode" class="igs-native-pill-select">
-                        <option value="live" selected>Live</option>
-                        <option value="eval">Eval</option>
-                        <option value="judge">Judge</option>
-                      </select>
-                      <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Runtime mode" data-control-tone="cyan" data-control-state="online" data-select-cycle="previewRuntimeMode" data-cycle-values="live,eval,judge" data-cycle-press-levels="none,half,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Live" data-state-tone="live" aria-pressed="false" aria-label="Runtime mode: Live"><span class="igs-state-text">Runtime mode</span></button>
-
-                      <select id="previewEngineVersion" class="igs-native-pill-select">
-                        <option value="v2" selected>V2</option>
-                        <option value="v1">V1</option>
-                      </select>
-                      <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Engine" data-control-tone="blue" data-control-state="info" data-select-cycle="previewEngineVersion" data-cycle-values="v2,v1" data-cycle-press-levels="none,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="V2" data-state-tone="v2" aria-pressed="false" aria-label="Engine: V2"><span class="igs-state-text">Engine</span></button>
-                    </div>
-
-                    <div class="igs-control-tile igs-control-tile-provider" data-contract-control-tile="Worker provider" data-control-tone="green" data-control-state="online">
-                      <div class="igs-control-tile-head">
-                        <label>Worker provider</label>
-                      </div>
-                      <div class="igs-segment igs-segment-wrap igs-provider-segment" role="group" aria-label="Provider">
-                        <button type="button" class="igs-segment-btn is-active" data-group="provider" data-value="deepseek" aria-pressed="true"><span class="igs-provider-led" aria-hidden="true"></span><span>DeepSeek</span></button>
-                        <button type="button" class="igs-segment-btn" data-group="provider" data-value="openai" aria-pressed="false"><span class="igs-provider-led" aria-hidden="true"></span><span>OpenAI</span></button>
-                        <button type="button" class="igs-segment-btn" data-group="provider" data-value="anthropic" aria-pressed="false"><span class="igs-provider-led" aria-hidden="true"></span><span>Anthropic</span></button>
-                        <button type="button" class="igs-segment-btn" data-group="provider" data-value="xai" aria-pressed="false"><span class="igs-provider-led" aria-hidden="true"></span><span>xAI</span></button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="igs-control-pack igs-control-pack-models" data-control-pack="models">
-                    <div class="igs-control-tile igs-select-tile igs-control-tile-wide" data-contract-control-tile="Worker default model" data-control-tone="green" data-control-state="online">
-                      <div class="igs-control-tile-head">
-                        <label for="previewWorkerModel">Worker default model</label>
-                      </div>
-                      <select id="previewWorkerModel" class="igs-native-pill-select" data-contract-pill-select="Worker default model"></select>
-                    </div>
-
-                    <div class="igs-control-tile igs-select-tile" data-contract-control-tile="Summarizer provider" data-control-tone="purple" data-control-state="online">
-                      <div class="igs-control-tile-head">
-                        <label for="previewSummarizerProvider">Summarizer provider</label>
-                      </div>
-                      <select id="previewSummarizerProvider" class="igs-native-pill-select" data-contract-pill-select="Summarizer provider">
+                    <div class="igs-control-tile igs-control-tile-provider igs-provider-selector-tile" data-contract-control-tile="Providers" data-control-tone="green" data-control-state="online">
+                      <select id="previewWorkerProvider" class="igs-native-pill-select">
                         <option value="deepseek">DeepSeek</option>
                         <option value="openai">OpenAI</option>
                         <option value="anthropic">Anthropic</option>
                         <option value="xai">xAI</option>
                       </select>
+                      <select id="previewSummarizerProvider" class="igs-native-pill-select">
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="xai">xAI</option>
+                      </select>
+                      <div class="igs-provider-role-segment" role="group" aria-label="Provider role">
+                        <button type="button" class="igs-provider-role-btn is-active" data-provider-role-option="worker" aria-pressed="true">Worker</button>
+                        <button type="button" class="igs-provider-role-btn" data-provider-role-option="summarizer" aria-pressed="false">Summarizer</button>
+                      </div>
+                      <div class="igs-segment igs-segment-wrap igs-provider-segment" role="group" aria-label="Provider">
+                        <button type="button" class="igs-segment-btn igs-provider-actuator is-active" data-provider-option="deepseek" aria-pressed="true">
+                          <span class="actuator-spark" aria-hidden="true"></span>
+                          <span class="actuator-depth" aria-hidden="true"></span>
+                          <span class="actuator-orbit" aria-hidden="true"></span>
+                          <span class="actuator-title">DeepSeek</span>
+                          <span class="actuator-indicator" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="igs-segment-btn igs-provider-actuator" data-provider-option="openai" aria-pressed="false">
+                          <span class="actuator-spark" aria-hidden="true"></span>
+                          <span class="actuator-depth" aria-hidden="true"></span>
+                          <span class="actuator-orbit" aria-hidden="true"></span>
+                          <span class="actuator-title">OpenAI</span>
+                          <span class="actuator-indicator" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="igs-segment-btn igs-provider-actuator" data-provider-option="anthropic" aria-pressed="false">
+                          <span class="actuator-spark" aria-hidden="true"></span>
+                          <span class="actuator-depth" aria-hidden="true"></span>
+                          <span class="actuator-orbit" aria-hidden="true"></span>
+                          <span class="actuator-title">ANT</span>
+                          <span class="actuator-indicator" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="igs-segment-btn igs-provider-actuator" data-provider-option="xai" aria-pressed="false">
+                          <span class="actuator-spark" aria-hidden="true"></span>
+                          <span class="actuator-depth" aria-hidden="true"></span>
+                          <span class="actuator-orbit" aria-hidden="true"></span>
+                          <span class="actuator-title">XAI</span>
+                          <span class="actuator-indicator" aria-hidden="true"></span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="igs-control-pack igs-control-pack-models" data-control-pack="models">
+                    <div class="igs-control-tile igs-select-tile igs-control-tile-wide igs-model-actuator igs-selector-actuator" data-contract-control-tile="Worker model" data-control-tone="green" data-control-state="online">
+                      <span class="actuator-spark" aria-hidden="true"></span>
+                      <span class="actuator-depth" aria-hidden="true"></span>
+                      <span class="actuator-orbit" aria-hidden="true"></span>
+                      <div class="igs-control-tile-head">
+                        <label for="previewWorkerModel">Worker model</label>
+                      </div>
+                      <select id="previewWorkerModel" class="igs-native-pill-select" data-contract-pill-select="Worker model"></select>
                     </div>
 
-                    <div class="igs-control-tile igs-select-tile igs-control-tile-wide" data-contract-control-tile="Summarizer model" data-control-tone="purple" data-control-state="online">
+                    <div class="igs-control-tile igs-select-tile igs-control-tile-wide igs-model-actuator igs-selector-actuator" data-contract-control-tile="Summarizer model" data-control-tone="purple" data-control-state="online">
+                      <span class="actuator-spark" aria-hidden="true"></span>
+                      <span class="actuator-depth" aria-hidden="true"></span>
+                      <span class="actuator-orbit" aria-hidden="true"></span>
                       <div class="igs-control-tile-head">
                         <label for="previewSummarizerModel">Summarizer model</label>
                       </div>
@@ -166,74 +192,33 @@
                   </div>
 
                   <div class="igs-control-pack igs-control-pack-execution" data-control-pack="execution">
-                    <select id="previewContextMode" class="igs-native-pill-select">
-                      <option value="weighted" selected>Light</option>
-                      <option value="full">Full</option>
-                    </select>
-                    <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Worker context" data-control-tone="teal" data-control-state="online" data-select-cycle="previewContextMode" data-cycle-values="weighted,full" data-cycle-press-levels="none,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Light" data-state-tone="light" aria-pressed="false" aria-label="Worker context: Light"><span class="igs-state-text">Worker context</span></button>
-
-                    <select id="previewReasoningEffort" class="igs-native-pill-select">
-                      <option value="low" selected>Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                      <option value="xhigh">Extra High</option>
-                    </select>
-                    <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Reasoning level" data-control-tone="blue" data-control-state="info" data-select-cycle="previewReasoningEffort" data-cycle-values="low,medium,high,xhigh" data-cycle-press-levels="none,half,full,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Low" data-state-tone="low" aria-pressed="false" aria-label="Reasoning level: Low"><span class="igs-state-text">Reasoning level</span></button>
-
-                    <select id="previewDirectBaselineMode" class="igs-native-pill-select">
-                      <option value="off" selected>Off</option>
-                      <option value="single">Single only</option>
-                      <option value="both">Both compare</option>
-                    </select>
-                    <button type="button" class="igs-control-tile igs-state-tile" data-contract-control-tile="Single-thread baseline" data-control-tone="amber" data-control-state="warning" data-select-cycle="previewDirectBaselineMode" data-cycle-values="off,single,both" data-cycle-press-levels="none,half,full" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Off" data-state-tone="off" aria-pressed="false" aria-label="Single-thread baseline: Off"><span class="igs-state-text">Single-thread baseline</span></button>
-
-                    <select id="previewVettingEnabled" class="igs-native-pill-select">
-                      <option value="1" selected>On</option>
-                      <option value="0">Off</option>
-                    </select>
-                    <button type="button" class="igs-control-tile igs-state-tile igs-binary-state is-active" data-contract-control-tile="Summarizer vetting" data-control-tone="blue" data-control-state="info" data-select-toggle="previewVettingEnabled" data-toggle-target="previewVettingEnabled" data-toggle-on="1" data-toggle-off="0" data-press-level="full" data-state-tooltip-delay="100" data-state-label="On" data-state-tone="on" aria-pressed="true" aria-label="Summarizer vetting: On"><span class="igs-state-text">Summarizer vetting</span></button>
-
-                    <select id="previewResearchMode" class="igs-native-pill-select">
-                      <option value="0" selected>Off</option>
-                      <option value="1">On</option>
-                    </select>
-                    <button type="button" class="igs-control-tile igs-state-tile igs-binary-state" data-contract-control-tile="Research" data-control-tone="orange" data-control-state="warning" data-select-toggle="previewResearchMode" data-toggle-target="previewResearchMode" data-toggle-on="1" data-toggle-off="0" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Off" data-state-tone="off" aria-pressed="false" aria-label="Research: Off"><span class="igs-state-text">Research</span></button>
-
-                    <select id="previewMemoryMode" class="igs-native-pill-select">
-                      <option value="0" selected>Off</option>
-                      <option value="1">On</option>
-                    </select>
-                    <button type="button" class="igs-control-tile igs-state-tile igs-binary-state" data-contract-control-tile="Fractal memory" data-control-tone="amber" data-control-state="warning" data-select-toggle="previewMemoryMode" data-toggle-target="previewMemoryMode" data-toggle-on="1" data-toggle-off="0" data-press-level="none" data-state-tooltip-delay="100" data-state-label="Off" data-state-tone="off" aria-pressed="false" aria-label="Fractal memory: Off"><span class="igs-state-text">Fractal memory</span></button>
+                    <div class="igs-hidden-control-stash" aria-hidden="true">
+                      <select id="previewContextMode" class="igs-native-pill-select">
+                        <option value="weighted" selected>Light</option>
+                        <option value="full">Full</option>
+                      </select>
+                      <select id="previewReasoningEffort" class="igs-native-pill-select">
+                        <option value="low" selected>Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="xhigh">Extra High</option>
+                      </select>
+                      <select id="previewVettingEnabled" class="igs-native-pill-select">
+                        <option value="1" selected>On</option>
+                        <option value="0">Off</option>
+                      </select>
+                      <select id="previewResearchMode" class="igs-native-pill-select">
+                        <option value="0" selected>Off</option>
+                        <option value="1">On</option>
+                      </select>
+                      <select id="previewMemoryMode" class="igs-native-pill-select">
+                        <option value="0" selected>Off</option>
+                        <option value="1">On</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
 
-                <aside class="igs-contract-telemetry" aria-live="polite">
-                  <div class="igs-contract-summary">
-                    <div class="igs-surface-kicker">This send will</div>
-                    <div class="igs-summary-pill-grid">
-                      <div class="igs-summary-pill">
-                        <span class="igs-summary-label">Path</span>
-                        <span id="previewSummaryPath" class="igs-summary-value">Para only</span>
-                      </div>
-                      <div class="igs-summary-pill">
-                        <span class="igs-summary-label">Limits</span>
-                        <span id="previewSummaryLimits" class="igs-summary-value">3 rounds, $5 spend wall</span>
-                      </div>
-                      <div class="igs-summary-pill">
-                        <span class="igs-summary-label">Reasoning</span>
-                        <span id="previewSummaryReasoning" class="igs-summary-value">Low</span>
-                      </div>
-                      <div class="igs-summary-pill">
-                        <span class="igs-summary-label">Research</span>
-                        <span id="previewSummaryResearch" class="igs-summary-value">Off</span>
-                      </div>
-                      <div class="igs-summary-pill">
-                        <span class="igs-summary-label">Memory</span>
-                        <span id="previewSummaryMemory" class="igs-summary-value">Off</span>
-                      </div>
-                    </div>
-                  </div>
-                </aside>
               </div>
             </section>
 
@@ -404,6 +389,16 @@
                     <button type="button" id="previewComposerToolMenuToggle" class="igs-composer-tool-toggle" aria-expanded="false" aria-controls="previewComposerToolMenu" aria-label="Open tools">+</button>
                     <div id="previewComposerToolMenu" class="igs-composer-tool-menu" role="menu" hidden>
                       <button type="button" class="igs-composer-tool-action" data-composer-tool-action="upload" role="menuitem">Upload files</button>
+                      <button type="button" class="igs-composer-tool-action" data-composer-tool-action="context" role="menuitem">Context light</button>
+                      <div class="igs-composer-tool-submenu" role="group" aria-label="Reasoning level">
+                        <div class="igs-composer-tool-subhead">Reasoning</div>
+                        <div class="igs-composer-tool-options">
+                          <button type="button" class="igs-composer-tool-option is-active" data-composer-reasoning-option="low" aria-pressed="true">Low</button>
+                          <button type="button" class="igs-composer-tool-option" data-composer-reasoning-option="medium" aria-pressed="false">Medium</button>
+                          <button type="button" class="igs-composer-tool-option" data-composer-reasoning-option="high" aria-pressed="false">High</button>
+                          <button type="button" class="igs-composer-tool-option" data-composer-reasoning-option="xhigh" aria-pressed="false">Extra High</button>
+                        </div>
+                      </div>
                       <button type="button" class="igs-composer-tool-action" data-composer-tool-action="web-search" role="menuitem">Web search off</button>
                       <button type="button" class="igs-composer-tool-action" data-composer-tool-action="memory" role="menuitem">Fractal memory off</button>
                       <button type="button" class="igs-composer-tool-action" data-composer-tool-action="local-files" role="menuitem">Local files off</button>
@@ -417,6 +412,34 @@
                     <span class="igs-send-icon" aria-hidden="true">↑</span>
                     <span class="igs-send-text">Send prompt</span>
                   </button>
+                </div>
+                <div class="igs-composer-summary-row" aria-live="polite">
+                  <div class="igs-summary-pill-grid">
+                    <div class="igs-summary-pill">
+                      <span class="igs-summary-label">Path</span>
+                      <span id="previewSummaryPath" class="igs-summary-value">Para only</span>
+                    </div>
+                    <div class="igs-summary-pill">
+                      <span class="igs-summary-label">Limits</span>
+                      <span id="previewSummaryLimits" class="igs-summary-value">3 rounds, $5 spend wall</span>
+                    </div>
+                    <div class="igs-summary-pill">
+                      <span class="igs-summary-label">Reasoning</span>
+                      <span id="previewSummaryReasoning" class="igs-summary-value">Low</span>
+                    </div>
+                    <div class="igs-summary-pill">
+                      <span class="igs-summary-label">Context</span>
+                      <span id="previewSummaryContext" class="igs-summary-value">Light</span>
+                    </div>
+                    <div class="igs-summary-pill">
+                      <span class="igs-summary-label">Search</span>
+                      <span id="previewSummaryResearch" class="igs-summary-value">Off</span>
+                    </div>
+                    <div class="igs-summary-pill">
+                      <span class="igs-summary-label">Memory</span>
+                      <span id="previewSummaryMemory" class="igs-summary-value">Off</span>
+                    </div>
+                  </div>
                 </div>
                 <div id="previewComposerAttachmentList" class="igs-composer-attachment-list" hidden></div>
               </div>
@@ -515,6 +538,12 @@
                               <div class="group-action-row">
                                 <button id="refreshBtn" class="primary" type="button">Refresh Repo</button>
                               </div>
+                              <div class="control">
+                                <label for="repoRootSelect">Scan folder</label>
+                                <select id="repoRootSelect">
+                                  <option value=".">Repository root</option>
+                                </select>
+                              </div>
                               <div id="status" class="status">Loading repo graph from /v1/repo/graph...</div>
                             </div>
                           </details>
@@ -532,6 +561,14 @@
                           <details class="group-card" data-repo-detail="visibility">
                             <summary>Visibility</summary>
                             <div class="group-card-body">
+                              <div class="control">
+                                <label for="graphModeSelect">Graph view</label>
+                                <select id="graphModeSelect">
+                                  <option value="overview">Oversight: modules and files</option>
+                                  <option value="functions">Function call graph</option>
+                                  <option value="selected">Selected neighborhood</option>
+                                </select>
+                              </div>
                               <div class="control">
                                 <label for="minDegreeRange">Minimum degree <span id="minDegreeValue">0</span></label>
                                 <input id="minDegreeRange" type="range" min="0" max="30" value="0" />
@@ -1041,8 +1078,8 @@
     </div>
   </div>
 
-  <script src="assets/repo-review.js?v=20260501-003"></script>
+  <script src="assets/repo-review.js?v=20260507-004"></script>
   <script src="assets/fractal-memory.js?v=20260501-003"></script>
-  <script src="assets/replacement-shell.js?v=20260506-008"></script>
+  <script src="assets/replacement-shell.js?v=20260506-009"></script>
 </body>
 </html>

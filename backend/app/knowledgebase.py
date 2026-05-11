@@ -191,6 +191,17 @@ def metadata_field(payload: Any, key: str = "metadata") -> Dict[str, Any]:
     return clean
 
 
+def metadata_search_text(value: Any) -> str:
+    metadata = value if isinstance(value, dict) else {}
+    parts: List[str] = []
+    for raw_value in metadata.values():
+        if isinstance(raw_value, (str, int, float, bool)):
+            text = str(raw_value).strip()
+            if text:
+                parts.append(text)
+    return " ".join(parts)
+
+
 def compact_string_list(value: Any, limit: int = 8, item_limit: int = 220) -> List[str]:
     if isinstance(value, str):
         raw = [value]
@@ -263,6 +274,21 @@ def stable_id(prefix: str, *parts: Any) -> str:
 
     seed = "\n".join(str(part or "") for part in parts)
     return f"{prefix}_{hashlib.sha1(seed.encode('utf-8', errors='replace')).hexdigest()[:16]}"
+
+
+def record_fingerprint(record: Dict[str, Any]) -> str:
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    comparable = {
+        "bankId": safe_bank_id(record.get("bankId") or DEFAULT_BANK_ID),
+        "title": compact(record.get("title"), 140).lower(),
+        "type": str(record.get("type") or record.get("factType") or "note").strip().lower(),
+        "text": compact(record.get("text"), MAX_RECORD_TEXT).lower(),
+        "context": compact(record.get("context"), 1000).lower(),
+        "tags": sorted(parse_tags(record.get("tags"))),
+        "metadata": {str(key): str(value) for key, value in sorted(metadata.items())},
+        "sop": normalize_sop_packet(record.get("sop")),
+    }
+    return stable_id("mem_fp", json.dumps(comparable, ensure_ascii=True, sort_keys=True))
 
 
 def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -347,6 +373,26 @@ def append_records(root: Path | str, bank_id: str, records: List[Dict[str, Any]]
     with target.open("a", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def upsert_memory_records(root: Path | str, bank_id: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not records:
+        return {"stored": 0, "duplicates": 0, "records": [], "path": str(bank_records_path(root, bank_id))}
+    target = bank_records_path(root, bank_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing, _warnings = read_jsonl_records(target, limit=100000)
+    seen = {record_fingerprint(record) for record in existing}
+    stored_records: List[Dict[str, Any]] = []
+    duplicates = 0
+    for record in records:
+        fingerprint = record_fingerprint(record)
+        if fingerprint in seen:
+            duplicates += 1
+            continue
+        seen.add(fingerprint)
+        stored_records.append(record)
+    append_records(root, bank_id, stored_records)
+    return {"stored": len(stored_records), "duplicates": duplicates, "records": stored_records, "path": str(target)}
 
 
 def read_jsonl_records(path: Path, limit: int = 2000) -> tuple[List[Dict[str, Any]], List[str]]:
@@ -573,11 +619,13 @@ def retain(root: Path | str, payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         items = [{"content": payload.get("content") if payload.get("content") is not None else payload.get("text")}]
     records = [record for item in items if (record := record_from_payload(bank_id, item, payload))]
-    append_records(root, bank_id, records)
+    upsert_result = upsert_memory_records(root, bank_id, records)
+    stored_records = upsert_result.get("records") if isinstance(upsert_result.get("records"), list) else []
     return {
         "schemaVersion": SCHEMA_VERSION,
         "bankId": bank_id,
-        "stored": len(records),
+        "stored": int(upsert_result["stored"]),
+        "duplicates": int(upsert_result["duplicates"]),
         "records": [
             {
                 "id": record["id"],
@@ -587,9 +635,9 @@ def retain(root: Path | str, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "tags": record["tags"],
                 "createdAt": record["createdAt"],
             }
-            for record in records
+            for record in stored_records
         ],
-        "storage": {"backend": "local_jsonl", "path": str(bank_records_path(root, bank_id))},
+        "storage": {"backend": "local_jsonl", "path": str(upsert_result["path"])},
         "fallbackSafe": True,
     }
 
@@ -697,6 +745,7 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
             str(record.get("context") or ""),
             " ".join(record.get("tags") or []),
             " ".join(record.get("entities") or []),
+            metadata_search_text(metadata),
             str(sop.get("useCase") or ""),
             " ".join(sop.get("eventTypes") or []),
             " ".join(sop.get("triggers") or []),
@@ -820,11 +869,6 @@ def recall(
     scored: List[Dict[str, Any]] = []
     baseline_scored: List[Dict[str, Any]] = []
     for record in filtered:
-        record_bank_id = str(record.get("bankId") or "")
-        record_tags = {str(tag).strip().lower() for tag in record.get("tags") or [] if str(tag).strip()}
-        record_is_msp = record_bank_id == MSP_BANK_ID or "msp" in record_tags or str(record.get("id") or "") == "runtime_msp_howto"
-        if record_is_msp and bank_id != MSP_BANK_ID and not allow_ambient_msp:
-            continue
         score, parts = record_score(record, query, query_terms, wanted_tags)
         reason = baseline_reason(record, query, query_terms, wanted_tags, bank_id)
         enriched = {**record, "score": round(score, 4), "scoreParts": parts}
@@ -833,7 +877,14 @@ def recall(
             enriched["baselineReason"] = reason
             baseline_scored.append(enriched)
             continue
-        if query_terms and score <= 0.35:
+        demand_score = (
+            float(parts.get("keyword") or 0.0) * 4.0
+            + float(parts.get("phrase") or 0.0) * 2.0
+            + float(parts.get("tag") or 0.0) * 1.2
+            + float(parts.get("sop") or 0.0) * 1.6
+        )
+        enriched["scoreParts"] = {**parts, "demand": round(demand_score, 4)}
+        if query_terms and demand_score <= 0.35:
             continue
         enriched["memoryLayer"] = "adaptive" if record.get("sop") else "supporting"
         scored.append(enriched)

@@ -38,4 +38,5 @@ backend/tests/__pycache__/
 *.zip
 tmp/
 .qa/
+qa/
 .venv/

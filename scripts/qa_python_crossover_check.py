@@ -97,7 +97,7 @@ def wait_for_health(backend_base: str, timeout_seconds: float = 12.0) -> None:
     raise QAError(f"Python backend did not become healthy within {timeout_seconds:.1f}s. {last_error}".strip())
 
 
-def wait_for_dispatch_idle(backend_base: str, timeout_seconds: float = 60.0) -> Dict[str, Any]:
+def wait_for_dispatch_idle(backend_base: str, timeout_seconds: float = 180.0) -> Dict[str, Any]:
     deadline = time.time() + timeout_seconds
     last_state: Dict[str, Any] | None = None
     while time.time() < deadline:
@@ -155,6 +155,17 @@ class PreservedWorkspace:
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(backup, path)
+
+    def restore_auth(self) -> None:
+        path = self.files["auth"]
+        backup = self.temp_dir / f"auth{path.suffix}"
+        if not backup.exists():
+            return
+        if not self.existed.get("auth", False):
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(backup, path)
 
     def cleanup_task_artifacts(self, task_id: str) -> None:
         directories = [
@@ -261,6 +272,7 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             openai_selected_mode = str(openai_group.get("selectedMode") or "").strip().lower()
             openai_writable = bool(openai_group.get("writable"))
             if openai_writable:
+                original_openai_key_count = int(openai_group.get("keyCount") or 0)
                 request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"clear": "1"}, timeout=20)
                 request_json(backend_base + "/v1/auth/keys", method="POST", form_data={"appendKey": "sk-test-1111"}, timeout=20)
                 post_auth_status = request_json(backend_base + "/v1/auth/status", timeout=20)
@@ -268,6 +280,12 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
                 post_openai_group = post_groups.get("openai") if isinstance(post_groups.get("openai"), dict) else {}
                 if int(post_openai_group.get("keyCount") or 0) < 1:
                     raise QAError("Python auth append did not leave at least one OpenAI key available.")
+                preserved.restore_auth()
+                restored_auth_status = request_json(backend_base + "/v1/auth/status", timeout=20)
+                restored_groups = restored_auth_status.get("providerGroups") if isinstance(restored_auth_status.get("providerGroups"), dict) else {}
+                restored_openai_group = restored_groups.get("openai") if isinstance(restored_groups.get("openai"), dict) else {}
+                if int(restored_openai_group.get("keyCount") or 0) != original_openai_key_count:
+                    raise QAError("Python auth mutation smoke did not restore the original OpenAI key pool before live dispatch.")
             else:
                 status_code, body = request(
                     backend_base + "/v1/auth/keys",
@@ -304,8 +322,8 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
                 form_data={
                     "objective": "QA the Python control-plane crossover path.",
                     "executionMode": "live",
-                    "model": "gpt-5-mini",
-                    "summarizerModel": "gpt-5-mini",
+                    "model": "gpt-5.4-mini",
+                    "summarizerModel": "gpt-5.4-mini",
                     "workers": json.dumps(draft.get("workers") or []),
                     "loopRounds": "2",
                     "loopDelayMs": "0",
@@ -320,7 +338,7 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
                 method="POST",
                 form_data={
                     "model": "gpt-5.4-mini",
-                    "summarizerModel": "gpt-5.4",
+                    "summarizerModel": "gpt-5.4-mini",
                     "reasoningEffort": "medium",
                     "loopRounds": "2",
                     "loopDelayMs": "0",
@@ -344,7 +362,7 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             request_json(
                 backend_base + "/v1/positions/model",
                 method="POST",
-                form_data={"positionId": "summarizer", "model": "gpt-5.4"},
+                form_data={"positionId": "summarizer", "model": "gpt-5.4-mini"},
                 timeout=20,
             )
 

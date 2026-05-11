@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import bisect
+import fnmatch
+import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -34,14 +36,20 @@ EXTENSIONS: Dict[str, str] = {
 }
 
 SKIP_PATH_PARTS = {
+    ".cache",
+    ".codex",
     ".git",
     ".hg",
+    ".idea",
     ".mypy_cache",
     ".next",
     ".nuxt",
     ".pytest_cache",
+    ".qa",
+    ".ruff_cache",
     ".svn",
     ".venv",
+    ".vscode",
     "__pycache__",
     "bin",
     "build",
@@ -52,7 +60,12 @@ SKIP_PATH_PARTS = {
     "obj",
     "old_logs",
     "packages",
+    "playwright-report",
+    "qa",
     "target",
+    "temp",
+    "test-results",
+    "tmp",
     "vendor",
     "venv",
 }
@@ -146,6 +159,15 @@ class FunctionRecord:
         return len(self.callers) + len(self.callees)
 
 
+@dataclass(frozen=True)
+class GitIgnoreRule:
+    pattern: str
+    negated: bool = False
+    directory_only: bool = False
+    anchored: bool = False
+    basename_only: bool = False
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -186,7 +208,92 @@ def get_ext(path: Path | str) -> str:
     return Path(str(path)).suffix.lower()
 
 
-def should_skip_path(relative_path: str) -> bool:
+def path_is_within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def parse_gitignore_line(raw_line: str) -> Optional[GitIgnoreRule]:
+    line = raw_line.rstrip("\n\r")
+    if not line.strip():
+        return None
+    line = line.rstrip()
+    if line.startswith("#"):
+        return None
+    negated = line.startswith("!")
+    if negated:
+        line = line[1:]
+    if line.startswith("\\#") or line.startswith("\\!"):
+        line = line[1:]
+    line = line.strip()
+    if not line:
+        return None
+    anchored = line.startswith("/")
+    if anchored:
+        line = line.lstrip("/")
+    directory_only = line.endswith("/")
+    pattern = normalize_path(line).rstrip("/")
+    if not pattern:
+        return None
+    return GitIgnoreRule(
+        pattern=pattern,
+        negated=negated,
+        directory_only=directory_only,
+        anchored=anchored,
+        basename_only="/" not in pattern,
+    )
+
+
+def load_gitignore_rules(root: Path) -> List[GitIgnoreRule]:
+    gitignore = root / ".gitignore"
+    if not gitignore.is_file():
+        return []
+    try:
+        lines = gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return [rule for line in lines if (rule := parse_gitignore_line(line))]
+
+
+def match_gitignore_rule(rule: GitIgnoreRule, relative_path: str, *, is_dir: bool) -> bool:
+    relative = normalize_path(relative_path).rstrip("/")
+    if not relative:
+        return False
+    parts = [part for part in relative.split("/") if part]
+    basename = parts[-1] if parts else relative
+    pattern = rule.pattern
+
+    if rule.directory_only:
+        if rule.basename_only:
+            return any(fnmatch.fnmatchcase(part, pattern) for part in parts)
+        return relative == pattern or relative.startswith(f"{pattern}/")
+
+    if rule.basename_only:
+        return fnmatch.fnmatchcase(basename, pattern)
+    if rule.anchored:
+        return fnmatch.fnmatchcase(relative, pattern)
+    return fnmatch.fnmatchcase(relative, pattern) or fnmatch.fnmatchcase(f"/{relative}", f"*/{pattern}")
+
+
+def is_gitignored(relative_path: str, rules: List[GitIgnoreRule], *, is_dir: bool) -> bool:
+    ignored = False
+    for rule in rules:
+        if match_gitignore_rule(rule, relative_path, is_dir=is_dir):
+            ignored = not rule.negated
+    return ignored
+
+
+def should_skip_path(relative_path: str, ignore_rules: Optional[List[GitIgnoreRule]] = None, *, is_dir: bool = False) -> bool:
+    parts = [part for part in normalize_path(relative_path).split("/") if part]
+    if any(part in SKIP_PATH_PARTS for part in parts):
+        return True
+    return is_gitignored(relative_path, ignore_rules or [], is_dir=is_dir)
+
+
+def has_skipped_path_part(relative_path: str) -> bool:
     parts = [part for part in normalize_path(relative_path).split("/") if part]
     return any(part in SKIP_PATH_PARTS for part in parts)
 
@@ -274,57 +381,166 @@ def find_matching_brace(text: str, start_index: int) -> int:
     return len(text)
 
 
-def source_files(root: Path, *, max_file_bytes: int, max_files: int) -> tuple[List[SourceFile], Dict[str, Any]]:
+def source_files(
+    root: Path,
+    *,
+    max_file_bytes: int,
+    max_files: int,
+    relative_root: Optional[Path] = None,
+    ignore_root: Optional[Path] = None,
+) -> tuple[List[SourceFile], Dict[str, Any]]:
+    root = root.resolve()
+    relative_root = (relative_root or root).resolve()
+    ignore_root = (ignore_root or relative_root).resolve()
+    ignore_rules = load_gitignore_rules(ignore_root)
     files: List[SourceFile] = []
     skipped_by_ext = 0
     skipped_by_path = 0
+    skipped_by_gitignore = 0
     skipped_large = 0
     read_errors = 0
-    for path in sorted(root.rglob("*")):
+    for current, dirs, filenames in os.walk(root):
+        current_path = Path(current)
+        kept_dirs = []
+        for dirname in sorted(dirs):
+            dir_path = current_path / dirname
+            try:
+                relative_dir = normalize_path(dir_path.relative_to(relative_root))
+            except ValueError:
+                relative_dir = normalize_path(dir_path.relative_to(root))
+            if has_skipped_path_part(relative_dir):
+                skipped_by_path += 1
+                continue
+            if is_gitignored(relative_dir, ignore_rules, is_dir=True):
+                skipped_by_gitignore += 1
+                continue
+            kept_dirs.append(dirname)
+        dirs[:] = kept_dirs
+
+        for filename in sorted(filenames):
+            if len(files) >= max_files:
+                break
+            path = current_path / filename
+            if not path.is_file():
+                continue
+            try:
+                relative = normalize_path(path.relative_to(relative_root))
+            except ValueError:
+                relative = normalize_path(path.relative_to(root))
+            if has_skipped_path_part(relative):
+                skipped_by_path += 1
+                continue
+            if is_gitignored(relative, ignore_rules, is_dir=False):
+                skipped_by_gitignore += 1
+                continue
+            if should_skip_path(relative, ignore_rules, is_dir=False):
+                skipped_by_path += 1
+                continue
+            ext = get_ext(path)
+            lang = EXTENSIONS.get(ext)
+            if not lang:
+                skipped_by_ext += 1
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                read_errors += 1
+                continue
+            if size > max_file_bytes:
+                skipped_large += 1
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                read_errors += 1
+                continue
+            files.append(
+                SourceFile(
+                    path=relative,
+                    absolute_path=path,
+                    ext=ext,
+                    lang=lang,
+                    size=size,
+                    text=text,
+                    clean=strip_dead_text(text, ext),
+                    line_starts=line_starts(text),
+                )
+            )
+            if len(files) >= max_files:
+                break
         if len(files) >= max_files:
             break
-        if not path.is_file():
-            continue
-        relative = normalize_path(path.relative_to(root))
-        if should_skip_path(relative):
-            skipped_by_path += 1
-            continue
-        ext = get_ext(path)
-        lang = EXTENSIONS.get(ext)
-        if not lang:
-            skipped_by_ext += 1
-            continue
-        try:
-            size = path.stat().st_size
-        except OSError:
-            read_errors += 1
-            continue
-        if size > max_file_bytes:
-            skipped_large += 1
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            read_errors += 1
-            continue
-        files.append(
-            SourceFile(
-                path=relative,
-                absolute_path=path,
-                ext=ext,
-                lang=lang,
-                size=size,
-                text=text,
-                clean=strip_dead_text(text, ext),
-                line_starts=line_starts(text),
-            )
-        )
     return files, {
         "skippedByExtension": skipped_by_ext,
         "skippedByPath": skipped_by_path,
+        "skippedByGitIgnore": skipped_by_gitignore,
+        "gitIgnoreRulesLoaded": len(ignore_rules),
         "skippedLarge": skipped_large,
         "readErrors": read_errors,
         "maxFilesHit": len(files) >= max_files,
+    }
+
+
+def resolve_scan_root(repo_root: Path | str, requested_root: str | None = None) -> Path:
+    resolved_repo = Path(repo_root).resolve()
+    requested = str(requested_root or ".").strip().replace("\\", "/")
+    if requested in {"", "."}:
+        return resolved_repo
+    candidate = (resolved_repo / requested).resolve()
+    if not path_is_within(candidate, resolved_repo):
+        raise ValueError("Repo scan root must stay inside the repository.")
+    if not candidate.exists() or not candidate.is_dir():
+        raise ValueError("Repo scan root must be an existing folder.")
+    return candidate
+
+
+def discover_scan_roots(repo_root: Path | str, *, max_depth: int = 2) -> Dict[str, Any]:
+    resolved_repo = Path(repo_root).resolve()
+    ignore_rules = load_gitignore_rules(resolved_repo)
+    roots: List[Dict[str, Any]] = [
+        {"label": "Repository root", "value": ".", "path": ".", "depth": 0},
+    ]
+    queue: List[tuple[Path, int]] = [(resolved_repo, 0)]
+    seen = {resolved_repo}
+    while queue:
+        current, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+        try:
+            children = sorted([child for child in current.iterdir() if child.is_dir()], key=lambda item: item.name.lower())
+        except OSError:
+            continue
+        for child in children:
+            if child in seen:
+                continue
+            seen.add(child)
+            relative = normalize_path(child.relative_to(resolved_repo))
+            if has_skipped_path_part(relative) or is_gitignored(relative, ignore_rules, is_dir=True):
+                continue
+            sample, _meta = source_files(
+                child,
+                max_file_bytes=900_000,
+                max_files=1,
+                relative_root=resolved_repo,
+                ignore_root=resolved_repo,
+            )
+            if sample:
+                roots.append(
+                    {
+                        "label": relative,
+                        "value": relative,
+                        "path": relative,
+                        "depth": depth + 1,
+                    }
+                )
+                queue.append((child, depth + 1))
+    return {
+        "root": str(resolved_repo),
+        "roots": roots,
+        "scanPolicy": {
+            "gitIgnoreRulesLoaded": len(ignore_rules),
+            "skippedPathParts": sorted(SKIP_PATH_PARTS),
+        },
     }
 
 
@@ -765,16 +981,24 @@ def cap_graph(functions: List[FunctionRecord], edges: List[Dict[str, Any]], max_
 def build_repo_graph(
     root: Path | str,
     *,
+    repo_root: Path | str | None = None,
     max_nodes: int = 1600,
     max_files: int = 5000,
     max_file_bytes: int = 900_000,
     include_ambiguous: bool = False,
 ) -> Dict[str, Any]:
     resolved_root = Path(root).resolve()
+    resolved_repo_root = Path(repo_root).resolve() if repo_root is not None else resolved_root
     max_nodes = max(50, min(5000, int(max_nodes or 1600)))
     max_files = max(50, min(20000, int(max_files or 5000)))
     max_file_bytes = max(64_000, min(10_000_000, int(max_file_bytes or 900_000)))
-    files, scan_meta = source_files(resolved_root, max_file_bytes=max_file_bytes, max_files=max_files)
+    files, scan_meta = source_files(
+        resolved_root,
+        max_file_bytes=max_file_bytes,
+        max_files=max_files,
+        relative_root=resolved_repo_root,
+        ignore_root=resolved_repo_root,
+    )
 
     functions: List[FunctionRecord] = []
     parse_errors: List[Dict[str, str]] = []
@@ -820,6 +1044,7 @@ def build_repo_graph(
         "schemaVersion": "repo-function-graph/v1",
         "generatedAt": utc_now(),
         "root": str(resolved_root),
+        "repoRoot": str(resolved_repo_root),
         "truncated": truncated,
         "stats": {
             "filesScanned": len(files),

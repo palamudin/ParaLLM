@@ -6,11 +6,12 @@ import json
 import re
 import shutil
 import sys
+import time
 import traceback
 from copy import deepcopy
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -98,6 +99,28 @@ COMPARISON_SCORE_FIELDS = [
     "operationalSeparation",
     "overallDifferentiation",
 ]
+
+LIVE_JUDGE_MAX_ATTEMPTS = 3
+LIVE_JUDGE_RETRY_BASE_DELAY_SECONDS = 0.75
+LIVE_JUDGE_TRANSIENT_STATUS_CODES = {408, 409, 425, 429, 502, 503, 504}
+LIVE_JUDGE_TRANSIENT_MESSAGE_MARKERS = (
+    "http 408",
+    "http 409",
+    "http 425",
+    "http 429",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+    "server_error",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "timeout",
+    "timed out",
+    "temporarily unavailable",
+    "connection reset",
+)
 
 
 def default_judge_learning_config() -> Dict[str, Any]:
@@ -474,6 +497,51 @@ def require_judge_audit_text(
     error.raw_output_text = str(raw_output_text or "")
     error.failure_kind = "score_only_judge"
     raise error
+
+
+def _error_status_code(error: RuntimeErrorWithCode) -> int:
+    try:
+        return int(getattr(error, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_transient_live_judge_error(error: RuntimeErrorWithCode) -> bool:
+    if str(getattr(error, "failure_kind", "") or "").strip():
+        return False
+    message = str(error or "").lower()
+    if "live judge returned" in message or "score-only payload" in message:
+        return False
+    if any(marker in message for marker in LIVE_JUDGE_TRANSIENT_MESSAGE_MARKERS):
+        return True
+    return _error_status_code(error) in LIVE_JUDGE_TRANSIENT_STATUS_CODES
+
+
+def live_judge_retry_delay_seconds(attempt_number: int) -> float:
+    attempt_index = max(0, int(attempt_number or 1) - 1)
+    return min(6.0, LIVE_JUDGE_RETRY_BASE_DELAY_SECONDS * (2**attempt_index))
+
+
+def run_live_judge_with_transient_retries(
+    call_judge: Callable[[], Dict[str, Any]],
+    persist_failure: Callable[[RuntimeErrorWithCode], None],
+    *,
+    max_attempts: int = LIVE_JUDGE_MAX_ATTEMPTS,
+) -> Dict[str, Any]:
+    attempts = max(1, int(max_attempts or 1))
+    last_error: Optional[RuntimeErrorWithCode] = None
+    for attempt_number in range(1, attempts + 1):
+        try:
+            return call_judge()
+        except RuntimeErrorWithCode as error:
+            last_error = error
+            persist_failure(error)
+            if attempt_number >= attempts or not is_transient_live_judge_error(error):
+                raise
+            time.sleep(live_judge_retry_delay_seconds(attempt_number))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeErrorWithCode("Live judge retry loop exited unexpectedly.", 500)
 
 
 def average_score_blocks(blocks: List[Dict[str, Any]], fields: List[str]) -> Dict[str, float]:
@@ -2555,13 +2623,14 @@ def run_quality_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
-        try:
+        def call_judge() -> Dict[str, Any]:
             result = quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in QUALITY_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable quality scores.", 500)
             require_judge_audit_text(result, ["verdict", "strongestStrength", "strongestWeakness", "rationale"], "quality")
             return result
-        except RuntimeErrorWithCode as error:
+
+        def persist_failure(error: RuntimeErrorWithCode) -> None:
             persist_failed_call_from_error(
                 judge_runtime,
                 error,
@@ -2571,7 +2640,8 @@ def run_quality_judge(
                 model=judge_model,
                 schema_name="quality_judge",
             )
-            raise
+
+        return run_live_judge_with_transient_retries(call_judge, persist_failure)
     raise RuntimeErrorWithCode("Live quality judge requires a configured provider key.", 401)
 
 
@@ -2586,13 +2656,14 @@ def run_answer_health_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
-        try:
+        def call_judge() -> Dict[str, Any]:
             result = answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in ANSWER_HEALTH_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable answer-health scores.", 500)
             require_judge_audit_text(result, ["verdict", "strongestStrength", "strongestWeakness", "rationale"], "answer-health")
             return result
-        except RuntimeErrorWithCode as error:
+
+        def persist_failure(error: RuntimeErrorWithCode) -> None:
             persist_failed_call_from_error(
                 judge_runtime,
                 error,
@@ -2602,7 +2673,8 @@ def run_answer_health_judge(
                 model=judge_model,
                 schema_name="answer_health_judge",
             )
-            raise
+
+        return run_live_judge_with_transient_retries(call_judge, persist_failure)
     raise RuntimeErrorWithCode("Live answer-health judge requires a configured provider key.", 401)
 
 
@@ -2616,13 +2688,14 @@ def run_control_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
-        try:
+        def call_judge() -> Dict[str, Any]:
             result = control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in CONTROL_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable control scores.", 500)
             require_judge_audit_text(result, ["verdict", "strongestControlStrength", "strongestControlWeakness", "rationale"], "control")
             return result
-        except RuntimeErrorWithCode as error:
+
+        def persist_failure(error: RuntimeErrorWithCode) -> None:
             persist_failed_call_from_error(
                 judge_runtime,
                 error,
@@ -2632,7 +2705,8 @@ def run_control_judge(
                 model=judge_model,
                 schema_name="control_judge",
             )
-            raise
+
+        return run_live_judge_with_transient_retries(call_judge, persist_failure)
     raise RuntimeErrorWithCode("Live control judge requires a configured provider key.", 401)
 
 
@@ -2771,7 +2845,7 @@ def run_comparison_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
-        try:
+        def call_judge() -> Dict[str, Any]:
             result = comparison_judge_live(
                 judge_runtime,
                 judge_provider,
@@ -2792,7 +2866,8 @@ def run_comparison_judge(
                 raise RuntimeErrorWithCode("Live judge returned no usable comparison scores.", 500)
             require_judge_audit_text(result, ["verdict", "decisionRelation", "primaryEdge", "baselineEdge", "rationale"], "comparison")
             return result
-        except RuntimeErrorWithCode as error:
+
+        def persist_failure(error: RuntimeErrorWithCode) -> None:
             persist_failed_call_from_error(
                 judge_runtime,
                 error,
@@ -2802,7 +2877,8 @@ def run_comparison_judge(
                 model=judge_model,
                 schema_name="comparison_judge",
             )
-            raise
+
+        return run_live_judge_with_transient_retries(call_judge, persist_failure)
     raise RuntimeErrorWithCode("Live comparison judge requires a configured provider key.", 401)
 
 

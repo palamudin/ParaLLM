@@ -1537,6 +1537,69 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(normalized["scores"]["B"]["overall"], 7.5)
         self.assertEqual(normalized["bestFinalAnswer"], "A")
 
+    def test_run_quality_judge_retries_transient_provider_failure(self) -> None:
+        attempts = []
+        valid_result = {
+            "mode": "live",
+            "scores": {field: 8 for field in eval_runner.QUALITY_SCORE_FIELDS},
+            "verdict": "Strong answer.",
+            "strongestStrength": "Concrete sequencing.",
+            "strongestWeakness": "Could name one more evidence source.",
+            "rationale": "The answer is operationally useful and calibrated.",
+            "responseId": "resp_ok",
+        }
+
+        def flaky_quality_judge(*_args, **_kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise eval_runner.RuntimeErrorWithCode("OpenAI API request failed: HTTP 500 | server_error", 500)
+            return valid_result
+
+        with mock.patch.object(eval_runner, "quality_judge_live", side_effect=flaky_quality_judge), mock.patch.object(
+            eval_runner, "persist_failed_call_from_error"
+        ) as persist_failed_call, mock.patch("time.sleep") as sleep:
+            result = eval_runner.run_quality_judge(
+                judge_runtime=object(),
+                judge_provider="openai",
+                api_key="key",
+                judge_model="gpt-5-mini",
+                case={"caseId": "transient-case", "objective": "Do the thing.", "constraints": []},
+                judge_rubric={},
+                public_answer="Recommend staged containment with explicit next steps.",
+                provider_settings={},
+            )
+
+        self.assertEqual(result, valid_result)
+        self.assertEqual(len(attempts), 2)
+        persist_failed_call.assert_called_once()
+        sleep.assert_called_once()
+
+    def test_run_quality_judge_does_not_retry_non_transient_provider_failure(self) -> None:
+        attempts = []
+
+        def bad_request_quality_judge(*_args, **_kwargs):
+            attempts.append(1)
+            raise eval_runner.RuntimeErrorWithCode("OpenAI API request failed: HTTP 400 | invalid_request", 400)
+
+        with mock.patch.object(eval_runner, "quality_judge_live", side_effect=bad_request_quality_judge), mock.patch.object(
+            eval_runner, "persist_failed_call_from_error"
+        ) as persist_failed_call, mock.patch("time.sleep") as sleep:
+            with self.assertRaises(eval_runner.RuntimeErrorWithCode):
+                eval_runner.run_quality_judge(
+                    judge_runtime=object(),
+                    judge_provider="openai",
+                    api_key="key",
+                    judge_model="gpt-5-mini",
+                    case={"caseId": "bad-request-case", "objective": "Do the thing.", "constraints": []},
+                    judge_rubric={},
+                    public_answer="Recommend staged containment with explicit next steps.",
+                    provider_settings={},
+                )
+
+        self.assertEqual(len(attempts), 1)
+        persist_failed_call.assert_called_once()
+        sleep.assert_not_called()
+
     def test_run_quality_judge_raises_when_live_scores_are_missing(self) -> None:
         with mock.patch.object(
             eval_runner,

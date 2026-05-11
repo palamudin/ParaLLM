@@ -118,20 +118,30 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     @app.get("/v1/repo/graph")
     def get_repo_graph(
+        root: str = ".",
         maxNodes: int = 1600,
         maxFiles: int = 5000,
         maxFileBytes: int = 900000,
         includeAmbiguous: bool = False,
     ) -> JSONResponse:
+        try:
+            scan_root = repo_graph.resolve_scan_root(paths.root, root)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse(
             repo_graph.build_repo_graph(
-                paths.root,
+                scan_root,
+                repo_root=paths.root,
                 max_nodes=maxNodes,
                 max_files=maxFiles,
                 max_file_bytes=maxFileBytes,
                 include_ambiguous=includeAmbiguous,
             )
         )
+
+    @app.get("/v1/repo/roots")
+    def get_repo_roots() -> JSONResponse:
+        return JSONResponse(repo_graph.discover_scan_roots(paths.root))
 
     @app.get("/v1/knowledgebase/graph")
     def get_knowledgebase_graph(

@@ -68,7 +68,7 @@
       border-color: rgba(128, 232, 218, 0.78);
     }
 
-    .repo-review-root input[type="text"], .repo-review-root input[type="number"]{
+    .repo-review-root input[type="text"], .repo-review-root input[type="number"], .repo-review-root select{
       width: 100%;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -76,6 +76,11 @@
       color: var(--text);
       background: rgba(3, 15, 18, 0.72);
       outline: none;
+    }
+
+    .repo-review-root select{
+      color-scheme: dark;
+      cursor: pointer;
     }
 
     .repo-review-root input[type="range"]{

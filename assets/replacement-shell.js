@@ -85,6 +85,7 @@
   const COMPOSER_ATTACHMENT_MAX_CHARS = 6000;
   const TEXTAREA_MIN_HEIGHT_PX = 48;
   const TEXTAREA_MAX_VISIBLE_ROWS = 7;
+  const SCROLLBAR_PROXIMITY_PX = 30;
   const COMPOSER_SUPPORTED_EXTENSIONS = [
     ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
     ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
@@ -98,6 +99,7 @@
     codexLimitsTimer: null,
     authRequirements: null,
     controlsLoaded: false,
+    providerPaneRole: "worker",
   };
 
   const shellState = {
@@ -136,11 +138,17 @@
     transfers: [],
   };
   let activeSurfaceDrag = null;
+  let scrollbarHotRaf = 0;
+  const scrollbarHotElements = new Set();
 
   const navButtons = Array.from(document.querySelectorAll("[data-view-target]"));
   const viewPanels = Array.from(document.querySelectorAll("[data-view-panel]"));
   const themeButtons = Array.from(document.querySelectorAll("[data-theme-option]"));
   const groupedButtons = Array.from(document.querySelectorAll("[data-group]"));
+  const summarizerProviderButtons = Array.from(document.querySelectorAll("[data-summarizer-provider-option]"));
+  const providerRoleButtons = Array.from(document.querySelectorAll("[data-provider-role-option]"));
+  const sharedProviderButtons = Array.from(document.querySelectorAll("[data-provider-option]"));
+  const selectorActuators = Array.from(document.querySelectorAll(".igs-selector-actuator, .igs-provider-actuator"));
   const selectToggleButtons = Array.from(document.querySelectorAll("[data-select-toggle]"));
   const selectCycleButtons = Array.from(document.querySelectorAll("[data-select-cycle]"));
   const inspectorModeButtons = Array.from(document.querySelectorAll("[data-inspector-mode]"));
@@ -148,16 +156,17 @@
   const homePanels = Array.from(document.querySelectorAll("[data-home-panel]"));
   const homeCollapseButtons = Array.from(document.querySelectorAll("[data-home-collapse-toggle]"));
   const composerToolActions = Array.from(document.querySelectorAll("[data-composer-tool-action]"));
+  const composerReasoningOptions = Array.from(document.querySelectorAll("[data-composer-reasoning-option]"));
   const contractNativeSelects = Array.from(document.querySelectorAll("[data-contract-pill-select]"));
   const HOME_COLLAPSE_STORAGE_KEY = "igsShell.homeCollapsedPanels";
   const HOME_COLLAPSE_DEFAULT_VERSION_KEY = "igsShell.homeCollapsedPanelsDefaultVersion";
   const HOME_COLLAPSE_DEFAULT_VERSION = "20260504-fields-collapsed-v1";
   const HOME_COLLAPSIBLE_PANELS = [
-    { id: "contract", label: "Run contract", side: "left" },
-    { id: "lanes", label: "Lane status", side: "right" },
-    { id: "trace", label: "Trace output", side: "right" },
-    { id: "supporting", label: "Supporting controls", side: "left" },
-    { id: "math2code", label: "Math2Code", side: "left" },
+    { id: "contract", label: "Run contract", shortLabel: "Contract", side: "left" },
+    { id: "lanes", label: "Lane status", shortLabel: "Lanes", side: "right" },
+    { id: "trace", label: "Trace output", shortLabel: "Trace", side: "right" },
+    { id: "supporting", label: "Supporting controls", shortLabel: "Supporting", side: "left" },
+    { id: "math2code", label: "Math2Code", shortLabel: "Math2Code", side: "left" },
   ];
 
   const elements = {
@@ -166,6 +175,7 @@
     draftState: document.getElementById("previewDraftState"),
     runtimeMode: document.getElementById("previewRuntimeMode"),
     engineVersion: document.getElementById("previewEngineVersion"),
+    workerProvider: document.getElementById("previewWorkerProvider"),
     workerModel: document.getElementById("previewWorkerModel"),
     summarizerProvider: document.getElementById("previewSummarizerProvider"),
     summarizerModel: document.getElementById("previewSummarizerModel"),
@@ -202,6 +212,7 @@
     summaryPath: document.getElementById("previewSummaryPath"),
     summaryLimits: document.getElementById("previewSummaryLimits"),
     summaryReasoning: document.getElementById("previewSummaryReasoning"),
+    summaryContext: document.getElementById("previewSummaryContext"),
     summaryResearch: document.getElementById("previewSummaryResearch"),
     summaryMemory: document.getElementById("previewSummaryMemory"),
     headerTask: document.getElementById("previewHeaderTask"),
@@ -514,6 +525,32 @@
     updateNarrative();
   }
 
+  function seedSelectorActuatorOrbits() {
+    selectorActuators.forEach((actuator, actuatorIndex) => {
+      const orbit = actuator.querySelector(".actuator-orbit");
+      if (!orbit || orbit.children.length) return;
+      const isProviderActuator = actuator.classList.contains("igs-provider-actuator");
+      const particleCount = isProviderActuator ? 20 : 26;
+      for (let index = 0; index < particleCount; index += 1) {
+        const star = document.createElement("i");
+        const seed = (actuatorIndex + 1) * (index + 3);
+        const size = isProviderActuator
+          ? 0.72 + ((seed * 17) % 13) / 10
+          : 1 + ((seed * 17) % 24) / 10;
+        const distance = isProviderActuator
+          ? 5 + ((seed * 29) % 15)
+          : 18 + ((seed * 29) % 82);
+        const duration = 7 + ((seed * 31) % 110) / 10;
+        const delay = ((seed * 13) % 100) / 10;
+        star.style.setProperty("--size", size.toFixed(2) + "px");
+        star.style.setProperty("--distance", distance.toFixed(1) + "px");
+        star.style.setProperty("--duration", duration.toFixed(2) + "s");
+        star.style.setProperty("--delay", delay.toFixed(2));
+        orbit.appendChild(star);
+      }
+    });
+  }
+
   function modelOptions(providerId) {
     return providerCatalog[String(providerId || "").trim()]?.models || [];
   }
@@ -755,6 +792,73 @@
     return HOME_COLLAPSIBLE_PANELS.find((panel) => panel.id === panelId) || null;
   }
 
+  function elementHasScrollableAxis(element) {
+    if (!element || element === document.documentElement || element === document.body) return false;
+    const style = window.getComputedStyle(element);
+    const yScrollable = /(auto|scroll|overlay)/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 2;
+    const xScrollable = /(auto|scroll|overlay)/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 2;
+    return yScrollable || xScrollable;
+  }
+
+  function pointerNearElementScrollChannel(element, x, y) {
+    const rect = element.getBoundingClientRect();
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return false;
+    const verticalHot = element.scrollHeight > element.clientHeight + 2 && rect.right - x <= SCROLLBAR_PROXIMITY_PX;
+    const horizontalHot = element.scrollWidth > element.clientWidth + 2 && rect.bottom - y <= SCROLLBAR_PROXIMITY_PX;
+    return verticalHot || horizontalHot;
+  }
+
+  function setScrollbarHotElements(nextHotElements) {
+    scrollbarHotElements.forEach((element) => {
+      if (!nextHotElements.has(element)) {
+        element.classList.remove("igs-scrollbar-hot");
+        scrollbarHotElements.delete(element);
+      }
+    });
+    nextHotElements.forEach((element) => {
+      if (!scrollbarHotElements.has(element)) {
+        element.classList.add("igs-scrollbar-hot");
+        scrollbarHotElements.add(element);
+      }
+    });
+  }
+
+  function clearScrollbarHotState() {
+    document.documentElement.classList.remove("igs-scrollbar-viewport-hot");
+    setScrollbarHotElements(new Set());
+  }
+
+  function updateScrollbarProximity(x, y) {
+    const root = document.documentElement;
+    const pageCanScrollY = root.scrollHeight > window.innerHeight + 2;
+    const pageCanScrollX = root.scrollWidth > window.innerWidth + 2;
+    const viewportHot = (pageCanScrollY && window.innerWidth - x <= SCROLLBAR_PROXIMITY_PX)
+      || (pageCanScrollX && window.innerHeight - y <= SCROLLBAR_PROXIMITY_PX);
+    root.classList.toggle("igs-scrollbar-viewport-hot", viewportHot);
+
+    const nextHotElements = new Set();
+    let element = document.elementFromPoint(x, y);
+    while (element && element.nodeType === Node.ELEMENT_NODE) {
+      if (elementHasScrollableAxis(element) && pointerNearElementScrollChannel(element, x, y)) {
+        nextHotElements.add(element);
+      }
+      element = element.parentElement;
+    }
+    setScrollbarHotElements(nextHotElements);
+  }
+
+  function scheduleScrollbarProximity(event) {
+    const x = Number(event.clientX || 0);
+    const y = Number(event.clientY || 0);
+    if (scrollbarHotRaf) {
+      window.cancelAnimationFrame(scrollbarHotRaf);
+    }
+    scrollbarHotRaf = window.requestAnimationFrame(function () {
+      scrollbarHotRaf = 0;
+      updateScrollbarProximity(x, y);
+    });
+  }
+
   function defaultHomeCollapsedPanelIds() {
     return HOME_COLLAPSIBLE_PANELS.map((panel) => panel.id);
   }
@@ -798,16 +902,33 @@
 
   function renderHomeCollapsedPills() {
     if (!elements.homeCollapsedPills) return;
-    const collapsed = HOME_COLLAPSIBLE_PANELS.filter((panel) => shellState.homeCollapsedPanels.has(panel.id));
-    elements.homeCollapsedPills.hidden = collapsed.length === 0;
-    elements.homeCollapsedPills.innerHTML = collapsed.map((panel) => `
-      <button type="button" class="igs-pill igs-pill-muted igs-home-restore-pill" data-home-collapse-restore="${escapeHtml(panel.id)}" aria-label="Show ${escapeHtml(panel.label)}">
-        ${escapeHtml(panel.label)}
+    const panelStates = HOME_COLLAPSIBLE_PANELS.map((panel) => ({
+      panel,
+      visible: !shellState.homeCollapsedPanels.has(panel.id),
+    }));
+    elements.homeCollapsedPills.hidden = panelStates.length === 0;
+    elements.homeCollapsedPills.innerHTML = panelStates.map((item, index) => {
+      const previousVisible = Boolean(panelStates[index - 1]?.visible);
+      const nextVisible = Boolean(panelStates[index + 1]?.visible);
+      const classes = [
+        "igs-pill",
+        "igs-home-panel-pill",
+        item.visible ? "is-active" : "is-hidden",
+        item.visible && previousVisible ? "is-joined-left" : "",
+        item.visible && nextVisible ? "is-joined-right" : "",
+      ].filter(Boolean).join(" ");
+      const label = item.panel.shortLabel || item.panel.label;
+      const action = item.visible ? "Hide" : "Show";
+      return `
+      <button type="button" class="${classes}" data-home-panel-toggle="${escapeHtml(item.panel.id)}" aria-pressed="${item.visible ? "true" : "false"}" aria-expanded="${item.visible ? "true" : "false"}" aria-label="${action} ${escapeHtml(item.panel.label)}" title="${action} ${escapeHtml(item.panel.label)}">
+        ${escapeHtml(label)}
       </button>
-    `).join("");
-    elements.homeCollapsedPills.querySelectorAll("[data-home-collapse-restore]").forEach((button) => {
+    `;
+    }).join("");
+    elements.homeCollapsedPills.querySelectorAll("[data-home-panel-toggle]").forEach((button) => {
       button.addEventListener("click", function () {
-        setHomePanelCollapsed(button.getAttribute("data-home-collapse-restore"), false);
+        const panelId = button.getAttribute("data-home-panel-toggle");
+        setHomePanelCollapsed(panelId, !shellState.homeCollapsedPanels.has(panelId));
       });
     });
   }
@@ -833,9 +954,16 @@
       elements.homeDrawer.hidden = homeDrawerEmpty();
     }
     if (elements.homeLayout) {
+      const visibleHomePanelIds = HOME_COLLAPSIBLE_PANELS
+        .filter((panel) => !shellState.homeCollapsedPanels.has(panel.id))
+        .map((panel) => panel.id);
       elements.homeLayout.classList.toggle("is-drawer-empty", homeDrawerEmpty());
       elements.homeLayout.classList.toggle("is-drawer-left-empty", homeSideEmpty("left"));
       elements.homeLayout.classList.toggle("is-drawer-right-empty", homeSideEmpty("right"));
+      elements.homeLayout.classList.toggle(
+        "is-contract-drawer-only",
+        visibleHomePanelIds.length === 1 && visibleHomePanelIds[0] === "contract"
+      );
     }
     renderHomeCollapsedPills();
   }
@@ -850,6 +978,9 @@
     }
     persistHomeCollapsedPanels();
     applyHomePanelCollapseState();
+    if (!collapsed && normalized === "contract") {
+      window.requestAnimationFrame(syncProviderButtonMetrics);
+    }
   }
 
   function prettyJson(value) {
@@ -1304,6 +1435,9 @@
   }
 
   function setGroupedButton(group, value) {
+    if (group === "provider" && elements.workerProvider) {
+      elements.workerProvider.value = String(value || "openai").trim();
+    }
     groupedButtons
       .filter((button) => button.getAttribute("data-group") === group)
       .forEach((button) => {
@@ -1311,13 +1445,126 @@
         button.classList.toggle("is-active", active);
         button.setAttribute("aria-pressed", active ? "true" : "false");
       });
+    if (group === "provider") {
+      syncProviderPaneButtons();
+    }
+  }
+
+  function setStateTileDisplayLabel(button, label) {
+    const displayLabel = String(label || "").trim();
+    button.dataset.stateLabel = displayLabel;
+    const text = button.querySelector(".igs-state-text");
+    if (text) {
+      text.dataset.stateLabel = displayLabel;
+    }
+  }
+
+  function syncSummarizerProviderButtons(value) {
+    const selectedValue = String(value || "").trim();
+    summarizerProviderButtons.forEach((button) => {
+      const active = String(button.getAttribute("data-summarizer-provider-option") || "").trim() === selectedValue;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    syncProviderPaneButtons();
+  }
+
+  function setSummarizerProviderValue(value, options) {
+    if (!elements.summarizerProvider) return;
+    const nextValue = String(value || selectedGroupedValue("provider", "openai") || "openai").trim();
+    elements.summarizerProvider.value = nextValue;
+    syncSummarizerProviderButtons(nextValue);
+    if (options?.dispatch) {
+      elements.summarizerProvider.dispatchEvent(new Event("change", { bubbles: true }));
+    }
   }
 
   function selectedGroupedValue(group, fallback) {
+    if (group === "provider" && elements.workerProvider) {
+      return String(elements.workerProvider.value || fallback || "").trim();
+    }
     const active = groupedButtons.find(
       (button) => button.getAttribute("data-group") === group && button.classList.contains("is-active")
     );
     return active ? active.getAttribute("data-value") : fallback;
+  }
+
+  function activeProviderPaneRole() {
+    return runtimeState.providerPaneRole === "summarizer" ? "summarizer" : "worker";
+  }
+
+  function providerValueForRole(role) {
+    const normalizedRole = role === "summarizer" ? "summarizer" : "worker";
+    const workerProvider = selectedGroupedValue("provider", "openai");
+    return normalizedRole === "summarizer"
+      ? String(elements.summarizerProvider?.value || workerProvider || "openai").trim()
+      : workerProvider;
+  }
+
+  function syncProviderPaneButtons() {
+    const role = activeProviderPaneRole();
+    const activeValue = providerValueForRole(role);
+    providerRoleButtons.forEach((button) => {
+      const active = String(button.getAttribute("data-provider-role-option") || "").trim() === role;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    sharedProviderButtons.forEach((button) => {
+      const active = String(button.getAttribute("data-provider-option") || "").trim() === activeValue;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function syncProviderButtonMetrics() {
+    const segment = sharedProviderButtons[0]?.closest(".igs-provider-segment");
+    if (!segment || !sharedProviderButtons.length) return;
+    const previousWidth = segment.style.getPropertyValue("--provider-button-width");
+    segment.style.removeProperty("--provider-button-width");
+    let maxWidth = 0;
+    sharedProviderButtons.forEach((button) => {
+      const originalWidth = button.style.width;
+      const originalFlexBasis = button.style.flexBasis;
+      button.style.width = "max-content";
+      button.style.flexBasis = "auto";
+      maxWidth = Math.max(maxWidth, Math.ceil(button.getBoundingClientRect().width));
+      button.style.width = originalWidth;
+      button.style.flexBasis = originalFlexBasis;
+    });
+    if (maxWidth > 0) {
+      const resolvedWidth = Math.max(86, maxWidth);
+      const segmentStyle = window.getComputedStyle(segment);
+      const gap = Number.parseFloat(segmentStyle.columnGap || segmentStyle.gap || "7") || 7;
+      const segmentWidth = (resolvedWidth * sharedProviderButtons.length) + (gap * Math.max(0, sharedProviderButtons.length - 1));
+      segment.style.setProperty("--provider-button-width", resolvedWidth + "px");
+      segment.style.setProperty("--provider-segment-width", Math.ceil(segmentWidth) + "px");
+    } else if (previousWidth) {
+      segment.style.setProperty("--provider-button-width", previousWidth);
+    }
+  }
+
+  function setProviderPaneRole(role) {
+    runtimeState.providerPaneRole = role === "summarizer" ? "summarizer" : "worker";
+    syncProviderPaneButtons();
+  }
+
+  function setWorkerProviderValue(value) {
+    const nextValue = String(value || "openai").trim();
+    const previousSummarizerProvider = elements.summarizerProvider?.value || "";
+    const previousSummarizerModel = elements.summarizerModel?.value || "";
+    setGroupedButton("provider", nextValue);
+    fillModelsForCurrentProviders();
+    if (!elements.summarizerProvider.value) {
+      setSummarizerProviderValue(nextValue);
+    }
+    if (previousSummarizerProvider === runtimeState.draft?.provider || previousSummarizerProvider === nextValue) {
+      setSummarizerProviderValue(nextValue);
+      populateSelect(elements.summarizerModel, modelOptions(nextValue), previousSummarizerModel || elements.workerModel.value, runtimeState.draft?.summarizerModelSource);
+      if (previousSummarizerModel === runtimeState.draft?.model || !previousSummarizerModel) {
+        elements.summarizerModel.value = elements.workerModel.value;
+      }
+    }
+    syncProviderPaneButtons();
   }
 
   function syncSelectToggleButtons(selectId) {
@@ -1339,10 +1586,10 @@
       button.dataset.pressLevel = pressLevel;
       button.dataset.stateTone = active ? "on" : "off";
       const stateLabel = active ? "On" : "Off";
-      button.dataset.stateLabel = stateLabel;
+      setStateTileDisplayLabel(button, stateLabel);
       button.setAttribute("aria-label", `${contractControlName(button)}: ${stateLabel}`);
       if (isBinaryToggle) {
-        button.dataset.stateLabel = stateLabel;
+        setStateTileDisplayLabel(button, stateLabel);
       }
     });
   }
@@ -1411,7 +1658,7 @@
       const active = pressLevel !== "none" && isVisuallyActiveState(targetId, select.value);
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", pressLevel === "half" ? "mixed" : active ? "true" : "false");
-      button.dataset.stateLabel = stateLabel;
+      setStateTileDisplayLabel(button, stateLabel);
       button.dataset.stateTone = stateTone;
       button.dataset.pressLevel = pressLevel;
       button.setAttribute("aria-label", `${contractControlName(button)}: ${stateLabel}`);
@@ -1733,13 +1980,16 @@
     if (elements.summaryReasoning) {
       elements.summaryReasoning.textContent = reasoningLabel;
     }
+    if (elements.summaryContext) {
+      elements.summaryContext.textContent = control.contextMode === "full" ? "Full" : "Light";
+    }
     elements.summaryResearch.textContent = control.researchEnabled === "1" ? "On" : "Off";
     if (elements.summaryMemory) {
       elements.summaryMemory.textContent = control.knowledgebaseEnabled === "1" ? "On" : "Off";
     }
 
     elements.headerRuntime.textContent =
-      control.executionMode === "judge" ? "Judge" : (control.executionMode === "eval" ? "Eval" : "Live");
+      control.executionMode === "judge" ? "Judge" : (control.executionMode === "eval" ? "Eval" : "Para");
     elements.headerBaseline.textContent =
       control.directBaselineMode === "both"
         ? "Both compare"
@@ -1789,6 +2039,8 @@
   }
 
   function composerToolState(action) {
+    if (action === "context") return elements.contextMode?.value === "full";
+    if (action === "reasoning") return String(elements.reasoningEffort?.value || "low") !== "low";
     if (action === "web-search") return elements.researchMode.value === "1";
     if (action === "memory") return elements.memoryMode?.value === "1";
     if (action === "local-files") return draftFlag("localFilesEnabled", true);
@@ -1803,6 +2055,10 @@
       return shellState.stagedAttachments.length
         ? `Upload files (${shellState.stagedAttachments.length} staged)`
         : "Upload files";
+    }
+    if (action === "context") return active ? "Context full" : "Context light";
+    if (action === "reasoning") {
+      return "Reasoning " + optionLabelForValue(elements.reasoningEffort, elements.reasoningEffort?.value || "low").toLowerCase();
     }
     if (action === "web-search") return active ? "Web search on" : "Web search off";
     if (action === "memory") return active ? "Fractal memory on" : "Fractal memory off";
@@ -1821,6 +2077,15 @@
         <button type="button" class="igs-composer-attachment-remove" data-attachment-id="${escapeHtml(attachment.id)}" aria-label="Remove ${escapeHtml(attachment.name)}">x</button>
       </span>
     `).join("");
+  }
+
+  function syncComposerReasoningOptions() {
+    const selected = String(elements.reasoningEffort?.value || "low");
+    composerReasoningOptions.forEach((button) => {
+      const active = String(button.getAttribute("data-composer-reasoning-option") || "") === selected;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
   }
 
   function renderComposerTools() {
@@ -1842,6 +2107,7 @@
       button.setAttribute("aria-pressed", active ? "true" : "false");
       button.textContent = composerToolLabel(action, active);
     });
+    syncComposerReasoningOptions();
     renderComposerAttachments();
   }
 
@@ -1854,6 +2120,9 @@
     if (action === "web-search") {
       elements.researchMode.value = elements.researchMode.value === "1" ? "0" : "1";
       syncSelectToggleButtons("previewResearchMode");
+    } else if (action === "context" && elements.contextMode) {
+      elements.contextMode.value = elements.contextMode.value === "full" ? "weighted" : "full";
+      syncSelectCycleButtons("previewContextMode");
     } else if (action === "memory" && elements.memoryMode) {
       elements.memoryMode.value = elements.memoryMode.value === "1" ? "0" : "1";
       syncSelectToggleButtons("previewMemoryMode");
@@ -1866,6 +2135,17 @@
       syncSelectToggleButtons("previewVettingEnabled");
     }
     setComposerMenuOpen(false);
+    updateNarrative();
+    queueDraftSave();
+  }
+
+  function setComposerReasoning(value) {
+    if (!elements.reasoningEffort) return;
+    const nextValue = String(value || "low").trim();
+    if (!nextValue) return;
+    elements.reasoningEffort.value = nextValue;
+    syncSelectCycleButtons("previewReasoningEffort");
+    syncComposerReasoningOptions();
     updateNarrative();
     queueDraftSave();
   }
@@ -2739,6 +3019,7 @@
 
   function fillModelsForCurrentProviders() {
     const workerProvider = selectedGroupedValue("provider", "openai");
+    syncSummarizerProviderButtons(elements.summarizerProvider?.value || workerProvider);
     populateSelect(
       elements.workerModel,
       modelOptions(workerProvider),
@@ -2766,7 +3047,7 @@
       setGroupedButton("engine", String(draft.engineVersion || "v1"));
     }
     setGroupedButton("provider", String(draft.provider || "openai"));
-    elements.summarizerProvider.value = String(draft.summarizerProvider || draft.provider || "openai");
+    setSummarizerProviderValue(String(draft.summarizerProvider || draft.provider || "openai"));
     fillModelsForCurrentProviders();
     populateSelect(elements.workerModel, modelOptions(draft.provider || "openai"), String(draft.model || elements.workerModel.value || ""), draft.modelSource);
     populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), String(draft.summarizerModel || ""), draft.summarizerModelSource);
@@ -3874,16 +4155,43 @@
         const previousSummarizerModel = elements.summarizerModel.value;
         fillModelsForCurrentProviders();
         if (!elements.summarizerProvider.value) {
-          elements.summarizerProvider.value = value;
+          setSummarizerProviderValue(value);
         }
         if (previousSummarizerProvider === runtimeState.draft?.provider || previousSummarizerProvider === value) {
-          elements.summarizerProvider.value = value;
+          setSummarizerProviderValue(value);
           populateSelect(elements.summarizerModel, modelOptions(value), previousSummarizerModel || elements.workerModel.value, runtimeState.draft?.summarizerModelSource);
           if (previousSummarizerModel === runtimeState.draft?.model || !previousSummarizerModel) {
             elements.summarizerModel.value = elements.workerModel.value;
           }
         }
       }
+      updateNarrative();
+      queueDraftSave();
+    });
+  });
+
+  summarizerProviderButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      const value = button.getAttribute("data-summarizer-provider-option");
+      setSummarizerProviderValue(value, { dispatch: true });
+    });
+  });
+
+  providerRoleButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      setProviderPaneRole(button.getAttribute("data-provider-role-option"));
+    });
+  });
+
+  sharedProviderButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      const value = String(button.getAttribute("data-provider-option") || "").trim();
+      if (!value) return;
+      if (activeProviderPaneRole() === "summarizer") {
+        setSummarizerProviderValue(value, { dispatch: true });
+        return;
+      }
+      setWorkerProviderValue(value);
       updateNarrative();
       queueDraftSave();
     });
@@ -3925,6 +4233,7 @@
         resizeObjectiveTextarea();
       }
       if (element === elements.summarizerProvider) {
+        syncSummarizerProviderButtons(elements.summarizerProvider.value);
         populateSelect(
           elements.summarizerModel,
           modelOptions(elements.summarizerProvider.value),
@@ -3944,6 +4253,7 @@
     });
     element.addEventListener("change", function () {
       if (element === elements.summarizerProvider) {
+        syncSummarizerProviderButtons(elements.summarizerProvider.value);
         populateSelect(
           elements.summarizerModel,
           modelOptions(elements.summarizerProvider.value),
@@ -3989,6 +4299,14 @@
       event.preventDefault();
       event.stopPropagation();
       toggleComposerTool(button.getAttribute("data-composer-tool-action"));
+    });
+  });
+
+  composerReasoningOptions.forEach((button) => {
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      setComposerReasoning(button.getAttribute("data-composer-reasoning-option"));
     });
   });
 
@@ -4403,13 +4721,23 @@
   installMainWorkbenchPanes();
   window.addEventListener("pointermove", onMainWorkbenchPaneMove);
   window.addEventListener("pointerup", endMainWorkbenchPaneDrag);
+  window.addEventListener("pointermove", scheduleScrollbarProximity, { passive: true });
+  window.addEventListener("mousemove", scheduleScrollbarProximity, { passive: true });
+  window.addEventListener("pointerleave", clearScrollbarHotState);
+  window.addEventListener("blur", clearScrollbarHotState);
 
+  seedSelectorActuatorOrbits();
+  syncProviderButtonMetrics();
+  if (document.fonts?.ready) {
+    document.fonts.ready.then(syncProviderButtonMetrics).catch(function () {});
+  }
   installContractPillSelects();
   fillModelsForCurrentProviders();
   syncSelectToggleButtons();
   syncSelectCycleButtons();
   resizeObjectiveTextarea();
   window.addEventListener("resize", resizeObjectiveTextarea);
+  window.addEventListener("resize", syncProviderButtonMetrics);
   try {
     applySidebarState(window.localStorage.getItem("igsShell.sidebarCollapsed") === "1");
   } catch (_) {
@@ -4422,6 +4750,7 @@
   }
   shellState.homeCollapsedPanels = new Set(readHomeCollapsedPanels());
   applyHomePanelCollapseState();
+  window.requestAnimationFrame(syncProviderButtonMetrics);
   try {
     scoreState.selectedRunId = window.localStorage.getItem("igsShell.scoreRunId") || "";
     scoreState.selectedSessionId = window.localStorage.getItem("igsShell.scoreSessionId") || "";

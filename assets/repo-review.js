@@ -11,6 +11,8 @@
     const state = {
       graph: null,
       nodes: [],
+      files: [],
+      functions: [],
       edges: [],
       nodeById: new Map(),
       visibleNodes: [],
@@ -18,6 +20,8 @@
       selectedId: "",
       hoveredId: "",
       query: "",
+      repoRoot: ".",
+      graphMode: "overview",
       minDegree: 0,
       maxVisible: 850,
       showOrphans: false,
@@ -46,7 +50,9 @@
     const els = {
       root: document.querySelector(".repo-review-root"),
       status: document.getElementById("status"),
+      repoRootSelect: document.getElementById("repoRootSelect"),
       searchInput: document.getElementById("searchInput"),
+      graphModeSelect: document.getElementById("graphModeSelect"),
       minDegreeRange: document.getElementById("minDegreeRange"),
       minDegreeValue: document.getElementById("minDegreeValue"),
       maxVisibleInput: document.getElementById("maxVisibleInput"),
@@ -93,6 +99,12 @@
     function bindEvents() {
       installWorkbenchWindows();
       if (els.refreshBtn) els.refreshBtn.addEventListener("click", fetchGraph);
+      if (els.repoRootSelect) {
+        els.repoRootSelect.addEventListener("change", () => {
+          state.repoRoot = els.repoRootSelect.value || ".";
+          fetchGraph();
+        });
+      }
       if (els.copyAiBtn) els.copyAiBtn.addEventListener("click", copyAiPacket);
       if (els.exportBtn) els.exportBtn.addEventListener("click", exportJson);
       els.fitBtn.addEventListener("click", fitGraph);
@@ -112,6 +124,13 @@
         state.query = els.searchInput.value.trim().toLowerCase();
         rebuildVisibleGraph(false);
       }, 120));
+      if (els.graphModeSelect) {
+        els.graphModeSelect.addEventListener("change", () => {
+          state.graphMode = els.graphModeSelect.value || "overview";
+          rebuildVisibleGraph(true);
+          setTimeout(fitGraph, 40);
+        });
+      }
       els.minDegreeRange.addEventListener("input", () => {
         state.minDegree = Number(els.minDegreeRange.value || 0);
         els.minDegreeValue.textContent = String(state.minDegree);
@@ -169,9 +188,32 @@
       }
       state.started = true;
       resizeCanvas();
+      fetchRepoRoots();
       fetchGraph();
       requestAnimationFrame(loop);
       return true;
+    }
+
+    async function fetchRepoRoots() {
+      if (!els.repoRootSelect) return;
+      try {
+        const response = await fetch("/v1/repo/roots", { headers: { Accept: "application/json" } });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        const roots = Array.isArray(payload.roots) ? payload.roots : [];
+        const current = state.repoRoot || ".";
+        els.repoRootSelect.innerHTML = "";
+        for (const root of roots) {
+          const option = document.createElement("option");
+          option.value = root.value || ".";
+          option.textContent = root.label || root.value || "Repository root";
+          els.repoRootSelect.appendChild(option);
+        }
+        els.repoRootSelect.value = roots.some(root => root.value === current) ? current : ".";
+        state.repoRoot = els.repoRootSelect.value || ".";
+      } catch (error) {
+        setStatus(`Folder list unavailable: ${error.message || error}`);
+      }
     }
 
     function stageHasViewport() {
@@ -184,6 +226,7 @@
       els.emptyState.hidden = false;
       try {
         const params = new URLSearchParams({
+          root: state.repoRoot || ".",
           maxNodes: "2400",
           includeAmbiguous: els.ambiguousInput.checked ? "true" : "false"
         });
@@ -203,29 +246,11 @@
       state.selectedId = "";
       state.hoveredId = "";
       state.nodeById = new Map();
-      state.nodes = (graph.nodes || []).map((node, index) => {
-        const hydrated = {
-          ...node,
-          index,
-          x: 0,
-          y: 0,
-          vx: 0,
-          vy: 0,
-          r: 4.5 + Math.sqrt(Number(node.degree || 0) + 1) * 1.8,
-          color: colorForModule(node.module || node.file || ""),
-          cluster: node.module || ".",
-          visible: false,
-          pinned: false
-        };
-        state.nodeById.set(hydrated.id, hydrated);
-        return hydrated;
-      });
-      state.edges = (graph.edges || []).map(edge => ({
-        ...edge,
-        source: state.nodeById.get(edge.sourceId),
-        target: state.nodeById.get(edge.targetId),
-        weight: Number(edge.weight || 1)
-      })).filter(edge => edge.source && edge.target);
+      state.files = graph.files || [];
+      state.functions = graph.nodes || [];
+      const built = buildOversightGraph(graph);
+      state.nodes = built.nodes;
+      state.edges = built.edges;
       renderMetrics();
       renderAiPacket();
       renderHotspots();
@@ -234,46 +259,188 @@
       requestDraw();
     }
 
+    function buildOversightGraph(graph) {
+      const nodes = [];
+      const edges = [];
+      const moduleStats = new Map();
+      const files = graph.files || [];
+      const functions = graph.nodes || [];
+
+      for (const file of files) {
+        const module = file.module || ".";
+        const stat = moduleStats.get(module) || {
+          module,
+          files: 0,
+          functions: 0,
+          inbound: 0,
+          outbound: 0
+        };
+        stat.files += 1;
+        stat.functions += Number(file.functionCount || 0);
+        stat.inbound += Number(file.inboundInternalEdges || 0);
+        stat.outbound += Number(file.outboundInternalEdges || 0);
+        moduleStats.set(module, stat);
+      }
+
+      for (const stat of moduleStats.values()) {
+        addGraphNode(nodes, {
+          id: `module:${stat.module}`,
+          name: stat.module,
+          label: stat.module,
+          nodeKind: "module",
+          module: stat.module,
+          file: "",
+          lang: "Module",
+          type: "module",
+          degree: stat.functions + stat.inbound + stat.outbound,
+          functionCount: stat.functions,
+          fileCount: stat.files,
+          inboundInternalEdges: stat.inbound,
+          outboundInternalEdges: stat.outbound,
+          r: 18,
+          fixed: true
+        });
+      }
+
+      for (const file of files) {
+        const module = file.module || ".";
+        addGraphNode(nodes, {
+          ...file,
+          id: `file:${file.path}`,
+          name: basename(file.path),
+          label: shortPath(file.path),
+          nodeKind: "file",
+          file: file.path,
+          type: "file",
+          degree: Number(file.functionCount || 0) + Number(file.inboundInternalEdges || 0) + Number(file.outboundInternalEdges || 0),
+          r: 11,
+          parentModuleId: `module:${module}`
+        });
+        edges.push({
+          id: `contains:${module}:${file.path}`,
+          sourceId: `module:${module}`,
+          targetId: `file:${file.path}`,
+          weight: Math.max(1, Math.min(8, Number(file.functionCount || 1))),
+          relation: "contains"
+        });
+      }
+
+      for (const node of functions) {
+        const module = node.module || ".";
+        addGraphNode(nodes, {
+          ...node,
+          label: node.name,
+          nodeKind: "function",
+          degree: Number(node.degree || 0),
+          r: 4.2 + Math.sqrt(Number(node.degree || 0) + 1) * 1.45,
+          parentFileId: `file:${node.file}`,
+          parentModuleId: `module:${module}`
+        });
+        edges.push({
+          id: `defines:${node.file}:${node.id}`,
+          sourceId: `file:${node.file}`,
+          targetId: node.id,
+          weight: 1,
+          relation: "defines"
+        });
+      }
+
+      for (const edge of graph.edges || []) {
+        edges.push({
+          ...edge,
+          id: `calls:${edge.sourceId}:${edge.targetId}`,
+          relation: edge.ambiguous ? "ambiguous" : "calls",
+          weight: Number(edge.weight || 1)
+        });
+      }
+
+      nodes.forEach((node, index) => {
+        node.index = index;
+        node.x = 0;
+        node.y = 0;
+        node.vx = 0;
+        node.vy = 0;
+        node.color = colorForModule(node.module || node.file || "");
+        node.cluster = node.module || ".";
+        node.visible = false;
+        node.pinned = false;
+        node.layoutReady = false;
+        state.nodeById.set(node.id, node);
+      });
+
+      const hydratedEdges = edges.map(edge => ({
+        ...edge,
+        source: state.nodeById.get(edge.sourceId),
+        target: state.nodeById.get(edge.targetId),
+        weight: Number(edge.weight || 1)
+      })).filter(edge => edge.source && edge.target);
+
+      return { nodes, edges: hydratedEdges };
+    }
+
+    function addGraphNode(nodes, node) {
+      nodes.push({
+        callers: [],
+        callees: [],
+        externalCalls: [],
+        ambiguousCalls: [],
+        ...node
+      });
+    }
+
     function rebuildVisibleGraph(resetPositions) {
       const query = state.query;
       const matches = new Set();
       const selectedNeighbors = new Set();
       if (state.selectedId) {
-        selectedNeighbors.add(state.selectedId);
         const selected = state.nodeById.get(state.selectedId);
-        if (selected) {
-          (selected.callers || []).forEach(id => selectedNeighbors.add(id));
-          (selected.callees || []).forEach(id => selectedNeighbors.add(id));
-        }
+        addNeighborhood(selected, selectedNeighbors);
       }
 
       for (const node of state.nodes) {
-        const searchable = `${node.name} ${node.file} ${node.module} ${node.lang} ${node.type} ${node.signature}`.toLowerCase();
-        const isMatch = !query || searchable.includes(query);
+        const searchable = `${node.name} ${node.label} ${node.file} ${node.module} ${node.lang} ${node.type} ${node.signature}`.toLowerCase();
+        const isMatch = Boolean(query && searchable.includes(query));
         if (isMatch) matches.add(node.id);
       }
 
       let visible = state.nodes.filter(node => {
-        if (!state.showOrphans && Number(node.degree || 0) === 0 && !matches.has(node.id)) return false;
-        if (Number(node.degree || 0) < state.minDegree && !matches.has(node.id) && !selectedNeighbors.has(node.id)) return false;
-        return matches.has(node.id) || selectedNeighbors.has(node.id) || !query;
+        const structural = node.nodeKind === "module" || node.nodeKind === "file";
+        const matched = matches.has(node.id);
+        const neighbor = selectedNeighbors.has(node.id);
+        if (state.graphMode === "selected") {
+          return neighbor || matched;
+        }
+        if (state.graphMode === "functions") {
+          if (node.nodeKind !== "function") return neighbor || matched;
+          if (!state.showOrphans && Number(node.degree || 0) === 0 && !matched) return false;
+          if (Number(node.degree || 0) < state.minDegree && !matched && !neighbor) return false;
+          return matched || neighbor || !query;
+        }
+        if (structural) {
+          return matched || neighbor || !query || Number(node.degree || 0) >= state.minDegree;
+        }
+        if (!state.showOrphans && Number(node.degree || 0) === 0 && !matched && !neighbor) return false;
+        if (Number(node.degree || 0) < state.minDegree && !matched && !neighbor) return false;
+        return matched || neighbor || Boolean(query) || Number(node.degree || 0) >= 8;
       });
 
       visible.sort((a, b) => {
-        const am = matches.has(a.id) ? 1 : 0;
-        const bm = matches.has(b.id) ? 1 : 0;
-        const as = selectedNeighbors.has(a.id) ? 1 : 0;
-        const bs = selectedNeighbors.has(b.id) ? 1 : 0;
-        return bs - as || bm - am || Number(b.degree || 0) - Number(a.degree || 0) || String(a.file).localeCompare(String(b.file));
+        return nodePriority(b, matches, selectedNeighbors) - nodePriority(a, matches, selectedNeighbors)
+          || Number(b.degree || 0) - Number(a.degree || 0)
+          || String(a.file || a.name).localeCompare(String(b.file || b.name));
       });
-      visible = visible.slice(0, state.maxVisible);
+      visible = capVisibleNodes(visible, matches, selectedNeighbors);
 
       const visibleIds = new Set(visible.map(node => node.id));
       state.visibleNodes = visible;
       state.visibleEdges = state.edges.filter(edge => visibleIds.has(edge.sourceId) && visibleIds.has(edge.targetId));
       for (const node of state.nodes) node.visible = visibleIds.has(node.id);
-      if (resetPositions || visible.some(node => !Number.isFinite(node.x) || (node.x === 0 && node.y === 0))) seedLayout();
-      state.layoutEnergy = Math.max(state.layoutEnergy, 1);
+      const seededCount = resetPositions ? seedLayout() : seedMissingVisibleNodes();
+      if (seededCount > 0) {
+        state.layoutEnergy = Math.max(state.layoutEnergy, state.graphMode === "overview" ? 0.022 : 0.18);
+      } else if (resetPositions) {
+        state.layoutEnergy = Math.max(state.layoutEnergy, state.graphMode === "overview" ? 0.045 : 0.72);
+      }
       renderMetrics();
       renderSelectedPanel();
       renderHotspots();
@@ -281,7 +448,67 @@
       requestDraw();
     }
 
+    function nodePriority(node, matches, selectedNeighbors) {
+      let score = 0;
+      if (selectedNeighbors.has(node.id)) score += 1000;
+      if (matches.has(node.id)) score += 700;
+      if (node.nodeKind === "module") score += 260;
+      if (node.nodeKind === "file") score += 160;
+      if (node.nodeKind === "function") score += 20;
+      return score;
+    }
+
+    function capVisibleNodes(nodes, matches, selectedNeighbors) {
+      if (nodes.length <= state.maxVisible) return nodes;
+      if (state.graphMode !== "overview") return nodes.slice(0, state.maxVisible);
+      const modules = nodes.filter(node => node.nodeKind === "module");
+      const files = nodes.filter(node => node.nodeKind === "file");
+      const functions = nodes.filter(node => node.nodeKind === "function");
+      const structuralLimit = Math.min(state.maxVisible, Math.max(120, Math.floor(state.maxVisible * 0.62)));
+      const structural = [...modules, ...files].slice(0, structuralLimit);
+      const remaining = Math.max(0, state.maxVisible - structural.length);
+      const importantFunctions = functions.filter(node => matches.has(node.id) || selectedNeighbors.has(node.id) || Number(node.degree || 0) >= 8);
+      return [...structural, ...importantFunctions.slice(0, remaining)];
+    }
+
+    function addNeighborhood(node, ids) {
+      if (!node) return;
+      ids.add(node.id);
+      if (node.parentFileId) ids.add(node.parentFileId);
+      if (node.parentModuleId) ids.add(node.parentModuleId);
+      if (node.nodeKind === "module") {
+        for (const candidate of state.nodes) {
+          if (candidate.parentModuleId === node.id || candidate.module === node.module) {
+            if (candidate.nodeKind !== "function" || Number(candidate.degree || 0) >= 6) ids.add(candidate.id);
+          }
+        }
+      } else if (node.nodeKind === "file") {
+        if (node.parentModuleId) ids.add(node.parentModuleId);
+        state.nodes
+          .filter(candidate => candidate.parentFileId === node.id)
+          .sort((a, b) => Number(b.degree || 0) - Number(a.degree || 0))
+          .slice(0, 80)
+          .forEach(candidate => ids.add(candidate.id));
+      } else {
+        (node.callers || []).forEach(id => {
+          ids.add(id);
+          const caller = state.nodeById.get(id);
+          if (caller?.parentFileId) ids.add(caller.parentFileId);
+        });
+        (node.callees || []).forEach(id => {
+          ids.add(id);
+          const callee = state.nodeById.get(id);
+          if (callee?.parentFileId) ids.add(callee.parentFileId);
+        });
+      }
+    }
+
     function seedLayout() {
+      const moduleNodes = state.visibleNodes.filter(node => node.nodeKind === "module");
+      const fileNodes = state.visibleNodes.filter(node => node.nodeKind === "file");
+      if (moduleNodes.length || fileNodes.length) {
+        return seedOversightLayout(moduleNodes, fileNodes);
+      }
       const modules = [...new Set(state.visibleNodes.map(node => node.cluster))].sort();
       const centers = new Map();
       const outer = Math.max(180, Math.sqrt(state.visibleNodes.length) * 54);
@@ -300,14 +527,107 @@
         node.y = center.y + Math.sin(angle) * radius;
         node.vx = 0;
         node.vy = 0;
+        node.layoutReady = true;
       }
+      return state.visibleNodes.length;
+    }
+
+    function seedOversightLayout(moduleNodes, fileNodes) {
+      let seeded = 0;
+      const centers = new Map();
+      const orderedModules = moduleNodes.length
+        ? moduleNodes
+        : [...new Set(state.visibleNodes.map(node => node.cluster))].sort().map(module => ({ id: `module:${module}`, module }));
+      const outer = Math.max(120, Math.min(300, 88 + orderedModules.length * 18));
+      orderedModules.forEach((node, index) => {
+        const angle = (Math.PI * 2 * index) / Math.max(1, orderedModules.length);
+        const center = { x: Math.cos(angle) * outer, y: Math.sin(angle) * outer };
+        centers.set(node.module || node.name || ".", center);
+        if (node.nodeKind === "module") {
+          node.x = center.x;
+          node.y = center.y;
+          node.vx = 0;
+          node.vy = 0;
+          node.layoutReady = true;
+          seeded += 1;
+        }
+      });
+
+      const fileCounts = new Map();
+      for (const node of fileNodes) {
+        const count = fileCounts.get(node.module) || 0;
+        fileCounts.set(node.module, count + 1);
+        const center = centers.get(node.module) || { x: 0, y: 0 };
+        const angle = count * 2.399963;
+        const radius = 44 + Math.sqrt(count + 1) * 15;
+        node.x = center.x + Math.cos(angle) * radius;
+        node.y = center.y + Math.sin(angle) * radius;
+        node.vx = 0;
+        node.vy = 0;
+        node.layoutReady = true;
+        seeded += 1;
+      }
+
+      const functionCounts = new Map();
+      for (const node of state.visibleNodes.filter(item => item.nodeKind === "function")) {
+        const parent = state.nodeById.get(node.parentFileId);
+        const count = functionCounts.get(node.parentFileId) || 0;
+        functionCounts.set(node.parentFileId, count + 1);
+        const center = parent || centers.get(node.module) || { x: 0, y: 0 };
+        const angle = count * 2.399963;
+        const radius = 20 + Math.sqrt(count + 1) * 9;
+        node.x = center.x + Math.cos(angle) * radius;
+        node.y = center.y + Math.sin(angle) * radius;
+        node.vx = 0;
+        node.vy = 0;
+        node.layoutReady = true;
+        seeded += 1;
+      }
+      return seeded;
+    }
+
+    function seedMissingVisibleNodes() {
+      let seeded = 0;
+      const selected = state.selectedId ? state.nodeById.get(state.selectedId) : null;
+      const counts = new Map();
+      for (const node of state.visibleNodes) {
+        if (nodeHasLayout(node)) {
+          continue;
+        }
+        placeNewVisibleNode(node, counts, selected);
+        node.layoutReady = true;
+        node.vx = 0;
+        node.vy = 0;
+        seeded += 1;
+      }
+      return seeded;
+    }
+
+    function placeNewVisibleNode(node, counts, selected) {
+      const parent = state.nodeById.get(node.parentFileId || node.parentModuleId);
+      const anchor = nodeHasLayout(parent) ? parent : nodeHasLayout(selected) ? selected : clusterCenter(node.cluster);
+      const key = node.parentFileId || node.parentModuleId || node.cluster || ".";
+      const count = counts.get(key) || 0;
+      counts.set(key, count + 1);
+      const angle = (count + 1) * 2.399963 + (node.index % 7) * 0.07;
+      const radius = node.nodeKind === "module"
+        ? 46
+        : node.nodeKind === "file"
+          ? 36 + Math.sqrt(count + 1) * 9
+          : 18 + Math.sqrt(count + 1) * 7;
+      node.x = anchor.x + Math.cos(angle) * radius;
+      node.y = anchor.y + Math.sin(angle) * radius;
+    }
+
+    function nodeHasLayout(node) {
+      return Boolean(node && node.layoutReady && Number.isFinite(node.x) && Number.isFinite(node.y));
     }
 
     function loop(now) {
       let rendered = false;
-      if (!state.paused && state.visibleNodes.length && state.layoutEnergy > 0.012) {
+      if (!state.paused && state.visibleNodes.length && shouldRunSimulation()) {
         simulate();
-        state.layoutEnergy *= 0.986;
+        state.layoutEnergy *= state.graphMode === "overview" ? 0.992 : 0.986;
         state.needsDraw = true;
       }
       if (state.needsDraw) {
@@ -319,9 +639,26 @@
       requestAnimationFrame(loop);
     }
 
+    function shouldRunSimulation() {
+      const threshold = state.graphMode === "overview" ? 0.0008 : 0.006;
+      return state.layoutEnergy > threshold || maxNodeVelocity() > 0.012;
+    }
+
+    function maxNodeVelocity() {
+      let maxVelocity = 0;
+      for (const node of state.visibleNodes) {
+        maxVelocity = Math.max(maxVelocity, Math.abs(node.vx || 0), Math.abs(node.vy || 0));
+        if (maxVelocity > 0.012) {
+          return maxVelocity;
+        }
+      }
+      return maxVelocity;
+    }
+
     function simulate() {
       const nodes = state.visibleNodes;
       const edges = state.visibleEdges;
+      const forceScale = physicsForceScale();
       const cellSize = 84;
       const grid = new Map();
       for (const node of nodes) {
@@ -343,16 +680,20 @@
               let dy = node.y - other.y;
               let dist2 = dx * dx + dy * dy;
               if (dist2 < 0.01) {
-                dx = 0.1 + Math.random() * 0.1;
-                dy = 0.1 + Math.random() * 0.1;
+                const angle = ((node.index + 1) * 1.618 + (other.index + 1) * 0.618) % (Math.PI * 2);
+                dx = Math.cos(angle) * 0.18;
+                dy = Math.sin(angle) * 0.18;
                 dist2 = dx * dx + dy * dy;
               }
               if (dist2 > 12000) continue;
-              const force = 1600 / Math.max(80, dist2);
+              const forceBase = state.graphMode === "overview"
+                ? (node.nodeKind === "function" && other.nodeKind === "function" ? 38 : 92)
+                : (node.nodeKind === "function" && other.nodeKind === "function" ? 820 : 1380);
+              const force = (forceBase / Math.max(120, dist2)) * forceScale;
               const fx = dx * force;
               const fy = dy * force;
-              if (!node.pinned) { node.vx += fx; node.vy += fy; }
-              if (!other.pinned) { other.vx -= fx; other.vy -= fy; }
+              if (!node.pinned && !node.fixed) { node.vx += fx; node.vy += fy; }
+              if (!other.pinned && !other.fixed) { other.vx -= fx; other.vy -= fy; }
             }
           }
         }
@@ -366,27 +707,51 @@
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const dist = Math.max(1, Math.hypot(dx, dy));
-        const desired = 70 + Math.min(80, (a.r + b.r) * 2.2);
-        const strength = 0.004 + Math.min(edge.weight, 6) * 0.0008;
+        const desired = edge.relation === "contains"
+          ? 132
+          : edge.relation === "defines"
+            ? 48
+            : 78 + Math.min(70, (a.r + b.r) * 2.1);
+        const baseStrength = edge.relation === "contains"
+          ? 0.0045
+          : edge.relation === "defines"
+            ? 0.0026
+            : 0.0022 + Math.min(edge.weight, 6) * 0.00038;
+        const strength = baseStrength * forceScale;
         const force = (dist - desired) * strength;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
-        if (!a.pinned) { a.vx += fx; a.vy += fy; }
-        if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
+        if (!a.pinned && !a.fixed) { a.vx += fx; a.vy += fy; }
+        if (!b.pinned && !b.fixed) { b.vx -= fx; b.vy -= fy; }
       }
 
       for (const node of nodes) {
-        if (node.pinned) continue;
+        if (node.pinned || node.fixed) continue;
         const center = clusterCenter(node.cluster);
-        node.vx += (center.x - node.x) * 0.00035;
-        node.vy += (center.y - node.y) * 0.00035;
-        node.vx += -node.x * 0.00012;
-        node.vy += -node.y * 0.00012;
-        node.vx *= 0.84;
-        node.vy *= 0.84;
-        node.x += clamp(node.vx, -7, 7);
-        node.y += clamp(node.vy, -7, 7);
+        const parent = state.nodeById.get(node.parentFileId || node.parentModuleId);
+        if (parent?.visible) {
+          const attraction = (node.nodeKind === "function" ? 0.00042 : 0.00028) * forceScale;
+          node.vx += (parent.x - node.x) * attraction;
+          node.vy += (parent.y - node.y) * attraction;
+        } else {
+          node.vx += (center.x - node.x) * 0.00018 * forceScale;
+          node.vy += (center.y - node.y) * 0.00018 * forceScale;
+        }
+        node.vx += -node.x * 0.00007 * forceScale;
+        node.vy += -node.y * 0.00007 * forceScale;
+        node.vx *= state.graphMode === "overview" ? 0.58 : 0.72;
+        node.vy *= state.graphMode === "overview" ? 0.58 : 0.72;
+        const travel = state.graphMode === "overview" ? 0.85 : 2.4;
+        node.x += clamp(node.vx, -travel, travel);
+        node.y += clamp(node.vy, -travel, travel);
       }
+    }
+
+    function physicsForceScale() {
+      if (state.graphMode === "overview") {
+        return clamp(state.layoutEnergy * 2.4, 0.0015, 0.13);
+      }
+      return clamp(state.layoutEnergy * 0.85, 0.06, 0.72);
     }
 
     function draw() {
@@ -437,9 +802,16 @@
         const active = selected && (edge.sourceId === selected.id || edge.targetId === selected.id);
         const hot = hover && (edge.sourceId === hover.id || edge.targetId === hover.id);
         if (selectedMode && !active) continue;
-        const alpha = active ? 0.78 : hot ? 0.48 : 0.16;
-        ctx.strokeStyle = edge.ambiguous ? `rgba(255,224,130,${alpha})` : `rgba(128,232,218,${alpha})`;
-        ctx.lineWidth = (active ? 2.4 : Math.min(2.2, 0.7 + Math.log2(edge.weight + 1) * 0.25)) / state.scale;
+        const alpha = active ? 0.78 : hot ? 0.48 : edge.relation === "contains" ? 0.22 : edge.relation === "defines" ? 0.09 : 0.14;
+        const stroke = edge.relation === "contains"
+          ? `rgba(138,180,255,${alpha})`
+          : edge.relation === "defines"
+            ? `rgba(128,232,218,${alpha})`
+            : edge.ambiguous || edge.relation === "ambiguous"
+              ? `rgba(255,224,130,${alpha})`
+              : `rgba(128,232,218,${alpha})`;
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = (active ? 2.4 : edge.relation === "defines" ? 0.65 : Math.min(2.2, 0.7 + Math.log2(edge.weight + 1) * 0.25)) / state.scale;
         ctx.beginPath();
         ctx.moveTo(edge.source.x, edge.source.y);
         const mx = (edge.source.x + edge.target.x) / 2;
@@ -461,6 +833,10 @@
         const isSelected = selected && selected.id === node.id;
         const isHover = hover && hover.id === node.id;
         const dim = selected && !highlight.has(node.id);
+        if (node.nodeKind === "module" || node.nodeKind === "file") {
+          drawStructuralNode(node, { selected: isSelected, hover: isHover, dim });
+          continue;
+        }
         const radius = node.r * (isSelected ? 1.45 : isHover ? 1.24 : 1);
         ctx.beginPath();
         ctx.arc(node.x, node.y, radius + 4 / state.scale, 0, Math.PI * 2);
@@ -480,8 +856,48 @@
       ctx.restore();
     }
 
+    function drawStructuralNode(node, flags) {
+      const width = structuralNodeWidth(node);
+      const height = node.nodeKind === "module" ? 34 : 25;
+      node.hitW = width;
+      node.hitH = height;
+      const x = node.x - width / 2;
+      const y = node.y - height / 2;
+      const alpha = flags.dim ? 0.38 : 1;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      roundRect(ctx, x - 4 / state.scale, y - 4 / state.scale, width + 8 / state.scale, height + 8 / state.scale, node.nodeKind === "module" ? 8 : 6);
+      ctx.fillStyle = flags.selected
+        ? "rgba(138,180,255,0.18)"
+        : flags.hover
+          ? "rgba(128,232,218,0.14)"
+          : "rgba(8,22,30,0.62)";
+      ctx.fill();
+      const gradient = ctx.createLinearGradient(x, y, x, y + height);
+      gradient.addColorStop(0, node.nodeKind === "module" ? "rgba(30,69,95,0.92)" : "rgba(17,39,54,0.92)");
+      gradient.addColorStop(1, node.nodeKind === "module" ? "rgba(8,21,35,0.96)" : "rgba(6,16,26,0.96)");
+      roundRect(ctx, x, y, width, height, node.nodeKind === "module" ? 7 : 5);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+      ctx.strokeStyle = flags.selected ? "#ffffff" : flags.hover ? "rgba(236,255,251,0.82)" : "rgba(128,232,218,0.28)";
+      ctx.lineWidth = (flags.selected ? 2 : 1) / state.scale;
+      ctx.stroke();
+      ctx.font = `${node.nodeKind === "module" ? 11 : 10}px ${getComputedStyle(document.documentElement).getPropertyValue("--mono")}`;
+      ctx.fillStyle = flags.selected ? "#ffffff" : "rgba(236,255,251,0.86)";
+      ctx.textBaseline = "middle";
+      const label = node.nodeKind === "module" ? String(node.label || node.name).toUpperCase() : shortPath(node.file || node.name);
+      const metric = node.nodeKind === "module" ? `${node.fileCount || 0} files` : `${node.functionCount || 0} fn`;
+      ctx.fillText(trimCanvasText(label, width - 62), x + 10, node.y);
+      ctx.fillStyle = "rgba(138,180,255,0.78)";
+      ctx.font = `9px ${getComputedStyle(document.documentElement).getPropertyValue("--mono")}`;
+      ctx.textAlign = "right";
+      ctx.fillText(metric, x + width - 9, node.y);
+      ctx.textAlign = "left";
+      ctx.restore();
+    }
+
     function drawLabel(node, strong) {
-      const text = node.name;
+      const text = node.label || node.name;
       ctx.save();
       ctx.font = `${strong ? 12 : 10}px ${getComputedStyle(document.documentElement).getPropertyValue("--mono")}`;
       const width = ctx.measureText(text).width;
@@ -545,6 +961,14 @@
         return;
       }
       els.selectedPanel.className = "";
+      if (node.nodeKind === "module") {
+        renderModulePanel(node);
+        return;
+      }
+      if (node.nodeKind === "file") {
+        renderFilePanel(node);
+        return;
+      }
       const callers = (node.callers || []).map(id => state.nodeById.get(id)).filter(Boolean).sort((a, b) => Number(b.degree || 0) - Number(a.degree || 0));
       const callees = (node.callees || []).map(id => state.nodeById.get(id)).filter(Boolean).sort((a, b) => Number(b.degree || 0) - Number(a.degree || 0));
       els.selectedPanel.innerHTML = `
@@ -564,6 +988,39 @@
       els.selectedPanel.appendChild(callList("Ambiguous Call Names", node.ambiguousCalls || []));
     }
 
+    function renderModulePanel(node) {
+      const files = state.nodes
+        .filter(candidate => candidate.nodeKind === "file" && candidate.module === node.module)
+        .sort((a, b) => Number(b.functionCount || 0) - Number(a.functionCount || 0));
+      els.selectedPanel.innerHTML = `
+        <div class="selected-title">
+          <h2>${escapeHtml(node.name)}</h2>
+          <span class="badge">${node.fileCount || 0} files</span>
+        </div>
+        <div class="kv"><div class="k">Functions</div><div class="v">${fmt(node.functionCount || 0)}</div></div>
+        <div class="kv"><div class="k">Internal edges</div><div class="v">${fmt((node.inboundInternalEdges || 0) + (node.outboundInternalEdges || 0))}</div></div>
+        <div class="kv"><div class="k">Role</div><div class="v">Module boundary / file cluster</div></div>
+      `;
+      els.selectedPanel.appendChild(sectionList("Files In Module", files));
+    }
+
+    function renderFilePanel(node) {
+      const functions = state.nodes
+        .filter(candidate => candidate.nodeKind === "function" && candidate.file === node.file)
+        .sort((a, b) => Number(b.degree || 0) - Number(a.degree || 0));
+      els.selectedPanel.innerHTML = `
+        <div class="selected-title">
+          <h2>${escapeHtml(basename(node.file))}</h2>
+          <span class="badge">${node.functionCount || 0} fn</span>
+        </div>
+        <div class="kv"><div class="k">File</div><div class="v">${escapeHtml(node.file)}</div></div>
+        <div class="kv"><div class="k">Module</div><div class="v">${escapeHtml(node.module || ".")}</div></div>
+        <div class="kv"><div class="k">Language</div><div class="v">${escapeHtml(node.lang || "")}</div></div>
+        <div class="kv"><div class="k">Internal edges</div><div class="v">${fmt((node.inboundInternalEdges || 0) + (node.outboundInternalEdges || 0))}</div></div>
+      `;
+      els.selectedPanel.appendChild(sectionList("Functions In File", functions));
+    }
+
     function sectionList(title, nodes) {
       const block = document.createElement("div");
       block.className = "section";
@@ -576,7 +1033,9 @@
         for (const node of nodes.slice(0, 40)) {
           const row = document.createElement("div");
           row.className = "mini-link";
-          row.innerHTML = `<div class="mini-title"><span>${escapeHtml(node.name)}</span><span class="badge">${node.degree || 0}</span></div><div class="path">${escapeHtml(shortPath(node.file))}:${node.line}</div>`;
+          const metric = node.nodeKind === "file" ? `${node.functionCount || 0} fn` : `${node.degree || 0}`;
+          const path = node.nodeKind === "file" ? node.file : `${shortPath(node.file)}:${node.line || ""}`;
+          row.innerHTML = `<div class="mini-title"><span>${escapeHtml(node.name)}</span><span class="badge">${escapeHtml(metric)}</span></div><div class="path">${escapeHtml(path)}</div>`;
           row.addEventListener("click", () => selectNode(node.id, true));
           list.appendChild(row);
         }
@@ -607,13 +1066,13 @@
 
     function selectNode(id, center) {
       state.selectedId = id || "";
+      rebuildVisibleGraph(false);
       const node = state.nodeById.get(state.selectedId);
-      if (center && node) {
+      if (center && nodeHasLayout(node)) {
         state.panX = -node.x * state.scale;
         state.panY = -node.y * state.scale;
         state.scale = Math.max(state.scale, 0.72);
       }
-      rebuildVisibleGraph(false);
       renderSelectedPanel();
       renderHotspots();
       if (node) {
@@ -670,7 +1129,7 @@
         state.draggingNode.y = pos.y;
         state.draggingNode.vx = 0;
         state.draggingNode.vy = 0;
-        state.layoutEnergy = Math.max(state.layoutEnergy, 0.2);
+        state.layoutEnergy = Math.max(state.layoutEnergy, state.graphMode === "overview" ? 0.04 : 0.16);
         requestDraw();
         return;
       }
@@ -703,6 +1162,18 @@
       let best = null;
       let bestDist = Infinity;
       for (const node of state.visibleNodes) {
+        if (node.nodeKind === "module" || node.nodeKind === "file") {
+          const width = node.hitW || structuralNodeWidth(node);
+          const height = node.hitH || (node.nodeKind === "module" ? 34 : 25);
+          if (Math.abs(pos.x - node.x) <= width / 2 + 7 / state.scale && Math.abs(pos.y - node.y) <= height / 2 + 7 / state.scale) {
+            const dist = Math.hypot(pos.x - node.x, pos.y - node.y);
+            if (dist < bestDist) {
+              best = node;
+              bestDist = dist;
+            }
+          }
+          continue;
+        }
         const dist = Math.hypot(pos.x - node.x, pos.y - node.y);
         const hit = node.r + 8 / state.scale;
         if (dist <= hit && dist < bestDist) {
@@ -729,10 +1200,11 @@
       let maxX = -Infinity;
       let maxY = -Infinity;
       for (const node of nodes) {
-        minX = Math.min(minX, node.x - node.r);
-        minY = Math.min(minY, node.y - node.r);
-        maxX = Math.max(maxX, node.x + node.r);
-        maxY = Math.max(maxY, node.y + node.r);
+        const bounds = nodeBounds(node);
+        minX = Math.min(minX, bounds.minX);
+        minY = Math.min(minY, bounds.minY);
+        maxX = Math.max(maxX, bounds.maxX);
+        maxY = Math.max(maxY, bounds.maxY);
       }
       const rect = els.canvas.getBoundingClientRect();
       const width = Math.max(1, maxX - minX);
@@ -786,9 +1258,7 @@
     function relatedIds(node) {
       const ids = new Set();
       if (!node) return ids;
-      ids.add(node.id);
-      (node.callers || []).forEach(id => ids.add(id));
-      (node.callees || []).forEach(id => ids.add(id));
+      addNeighborhood(node, ids);
       return ids;
     }
 
@@ -1122,6 +1592,46 @@
     function shortPath(path) {
       const parts = String(path || "").split("/");
       return parts.length <= 3 ? String(path || "") : `.../${parts.slice(-3).join("/")}`;
+    }
+
+    function basename(path) {
+      const parts = String(path || "").split("/");
+      return parts[parts.length - 1] || String(path || "");
+    }
+
+    function structuralNodeWidth(node) {
+      const label = node.nodeKind === "module" ? String(node.label || node.name).toUpperCase() : shortPath(node.file || node.name);
+      return clamp(82 + label.length * 6.2, node.nodeKind === "module" ? 132 : 118, node.nodeKind === "module" ? 260 : 230);
+    }
+
+    function nodeBounds(node) {
+      if (node.nodeKind === "module" || node.nodeKind === "file") {
+        const width = node.hitW || structuralNodeWidth(node);
+        const height = node.hitH || (node.nodeKind === "module" ? 34 : 25);
+        return {
+          minX: node.x - width / 2,
+          minY: node.y - height / 2,
+          maxX: node.x + width / 2,
+          maxY: node.y + height / 2
+        };
+      }
+      const radius = node.r || 8;
+      return {
+        minX: node.x - radius,
+        minY: node.y - radius,
+        maxX: node.x + radius,
+        maxY: node.y + radius
+      };
+    }
+
+    function trimCanvasText(text, maxWidth) {
+      const raw = String(text || "");
+      if (ctx.measureText(raw).width <= maxWidth) return raw;
+      let trimmed = raw;
+      while (trimmed.length > 4 && ctx.measureText(`${trimmed}...`).width > maxWidth) {
+        trimmed = trimmed.slice(0, -1);
+      }
+      return `${trimmed}...`;
     }
 
     function setStatus(text) {

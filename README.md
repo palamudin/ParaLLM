@@ -148,7 +148,7 @@ Current skill layers:
 
 Current Home operator surface:
 
-![ParaLLM Home operator surface](docs/assets/parallm-home-2026-05-06.png)
+![ParaLLM Home operator surface with compact contract drawer and chat canvas](docs/assets/parallm-home-2026-05-06.png)
 
 - Chat-first `Home`
 - Home answer canvas renders user prompts as compact right-side bubbles while Para output stays full-width and unconstricted for long-form operator synthesis

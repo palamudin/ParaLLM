@@ -5506,6 +5506,7 @@ class LoopRuntime:
             "hits": [
                 {
                     "id": str(hit.get("id") or ""),
+                    "bankId": str(hit.get("bankId") or ""),
                     "title": truncate_text(hit.get("title") or "", 140),
                     "type": str(hit.get("type") or ""),
                     "source": str(hit.get("source") or ""),
@@ -5621,11 +5622,14 @@ class LoopRuntime:
         if not projected.get("enabled") or not projected.get("available"):
             return ""
         prompt_packet = self.project_targeted_sop_prompt_packet(projected)
-        heading = (
-            "MSP knowledgebase recall (optional background, never a core dependency):\n"
-            if prompt_packet.get("intent") == "targeted_usecase_sop_recall"
-            else "Knowledgebase recall (optional background, never a core dependency):\n"
+        msp_recall = any(
+            str(hit.get("bankId") or "") == knowledgebase.MSP_BANK_ID
+            or str(hit.get("sourceId") or "").startswith("msp-")
+            or "msp" in {str(tag or "").strip().lower() for tag in normalize_string_array_preserve_items(hit.get("tags", []))}
+            for hit in projected.get("hits", [])
+            if isinstance(hit, dict)
         )
+        heading = "MSP knowledgebase recall (optional background, never a core dependency):\n" if msp_recall else "Knowledgebase recall (optional background, never a core dependency):\n"
         return (
             heading
             + json.dumps(prompt_packet, ensure_ascii=False, indent=2)

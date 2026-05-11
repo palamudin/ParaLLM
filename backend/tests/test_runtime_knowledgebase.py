@@ -6,6 +6,8 @@ from pathlib import Path
 
 from backend.app import knowledgebase
 from runtime.engine import LoopRuntime
+from scripts import qa_memory_relevance_probe
+from scripts import qa_msp_school_probe
 
 
 class RuntimeKnowledgebaseTests(unittest.TestCase):
@@ -305,6 +307,236 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertNotIn("targeted_usecase_sop_recall", rendered)
         self.assertNotIn("MSP knowledgebase recall", rendered)
 
+    def test_global_recall_can_retrieve_any_domain_when_query_demands_it(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "msp-knowledgebase",
+                "tags": ["msp", "judge-learning"],
+                "items": [
+                    {
+                        "title": "Learned: Operator efficiency scar",
+                        "content": "First-hour operator efficiency improves when the answer names console distrust and reversible evidence capture before cleanup.",
+                        "type": "runbook",
+                        "metadata": {
+                            "learning.kind": "judge-score-failure-class",
+                            "learning.failureClass": "operator-efficiency",
+                            "learning.missCount": 99,
+                            "learning.adaptiveWeight": 10.0,
+                        },
+                    }
+                ],
+            },
+        )
+
+        result = knowledgebase.recall(
+            self.root,
+            query="first hour operator efficiency console distrust reversible evidence capture",
+            include_runtime=False,
+            include_persistent=True,
+        )
+
+        self.assertEqual(result["resultCount"], 1)
+        self.assertEqual(result["hits"][0]["bankId"], "msp-knowledgebase")
+        self.assertIn("console distrust", result["aiPacket"]["contextText"])
+
+    def test_retain_dedupes_exact_life_memory_items(self) -> None:
+        payload = {
+            "bankId": "msp-knowledgebase",
+            "tags": ["msp", "school"],
+            "items": [
+                {
+                    "title": "Break-glass evidence gate",
+                    "content": "Before revoking emergency access, export sign-in logs and preserve the approval record.",
+                    "type": "runbook",
+                    "metadata": {"school.domain": "msp", "school.source": "lesson-001"},
+                }
+            ],
+        }
+
+        first = knowledgebase.retain(self.root, payload)
+        second = knowledgebase.retain(self.root, payload)
+        records, warnings = knowledgebase.load_persistent_records(self.root, bank_id="msp-knowledgebase")
+
+        self.assertFalse(warnings)
+        self.assertEqual(first["stored"], 1)
+        self.assertEqual(second["stored"], 0)
+        self.assertEqual(second["duplicates"], 1)
+        self.assertEqual(len(records), 1)
+
+    def test_msp_school_probe_dedupes_learns_and_rejects_irrelevant_lessons(self) -> None:
+        result = qa_msp_school_probe.run_school_probe(self.root)
+        rows = {str(row["label"]): row for row in result["rows"]}
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["delta"], 1)
+        self.assertEqual(rows["already-known-msp-memory"]["action"], "dedupe")
+        self.assertEqual(rows["already-known-msp-memory"]["duplicates"], 1)
+        self.assertEqual(rows["new-useful-msp-lesson"]["action"], "learn")
+        self.assertEqual(rows["new-useful-msp-lesson"]["stored"], 1)
+        self.assertEqual(rows["irrelevant-dessert-fact"]["action"], "reject")
+        self.assertGreater(result["newLessonRecallRank"], 0)
+
+    def test_first_cousin_relevance_uses_common_and_industry_names(self) -> None:
+        probe_records = [
+            {
+                "bankId": "dog-lab",
+                "tags": ["domain:canine", "reference"],
+                "items": [
+                    {
+                        "title": "Short-legged scent hound breed profile",
+                        "content": "A low, elongated hound profile with strong scent-tracking history and common back-care screening concerns.",
+                        "type": "world",
+                        "metadata": {
+                            "commonName": "wiener dog",
+                            "industryName": "Dachshund",
+                            "registryGroup": "FCI Group 4 Dachshunds",
+                        },
+                    }
+                ],
+            },
+            {
+                "bankId": "cat-lab",
+                "tags": ["domain:feline", "reference"],
+                "items": [
+                    {
+                        "title": "Random-bred household cat profile",
+                        "content": "A non-pedigree companion cat profile commonly described by coat length rather than a formal breed registry.",
+                        "type": "world",
+                        "metadata": {
+                            "commonName": "moggy",
+                            "industryName": "Domestic Shorthair",
+                            "registryGroup": "Household pet class",
+                        },
+                    }
+                ],
+            },
+            {
+                "bankId": "building-lab",
+                "tags": ["domain:architecture", "reference"],
+                "items": [
+                    {
+                        "title": "Non-load-bearing exterior envelope profile",
+                        "content": "A facade assembly that hangs from the structural frame and manages air, water, thermal, and wind loads.",
+                        "type": "world",
+                        "metadata": {
+                            "commonName": "glass tower skin",
+                            "industryName": "unitized curtain wall",
+                            "tradeName": "facade contractor package",
+                        },
+                    }
+                ],
+            },
+            {
+                "bankId": "distractor-lab",
+                "tags": ["domain:general", "reference"],
+                "items": [
+                    {
+                        "title": "Unrelated field note",
+                        "content": "This note mentions pets and structures generically without naming registry, breed, facade, or trade vocabulary.",
+                        "type": "note",
+                    }
+                ],
+            },
+        ]
+        for payload in probe_records:
+            knowledgebase.retain(self.root, payload)
+
+        cases = [
+            ("wiener dog", "dog-lab"),
+            ("domestic shorthair household pet class", "cat-lab"),
+            ("unitized curtain wall facade contractor", "building-lab"),
+        ]
+        for query, expected_bank_id in cases:
+            with self.subTest(query=query):
+                result = knowledgebase.recall(
+                    self.root,
+                    query=query,
+                    include_runtime=False,
+                    include_persistent=True,
+                    max_records=3,
+                )
+
+                self.assertGreaterEqual(result["resultCount"], 1)
+                self.assertEqual(result["hits"][0]["bankId"], expected_bank_id)
+                self.assertGreater(result["hits"][0]["scoreParts"].get("demand", 0), 0.35)
+
+    def test_first_cousin_relevance_indexes_alias_lists(self) -> None:
+        probe_records = [
+            {
+                "bankId": "aviation-lab",
+                "tags": ["domain:aviation", "reference"],
+                "items": [
+                    {
+                        "title": "Commercial transport category jet profile",
+                        "content": "A short-to-medium range passenger jet profile tracked by airline fleet planners and airport stand allocation teams.",
+                        "type": "world",
+                        "metadata": {
+                            "commonName": "737",
+                            "industryName": "Boeing 737-800",
+                            "aliases": ["B738", "narrowbody", "single aisle"],
+                        },
+                    }
+                ],
+            },
+            {
+                "bankId": "building-systems-lab",
+                "tags": ["domain:construction", "reference"],
+                "items": [
+                    {
+                        "title": "Mechanical plant coordination package",
+                        "content": "A building services coordination package for heating, cooling, ventilation, electrical distribution, and plumbing trades.",
+                        "type": "world",
+                        "metadata": {
+                            "commonName": "plant room services",
+                            "industryName": "MEP package",
+                            "aliases": ["mechanical electrical plumbing", "building services"],
+                        },
+                    }
+                ],
+            },
+            {
+                "bankId": "distractor-lab",
+                "tags": ["domain:general", "reference"],
+                "items": [
+                    {
+                        "title": "Generic airport building note",
+                        "content": "This mentions airport buildings and utilities without fleet codes or trade package shorthand.",
+                        "type": "note",
+                    }
+                ],
+            },
+        ]
+        for payload in probe_records:
+            knowledgebase.retain(self.root, payload)
+
+        cases = [
+            ("B738 narrowbody single aisle", "aviation-lab"),
+            ("mechanical electrical plumbing building services", "building-systems-lab"),
+        ]
+        for query, expected_bank_id in cases:
+            with self.subTest(query=query):
+                result = knowledgebase.recall(
+                    self.root,
+                    query=query,
+                    include_runtime=False,
+                    include_persistent=True,
+                    max_records=3,
+                )
+
+                self.assertGreaterEqual(result["resultCount"], 1)
+                self.assertEqual(result["hits"][0]["bankId"], expected_bank_id)
+                self.assertGreater(result["hits"][0]["scoreParts"].get("demand", 0), 0.35)
+
+    def test_crude_memory_relevance_probe_passes(self) -> None:
+        qa_memory_relevance_probe.seed_probe_records(self.root)
+
+        rows, passed = qa_memory_relevance_probe.run_probe(self.root)
+
+        self.assertTrue(passed, rows)
+        self.assertGreaterEqual(len(rows), 12)
+        self.assertTrue(all(row["rank"] == 1 for row in rows))
+
     def test_default_live_recall_does_not_pull_runtime_msp_howto_into_non_msp_prompt(self) -> None:
         docs_dir = self.root / "docs"
         docs_dir.mkdir(parents=True, exist_ok=True)
@@ -332,6 +564,128 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertNotIn("MSP Knowledgebase How-To", rendered)
         self.assertNotIn("MSP high-risk incidents", rendered)
         self.assertNotIn("RMM and tenant incident gates", rendered)
+
+    def test_cross_domain_recall_keeps_non_msp_memory_usable_without_msp_bleed(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "vehicle-lab",
+                "tags": ["domain:vehicle", "mechanical", "diagnostic"],
+                "items": [
+                    {
+                        "title": "Carbureted idle stumble diagnostic",
+                        "content": "A carbureted roadster that stumbles at idle after warm-up should be checked for vacuum leaks, clogged idle jets, and base timing drift before replacing ignition parts.",
+                        "type": "runbook",
+                    }
+                ],
+            },
+        )
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "weather-lab",
+                "tags": ["domain:meteorology", "clouds", "field-id"],
+                "items": [
+                    {
+                        "title": "Cumulonimbus anvil field marker",
+                        "content": "A cumulonimbus anvil spreads downwind near the tropopause and is a storm-maturity marker, not a sign of fair-weather cumulus.",
+                        "type": "observation",
+                        "sop": {
+                            "schemaVersion": "field-observation/v1",
+                            "useCase": "Cloud field classification",
+                            "eventTypes": ["cumulonimbus", "anvil", "storm-maturity"],
+                            "firstActions": ["Check upper-level anvil spread and precipitation shaft relation"],
+                            "evidence": ["Cloud top shape", "Downwind spread", "Storm base"],
+                            "decisionGates": ["Do not label mature storm anvils as fair-weather cumulus"],
+                        },
+                    }
+                ],
+            },
+        )
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "biology-lab",
+                "tags": ["domain:biology", "mammals", "field-id"],
+                "items": [
+                    {
+                        "title": "Monotreme reproduction marker",
+                        "content": "Monotremes are egg-laying mammals; platypus and echidna field notes should not be answered as marsupial pouch development cases.",
+                        "type": "observation",
+                    }
+                ],
+            },
+        )
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "msp-knowledgebase",
+                "tags": ["msp", "rmm"],
+                "items": [
+                    {
+                        "title": "RMM tenant gate scar",
+                        "content": "RMM tenant incident gates belong to remote management incident response, not unrelated reasoning answers.",
+                        "type": "runbook",
+                    }
+                ],
+            },
+        )
+
+        task = {
+            "taskId": "t-clouds",
+            "objective": "Classify a cumulonimbus anvil cloud and explain the storm-maturity cloud-top markers.",
+            "runtime": {
+                "knowledgebase": {
+                    "enabled": True,
+                    "scope": "shared",
+                    "includeRuntime": False,
+                    "includePersistent": True,
+                    "maxRecords": 4,
+                }
+            },
+        }
+        packet = self.runtime.build_knowledgebase_recall_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            "summarizer",
+            label="Summarizer",
+            role="final_answer",
+            focus="cloud classification",
+        )
+        rendered = self.runtime.render_knowledgebase_prompt_block(packet)
+
+        self.assertTrue(packet["available"])
+        self.assertGreaterEqual(packet["resultCount"], 1)
+        self.assertIn("Knowledgebase recall (optional background", rendered)
+        self.assertNotIn("MSP knowledgebase recall", rendered)
+        self.assertIn("targeted_usecase_sop_recall", rendered)
+        self.assertIn("Cumulonimbus anvil field marker", rendered)
+        self.assertNotIn("RMM tenant gate scar", rendered)
+        self.assertNotIn("msp-knowledgebase", rendered)
+
+        vehicle = knowledgebase.recall(
+            self.root,
+            query="carbureted roadster idle vacuum leak diagnostic",
+            tags=["domain:vehicle"],
+            tags_match="all",
+            include_runtime=False,
+            include_persistent=True,
+        )
+        self.assertEqual(vehicle["resultCount"], 1)
+        self.assertEqual(vehicle["hits"][0]["bankId"], "vehicle-lab")
+        self.assertIn("vacuum leaks", vehicle["hits"][0]["text"])
+
+        biology = knowledgebase.recall(
+            self.root,
+            query="egg laying mammal platypus echidna reproduction marker",
+            tags=["domain:biology"],
+            tags_match="all",
+            include_runtime=False,
+            include_persistent=True,
+        )
+        self.assertEqual(biology["resultCount"], 1)
+        self.assertEqual(biology["hits"][0]["bankId"], "biology-lab")
+        self.assertIn("egg-laying mammals", biology["hits"][0]["text"])
 
     def test_non_msp_task_does_not_activate_final_gates_from_recalled_msp_packet(self) -> None:
         task = {
