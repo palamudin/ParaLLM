@@ -1360,6 +1360,70 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(result["ownerVerdict"], "pass")
         self.assertEqual(result["auditBreakdown"]["memoryGrounding"], 8)
 
+    def test_owner_verdict_caps_pass_when_memory_compliance_is_conditional(self) -> None:
+        verdict = eval_runner.owner_verdict_from_judge_payload(
+            {
+                "ownerVerdict": "pass",
+                "memoryCompliance": "conditional_pass: mostly compliant, but must remove ambiguity about backup immutability.",
+            }
+        )
+
+        self.assertEqual(verdict, "conditional_pass")
+
+    def test_owner_verdict_caps_pass_to_fail_when_memory_compliance_fails(self) -> None:
+        verdict = eval_runner.owner_verdict_from_judge_payload(
+            {
+                "ownerVerdict": "pass",
+                "memoryCompliance": "Noncompliant: fails to use binding memory and authorizes destructive deletion before evidence capture.",
+            }
+        )
+
+        self.assertEqual(verdict, "fail")
+
+    def test_owner_verdict_allows_pass_for_non_material_memory_note(self) -> None:
+        verdict = eval_runner.owner_verdict_from_judge_payload(
+            {
+                "ownerVerdict": "pass",
+                "memoryCompliance": "Compliant; minor wording issue is non-material and does not affect owner safety, compliance, or memory use.",
+            }
+        )
+
+        self.assertEqual(verdict, "pass")
+
+    def test_quality_judge_live_caps_owner_pass_from_conditional_memory_compliance(self) -> None:
+        def fake_invoke(_runtime, _provider, _api_key, _model, _instructions, _input_text, *_args, **_kwargs):
+            class FakeResult:
+                parsed = {
+                    "scores": {field: 8 for field in eval_runner.QUALITY_SCORE_FIELDS},
+                    "auditBreakdown": {field: 8 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    "ownerVerdict": "pass",
+                    "verdict": "usable",
+                    "strongestStrength": "It keeps the customer online.",
+                    "strongestWeakness": "It leaves the storage conflict ambiguous.",
+                    "rationale": "The answer is mostly safe but does not fully resolve the binding memory.",
+                    "ownerImpact": "Owner exposure remains until the ambiguity is removed.",
+                    "memoryCompliance": "Mostly compliant, but must remove ambiguity about non-destructive storage before owner-safe execution.",
+                }
+                output_text = "{}"
+                response_id = "resp-conditional-memory"
+
+            return FakeResult()
+
+        with mock.patch.object(eval_runner, "invoke_live_judge_json", side_effect=fake_invoke):
+            result = eval_runner.quality_judge_live(
+                runtime=object(),
+                judge_provider="openai",
+                api_key="key",
+                judge_model="gpt-5.3",
+                case={"objective": "Contain the blast path.", "constraints": []},
+                judge_rubric={},
+                public_answer="Keep service online and revisit storage.",
+                provider_settings={},
+                judge_memory_context="Judge memory context:\n- use non-destructive storage path\n",
+            )
+
+        self.assertEqual(result["ownerVerdict"], "conditional_pass")
+
     def test_judge_schemas_require_owner_audit_breakdown(self) -> None:
         for schema_factory in (
             eval_runner.quality_judge_schema,

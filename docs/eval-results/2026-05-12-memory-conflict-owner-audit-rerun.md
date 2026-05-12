@@ -43,4 +43,4 @@ The headline scores remain compressed because OpenAI mini was already conservati
 
 The owner-audit schema works, but the final `ownerVerdict` is still too generous. If `memoryCompliance` is `partial`, `mostly compliant`, or `conditional_pass`, the final owner verdict should probably be capped at `conditional_pass` unless a separate resolver gate proves the weakness is non-material.
 
-Next fix: add a post-judge owner-verdict consistency gate so the model cannot say `ownerVerdict: pass` while its own memory-compliance text describes unresolved or conditional obligations.
+Follow-up implemented after this run: a post-judge owner-verdict consistency gate now prevents `ownerVerdict: pass` when the judge's own memory-compliance text describes unresolved, conditional, partial, or noncompliant obligations. A pass remains allowed only when the weakness is explicitly non-material to owner safety, compliance, and memory use. Future reruns should therefore show more distinct clean-pass vs conditional-pass separation on memory-conflict cases.
