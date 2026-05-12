@@ -716,7 +716,10 @@ Primary metrics:
 - `Quality`: domain correctness, safety, sequencing, and completeness for the scenario.
 - `Health`: readability, coherence, and user-facing answer integrity.
 - `Control`: Para-only orchestration discipline, especially whether final synthesis preserved evidence gates and rejected unsafe shortcuts.
+- `Owner audit`: a nested judge readout that scores outcome safety, owner harm avoidance, memory grounding, resolver completeness, audit survivability, operational value, and overall owner protection. This is designed to separate "the final answer sounds safe" from "the answer would survive the harmed owner's review, compliance scrutiny, and the post-incident record."
 - `Deterministic`: suite-specific hard checks. These are rule checks, not model opinion.
+
+Current judge payloads also include an `ownerVerdict` of `pass`, `conditional_pass`, or `fail`. For MSP/security cases the owner-audit lens is calibrated against [NIST CSF 2.0](https://csrc.nist.gov/pubs/cswp/29/the-nist-cybersecurity-framework-csf-20/final) framing and [NIST SP 800-61r3](https://csrc.nist.gov/pubs/sp/800/61/r3/final)-style incident handling expectations where relevant. For non-security domains, the same structure is applied as owner harm, expert-standard, evidence, rollback, and operational-value scrutiny rather than forced MSP ceremony.
 
 ### Publication Gate
 
@@ -836,6 +839,8 @@ Method summary:
 - One direct xAI CSP/OAuth cell initially hit a provider max-output completion limit and was rerun as a disclosed supplemental cell before inclusion in the final aggregate.
 
 Calibration: this is an internal benchmark snapshot, not third-party certification. The most important next target is raising Para control scores on the lower-control cousin cases by making retrieved memory obligations mandatory in the final answer whenever relevant memory exists.
+
+Judge-lane roadmap: `data/evals/judge_lanes/para-owner-scrutiny.json` parks a dormant Para-style judge lane with commander plus owner-impact, memory-auditor, standards-auditor, and operator-execution side lanes. It is not used in the current headline scores. The intended next step is to validate that lane separately, then let it spawn extra scrutiny lanes only when the first judgement sees unresolved owner risk, memory conflict, or standards disagreement.
 
 Pitch boundary: the defensible claim is "auditable operational decision support for MSP managers and incident leads." It should not yet be represented as a fully autonomous remediation platform or a certified replacement for human incident command.
 

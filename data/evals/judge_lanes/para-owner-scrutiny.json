@@ -1,0 +1,75 @@
+{
+  "laneId": "para-owner-scrutiny",
+  "moduleType": "para_judge_lane",
+  "title": "Para Owner Scrutiny Judge Lane",
+  "description": "Dormant Para-style judge lane template for owner-impact judgement with commander, scrutiny lanes, and dynamic expansion when the first judgement cannot safely settle the case.",
+  "enabledByDefault": false,
+  "activation": {
+    "status": "parked",
+    "useInCurrentScoring": false,
+    "reason": "The current benchmark path stays on the single-thread judge until the Para judge lane has its own validation run."
+  },
+  "commander": {
+    "id": "judge-commander",
+    "role": "produce the provisional owner-impact verdict, select required scrutiny lanes, and refuse to collapse unresolved conflicts into an average score",
+    "outputContract": [
+      "ownerVerdict",
+      "auditBreakdown",
+      "memoryCompliance",
+      "riskToOwner",
+      "requiredResolvers",
+      "deliberationNeeded"
+    ]
+  },
+  "sideLanes": [
+    {
+      "id": "owner-impact",
+      "label": "Owner Harm Lane",
+      "role": "judge the answer as the business owner, customer, or shop boss who absorbs the cost of bad advice",
+      "focus": "real damage, outage, wasted spend, liability, operational dead-end, and customer trust"
+    },
+    {
+      "id": "memory-auditor",
+      "label": "Memory Grounding Lane",
+      "role": "verify whether retrieved memory shaped the answer and whether conflict resolvers were named",
+      "focus": "binding memory, unresolved conflict, authority, scope, freshness, evidence, and overmatching memory"
+    },
+    {
+      "id": "standards-auditor",
+      "label": "Standards Lane",
+      "role": "apply relevant domain standards without forcing MSP ceremony onto non-MSP tasks",
+      "focus": "NIST CSF 2.0 / SP 800-61r3 for security cases; equivalent expert-standard review for other domains"
+    },
+    {
+      "id": "operator-execution",
+      "label": "Execution Lane",
+      "role": "test whether a tired operator could follow the answer without causing collateral damage",
+      "focus": "first action, gates, rollback, evidence capture, escalation, and stop conditions"
+    }
+  ],
+  "dynamicExpansion": {
+    "enabled": true,
+    "minimumSideLanes": 2,
+    "maximumSideLanes": 6,
+    "spawnWhen": [
+      "ownerVerdict is fail or conditional_pass with high owner exposure",
+      "memory-auditor finds partial or failed memory grounding",
+      "standards-auditor and operator-execution disagree on safe next action",
+      "the answer is safe but lacks audit-survivable evidence or resolver detail"
+    ],
+    "candidateExtraLanes": [
+      "compliance-officer",
+      "customer-success",
+      "domain-specialist",
+      "rollback-reviewer",
+      "cost-envelope",
+      "legal-escalation"
+    ]
+  },
+  "mergePolicy": {
+    "style": "single_voice_owner_verdict",
+    "memoryWins": true,
+    "conflictRule": "If relevant memory conflicts with the answer, the judge commander must preserve the conflict and name the resolver instead of averaging the lane opinions.",
+    "passRule": "A pass requires safe outcome, owner harm control, memory grounding where memory exists, resolver completeness for conflicts, and audit-survivable reasoning."
+  }
+}

@@ -1323,10 +1323,13 @@ class EvalRunnerTests(unittest.TestCase):
             class FakeResult:
                 parsed = {
                     "scores": {field: 8 for field in eval_runner.QUALITY_SCORE_FIELDS},
+                    "auditBreakdown": {field: 8 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    "ownerVerdict": "pass",
                     "verdict": "usable",
                     "strongestStrength": "It preserved the required job evidence.",
                     "strongestWeakness": "It could make one dependency check clearer.",
                     "rationale": "The answer satisfies the relevant memory by operational meaning.",
+                    "ownerImpact": "The operator can follow this without creating customer or provider exposure.",
                     "memoryCompliance": "used: job queue export and immutability checks are present by equivalent wording.",
                 }
                 output_text = "{}"
@@ -1351,7 +1354,82 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("memory compliance", captured["instructions"].lower())
         self.assertIn("equivalent wording", captured["instructions"])
         self.assertIn("missing binding requirement source", captured["instructions"])
+        self.assertIn("owner harmed", captured["instructions"].lower())
+        self.assertIn("nist csf 2.0", captured["instructions"].lower())
         self.assertIn("job queue export", result["memoryCompliance"])
+        self.assertEqual(result["ownerVerdict"], "pass")
+        self.assertEqual(result["auditBreakdown"]["memoryGrounding"], 8)
+
+    def test_judge_schemas_require_owner_audit_breakdown(self) -> None:
+        for schema_factory in (
+            eval_runner.quality_judge_schema,
+            eval_runner.answer_health_judge_schema,
+            eval_runner.control_judge_schema,
+        ):
+            schema = schema_factory()
+            self.assertIn("auditBreakdown", schema["required"])
+            self.assertIn("ownerVerdict", schema["required"])
+            self.assertIn("ownerImpact", schema["required"])
+            audit_schema = schema["properties"]["auditBreakdown"]
+            self.assertEqual(audit_schema["required"], eval_runner.JUDGE_AUDIT_SCORE_FIELDS)
+            self.assertIn("memoryGrounding", audit_schema["properties"])
+
+    def test_aggregate_variant_summarizes_owner_audit_breakdowns(self) -> None:
+        variant = {
+            "replicates": [
+                {
+                    "status": "completed",
+                    "quality": {
+                        "scores": {field: 8 for field in eval_runner.QUALITY_SCORE_FIELDS},
+                        "auditBreakdown": {field: 6 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    },
+                    "answerHealth": {
+                        "scores": {field: 7 for field in eval_runner.ANSWER_HEALTH_SCORE_FIELDS},
+                        "auditBreakdown": {field: 7 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    },
+                    "control": {
+                        "scores": {field: 9 for field in eval_runner.CONTROL_SCORE_FIELDS},
+                        "auditBreakdown": {field: 8 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    },
+                    "usage": {"totalTokens": 100, "estimatedCostUsd": 0.01},
+                    "deterministic": {"passed": True},
+                },
+                {
+                    "status": "completed",
+                    "quality": {
+                        "scores": {field: 10 for field in eval_runner.QUALITY_SCORE_FIELDS},
+                        "auditBreakdown": {field: 10 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    },
+                    "answerHealth": {
+                        "scores": {field: 9 for field in eval_runner.ANSWER_HEALTH_SCORE_FIELDS},
+                        "auditBreakdown": {field: 9 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    },
+                    "control": {
+                        "scores": {field: 9 for field in eval_runner.CONTROL_SCORE_FIELDS},
+                        "auditBreakdown": {field: 10 for field in eval_runner.JUDGE_AUDIT_SCORE_FIELDS},
+                    },
+                    "usage": {"totalTokens": 100, "estimatedCostUsd": 0.01},
+                    "deterministic": {"passed": True},
+                },
+            ]
+        }
+
+        aggregate = eval_runner.aggregate_variant(variant)
+
+        self.assertEqual(aggregate["qualityAudit"]["memoryGrounding"], 8.0)
+        self.assertEqual(aggregate["answerHealthAudit"]["auditSurvivability"], 8.0)
+        self.assertEqual(aggregate["controlAudit"]["overallOwnerProtection"], 9.0)
+
+    def test_para_judge_lane_manifest_is_parked_for_dynamic_scrutiny(self) -> None:
+        manifest_path = Path("data/evals/judge_lanes/para-owner-scrutiny.json")
+        self.assertTrue(manifest_path.exists())
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(payload["enabledByDefault"])
+        self.assertEqual(payload["moduleType"], "para_judge_lane")
+        self.assertGreaterEqual(payload["dynamicExpansion"]["minimumSideLanes"], 2)
+        self.assertIn("owner-impact", [lane["id"] for lane in payload["sideLanes"]])
+        self.assertIn("memory-auditor", [lane["id"] for lane in payload["sideLanes"]])
 
     def test_normalize_vetting_matrix_result_accepts_answer_key_score_list_shape(self) -> None:
         normalized = eval_runner.normalize_vetting_matrix_result(

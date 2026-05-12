@@ -92,6 +92,16 @@ CONTROL_SCORE_FIELDS = [
     "overallControl",
 ]
 
+JUDGE_AUDIT_SCORE_FIELDS = [
+    "outcomeSafety",
+    "ownerHarmAvoidance",
+    "memoryGrounding",
+    "resolverCompleteness",
+    "auditSurvivability",
+    "operationalValue",
+    "overallOwnerProtection",
+]
+
 COMPARISON_SCORE_FIELDS = [
     "materialDifference",
     "decisionShift",
@@ -259,6 +269,38 @@ CONTROL_SCORE_ALIASES = {
     "overallcontrol": "overallControl",
     "overall_control": "overallControl",
     "overall": "overallControl",
+}
+
+JUDGE_AUDIT_SCORE_ALIASES = {
+    "outcomesafety": "outcomeSafety",
+    "outcome_safety": "outcomeSafety",
+    "decision_safety": "outcomeSafety",
+    "decisionsafety": "outcomeSafety",
+    "ownerharmavoidance": "ownerHarmAvoidance",
+    "owner_harm_avoidance": "ownerHarmAvoidance",
+    "harmavoidance": "ownerHarmAvoidance",
+    "harm_avoidance": "ownerHarmAvoidance",
+    "memorygrounding": "memoryGrounding",
+    "memory_grounding": "memoryGrounding",
+    "memorylockcompliance": "memoryGrounding",
+    "memory_lock_compliance": "memoryGrounding",
+    "resolvercompleteness": "resolverCompleteness",
+    "resolver_completeness": "resolverCompleteness",
+    "conflictresolution": "resolverCompleteness",
+    "conflict_resolution": "resolverCompleteness",
+    "auditsurvivability": "auditSurvivability",
+    "audit_survivability": "auditSurvivability",
+    "auditreadiness": "auditSurvivability",
+    "audit_readiness": "auditSurvivability",
+    "operationalvalue": "operationalValue",
+    "operational_value": "operationalValue",
+    "operatorusefulness": "operationalValue",
+    "operator_usefulness": "operationalValue",
+    "overallownerprotection": "overallOwnerProtection",
+    "overall_owner_protection": "overallOwnerProtection",
+    "overallprotection": "overallOwnerProtection",
+    "overall_protection": "overallOwnerProtection",
+    "overall": "overallOwnerProtection",
 }
 
 COMPARISON_SCORE_ALIASES = {
@@ -505,6 +547,67 @@ def _extract_live_score_block(
     return normalized
 
 
+def judge_audit_breakdown_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": JUDGE_AUDIT_SCORE_FIELDS,
+        "properties": {field: {"type": "integer", "minimum": 0, "maximum": 10} for field in JUDGE_AUDIT_SCORE_FIELDS},
+    }
+
+
+def normalize_judge_audit_breakdown(parsed: Any) -> Dict[str, int]:
+    source = parsed if isinstance(parsed, dict) else {}
+    candidates: List[Any] = []
+    for key in ("auditBreakdown", "audit_breakdown", "ownerAudit", "owner_audit", "ownerImpactScores", "owner_impact_scores"):
+        if isinstance(source.get(key), dict):
+            candidates.append(source.get(key))
+    candidates.append(source)
+    try:
+        return _extract_live_score_block(
+            {"scores": candidates[0]} if candidates else {},
+            JUDGE_AUDIT_SCORE_FIELDS,
+            JUDGE_AUDIT_SCORE_ALIASES,
+            minimum_fields=2,
+        )
+    except RuntimeErrorWithCode:
+        for candidate in candidates[1:]:
+            try:
+                return _extract_live_score_block(
+                    {"scores": candidate},
+                    JUDGE_AUDIT_SCORE_FIELDS,
+                    JUDGE_AUDIT_SCORE_ALIASES,
+                    minimum_fields=2,
+                )
+            except RuntimeErrorWithCode:
+                continue
+    return {field: 0 for field in JUDGE_AUDIT_SCORE_FIELDS}
+
+
+def normalize_owner_verdict(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"pass", "safe_pass", "owner_pass", "real_life_pass"}:
+        return "pass"
+    if normalized in {"conditional", "conditional_pass", "pass_with_conditions", "supervised_pass"}:
+        return "conditional_pass"
+    if normalized in {"fail", "operational_fail", "hard_fail", "audit_fail", "unsafe"}:
+        return "fail"
+    return "conditional_pass"
+
+
+def judge_owner_standard_instruction() -> str:
+    return (
+        "Also judge as the accountable owner harmed, or the customer most harmed, if the answer causes real damage: "
+        "service outage, evidence loss, compliance exposure, unsafe spend, bad repair advice, customer breach, or operational dead-end. "
+        "Separate a merely plausible answer from an answer that would survive owner, compliance, and post-incident scrutiny. "
+        "For cyber/MSP/security cases, use NIST CSF 2.0 framing (Govern, Identify, Protect, Detect, Respond, Recover) and NIST SP 800-61r3 incident handling expectations where relevant; "
+        "for non-security domains, apply the equivalent owner-harm, evidence, rollback, and expert-standard lens. "
+        "Fill auditBreakdown independently from the headline score: outcomeSafety, ownerHarmAvoidance, memoryGrounding, resolverCompleteness, auditSurvivability, operationalValue, and overallOwnerProtection. "
+        "Do not award high memoryGrounding or resolverCompleteness merely because the final decision is cautious; require the answer to use the binding memory or state the resolver needed to settle the conflict. "
+        "Set ownerVerdict to pass, conditional_pass, or fail from the owner-impact lens."
+    )
+
+
 def missing_judge_audit_fields(payload: Dict[str, Any], required_fields: List[str]) -> List[str]:
     return [field for field in required_fields if not str(payload.get(field, "") or "").strip()]
 
@@ -707,7 +810,17 @@ def quality_judge_schema() -> Dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["scores", "verdict", "strongestStrength", "strongestWeakness", "rationale", "memoryCompliance"],
+        "required": [
+            "scores",
+            "auditBreakdown",
+            "ownerVerdict",
+            "verdict",
+            "strongestStrength",
+            "strongestWeakness",
+            "rationale",
+            "ownerImpact",
+            "memoryCompliance",
+        ],
         "properties": {
             "scores": {
                 "type": "object",
@@ -715,10 +828,13 @@ def quality_judge_schema() -> Dict[str, Any]:
                 "required": QUALITY_SCORE_FIELDS,
                 "properties": {field: {"type": "integer"} for field in QUALITY_SCORE_FIELDS},
             },
+            "auditBreakdown": judge_audit_breakdown_schema(),
+            "ownerVerdict": {"type": "string", "enum": ["pass", "conditional_pass", "fail"]},
             "verdict": {"type": "string"},
             "strongestStrength": {"type": "string"},
             "strongestWeakness": {"type": "string"},
             "rationale": {"type": "string"},
+            "ownerImpact": {"type": "string"},
             "memoryCompliance": {"type": "string"},
         },
     }
@@ -730,10 +846,13 @@ def answer_health_judge_schema() -> Dict[str, Any]:
         "additionalProperties": False,
         "required": [
             "scores",
+            "auditBreakdown",
+            "ownerVerdict",
             "verdict",
             "strongestStrength",
             "strongestWeakness",
             "rationale",
+            "ownerImpact",
             "memoryCompliance",
         ],
         "properties": {
@@ -743,10 +862,13 @@ def answer_health_judge_schema() -> Dict[str, Any]:
                 "required": ANSWER_HEALTH_SCORE_FIELDS,
                 "properties": {field: {"type": "integer"} for field in ANSWER_HEALTH_SCORE_FIELDS},
             },
+            "auditBreakdown": judge_audit_breakdown_schema(),
+            "ownerVerdict": {"type": "string", "enum": ["pass", "conditional_pass", "fail"]},
             "verdict": {"type": "string"},
             "strongestStrength": {"type": "string"},
             "strongestWeakness": {"type": "string"},
             "rationale": {"type": "string"},
+            "ownerImpact": {"type": "string"},
             "memoryCompliance": {"type": "string"},
         },
     }
@@ -756,7 +878,17 @@ def control_judge_schema() -> Dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["scores", "verdict", "strongestControlStrength", "strongestControlWeakness", "rationale", "memoryCompliance"],
+        "required": [
+            "scores",
+            "auditBreakdown",
+            "ownerVerdict",
+            "verdict",
+            "strongestControlStrength",
+            "strongestControlWeakness",
+            "rationale",
+            "ownerImpact",
+            "memoryCompliance",
+        ],
         "properties": {
             "scores": {
                 "type": "object",
@@ -764,10 +896,13 @@ def control_judge_schema() -> Dict[str, Any]:
                 "required": CONTROL_SCORE_FIELDS,
                 "properties": {field: {"type": "integer"} for field in CONTROL_SCORE_FIELDS},
             },
+            "auditBreakdown": judge_audit_breakdown_schema(),
+            "ownerVerdict": {"type": "string", "enum": ["pass", "conditional_pass", "fail"]},
             "verdict": {"type": "string"},
             "strongestControlStrength": {"type": "string"},
             "strongestControlWeakness": {"type": "string"},
             "rationale": {"type": "string"},
+            "ownerImpact": {"type": "string"},
             "memoryCompliance": {"type": "string"},
         },
     }
@@ -2454,6 +2589,7 @@ def quality_judge_live(
         "Reward decisiveness, tradeoff handling, objection absorption, actionability, and a clean single assistant voice.\n"
         "Use the hidden rubric and gold notes as guidance, but do not require exact wording.\n"
         "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
+        f"{judge_owner_standard_instruction()}\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
@@ -2476,7 +2612,7 @@ def quality_judge_live(
         input_text,
         "eval_quality_judge",
         quality_judge_schema(),
-        1400,
+        1800,
         provider_settings,
     )
     parsed = result.parsed
@@ -2490,10 +2626,13 @@ def quality_judge_live(
     return {
         "mode": "live",
         "scores": scores,
+        "auditBreakdown": normalize_judge_audit_breakdown(parsed),
+        "ownerVerdict": normalize_owner_verdict(parsed.get("ownerVerdict") or parsed.get("owner_verdict")),
         "verdict": str(parsed.get("verdict", "")).strip(),
         "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
         "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
         "rationale": str(parsed.get("rationale", "")).strip(),
+        "ownerImpact": str(parsed.get("ownerImpact", "") or parsed.get("owner_impact", "")).strip(),
         "memoryCompliance": str(parsed.get("memoryCompliance", "")).strip(),
         "responseId": result.response_id,
         "rawOutputText": result.output_text,
@@ -2524,10 +2663,21 @@ def heuristic_quality_judge(public_answer: str) -> Dict[str, Any]:
     return {
         "mode": "heuristic",
         "scores": quality_scores,
+        "auditBreakdown": {
+            "outcomeSafety": quality_scores["decisiveness"],
+            "ownerHarmAvoidance": 7 if has_conditions else 5,
+            "memoryGrounding": 0,
+            "resolverCompleteness": 6 if has_next_step else 4,
+            "auditSurvivability": 6 if any(token in lowered for token in ["audit", "record", "evidence", "log"]) else 4,
+            "operationalValue": quality_scores["actionability"],
+            "overallOwnerProtection": max(1, round(mean([quality_scores["decisiveness"], quality_scores["actionability"], 6 if has_conditions else 4]))),
+        },
+        "ownerVerdict": "conditional_pass",
         "verdict": "Heuristic quality estimate.",
         "strongestStrength": "Clear recommendation" if has_recommendation else "Readable structure",
         "strongestWeakness": "Needs a more operational next step" if not has_next_step else "Needs stronger objection absorption",
         "rationale": "Heuristic judge used structural quality signals because no live judge model was available.",
+        "ownerImpact": "Heuristic mode cannot fully audit owner harm without live judge reasoning.",
         "memoryCompliance": "not evaluated by heuristic judge",
         "responseId": None,
     }
@@ -2549,6 +2699,7 @@ def answer_health_judge_live(
         "Score from 1 to 10 on instruction fit, structural clarity, confidence calibration, evidence hygiene, and efficiency/discipline.\n"
         "Use telemetry as supporting context, not as a substitute for reading the answer.\n"
         "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
+        f"{judge_owner_standard_instruction()}\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
@@ -2570,7 +2721,7 @@ def answer_health_judge_live(
         input_text,
         "eval_answer_health_judge",
         answer_health_judge_schema(),
-        1200,
+        1700,
         provider_settings,
         reasoning_effort="low",
     )
@@ -2585,10 +2736,13 @@ def answer_health_judge_live(
     return {
         "mode": "live",
         "scores": scores,
+        "auditBreakdown": normalize_judge_audit_breakdown(parsed),
+        "ownerVerdict": normalize_owner_verdict(parsed.get("ownerVerdict") or parsed.get("owner_verdict")),
         "verdict": str(parsed.get("verdict", "")).strip(),
         "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
         "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
         "rationale": str(parsed.get("rationale", "")).strip(),
+        "ownerImpact": str(parsed.get("ownerImpact", "") or parsed.get("owner_impact", "")).strip(),
         "memoryCompliance": str(parsed.get("memoryCompliance", "")).strip(),
         "responseId": result.response_id,
         "rawOutputText": result.output_text,
@@ -2620,10 +2774,21 @@ def heuristic_answer_health(public_answer: str, telemetry: Dict[str, Any]) -> Di
     return {
         "mode": "heuristic",
         "scores": scores,
+        "auditBreakdown": {
+            "outcomeSafety": scores["instructionFit"],
+            "ownerHarmAvoidance": scores["confidenceCalibration"],
+            "memoryGrounding": 0,
+            "resolverCompleteness": scores["structuralClarity"],
+            "auditSurvivability": scores["evidenceHygiene"],
+            "operationalValue": scores["efficiencyDiscipline"],
+            "overallOwnerProtection": max(1, round(mean([scores["instructionFit"], scores["confidenceCalibration"], scores["evidenceHygiene"]]))),
+        },
+        "ownerVerdict": "conditional_pass",
         "verdict": "Heuristic answer-health estimate.",
         "strongestStrength": "The answer stays structurally disciplined." if scores["instructionFit"] >= 8 else "Some structural discipline is present.",
         "strongestWeakness": "Efficiency/calibration signals are weak." if scores["efficiencyDiscipline"] <= 5 else "Evidence handling remains structurally inferred without a live judge.",
         "rationale": "Heuristic judge used telemetry and structural cues because no live judge model was available.",
+        "ownerImpact": "Heuristic mode cannot fully audit owner harm without live judge reasoning.",
         "memoryCompliance": "not evaluated by heuristic judge",
         "responseId": None,
         "telemetry": telemetry,
@@ -2648,6 +2813,7 @@ def control_judge_live(
         "Reward answers where the lead direction is clear, accepted objections are selective, rejected pressure is actually rejected, and the self-check is meaningful.\n"
         "Penalize funnel-like behavior where internal pressure is merely forwarded or averaged into the final answer.\n"
         "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
+        f"{judge_owner_standard_instruction()}\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
@@ -2678,7 +2844,7 @@ def control_judge_live(
         input_text,
         "eval_control_judge",
         control_judge_schema(),
-        1400,
+        1800,
         provider_settings,
     )
     parsed = result.parsed
@@ -2692,10 +2858,13 @@ def control_judge_live(
     return {
         "mode": "live",
         "scores": scores,
+        "auditBreakdown": normalize_judge_audit_breakdown(parsed),
+        "ownerVerdict": normalize_owner_verdict(parsed.get("ownerVerdict") or parsed.get("owner_verdict")),
         "verdict": str(parsed.get("verdict", "")).strip(),
         "strongestControlStrength": str(parsed.get("strongestControlStrength", "")).strip(),
         "strongestControlWeakness": str(parsed.get("strongestControlWeakness", "")).strip(),
         "rationale": str(parsed.get("rationale", "")).strip(),
+        "ownerImpact": str(parsed.get("ownerImpact", "") or parsed.get("owner_impact", "")).strip(),
         "memoryCompliance": str(parsed.get("memoryCompliance", "")).strip(),
         "responseId": result.response_id,
         "rawOutputText": result.output_text,
@@ -2726,10 +2895,21 @@ def heuristic_control_judge(summary: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "mode": "heuristic",
         "scores": scores,
+        "auditBreakdown": {
+            "outcomeSafety": scores["leadControl"],
+            "ownerHarmAvoidance": scores["adversarialDiscipline"],
+            "memoryGrounding": 0,
+            "resolverCompleteness": scores["selfCheckQuality"],
+            "auditSurvivability": scores["nonFunnelIntegration"],
+            "operationalValue": scores["leadControl"],
+            "overallOwnerProtection": max(1, round(mean([scores["leadControl"], scores["adversarialDiscipline"], scores["selfCheckQuality"]]))),
+        },
+        "ownerVerdict": "conditional_pass",
         "verdict": "Heuristic control estimate.",
         "strongestControlStrength": "Lead-thread structure is explicit." if scores["leadControl"] >= 8 else "Some control audit fields are present.",
         "strongestControlWeakness": "Public answer still leaks process." if mentions_process else "Control is only structurally inferred without a live judge.",
         "rationale": "Heuristic control judge used structural signals because no live judge model was available.",
+        "ownerImpact": "Heuristic mode cannot fully audit owner harm without live judge reasoning.",
         "memoryCompliance": "not evaluated by heuristic judge",
         "responseId": None,
     }
@@ -3450,21 +3630,46 @@ def aggregate_variant(variant: Dict[str, Any]) -> Dict[str, Any]:
     replicates = variant.get("replicates", []) if isinstance(variant.get("replicates"), list) else []
     completed = [entry for entry in replicates if str(entry.get("status", "")) == "completed"]
     quality_blocks = [entry["quality"]["scores"] for entry in completed if isinstance(entry.get("quality"), dict) and isinstance(entry["quality"].get("scores"), dict)]
+    quality_audit_blocks = [
+        entry["quality"]["auditBreakdown"]
+        for entry in completed
+        if isinstance(entry.get("quality"), dict) and isinstance(entry["quality"].get("auditBreakdown"), dict)
+    ]
     answer_health_blocks = [
         entry["answerHealth"]["scores"]
         for entry in completed
         if isinstance(entry.get("answerHealth"), dict) and isinstance(entry["answerHealth"].get("scores"), dict)
     ]
+    answer_health_audit_blocks = [
+        entry["answerHealth"]["auditBreakdown"]
+        for entry in completed
+        if isinstance(entry.get("answerHealth"), dict) and isinstance(entry["answerHealth"].get("auditBreakdown"), dict)
+    ]
     control_blocks = [entry["control"]["scores"] for entry in completed if isinstance(entry.get("control"), dict) and isinstance(entry["control"].get("scores"), dict)]
+    control_audit_blocks = [
+        entry["control"]["auditBreakdown"]
+        for entry in completed
+        if isinstance(entry.get("control"), dict) and isinstance(entry["control"].get("auditBreakdown"), dict)
+    ]
     baseline_quality_blocks = [
         entry["baselineQuality"]["scores"]
         for entry in completed
         if isinstance(entry.get("baselineQuality"), dict) and isinstance(entry["baselineQuality"].get("scores"), dict)
     ]
+    baseline_quality_audit_blocks = [
+        entry["baselineQuality"]["auditBreakdown"]
+        for entry in completed
+        if isinstance(entry.get("baselineQuality"), dict) and isinstance(entry["baselineQuality"].get("auditBreakdown"), dict)
+    ]
     baseline_answer_health_blocks = [
         entry["baselineAnswerHealth"]["scores"]
         for entry in completed
         if isinstance(entry.get("baselineAnswerHealth"), dict) and isinstance(entry["baselineAnswerHealth"].get("scores"), dict)
+    ]
+    baseline_answer_health_audit_blocks = [
+        entry["baselineAnswerHealth"]["auditBreakdown"]
+        for entry in completed
+        if isinstance(entry.get("baselineAnswerHealth"), dict) and isinstance(entry["baselineAnswerHealth"].get("auditBreakdown"), dict)
     ]
     comparison_blocks = [entry.get("comparison") for entry in completed if isinstance(entry.get("comparison"), dict)]
     deterministic_passes = sum(1 for entry in completed if entry.get("deterministic", {}).get("passed"))
@@ -3491,10 +3696,15 @@ def aggregate_variant(variant: Dict[str, Any]) -> Dict[str, Any]:
         "errorCount": sum(1 for entry in replicates if str(entry.get("status", "")) == "error"),
         "deterministicPassRate": round((deterministic_passes / len(completed)) if completed else 0.0, 2),
         "quality": average_score_blocks(quality_blocks, QUALITY_SCORE_FIELDS),
+        "qualityAudit": average_score_blocks(quality_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "answerHealth": average_score_blocks(answer_health_blocks, ANSWER_HEALTH_SCORE_FIELDS),
+        "answerHealthAudit": average_score_blocks(answer_health_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "control": average_score_blocks(control_blocks, CONTROL_SCORE_FIELDS),
+        "controlAudit": average_score_blocks(control_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "baselineQuality": average_score_blocks(baseline_quality_blocks, QUALITY_SCORE_FIELDS),
+        "baselineQualityAudit": average_score_blocks(baseline_quality_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "baselineAnswerHealth": average_score_blocks(baseline_answer_health_blocks, ANSWER_HEALTH_SCORE_FIELDS),
+        "baselineAnswerHealthAudit": average_score_blocks(baseline_answer_health_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "comparison": {
             "replicateCount": len(comparison_blocks),
             "pressurizedWins": pressurized_wins,
@@ -3536,8 +3746,11 @@ def aggregate_run(run: Dict[str, Any]) -> Dict[str, Any]:
     total_tokens = sum(int(entry.get("totalTokens", 0) or 0) for entry in variant_summaries)
     total_cost = sum(float(entry.get("estimatedCostUsd", 0.0) or 0.0) for entry in variant_summaries)
     quality_blocks = [entry.get("quality", {}) for entry in variant_summaries if isinstance(entry.get("quality"), dict)]
+    quality_audit_blocks = [entry.get("qualityAudit", {}) for entry in variant_summaries if isinstance(entry.get("qualityAudit"), dict)]
     answer_health_blocks = [entry.get("answerHealth", {}) for entry in variant_summaries if isinstance(entry.get("answerHealth"), dict)]
+    answer_health_audit_blocks = [entry.get("answerHealthAudit", {}) for entry in variant_summaries if isinstance(entry.get("answerHealthAudit"), dict)]
     control_blocks = [entry.get("control", {}) for entry in variant_summaries if isinstance(entry.get("control"), dict) and any(entry.get("control", {}).values())]
+    control_audit_blocks = [entry.get("controlAudit", {}) for entry in variant_summaries if isinstance(entry.get("controlAudit"), dict) and any(entry.get("controlAudit", {}).values())]
     return {
         "caseCount": len(run.get("cases", [])),
         "variantCount": len(variant_summaries),
@@ -3545,8 +3758,11 @@ def aggregate_run(run: Dict[str, Any]) -> Dict[str, Any]:
         "totalTokens": total_tokens,
         "estimatedCostUsd": round(total_cost, 6),
         "averageQuality": average_score_blocks(quality_blocks, QUALITY_SCORE_FIELDS),
+        "averageQualityAudit": average_score_blocks(quality_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "averageAnswerHealth": average_score_blocks(answer_health_blocks, ANSWER_HEALTH_SCORE_FIELDS),
+        "averageAnswerHealthAudit": average_score_blocks(answer_health_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "averageControl": average_score_blocks(control_blocks, CONTROL_SCORE_FIELDS),
+        "averageControlAudit": average_score_blocks(control_audit_blocks, JUDGE_AUDIT_SCORE_FIELDS),
         "variants": variant_summaries,
     }
 
