@@ -115,6 +115,8 @@
     payload: null,
     sessions: [],
     loaded: false,
+    emptyRunSkips: new Set(),
+    autoComparableFallback: true,
   };
   const sessionBrowserState = {
     loaded: false,
@@ -3192,6 +3194,96 @@
     return String(variant?.model || variant?.directModel || variant?.summarizerModel || "").trim();
   }
 
+  function runVariantCounts(run) {
+    const counts = { steered: 0, direct: 0 };
+    (Array.isArray(run?.cases) ? run.cases : []).forEach((caseEntry) => {
+      (Array.isArray(caseEntry?.variants) ? caseEntry.variants : []).forEach((variant) => {
+        const type = variantType(variant);
+        if (type === "steered") counts.steered += 1;
+        if (type === "direct") counts.direct += 1;
+      });
+    });
+    return counts;
+  }
+
+  function findCompanionDirectRunId(runs, selectedRun) {
+    const currentRunId = String(selectedRun?.runId || "").trim();
+    const selectedSuite = String(selectedRun?.suiteId || "").toLowerCase();
+    const selectedCases = new Set((Array.isArray(selectedRun?.cases) ? selectedRun.cases : [])
+      .map((caseEntry) => String(caseEntry?.caseId || "").trim())
+      .filter(Boolean));
+    return (Array.isArray(runs) ? runs : [])
+      .filter((run) => {
+        const runId = String(run?.runId || "").trim();
+        if (!runId || runId === currentRunId) return false;
+        const suite = String(run?.suiteId || "").toLowerCase();
+        if (!suite.includes("direct")) return false;
+        if (selectedSuite.includes("five") && !suite.includes("five")) return false;
+        return true;
+      })
+      .map((run) => {
+        const suite = String(run?.suiteId || "").toLowerCase();
+        let score = Number(run?.summary?.variantCount || 0);
+        if (suite.includes("direct")) score += 100;
+        if (selectedSuite.includes("msp") && suite.includes("msp")) score += 20;
+        if (selectedCases.size && Number(run?.summary?.variantCount || 0) >= selectedCases.size) score += 10;
+        return { run, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map((entry) => String(entry.run?.runId || "").trim())
+      .find(Boolean) || "";
+  }
+
+  function mergeDirectRunIntoSelectedRun(selectedRun, directRun) {
+    if (!selectedRun || !directRun) return selectedRun;
+    const directCases = new Map();
+    (Array.isArray(directRun.cases) ? directRun.cases : []).forEach((caseEntry) => {
+      const caseId = String(caseEntry?.caseId || "").trim();
+      if (caseId) directCases.set(caseId, caseEntry);
+    });
+    const merged = Object.assign({}, selectedRun, {
+      cases: (Array.isArray(selectedRun.cases) ? selectedRun.cases : []).map((caseEntry) => {
+        const caseId = String(caseEntry?.caseId || "").trim();
+        const directCase = directCases.get(caseId);
+        if (!directCase) return caseEntry;
+        const existingVariants = Array.isArray(caseEntry?.variants) ? caseEntry.variants : [];
+        const existingIds = new Set(existingVariants.map((variant) => String(variant?.variantId || "").trim()).filter(Boolean));
+        const directVariants = (Array.isArray(directCase?.variants) ? directCase.variants : [])
+          .filter((variant) => variantType(variant) === "direct")
+          .filter((variant) => {
+            const variantId = String(variant?.variantId || "").trim();
+            return !variantId || !existingIds.has(variantId);
+          });
+        return Object.assign({}, caseEntry, {
+          objective: caseEntry?.objective || directCase?.objective || "",
+          constraints: Array.isArray(caseEntry?.constraints) && caseEntry.constraints.length ? caseEntry.constraints : directCase?.constraints,
+          variants: existingVariants.concat(directVariants),
+        });
+      }),
+      directCompanionRunId: String(directRun.runId || ""),
+      directCompanionSuiteId: String(directRun.suiteId || ""),
+    });
+    return merged;
+  }
+
+  async function hydrateCompanionDirectRun(payload) {
+    const selectedRun = payload?.selectedRun && typeof payload.selectedRun === "object" ? payload.selectedRun : null;
+    const counts = runVariantCounts(selectedRun);
+    if (!selectedRun || !counts.steered || counts.direct) return payload;
+    const companionRunId = findCompanionDirectRunId(payload?.runs, selectedRun);
+    if (!companionRunId) return payload;
+    const query = `?runId=${encodeURIComponent(companionRunId)}`;
+    const companionPayload = await fetchJson(API.evalHistory + query);
+    const companionRun = companionPayload?.selectedRun && typeof companionPayload.selectedRun === "object"
+      ? companionPayload.selectedRun
+      : null;
+    if (!companionRun) return payload;
+    return Object.assign({}, payload, {
+      selectedRun: mergeDirectRunIntoSelectedRun(selectedRun, companionRun),
+      directCompanionRunId: companionRunId,
+    });
+  }
+
   function answerTextFromEntry(entry) {
     if (!entry || typeof entry !== "object") return "";
     if (typeof entry.publicAnswer === "string") return entry.publicAnswer;
@@ -3210,7 +3302,7 @@
     const hasOverride = (key) => Object.prototype.hasOwnProperty.call(overrides, key);
     return {
       kind,
-      label: overrides.label || (isPara ? "Summarizer -> Judge" : "Direct -> Judge"),
+      label: overrides.label || (isPara ? "Para output" : "Direct output"),
       source: overrides.source || String(variant?.variantId || "baseline"),
       provider,
       model,
@@ -3231,7 +3323,7 @@
     const hasBaselineScores = !!(replicate?.baselineQuality || replicate?.baselineAnswerHealth);
     if (!baselineAnswer && !hasBaselineScores) return null;
     return buildScoreLane("direct", variant, replicate, {
-      label: "Direct baseline -> Judge",
+      label: "Direct output",
       source: "embedded baseline",
       provider: variant?.directProvider || variantProvider(variant),
       model: variant?.directModel || variantModel(variant),
@@ -3368,7 +3460,7 @@
     if (!lane) {
       return `
         <section class="igs-surface igs-score-card ${escapeHtml(tone || "")}">
-          <div class="igs-surface-head"><h4>Direct -> Judge</h4></div>
+          <div class="igs-surface-head"><h4>Direct output</h4></div>
           <div class="igs-inline-note">No comparable direct answer was found for this session.</div>
         </section>
       `;
@@ -3383,7 +3475,7 @@
       <section class="igs-surface igs-score-card ${escapeHtml(tone || "")}">
         <div class="igs-surface-head">
           <div>
-            <div class="igs-surface-kicker">${escapeHtml(lane.kind === "para" ? "Summarizer output" : "Direct output")}</div>
+            <div class="igs-surface-kicker">${escapeHtml(lane.kind === "para" ? "Para output" : "Direct output")}</div>
             <h4>${escapeHtml(lane.label)}</h4>
           </div>
           <span class="igs-pill ${lane.kind === "para" ? "igs-pill-success" : "igs-pill-warn"}">To judge</span>
@@ -3451,12 +3543,27 @@
       modelLabel(session?.judge?.provider || "", session?.judge?.model || ""),
       session?.judge?.status ? ("run " + session.judge.status) : "",
     ].filter(Boolean);
+    const judgeNotes = [
+      ["Para quality", session?.para?.quality?.verdict || session?.para?.quality?.rationale || ""],
+      ["Direct quality", session?.direct?.quality?.verdict || session?.direct?.quality?.rationale || ""],
+      ["Para control", session?.para?.control?.verdict || session?.para?.control?.rationale || ""],
+      ["Para memory", session?.para?.quality?.memoryCompliance || session?.para?.health?.memoryCompliance || session?.para?.control?.memoryCompliance || ""],
+      ["Direct memory", session?.direct?.quality?.memoryCompliance || session?.direct?.health?.memoryCompliance || ""],
+    ].map(([label, value]) => {
+      const text = truncateText(value, 320);
+      return text ? `
+        <div class="igs-score-note">
+          <span>${escapeHtml(label)}</span>
+          <p>${escapeHtml(text)}</p>
+        </div>
+      ` : "";
+    }).filter(Boolean).join("");
     return `
-      <section class="igs-surface igs-score-judge">
+      <section class="igs-surface igs-score-card accent igs-score-judge">
         <div class="igs-surface-head">
           <div>
             <div class="igs-surface-kicker">Judge comparison</div>
-            <h4>Score side by side</h4>
+            <h4>Judge</h4>
           </div>
           <span class="igs-pill igs-pill-muted">${escapeHtml(metaBits.join(" | ") || "Judge")}</span>
         </div>
@@ -3474,6 +3581,7 @@
             <strong>${escapeHtml("r" + String(session?.replicate || 1))}</strong>
           </div>
         </div>
+        ${judgeNotes ? `<div class="igs-score-notes">${judgeNotes}</div>` : ""}
         <details class="igs-score-packet">
           <summary>AI score packet</summary>
           <pre>${escapeHtml(JSON.stringify(packet, null, 2))}</pre>
@@ -3497,8 +3605,8 @@
         ${renderScoreQuestionBubble(session)}
         ${renderScoreLaneCard(session.para, "primary")}
         ${renderScoreLaneCard(session.direct, "secondary")}
+        ${renderScoreJudgePanel(session)}
       </div>
-      ${renderScoreJudgePanel(session)}
     `;
   }
 
@@ -3961,9 +4069,31 @@
       Number(summary.errorCount || 0) ? `${Number(summary.errorCount || 0)} errors` : "0 errors",
       Number(summary.totalTokens || 0) ? `${Number(summary.totalTokens || 0).toLocaleString()} tokens` : "",
       sessions.length ? `${sessions.length} comparable sessions` : "",
+      run.directCompanionSuiteId ? `direct baseline ${run.directCompanionSuiteId}` : "",
       learningLabel,
     ].filter(Boolean);
     return bits.join(" | ");
+  }
+
+  function scoreRunComparableHint(run) {
+    const suite = String(run?.suiteId || run?.suite || run?.title || "").toLowerCase();
+    const variants = Number(run?.summary?.variantCount || 0);
+    let score = variants;
+    if (suite.includes("memory") || suite.includes("para") || suite.includes("steered")) score += 100;
+    if (suite.includes("direct")) score -= 20;
+    return score;
+  }
+
+  function fallbackScoreRunId(runs, currentRunId) {
+    const current = String(currentRunId || "").trim();
+    return runs
+      .filter((run) => {
+        const runId = String(run?.runId || "").trim();
+        return runId && runId !== current && !scoreState.emptyRunSkips.has(runId);
+      })
+      .sort((a, b) => scoreRunComparableHint(b) - scoreRunComparableHint(a))
+      .map((run) => String(run.runId || "").trim())
+      .find(Boolean) || "";
   }
 
   function syncScoreSelectors(payload) {
@@ -3993,6 +4123,25 @@
       return;
     }
     const sessions = buildScoreSessions(selectedRun);
+    if (!sessions.length && selectedRun && runs.length && scoreState.autoComparableFallback) {
+      const currentRunId = String(selectedRun.runId || scoreState.selectedRunId || "").trim();
+      if (currentRunId) {
+        scoreState.emptyRunSkips.add(currentRunId);
+      }
+      const fallbackRun = fallbackScoreRunId(runs, currentRunId);
+      if (fallbackRun) {
+        scoreState.selectedRunId = fallbackRun;
+        scoreState.selectedSessionId = "";
+        persistScoreSelection();
+        loadScoreRuns(fallbackRun);
+        return;
+      }
+      scoreState.autoComparableFallback = false;
+    }
+    if (sessions.length) {
+      scoreState.emptyRunSkips.clear();
+      scoreState.autoComparableFallback = false;
+    }
     scoreState.sessions = sessions;
     if (!scoreState.selectedSessionId || !sessions.some((session) => session.sessionId === scoreState.selectedSessionId)) {
       scoreState.selectedSessionId = sessions[0]?.sessionId || "";
@@ -4014,7 +4163,7 @@
     const selectedSession = scoreState.sessions.find((session) => session.sessionId === scoreState.selectedSessionId) || scoreState.sessions[0] || null;
     elements.scoreStatus.textContent = selectedSession
       ? `Viewing ${selectedSession.caseId || "case"} / ${selectedSession.variantId || "variant"} / replicate ${selectedSession.replicate}.`
-      : "No Direct vs Summarizer judged pair was found in this run.";
+      : "No Direct vs Para judged pair was found in this run.";
     elements.scoreCompareDetail.innerHTML = renderScoreSession(selectedSession);
     installMainWorkbenchPanes();
   }
@@ -4033,7 +4182,8 @@
       elements.scoreStatus.textContent = "Loading judged sessions...";
     }
     const query = requestedRunId ? `?runId=${encodeURIComponent(requestedRunId)}` : "";
-    const payload = await fetchJson(API.evalHistory + query);
+    let payload = await fetchJson(API.evalHistory + query);
+    payload = await hydrateCompanionDirectRun(payload || {});
     scoreState.payload = payload || {};
     scoreState.loaded = true;
     scoreState.selectedRunId = String(payload?.selectedRunId || requestedRunId || "");
@@ -4084,7 +4234,7 @@
     if (nextTarget === "scores" && !scoreState.loaded) {
       loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
         if (elements.scoreStatus) {
-          elements.scoreStatus.textContent = "Score sessions failed to load: " + String(error.message || error);
+          elements.scoreStatus.textContent = "Eval sessions failed to load: " + String(error.message || error);
         }
       });
     }
@@ -4554,9 +4704,10 @@
   if (elements.scoreRefreshBtn) {
     elements.scoreRefreshBtn.addEventListener("click", function () {
       scoreState.loaded = false;
+      scoreState.emptyRunSkips.clear();
       loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
         if (elements.scoreStatus) {
-          elements.scoreStatus.textContent = "Score sessions failed to refresh: " + String(error.message || error);
+          elements.scoreStatus.textContent = "Eval sessions failed to refresh: " + String(error.message || error);
         }
       });
     });
@@ -4701,10 +4852,12 @@
       scoreState.selectedRunId = String(elements.scoreRunSelect.value || "");
       scoreState.selectedSessionId = "";
       scoreState.loaded = false;
+      scoreState.autoComparableFallback = false;
+      scoreState.emptyRunSkips.clear();
       persistScoreSelection();
       loadScoreRuns(scoreState.selectedRunId).catch(function (error) {
         if (elements.scoreStatus) {
-          elements.scoreStatus.textContent = "Score run failed to load: " + String(error.message || error);
+          elements.scoreStatus.textContent = "Eval run failed to load: " + String(error.message || error);
         }
       });
     });

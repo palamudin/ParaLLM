@@ -2381,8 +2381,10 @@ def build_judge_memory_context(
         + rendered
         + "\n"
         + "Judge memory compliance rule: grade against this memory when it is relevant. "
+        "Treat memoryObligations as the compact release checklist and baseline packet firstActions, decisionGates, and avoid items as binding guardrails when applicable. "
         "equivalent wording satisfies a memory requirement when the operational action, evidence, or decision gate is present. "
-        "Do not require exact wording; do penalize omissions, contradictions, or answers that bury required memory so obscurely that an operator could miss it.\n"
+        "Do not require exact wording; do penalize omissions, contradictions, or answers that bury required memory so obscurely that an operator could miss it. "
+        "When you mark memory compliance partial or failing, name the missing requirement source as memoryObligations or the packet field that made it binding.\n"
     )
 
 
@@ -2402,7 +2404,7 @@ def quality_judge_live(
         "Score from 1 to 10 on each quality dimension.\n"
         "Reward decisiveness, tradeoff handling, objection absorption, actionability, and a clean single assistant voice.\n"
         "Use the hidden rubric and gold notes as guidance, but do not require exact wording.\n"
-        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
@@ -2497,7 +2499,7 @@ def answer_health_judge_live(
         "You are grading the operational health of one candidate assistant answer.\n"
         "Score from 1 to 10 on instruction fit, structural clarity, confidence calibration, evidence hygiene, and efficiency/discipline.\n"
         "Use telemetry as supporting context, not as a substitute for reading the answer.\n"
-        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
@@ -2595,7 +2597,7 @@ def control_judge_live(
         "You are grading whether a lead assistant thread stayed in control of adversarial pressure.\n"
         "Reward answers where the lead direction is clear, accepted objections are selective, rejected pressure is actually rejected, and the self-check is meaningful.\n"
         "Penalize funnel-like behavior where internal pressure is merely forwarded or averaged into the final answer.\n"
-        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
@@ -2808,7 +2810,7 @@ def comparison_judge_live(
         "Verdict must be exactly one of: pressurized_advantage, baseline_advantage, mixed.\n"
         "decisionRelation must be exactly one of: same_direction, refined_direction, different_direction, opposed_direction.\n"
         "Use the supplied quality/health summaries and similarity metrics as context, but base the verdict on the actual answer texts.\n"
-        "Use judge memory context, when supplied, as relevant operational ground truth; assess each answer's memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess each answer's memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, edges, relation, or rationale.\n"
         "Return JSON only that matches the schema."
     )
@@ -3058,7 +3060,7 @@ def build_vetting_matrix_judge_prompt(
         "Score each answer from 0 to 10 in 0.5-point increments for every listed category.\n"
         "Record hire verdicts, hard-fail flags, and trap findings for each answer.\n"
         "An answer that triggers a hard fail should not win best final answer unless every answer hard-fails.\n"
-        "Use judge memory context, when supplied, as relevant operational ground truth and assess memory compliance by meaning rather than exact wording.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth and assess memory compliance by meaning rather than exact wording. If memory compliance is partial or failing, name the missing binding requirement source.\n"
         "Choose one best final answer and one best tactical detail answer.\n"
         "Return JSON only that matches the schema."
     )

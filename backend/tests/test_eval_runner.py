@@ -513,6 +513,8 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("Judge memory context", context)
         self.assertIn("mem_msp_esxi_backup_restore", context)
         self.assertIn("equivalent wording", context)
+        self.assertIn("compact release checklist", context)
+        self.assertIn("missing requirement source", context)
 
     def test_format_candidate_answer_packets_stays_blind(self) -> None:
         rendered = eval_runner.format_candidate_answer_packets(
@@ -1220,6 +1222,7 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("Judge memory context:", prompt["inputText"])
         self.assertIn("preserve job queue exports", prompt["inputText"])
         self.assertIn("memory compliance", prompt["instructions"].lower())
+        self.assertIn("missing binding requirement source", prompt["instructions"])
 
     def test_quality_judge_live_includes_memory_context_and_returns_compliance(self) -> None:
         captured = {}
@@ -1258,6 +1261,7 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("Judge memory context:", captured["inputText"])
         self.assertIn("memory compliance", captured["instructions"].lower())
         self.assertIn("equivalent wording", captured["instructions"])
+        self.assertIn("missing binding requirement source", captured["instructions"])
         self.assertIn("job queue export", result["memoryCompliance"])
 
     def test_normalize_vetting_matrix_result_accepts_answer_key_score_list_shape(self) -> None:

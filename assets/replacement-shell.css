@@ -4534,7 +4534,7 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
 }
 
 .igs-score-lane-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
 }
 
@@ -4578,6 +4578,10 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
 
 .igs-score-card.secondary {
   border-color: rgba(245, 158, 11, 0.28);
+}
+
+.igs-score-card.accent {
+  border-color: rgba(96, 165, 250, 0.30);
 }
 
 .igs-score-meta,

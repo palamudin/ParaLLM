@@ -20,7 +20,16 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency in some ru
 from .config import deployment_topology
 
 
-ARTIFACT_CATEGORIES = {"checkpoints", "outputs", "sessions", "exports", "failed_calls", "handoffs", "node_transfers"}
+ARTIFACT_CATEGORIES = {
+    "checkpoints",
+    "outputs",
+    "sessions",
+    "exports",
+    "failed_calls",
+    "provider_calls",
+    "handoffs",
+    "node_transfers",
+}
 MAX_FILESYSTEM_ARTIFACT_PATH = 248
 MAX_ARTIFACT_FILENAME = 96
 

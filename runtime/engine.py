@@ -3743,7 +3743,7 @@ def normalize_control_audit(control_audit: Any, fallback_summary: Optional[Dict[
         accepted = limit_string_list(control_audit.get("acceptedAdversarialPoints", []), 3, 220)
         rejected = limit_string_list(control_audit.get("rejectedAdversarialPoints", []), 3, 220)
         held_out = limit_string_list(control_audit.get("heldOutConcerns", []), 3, 220)
-        self_check = truncate_text(control_audit.get("selfCheck", ""), 360)
+        self_check = truncate_text(control_audit.get("selfCheck", ""), 900)
         if lead_draft:
             normalized["leadDraft"] = lead_draft
         if integration_question:
@@ -4088,6 +4088,7 @@ class LoopRuntime:
         self.checkpoints_path = self.data_path / "checkpoints"
         self.outputs_path = self.data_path / "outputs"
         self.failed_calls_path = self.data_path / "failed_calls"
+        self.provider_calls_path = self.data_path / "provider_calls"
         self.handoffs_path = self.data_path / "handoffs"
         self.node_transfers_path = self.data_path / "node_transfers"
         self.sessions_path = self.data_path / "sessions"
@@ -4108,6 +4109,7 @@ class LoopRuntime:
             self.checkpoints_path,
             self.outputs_path,
             self.failed_calls_path,
+            self.provider_calls_path,
             self.handoffs_path,
             self.node_transfers_path,
             self.sessions_path,
@@ -5634,13 +5636,19 @@ class LoopRuntime:
                 add_obligation(packet, field, label, item)
 
         # Keep universal MSP command obligations, but do not let them crowd out the
-        # exact scenario packet. The final gate needs the sharp memory first.
+        # exact scenario packet. These are the cross-case control gates the judge is
+        # allowed to enforce, so they must also reach the generator's compact gate list.
         common_needles = (
             "declare incident posture",
+            "move command",
+            "scribe log outside",
             "open internal major incident",
             "named owner per affected tenant",
+            "freeze unsafe automation",
+            "wake senior incident lead",
             "evidence captured or explicit emergency",
             "senior authority activated",
+            "rollback and monitoring path",
             "hashes and collector",
         )
         for packet in common_packets:
@@ -5711,7 +5719,7 @@ class LoopRuntime:
             "baselinePackets": baseline_packets[:3],
             "adaptivePackets": adaptive_packets[:5],
             "sopPackets": sop_packets[:8],
-            "memoryObligations": memory_obligations[:24],
+            "memoryObligations": memory_obligations[:32],
             "supportingHits": non_sop_hits[:3],
             "fallbackPolicy": projected["fallbackPolicy"],
         }
@@ -5733,7 +5741,7 @@ class LoopRuntime:
             heading
             + json.dumps(prompt_packet, ensure_ascii=False, indent=2)
             + "\n\n"
-            "Memory authority rule: if this packet contains relevant memory, build the answer from it. Current user input, current constraints, live tool evidence, and inspected files can override memory only when they explicitly conflict. Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory. Integrate each applicable memoryObligation naturally in the answer, or explicitly reject it in controlAudit.selfCheck with the current evidence that makes it inapplicable.\n\n"
+            "Memory authority rule: if this packet contains relevant memory, build the answer from it. Current user input, current constraints, live tool evidence, and inspected files can override memory only when they explicitly conflict. Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory. Treat baselinePackets firstActions, decisionGates, and avoid items as mandatory guardrails when relevant; memoryObligations is the compact release checklist. Integrate each applicable memoryObligation naturally in the answer, or explicitly reject it in controlAudit.selfCheck with the current evidence that makes it inapplicable.\n\n"
         )
 
     def task_matches_msp_contradiction_gate(self, task: Dict[str, Any], prompt_packet: Optional[Dict[str, Any]] = None) -> bool:
@@ -5986,8 +5994,8 @@ class LoopRuntime:
             "round": int(round_number or review_projection.get("round", 0) or 0),
             "source": "commander_review + worker_pressure + msp_knowledgebase_recall",
             "openContradictions": open_items[:8],
-            "sopObligations": sop_obligations[:16],
-            "memoryObligationGates": memory_obligation_gates[:16],
+            "sopObligations": sop_obligations[:24],
+            "memoryObligationGates": memory_obligation_gates[:24],
             "finalAnswerGates": final_gates[:6],
             "fallbackPolicy": "If this packet is empty, continue normally. If non-empty, satisfy or explicitly reject each finalAnswerGate and memoryObligationGate before the public answer leaves the summarizer.",
         }
@@ -6062,7 +6070,7 @@ class LoopRuntime:
         existing_self_check = str(control_audit.get("selfCheck") or "").strip()
         inserted = ", ".join(str(gate.get("id") or "") for gate in missing[:6] if str(gate.get("id") or "").strip())
         self_check = f"Contradiction-memory backstop verified mandatory MSP gates and inserted missing gates: {inserted}."
-        control_audit["selfCheck"] = truncate_text((existing_self_check + " " + self_check).strip(), 420)
+        control_audit["selfCheck"] = truncate_text((existing_self_check + " " + self_check).strip(), 900)
         summary["controlAudit"] = control_audit
         summary["publicAnswer"] = str(front_answer.get("answer") or "").strip()
         summary["flattenedOutputText"] = flatten_output_payload_text(summary, "summary_output")
@@ -9311,8 +9319,57 @@ class LoopRuntime:
             (provider_settings or {}).get("requestTimeoutSeconds"),
             target_timeout_seconds(default_target_timeout_config(), target_kind),
         )
+        def call_and_record(factory) -> OpenAIResult:
+            try:
+                result = factory()
+            except Exception as error:
+                try:
+                    self.write_provider_call_artifact(
+                        task_id=task_id,
+                        target_kind=target_kind,
+                        provider=normalized_provider,
+                        model=model,
+                        reasoning_effort=reasoning_effort,
+                        schema_name=schema_name,
+                        instructions=instructions,
+                        input_text=input_text,
+                        schema=schema,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        include=include,
+                        provider_settings=provider_settings,
+                        auth_assignments=auth_assignments,
+                        error=error,
+                        status="error",
+                    )
+                except Exception:
+                    pass
+                raise
+            try:
+                self.write_provider_call_artifact(
+                    task_id=task_id,
+                    target_kind=target_kind,
+                    provider=normalized_provider,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    schema_name=schema_name,
+                    instructions=instructions,
+                    input_text=input_text,
+                    schema=schema,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    include=include,
+                    provider_settings=provider_settings,
+                    auth_assignments=auth_assignments,
+                    result=result,
+                    status="completed",
+                )
+            except Exception:
+                pass
+            return result
+
         if normalized_provider == "openai":
-            return self.invoke_openai_json(
+            return call_and_record(lambda: self.invoke_openai_json(
                 api_key=api_key,
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -9328,9 +9385,9 @@ class LoopRuntime:
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
-            )
+            ))
         if normalized_provider == "xai":
-            return self.invoke_xai_json(
+            return call_and_record(lambda: self.invoke_xai_json(
                 api_key=api_key,
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -9346,13 +9403,13 @@ class LoopRuntime:
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
-            )
+            ))
         if normalized_provider == "deepseek":
             if include:
                 include = None
             deepseek_transport = self.deepseek_transport_mode(provider_settings if isinstance(provider_settings, dict) else None)
             if deepseek_transport == "anthropic":
-                return self.invoke_anthropic_messages_json(
+                return call_and_record(lambda: self.invoke_anthropic_messages_json(
                     provider=normalized_provider,
                     api_key=api_key,
                     model=model,
@@ -9366,8 +9423,8 @@ class LoopRuntime:
                     function_handlers=function_handlers,
                     auth_assignments=auth_assignments,
                     request_timeout_seconds=request_timeout_seconds,
-                )
-            return self.invoke_deepseek_openai_json(
+                ))
+            return call_and_record(lambda: self.invoke_deepseek_openai_json(
                 api_key=api_key,
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -9383,13 +9440,13 @@ class LoopRuntime:
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
                 task_id=task_id,
-            )
+            ))
         if normalized_provider == "minimax":
             if include:
                 include = None
             minimax_transport = self.minimax_transport_mode(provider_settings if isinstance(provider_settings, dict) else None)
             if minimax_transport == "anthropic":
-                return self.invoke_anthropic_messages_json(
+                return call_and_record(lambda: self.invoke_anthropic_messages_json(
                     provider=normalized_provider,
                     api_key=api_key,
                     model=model,
@@ -9403,8 +9460,8 @@ class LoopRuntime:
                     function_handlers=function_handlers,
                     auth_assignments=auth_assignments,
                     request_timeout_seconds=request_timeout_seconds,
-                )
-            return self.invoke_minimax_openai_json(
+                ))
+            return call_and_record(lambda: self.invoke_minimax_openai_json(
                 api_key=api_key,
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -9420,11 +9477,11 @@ class LoopRuntime:
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
                 task_id=task_id,
-            )
+            ))
         if normalized_provider == "anthropic":
             if include:
                 include = None
-            return self.invoke_anthropic_messages_json(
+            return call_and_record(lambda: self.invoke_anthropic_messages_json(
                 provider=normalized_provider,
                 api_key=api_key,
                 model=model,
@@ -9438,7 +9495,7 @@ class LoopRuntime:
                 function_handlers=function_handlers,
                 auth_assignments=auth_assignments,
                 request_timeout_seconds=request_timeout_seconds,
-            )
+            ))
         if normalized_provider == "ollama":
             normalized_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
             unsupported_tool_types = sorted(
@@ -9476,7 +9533,7 @@ class LoopRuntime:
             if isinstance(provider_settings, dict) and provider_settings.get("ollamaBaseUrl") is not None:
                 ollama_base_url = str(provider_settings.get("ollamaBaseUrl"))
             provider_instance = provider_settings.get("providerInstance") if isinstance(provider_settings, dict) else None
-            return self.invoke_ollama_json(
+            return call_and_record(lambda: self.invoke_ollama_json(
                 model=model,
                 instructions=instructions,
                 input_text=input_text,
@@ -9488,7 +9545,7 @@ class LoopRuntime:
                 base_url=ollama_base_url,
                 provider_instance=provider_instance if isinstance(provider_instance, dict) else None,
                 request_timeout_seconds=request_timeout_seconds,
-            )
+            ))
         raise RuntimeErrorWithCode(f"provider_not_configured: Unsupported provider {normalized_provider}.", 400)
 
     def build_output_token_attempts(
@@ -11859,7 +11916,7 @@ class LoopRuntime:
                 "Put rejected or downgraded pressure into controlAudit.rejectedAdversarialPoints.\n"
                 "Put concerns you are keeping visible but not letting dominate the answer into controlAudit.heldOutConcerns.\n"
                 "Before you finalize frontAnswer.answer, compare the final wording against your own lead draft and the user's actual request.\n"
-                "Write that last self-audit into controlAudit.selfCheck.\n"
+                "Write that last self-audit into controlAudit.selfCheck, including a compact note on which memory obligations were satisfied, inserted, or explicitly rejected.\n"
             )
             instructions += (
                 "Use adversarial pressure to improve the answer, not to speak directly through it.\n"
@@ -12478,6 +12535,147 @@ class LoopRuntime:
         if not normalized:
             normalized = fallback
         return normalized[:max(12, int(max_length or 80))].strip("-._") or fallback
+
+    def sanitize_auth_audit_payload(self, value: Any) -> Any:
+        if isinstance(value, list):
+            return [self.sanitize_auth_audit_payload(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        sanitized: Dict[str, Any] = {}
+        for key, item in value.items():
+            field = str(key or "")
+            lowered = field.lower()
+            if lowered in {"apikey", "api_key", "authorization", "x-api-key"}:
+                raw = str(item or "")
+                sanitized[field] = {
+                    "present": bool(raw),
+                    "masked": mask_api_key(raw) if raw else "",
+                    "last4": raw[-4:] if len(raw) >= 4 else raw,
+                }
+                continue
+            sanitized[field] = self.sanitize_auth_audit_payload(item)
+        return sanitized
+
+    def write_provider_call_artifact(
+        self,
+        *,
+        task_id: Optional[str] = None,
+        target_kind: str = "generic",
+        provider: str = "",
+        model: str = "",
+        reasoning_effort: str = "",
+        schema_name: str = "",
+        instructions: str = "",
+        input_text: str = "",
+        schema: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        include: Optional[List[str]] = None,
+        provider_settings: Optional[Dict[str, Any]] = None,
+        auth_assignments: Optional[List[Dict[str, Any]]] = None,
+        result: Optional[OpenAIResult] = None,
+        error: Any = "",
+        status: str = "completed",
+    ) -> Dict[str, Any]:
+        normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID) if str(provider or "").strip() else "unknown"
+        normalized_target = normalize_auth_target(target_kind)
+        normalized_status = self.failed_call_filename_component(status, "completed", 24)
+        normalized_task_id = self.failed_call_task_id(task_id)
+        timestamp = datetime.now(timezone.utc).strftime("%H%M%S%f")
+        compact_task = self.failed_call_filename_component(normalized_task_id, "task", 12).replace("-", "")
+        compact_target = self.failed_call_filename_component(normalized_target, "target", 12).replace("-", "")
+        compact_provider = self.failed_call_filename_component(normalized_provider, "provider", 10).replace("-", "")
+        compact_schema = self.failed_call_filename_component(schema_name, "schema", 18).replace("-", "")
+        safe_name = "_".join(
+            [
+                "pc",
+                compact_task,
+                compact_target,
+                compact_provider,
+                compact_schema,
+                normalized_status,
+                timestamp,
+            ]
+        ) + ".json"
+        raw_output_text = str(getattr(result, "output_text", "") or "") if result is not None else ""
+        raw_response = getattr(result, "response", None) if result is not None else None
+        response_id = str(getattr(result, "response_id", "") or "") if result is not None else ""
+        parsed = getattr(result, "parsed", None) if result is not None else None
+        provider_trace = getattr(result, "provider_trace", None) if result is not None else None
+        request_payload = {
+            "provider": normalized_provider,
+            "model": str(model or "").strip(),
+            "reasoningEffort": str(reasoning_effort or "").strip(),
+            "target": normalized_target,
+            "targetNode": node_target_from_schema_or_target(schema_name, normalized_target),
+            "schemaName": str(schema_name or "").strip(),
+            "instructions": str(instructions or ""),
+            "inputText": str(input_text or ""),
+            "schema": schema if isinstance(schema, dict) else {},
+            "tools": tools if isinstance(tools, list) else [],
+            "toolChoice": tool_choice,
+            "include": include if isinstance(include, list) else [],
+            "providerSettings": self.sanitize_auth_audit_payload(provider_settings) if isinstance(provider_settings, dict) else {},
+        }
+        response_payload = {
+            "responseId": response_id,
+            "rawOutputText": raw_output_text,
+            "thinkingText": str(getattr(result, "thinking_text", "") or "") if result is not None else "",
+            "parsed": parsed if isinstance(parsed, dict) else {},
+            "rawProviderResponse": raw_response if isinstance(raw_response, dict) else {},
+            "usage": {
+                "requestedMaxOutputTokens": int(getattr(result, "requested_max_output_tokens", 0) or 0) if result is not None else 0,
+                "effectiveMaxOutputTokens": int(getattr(result, "effective_max_output_tokens", 0) or 0) if result is not None else 0,
+                "maxOutputTokenAttempts": list(getattr(result, "attempts", []) or []) if result is not None else [],
+                "recoveredFromIncomplete": bool(getattr(result, "recovered_from_incomplete", False)) if result is not None else False,
+            },
+            "providerTrace": self.normalize_provider_trace(provider_trace),
+            "executedTools": list(getattr(result, "executed_tools", []) or []) if result is not None else [],
+        }
+        canonical = {
+            "request": request_payload,
+            "response": response_payload,
+            "error": str(error or ""),
+        }
+        payload: Dict[str, Any] = {
+            "schemaVersion": "parallm.provider_call.v1",
+            "artifactType": "provider_call",
+            "capturedAt": utc_now(),
+            "status": normalized_status,
+            "taskId": normalized_task_id,
+            "target": normalized_target,
+            "targetNode": request_payload["targetNode"],
+            "provider": normalized_provider,
+            "providerLabel": PROVIDER_CATALOG.get(normalized_provider, {}).get("label") or normalized_provider.title(),
+            "model": str(model or "").strip(),
+            "schemaName": str(schema_name or "").strip(),
+            "request": request_payload,
+            "response": response_payload,
+            "error": str(error or "") or None,
+            "auth": self.sanitize_auth_audit_payload(auth_assignments or getattr(result, "auth_assignment", None) or []),
+            "integrity": {
+                "sha256": hashlib.sha256(
+                    json.dumps(canonical, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+                "requestChars": len(str(instructions or "")) + len(str(input_text or "")),
+                "responseChars": len(raw_output_text),
+            },
+        }
+        artifact_meta = artifact_store.write_json_artifact(self.root, "provider_calls", safe_name, payload)
+        return {
+            "name": artifact_meta.get("name") or safe_name,
+            "category": artifact_meta.get("category") or "provider_calls",
+            "status": normalized_status,
+            "taskId": normalized_task_id,
+            "target": normalized_target,
+            "provider": normalized_provider,
+            "model": str(model or "").strip(),
+            "schemaName": str(schema_name or "").strip(),
+            "responseId": response_id,
+            "rawOutputAvailable": bool(raw_output_text.strip()),
+            "modifiedAt": artifact_meta.get("modifiedAt"),
+            "size": artifact_meta.get("size"),
+        }
 
     def classify_failed_call_kind(self, error: Any, raw_output_text: str = "", finish_reason: str = "") -> str:
         message = str(error or "").lower()

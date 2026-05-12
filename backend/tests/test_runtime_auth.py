@@ -75,6 +75,39 @@ class RuntimeAuthTests(unittest.TestCase):
             auth_failover_history=[],
         )
 
+    def test_invoke_provider_json_writes_successful_provider_call_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            runtime.ensure_data_paths()
+            result = self._stub_openai_result({"answer": "ok"}, 120)
+            result.output_text = "{\"answer\":\"ok\"}"
+            result.auth_assignment = {"apiKey": "sk-test-secret-1234", "provider": "openai", "keySlot": 1}
+            with mock.patch.object(runtime, "invoke_openai_json", return_value=result):
+                actual = runtime.invoke_provider_json(
+                    provider="openai",
+                    api_key="sk-test-secret-1234",
+                    model="gpt-test",
+                    reasoning_effort="medium",
+                    instructions="system prompt",
+                    input_text="user prompt",
+                    schema_name="front_answer",
+                    schema={"type": "object"},
+                    max_output_tokens=120,
+                    target_kind="summarizer",
+                    auth_assignments=[{"apiKey": "sk-test-secret-1234", "provider": "openai", "keySlot": 1}],
+                    task_id="task-provider-ledger",
+                )
+            self.assertIs(actual, result)
+            call_files = sorted((Path(tmpdir) / "data" / "provider_calls").glob("*.json"))
+            self.assertEqual(len(call_files), 1)
+            saved = json.loads(call_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(saved["artifactType"], "provider_call")
+            self.assertEqual(saved["status"], "completed")
+            self.assertEqual(saved["request"]["inputText"], "user prompt")
+            self.assertEqual(saved["response"]["rawOutputText"], "{\"answer\":\"ok\"}")
+            self.assertNotIn("sk-test-secret-1234", call_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(saved["auth"][0]["apiKey"]["last4"], "1234")
+
     def _build_summary_ready_fixture(self) -> tuple[dict, dict, dict, list[dict], dict, dict]:
         task = {
             "taskId": "task-1",

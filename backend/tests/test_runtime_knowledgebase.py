@@ -453,6 +453,8 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         obligations = [item["requirement"] for item in targeted["memoryObligations"]]
 
         self.assertIn("Open internal major incident record plus named owner per affected tenant child record", obligations)
+        self.assertIn("Move command and scribe log outside suspect systems if needed", obligations)
+        self.assertIn("Wake senior incident lead when scope is multi-tenant, destructive, regulated, or control-plane related", obligations)
         self.assertIn("Snapshot portal and job queue state", obligations)
         self.assertIn("Verify storage-side immutability and vendor-side job state", obligations)
         self.assertIn("Storage-side immutability status", obligations)

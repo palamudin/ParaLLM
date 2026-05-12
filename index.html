@@ -40,7 +40,7 @@
         <button type="button" class="igs-nav-btn" data-view-target="sessions">Sessions</button>
         <button type="button" class="igs-nav-btn" data-view-target="repo">Repo</button>
         <button type="button" class="igs-nav-btn" data-view-target="review">Review</button>
-        <button type="button" class="igs-nav-btn" data-view-target="scores">Scores</button>
+        <button type="button" class="igs-nav-btn" data-view-target="scores">Eval</button>
         <button type="button" class="igs-nav-btn" data-view-target="settings">Settings</button>
         <button type="button" class="igs-nav-btn" data-view-target="debug">Debug</button>
       </nav>
@@ -856,8 +856,8 @@
         <section class="igs-view" data-view-panel="scores" hidden>
           <div class="igs-view-head">
             <div>
-              <div class="igs-kicker">Decision surface</div>
-              <h3>Scores</h3>
+              <div class="igs-kicker">Evaluation surface</div>
+              <h3>Eval</h3>
             </div>
           </div>
 
@@ -882,20 +882,20 @@
             <div id="scoreRunMeta" class="igs-inline-note">Loading judged sessions...</div>
           </section>
 
-          <div id="scoreStatus" class="igs-inline-note">Pick a run and session to compare Direct and Summarizer judge outputs.</div>
+          <div id="scoreStatus" class="igs-inline-note">Pick a run and session to compare Para output, Direct output, and judge readout.</div>
 
           <div id="scoreCompareDetail" class="igs-score-detail">
             <div class="igs-grid igs-grid-three">
               <section class="igs-surface igs-surface-winner">
                 <div class="igs-surface-head">
-                  <h4>Summarizer</h4>
+                  <h4>Para output</h4>
                   <span class="igs-pill igs-pill-success">To judge</span>
                 </div>
               </section>
 
               <section class="igs-surface igs-surface-runner">
                 <div class="igs-surface-head">
-                  <h4>Direct</h4>
+                  <h4>Direct output</h4>
                   <span class="igs-pill igs-pill-warn">To judge</span>
                 </div>
               </section>

@@ -10,6 +10,7 @@ data/evals/*
 data/evals/runs/
 data/outputs/
 data/failed_calls/
+data/provider_calls/
 data/sessions/
 data/handoffs/
 data/node_transfers/

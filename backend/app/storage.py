@@ -30,6 +30,7 @@ class Paths:
     checkpoints: Path
     outputs: Path
     failed_calls: Path
+    provider_calls: Path
     handoffs: Path
     node_transfers: Path
     sessions: Path
@@ -56,6 +57,7 @@ def project_paths(root: Optional[Path] = None) -> Paths:
         checkpoints=data / "checkpoints",
         outputs=data / "outputs",
         failed_calls=data / "failed_calls",
+        provider_calls=data / "provider_calls",
         handoffs=data / "handoffs",
         node_transfers=data / "node_transfers",
         sessions=data / "sessions",
@@ -1044,7 +1046,7 @@ def artifact_visibility_policy() -> Dict[str, Any]:
         "exportSurface": "raw_output_exception",
         "rules": [
             "Home and canonical memory render only normalized structured outputs and adjudicated answers.",
-            "Raw model text is a review-only exception and is limited to saved output artifacts, failed-call artifacts, and export bundles.",
+            "Raw model text is a review-only exception and is limited to saved output artifacts, provider-call artifacts, failed-call artifacts, and export bundles.",
             "Carry-forward context, task snapshots, worker checkpoints, and summary state must stay structured.",
             "When raw output is shown in Review, it is for auditability and replay, not as the canonical source of truth.",
         ],
@@ -1068,6 +1070,38 @@ ARTIFACT_PATTERNS = [
 
 
 def build_artifact_history_entry(name: str, modified_at: str, size: int, content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if isinstance(content, dict) and content.get("artifactType") == "provider_call":
+        warnings: List[str] = []
+        request_node = content.get("request") if isinstance(content.get("request"), dict) else {}
+        response_node = content.get("response") if isinstance(content.get("response"), dict) else {}
+        usage = response_node.get("usage") if isinstance(response_node.get("usage"), dict) else {}
+        provider_trace = normalize_provider_trace(response_node.get("providerTrace"))
+        return {
+            "name": name,
+            "modifiedAt": modified_at,
+            "size": coerce_int(size, default=0, minimum=0, warnings=warnings, label=f"{name}.size") or 0,
+            "kind": "provider_call",
+            "taskId": str(content.get("taskId") or "").strip() or None,
+            "worker": str(content.get("target") or "").strip() or None,
+            "target": str(content.get("target") or "").strip() or None,
+            "roundOrStep": None,
+            "provider": content.get("provider"),
+            "providerCapabilities": {},
+            "model": content.get("model") or request_node.get("model"),
+            "mode": None,
+            "schemaName": content.get("schemaName") or request_node.get("schemaName"),
+            "responseId": response_node.get("responseId"),
+            "providerTrace": provider_trace,
+            "requestedMaxOutputTokens": coerce_int(usage.get("requestedMaxOutputTokens"), allow_none=True, warnings=warnings, label=f"{name}.response.usage.requestedMaxOutputTokens"),
+            "effectiveMaxOutputTokens": coerce_int(usage.get("effectiveMaxOutputTokens"), allow_none=True, warnings=warnings, label=f"{name}.response.usage.effectiveMaxOutputTokens"),
+            "maxOutputTokenAttempts": coerce_int_list(usage.get("maxOutputTokenAttempts"), warnings=warnings, label=f"{name}.response.usage.maxOutputTokenAttempts"),
+            "recoveredFromIncomplete": bool(usage.get("recoveredFromIncomplete")),
+            "rawOutputAvailable": bool(str(response_node.get("rawOutputText") or "").strip()),
+            "failureKind": "provider_call_error" if str(content.get("status") or "") == "error" else None,
+            "error": str(content.get("error") or ""),
+            "capturedAt": str(content.get("capturedAt") or modified_at),
+            "contractWarnings": warnings[:12],
+        }
     if isinstance(content, dict) and (content.get("artifactType") == "failed_call" or "failed_call" in name):
         warnings: List[str] = []
         response_meta = content.get("responseMeta") if isinstance(content.get("responseMeta"), dict) else {}
@@ -1544,7 +1578,7 @@ def _handoff_recent_jobs(paths: Paths, limit: int = 8) -> List[Dict[str, Any]]:
 
 def _handoff_recent_artifacts(paths: Paths, limit: int = 14) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for artifact_file in artifacts.list_json_artifacts(paths.root, ["checkpoints", "outputs", "failed_calls"]):
+    for artifact_file in artifacts.list_json_artifacts(paths.root, ["checkpoints", "outputs", "provider_calls", "failed_calls"]):
         category = str(artifact_file.get("category") or "")
         name = str(artifact_file.get("name") or "")
         content = artifacts.read_json_artifact(paths.root, category, name)
@@ -1797,7 +1831,7 @@ def build_history_payload(paths: Optional[Paths] = None, max_jobs: int = 12, max
             }
         )
 
-    artifact_files = artifacts.list_json_artifacts(paths.root, ["checkpoints", "outputs", "failed_calls"])
+    artifact_files = artifacts.list_json_artifacts(paths.root, ["checkpoints", "outputs", "provider_calls", "failed_calls"])
 
     artifact_entries: List[Dict[str, Any]] = []
     round_groups: Dict[str, Dict[str, Any]] = {}
@@ -2122,7 +2156,7 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
     content: Optional[Dict[str, Any]] = None
     modified_at: Optional[str] = None
     size = 0
-    for bucket in ("outputs", "checkpoints", "failed_calls", "handoffs", "node_transfers"):
+    for bucket in ("outputs", "checkpoints", "provider_calls", "failed_calls", "handoffs", "node_transfers"):
         content = artifacts.read_json_artifact(paths.root, bucket, safe_name)
         if isinstance(content, dict):
             bucket_name = bucket
@@ -2138,7 +2172,12 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
         raise FileNotFoundError("Artifact not found.")
     warnings: List[str] = []
     response_meta = content.get("responseMeta") if isinstance(content.get("responseMeta"), dict) else {}
-    provider_trace = normalize_provider_trace(response_meta.get("providerTrace"))
+    if str(content.get("artifactType") or "") == "provider_call":
+        response_node = content.get("response") if isinstance(content.get("response"), dict) else {}
+        response_meta = response_node.get("usage") if isinstance(response_node.get("usage"), dict) else {}
+        provider_trace = normalize_provider_trace(response_node.get("providerTrace"))
+    else:
+        provider_trace = normalize_provider_trace(response_meta.get("providerTrace"))
     kind = str(content.get("artifactType") or "").strip() or "artifact"
     if kind == "artifact":
         if re.search(r"_summary_round\d+\.json$", safe_name, re.I):
@@ -2161,7 +2200,7 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
             "model": content.get("model") or content.get("modelUsed"),
             "step": coerce_int(content.get("step"), allow_none=True, warnings=warnings, label=f"{safe_name}.step"),
             "round": coerce_int(content.get("round"), allow_none=True, warnings=warnings, label=f"{safe_name}.round"),
-            "responseId": content.get("responseId") or (provider_trace.get("providerResponseId") if isinstance(provider_trace, dict) else None),
+            "responseId": content.get("responseId") or ((content.get("response") or {}).get("responseId") if isinstance(content.get("response"), dict) else None) or (provider_trace.get("providerResponseId") if isinstance(provider_trace, dict) else None),
             "providerTrace": provider_trace,
             "requestedMaxOutputTokens": coerce_int(
                 response_meta.get("requestedMaxOutputTokens"),
@@ -2185,7 +2224,7 @@ def read_artifact(paths: Optional[Paths], name: str) -> Dict[str, Any]:
             "localFileSources": list(response_meta.get("localFileSources") or []) if isinstance(response_meta.get("localFileSources"), list) else [],
             "githubToolCalls": (response_meta.get("githubToolCalls") or [])[:12] if isinstance(response_meta.get("githubToolCalls"), list) else [],
             "githubSources": list(response_meta.get("githubSources") or []) if isinstance(response_meta.get("githubSources"), list) else [],
-            "rawOutputAvailable": bool(str(content.get("rawOutputText") or "").strip()),
+            "rawOutputAvailable": bool(str(content.get("rawOutputText") or ((content.get("response") or {}).get("rawOutputText") if isinstance(content.get("response"), dict) else "") or "").strip()),
             "failureKind": content.get("failureKind"),
             "error": content.get("error"),
             "ingestion": content.get("ingestion") if isinstance(content.get("ingestion"), dict) else {},
