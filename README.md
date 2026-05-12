@@ -743,7 +743,7 @@ Those results remain useful only as historical constrained evidence. They were p
 
 ### Current Evaluation Snapshot
 
-Current review position as of `2026-05-12`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot with memory-aware judging, direct baselines, and Para orchestration results. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in this sweep, and it exposes a separate control-discipline audit that direct single-thread answers do not provide.
+Current review position as of `2026-05-12`: ParaLLM now has a five-scenario, three-provider MSP evaluation snapshot with memory-aware judging, direct baselines, and Para orchestration results. Payload audit found that the direct answer-generation prompt was mistakenly given explicit MSP knowledgebase recall, so the current direct rows are memory-assisted direct baselines rather than clean model-only baselines. The snapshot remains useful for orchestration/eval plumbing and audit-surface review, but the direct-vs-Para deltas must be rerun before being used as a clean commercial benchmark.
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
@@ -758,7 +758,7 @@ This is not limited to MSP work. The same shell/API/memory pattern can support o
 | Direct single-thread baseline | `15 / 15` | `8.49` | `8.64` | `n/a` | Strong direct answers, especially from OpenAI and xAI, but no internal orchestration-control score. |
 | ParaLLM multi-lane orchestration | `15 / 15` | `8.92` | `9.11` | `7.80` | Higher aggregate score plus auditable control discipline across worker/review/summary lanes. |
 
-Measured delta on this sweep: ParaLLM scored `+0.43` on quality and `+0.47` on answer health versus direct single-thread baselines. Control is not a direct-vs-Para metric because it grades Para's internal orchestration behavior.
+Measured delta on this sweep: ParaLLM scored `+0.43` on quality and `+0.47` on answer health versus the memory-assisted direct baselines. Control is not a direct-vs-Para metric because it grades Para's internal orchestration behavior. A clean direct rerun is required before presenting the delta as a model-only baseline comparison.
 
 | Provider family | Direct quality | Direct health | Para quality | Para health | Para control | Readout |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |

@@ -1959,7 +1959,6 @@ def run_direct_answer(
     arm: Dict[str, Any],
 ) -> Dict[str, Any]:
     provider = str(arm["runtime"].get("provider") or "openai").strip()
-    hydrate_eval_knowledgebase(runtime, arm["runtime"])
     primary_assignment = (
         dict(auth_assignments[0])
         if isinstance(auth_assignments, list) and auth_assignments and isinstance(auth_assignments[0], dict)
@@ -2319,24 +2318,6 @@ def build_direct_answer_prompt(
         format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
         format_prompt_section("Session context", str(case.get("sessionContext", "") or "none").strip() or "none"),
     ]
-    if runtime_config.get("knowledgebaseExplicit") and runtime is not None and hasattr(runtime, "build_knowledgebase_recall_packet"):
-        task = {
-            "taskId": sanitize_id(str(case.get("caseId") or "eval-direct")),
-            "objective": str(case.get("objective") or "").strip(),
-            "constraints": list(case.get("constraints", [])) if isinstance(case.get("constraints"), list) else [],
-            "sessionContext": str(case.get("sessionContext") or "").strip(),
-            "runtime": {"knowledgebase": deepcopy(runtime_config.get("knowledgebase", default_knowledgebase_config()))},
-        }
-        knowledgebase_packet = runtime.build_knowledgebase_recall_packet(
-            task,
-            task["runtime"],
-            "direct_baseline",
-            label="Direct Baseline",
-            role="direct_answer",
-            focus="single-thread user-facing answer",
-            constraints=task["constraints"],
-        )
-        sections.append(runtime.render_knowledgebase_prompt_block(knowledgebase_packet).strip())
     input_text = "\n\n".join(sections).strip()
     return {
         "instructions": instructions,

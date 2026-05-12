@@ -449,16 +449,13 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("Use one short answer block.", prompt["instructions"])
         self.assertNotIn("This should not leak into direct.", prompt["instructions"])
 
-    def test_build_direct_answer_prompt_renders_explicit_knowledgebase(self) -> None:
+    def test_build_direct_answer_prompt_does_not_feed_memory_to_direct_candidate(self) -> None:
         class FakeRuntime:
             def build_knowledgebase_recall_packet(self, task, runtime, target, **kwargs):
-                self.task = task
-                self.runtime = runtime
-                self.target = target
-                return {"selectedEvidenceIds": ["mem_msp_rmm_control_plane"]}
+                raise AssertionError("Direct answer generation must not receive memory recall.")
 
             def render_knowledgebase_prompt_block(self, packet):
-                return "MSP knowledgebase recall (ranked operational memory; binding when relevant):\nmem_msp_rmm_control_plane\n"
+                raise AssertionError("Direct answer generation must not render memory recall.")
 
         fake_runtime = FakeRuntime()
         prompt = eval_runner.build_direct_answer_prompt(
@@ -476,10 +473,10 @@ class EvalRunnerTests(unittest.TestCase):
             runtime=fake_runtime,
         )
 
-        self.assertEqual(fake_runtime.target, "direct_baseline")
-        self.assertEqual(fake_runtime.task["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
-        self.assertIn("mem_msp_rmm_control_plane", prompt["inputText"])
-        self.assertIn("mem_msp_rmm_control_plane", prompt["fullPrompt"])
+        self.assertNotIn("MSP knowledgebase recall", prompt["inputText"])
+        self.assertNotIn("mem_msp_rmm_control_plane", prompt["inputText"])
+        self.assertNotIn("MSP knowledgebase recall", prompt["fullPrompt"])
+        self.assertNotIn("mem_msp_rmm_control_plane", prompt["fullPrompt"])
 
     def test_build_judge_memory_context_uses_arm_knowledgebase(self) -> None:
         class FakeRuntime:

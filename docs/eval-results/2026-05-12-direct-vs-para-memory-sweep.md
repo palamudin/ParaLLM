@@ -2,6 +2,8 @@
 
 This run compares single-thread direct answers against ParaLLM's pressurized multi-lane path on five hard MSP severity-1 scenarios. It is intended as an internal evaluation snapshot for product and architecture review, not third-party certification.
 
+Correction after payload audit: the direct answer-generation prompt in this sweep was mistakenly given the same explicit MSP knowledgebase recall packet that was intended for judge memory compliance. The judge-side memory context is still intentional, but the direct answers below are memory-assisted direct baselines, not clean model-only direct baselines. Treat these numbers as a useful orchestration/eval-plumbing snapshot and rerun before using the direct-vs-Para deltas as a clean commercial benchmark.
+
 ## Executive Summary
 
 | Architecture | Completed cells | Quality mean | Health mean | Control mean | Readout |
@@ -10,6 +12,8 @@ This run compares single-thread direct answers against ParaLLM's pressurized mul
 | ParaLLM multi-lane orchestration | `15 / 15` | `8.92` | `9.11` | `7.80` | Higher overall aggregate with a separate control-discipline score that direct baselines do not expose. |
 
 Measured delta on the completed sweep: ParaLLM is `+0.43` on quality and `+0.47` on answer health versus direct single-thread baselines. Control is Para-only because it grades internal orchestration discipline.
+
+Because of the direct-prompt contamination noted above, this delta is provisional until a clean direct rerun is produced.
 
 ## Run Metadata
 
