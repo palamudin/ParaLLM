@@ -27,6 +27,7 @@ data/backend-*.err.log
 data/exports/
 data/*smoke_runtime/
 data/*.json
+!data/model_capacities.json
 data/*.jsonl
 Vetting.txt
 vetting.txt

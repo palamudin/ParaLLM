@@ -1,0 +1,246 @@
+{
+  "_runtimeOutputPolicy": {
+    "unknownModelExplicitMaxOutputTokens": 8192,
+    "explicitMaxOutputTokensByProvider": {
+      "anthropic": 8192,
+      "deepseek": 8192,
+      "minimax": 8192
+    },
+    "requestedOutputRetry": {
+      "floor": 1600,
+      "retryFloor": 3200,
+      "fallbackCeiling": 12000,
+      "targets": {
+        "summarizer": {
+          "floor": 2200,
+          "retryFloor": 3600,
+          "fallbackCeiling": 12000
+        }
+      }
+    },
+    "notes": [
+      "Central runtime output envelope. Provider adapters must not add local token ceilings.",
+      "A requested value of 0 means the runtime did not request a cap; known model capacity is used only when an adapter must transmit an explicit max token field."
+    ]
+  },
+  "openai:gpt-5.4": {
+    "provider": "openai",
+    "model": "gpt-5.4",
+    "contextWindowTokens": 1000000,
+    "maxOutputTokens": 128000,
+    "recommendedSummaryPromptBudgetTokens": 24000,
+    "recommendedReviewBinderBudgetTokens": 12000,
+    "sourceUrls": [
+      "https://platform.openai.com/docs/models"
+    ],
+    "notes": [
+      "Context and max output are from OpenAI's official models docs.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "openai:gpt-5.4-mini": {
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "contextWindowTokens": 400000,
+    "maxOutputTokens": 128000,
+    "recommendedSummaryPromptBudgetTokens": 16000,
+    "recommendedReviewBinderBudgetTokens": 8000,
+    "sourceUrls": [
+      "https://platform.openai.com/docs/models"
+    ],
+    "notes": [
+      "Context and max output are from OpenAI's official models docs.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "openai:gpt-5.4-nano": {
+    "provider": "openai",
+    "model": "gpt-5.4-nano",
+    "contextWindowTokens": 400000,
+    "maxOutputTokens": 128000,
+    "recommendedSummaryPromptBudgetTokens": 12000,
+    "recommendedReviewBinderBudgetTokens": 6000,
+    "sourceUrls": [
+      "https://platform.openai.com/docs/models"
+    ],
+    "notes": [
+      "Context and max output are from OpenAI's official models docs.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "openai:gpt-5-mini": {
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "contextWindowTokens": 400000,
+    "maxOutputTokens": 128000,
+    "recommendedSummaryPromptBudgetTokens": 16000,
+    "recommendedReviewBinderBudgetTokens": 8000,
+    "sourceUrls": [
+      "https://platform.openai.com/docs/models/gpt-5-mini/"
+    ],
+    "notes": [
+      "Context and max output are from OpenAI's official GPT-5 mini model page.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "openai:gpt-5-nano": {
+    "provider": "openai",
+    "model": "gpt-5-nano",
+    "contextWindowTokens": 400000,
+    "maxOutputTokens": 128000,
+    "recommendedSummaryPromptBudgetTokens": 12000,
+    "recommendedReviewBinderBudgetTokens": 6000,
+    "sourceUrls": [
+      "https://platform.openai.com/docs/models/gpt-5/"
+    ],
+    "notes": [
+      "Context is documented on the official GPT-5 family pages.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "anthropic:claude-sonnet-4-20250514": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
+    "contextWindowTokens": 200000,
+    "extendedContextWindowTokens": 1000000,
+    "recommendedSummaryPromptBudgetTokens": 16000,
+    "recommendedReviewBinderBudgetTokens": 8000,
+    "sourceUrls": [
+      "https://docs.anthropic.com/en/docs/build-with-claude/context-windows"
+    ],
+    "notes": [
+      "Anthropic documents a 200K default context window and a 1M beta for Claude Sonnet 4 with the beta header.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "anthropic:claude-sonnet-4-6": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "contextWindowTokens": 200000,
+    "extendedContextWindowTokens": 1000000,
+    "recommendedSummaryPromptBudgetTokens": 16000,
+    "recommendedReviewBinderBudgetTokens": 8000,
+    "sourceUrls": [
+      "https://docs.anthropic.com/en/docs/build-with-claude/context-windows"
+    ],
+    "notes": [
+      "Anthropic documents a 200K default context window and a 1M beta for Claude Sonnet 4 with the beta header.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "anthropic:claude-opus-4-7": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-7",
+    "contextWindowTokens": 200000,
+    "recommendedSummaryPromptBudgetTokens": 20000,
+    "recommendedReviewBinderBudgetTokens": 10000,
+    "sourceUrls": [
+      "https://docs.anthropic.com/en/docs/build-with-claude/context-windows"
+    ],
+    "notes": [
+      "Anthropic context windows docs describe a 200K standard context window.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "deepseek:deepseek-v4-pro": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "contextWindowTokens": 1000000,
+    "maxOutputTokens": 384000,
+    "recommendedSummaryPromptBudgetTokens": 20000,
+    "recommendedReviewBinderBudgetTokens": 10000,
+    "sourceUrls": [
+      "https://api-docs.deepseek.com/quick_start/pricing"
+    ],
+    "notes": [
+      "DeepSeek documents a 1M context length and a 384K max output for V4 Pro.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "deepseek:deepseek-v4-flash": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "contextWindowTokens": 1000000,
+    "maxOutputTokens": 384000,
+    "recommendedSummaryPromptBudgetTokens": 16000,
+    "recommendedReviewBinderBudgetTokens": 8000,
+    "sourceUrls": [
+      "https://api-docs.deepseek.com/quick_start/pricing"
+    ],
+    "notes": [
+      "DeepSeek documents a 1M context length and a 384K max output for V4 Flash.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "xai:grok-4.20-reasoning": {
+    "provider": "xai",
+    "model": "grok-4.20-reasoning",
+    "contextWindowTokens": 2000000,
+    "recommendedSummaryPromptBudgetTokens": 24000,
+    "recommendedReviewBinderBudgetTokens": 12000,
+    "sourceUrls": [
+      "https://docs.x.ai/docs/models/"
+    ],
+    "notes": [
+      "xAI documents a 2M context window for Grok 4.20.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "xai:grok-4-1-fast-reasoning": {
+    "provider": "xai",
+    "model": "grok-4-1-fast-reasoning",
+    "contextWindowTokens": 2000000,
+    "recommendedSummaryPromptBudgetTokens": 20000,
+    "recommendedReviewBinderBudgetTokens": 10000,
+    "sourceUrls": [
+      "https://x.ai/news/grok-4-1-fast/",
+      "https://x.ai/api"
+    ],
+    "notes": [
+      "xAI documents a 2M context window for Grok 4.1 Fast.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "minimax:minimax-m2.7": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.7",
+    "contextWindowTokens": 204800,
+    "recommendedSummaryPromptBudgetTokens": 12000,
+    "recommendedReviewBinderBudgetTokens": 6000,
+    "sourceUrls": [
+      "https://platform.minimax.io/docs/guides/text-generation"
+    ],
+    "notes": [
+      "MiniMax documents a 204,800 token context window for M2.7.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "minimax:minimax-m2.7-highspeed": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.7-highspeed",
+    "contextWindowTokens": 204800,
+    "recommendedSummaryPromptBudgetTokens": 10000,
+    "recommendedReviewBinderBudgetTokens": 5000,
+    "sourceUrls": [
+      "https://platform.minimax.io/docs/guides/text-generation"
+    ],
+    "notes": [
+      "MiniMax documents a 204,800 token context window for M2.7 Highspeed.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  },
+  "minimax:minimax-m2.5": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.5",
+    "contextWindowTokens": 204800,
+    "recommendedSummaryPromptBudgetTokens": 10000,
+    "recommendedReviewBinderBudgetTokens": 5000,
+    "sourceUrls": [
+      "https://platform.minimax.io/docs/guides/text-generation"
+    ],
+    "notes": [
+      "MiniMax docs list M2.5 under the 204,800 token text-model context window table.",
+      "Recommended prompt and binder budgets are repo-local heuristics for stable agent packets."
+    ]
+  }
+}

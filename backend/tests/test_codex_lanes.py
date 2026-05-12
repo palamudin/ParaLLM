@@ -162,8 +162,10 @@ class CodexLaneTests(unittest.TestCase):
             calls.append({"cmd": cmd, **kwargs})
             return _CompletedProcess(stdout=stdout)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as codex_home:
             root = Path(tmpdir)
+            home = Path(codex_home)
+            (home / "auth.json").write_text(json.dumps({"mode": "chatgpt", "test": True}), encoding="utf-8")
             data = root / "data"
             data.mkdir(parents=True, exist_ok=True)
             (data / "state.json").write_text(
@@ -179,16 +181,17 @@ class CodexLaneTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = codex_lanes.run_codex_arm(
-                root,
-                {
-                    "laneId": "codex_adversarial",
-                    "providerFamily": "openai",
-                    "model": "gpt-5.4",
-                    "objective": "Check the current plan for structural risks.",
-                },
-                runner=fake_runner,
-            )
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+                result = codex_lanes.run_codex_arm(
+                    root,
+                    {
+                        "laneId": "codex_adversarial",
+                        "providerFamily": "openai",
+                        "model": "gpt-5.4",
+                        "objective": "Check the current plan for structural risks.",
+                    },
+                    runner=fake_runner,
+                )
 
             stored_path = root / "data" / "outputs" / result["artifactFile"]
             stored = json.loads(stored_path.read_text(encoding="utf-8"))
