@@ -1,7 +1,7 @@
 {
-  "armId": "direct-openai-mini-open",
-  "title": "Direct OpenAI Mini | Open Harness",
-  "description": "Single-thread OpenAI mini baseline with the same open detailed-answer policy as the critical MSP Para runs.",
+  "armId": "direct-openai-mini-pure",
+  "title": "Pure Direct OpenAI Mini | Prompt Only",
+  "description": "Single-call OpenAI mini baseline where answer generation receives only objective, constraints, session context, and the direct harness. The judge may still use memory for compliance scoring.",
   "type": "direct",
   "runtime": {
     "executionMode": "live",
@@ -9,7 +9,7 @@
     "model": "gpt-5-mini",
     "directProvider": "openai",
     "directModel": "gpt-5-mini",
-    "directMemoryMode": "knowledgebase",
+    "directMemoryMode": "off",
     "summarizerProvider": "openai",
     "summarizerModel": "gpt-5-mini",
     "reasoningEffort": "low",

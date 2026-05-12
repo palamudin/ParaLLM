@@ -122,6 +122,35 @@ LIVE_JUDGE_TRANSIENT_MESSAGE_MARKERS = (
     "connection reset",
 )
 
+DIRECT_MEMORY_OFF_VALUES = {
+    "off",
+    "none",
+    "no_memory",
+    "no-memory",
+    "pure",
+    "prompt_only",
+    "prompt-only",
+    "model_only",
+    "model-only",
+}
+
+
+def normalize_direct_memory_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in DIRECT_MEMORY_OFF_VALUES:
+        return "off"
+    if normalized in {"", "on", "memory", "knowledgebase", "recall", "bound", "memory_bound", "memory-bound"}:
+        return "knowledgebase"
+    return "knowledgebase"
+
+
+def direct_answer_uses_memory(runtime_config: Dict[str, Any]) -> bool:
+    if not isinstance(runtime_config, dict):
+        return False
+    if not runtime_config.get("knowledgebaseExplicit"):
+        return False
+    return normalize_direct_memory_mode(runtime_config.get("directMemoryMode")) != "off"
+
 
 def default_judge_learning_config() -> Dict[str, Any]:
     return {
@@ -1781,6 +1810,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         runtime_payload.get("directHarness", default_direct_harness()),
         default_direct_harness()["concision"],
     )
+    direct_memory_mode = normalize_direct_memory_mode(runtime_payload.get("directMemoryMode"))
     workers = payload.get("workers") if isinstance(payload.get("workers"), list) else []
     normalized_workers = task_workers({"runtime": {"model": model, "provider": provider}, "workers": workers}) if workers else []
     if arm_type == "steered" and not normalized_workers:
@@ -1804,6 +1834,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "summarizerModel": summarizer_model,
             "summarizerHarness": summarizer_harness,
             "directHarness": direct_harness,
+            "directMemoryMode": direct_memory_mode,
             "reasoningEffort": reasoning_effort,
             "budget": budget,
             "research": research,
@@ -1959,6 +1990,8 @@ def run_direct_answer(
     arm: Dict[str, Any],
 ) -> Dict[str, Any]:
     provider = str(arm["runtime"].get("provider") or "openai").strip()
+    if direct_answer_uses_memory(arm["runtime"]):
+        hydrate_eval_knowledgebase(runtime, arm["runtime"])
     primary_assignment = (
         dict(auth_assignments[0])
         if isinstance(auth_assignments, list) and auth_assignments and isinstance(auth_assignments[0], dict)
@@ -1973,6 +2006,8 @@ def run_direct_answer(
     runtime_config = arm["runtime"]
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
+    direct_memory_mode = normalize_direct_memory_mode(runtime_config.get("directMemoryMode"))
+    answer_memory_used = direct_answer_uses_memory(runtime_config)
     runtime_budget = runtime_config.get("budget") if isinstance(runtime_config.get("budget"), dict) else {}
     requested_max_output = int(runtime_budget.get("maxOutputTokens", 0) or 0)
     prompt_packet = build_direct_answer_prompt(case, runtime_config, runtime=runtime)
@@ -2013,6 +2048,8 @@ def run_direct_answer(
                 "provider": provider,
                 "providerCapabilities": provider_capability_profile(provider),
                 "model": model,
+                "directMemoryMode": direct_memory_mode,
+                "answerMemoryUsed": answer_memory_used,
                 "inputText": prompt_packet["inputText"],
                 "fullPrompt": prompt_packet["fullPrompt"],
                 "answer": normalized_answer,
@@ -2318,6 +2355,24 @@ def build_direct_answer_prompt(
         format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
         format_prompt_section("Session context", str(case.get("sessionContext", "") or "none").strip() or "none"),
     ]
+    if direct_answer_uses_memory(runtime_config) and runtime is not None and hasattr(runtime, "build_knowledgebase_recall_packet"):
+        task = {
+            "taskId": sanitize_id(str(case.get("caseId") or "eval-direct")),
+            "objective": str(case.get("objective") or "").strip(),
+            "constraints": list(case.get("constraints", [])) if isinstance(case.get("constraints"), list) else [],
+            "sessionContext": str(case.get("sessionContext") or "").strip(),
+            "runtime": {"knowledgebase": deepcopy(runtime_config.get("knowledgebase", default_knowledgebase_config()))},
+        }
+        knowledgebase_packet = runtime.build_knowledgebase_recall_packet(
+            task,
+            task["runtime"],
+            "direct_baseline",
+            label="Direct Baseline",
+            role="direct_answer",
+            focus="single-thread user-facing answer",
+            constraints=task["constraints"],
+        )
+        sections.append(runtime.render_knowledgebase_prompt_block(knowledgebase_packet).strip())
     input_text = "\n\n".join(sections).strip()
     return {
         "instructions": instructions,
@@ -3573,6 +3628,8 @@ def execute_replicate(
             "model": direct["model"],
             "capturedAt": utc_now(),
             "responseId": direct["responseId"],
+            "directMemoryMode": direct.get("directMemoryMode", "knowledgebase"),
+            "answerMemoryUsed": bool(direct.get("answerMemoryUsed")),
             "inputText": direct.get("inputText"),
             "fullPrompt": direct.get("fullPrompt"),
             "responseMeta": direct["responseMeta"],
@@ -3590,6 +3647,8 @@ def execute_replicate(
             "responseId": direct["responseId"],
             "responseMeta": direct["responseMeta"],
             "model": direct["model"],
+            "directMemoryMode": direct.get("directMemoryMode", "knowledgebase"),
+            "answerMemoryUsed": bool(direct.get("answerMemoryUsed")),
             "modeState": {"directMode": direct["mode"]},
         }
     else:
@@ -3868,6 +3927,7 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
             "summarizerProvider": arm["runtime"]["summarizerProvider"],
             "knowledgebase": deepcopy(arm["runtime"].get("knowledgebase", default_knowledgebase_config())),
             "knowledgebaseExplicit": bool(arm["runtime"].get("knowledgebaseExplicit")),
+            "directMemoryMode": arm["runtime"].get("directMemoryMode", "knowledgebase"),
         }
         for arm in arm_map.values()
     ]
@@ -3916,6 +3976,7 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
                         "directModel": arm["runtime"]["directModel"],
                         "knowledgebase": deepcopy(arm["runtime"].get("knowledgebase", default_knowledgebase_config())),
                         "knowledgebaseExplicit": bool(arm["runtime"].get("knowledgebaseExplicit")),
+                        "directMemoryMode": arm["runtime"].get("directMemoryMode", "knowledgebase"),
                         "loopRounds": int(loop_rounds),
                         "replicates": [],
                     }

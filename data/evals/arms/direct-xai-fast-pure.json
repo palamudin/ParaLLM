@@ -1,21 +1,21 @@
 {
-  "armId": "direct-openai-mini-open",
-  "title": "Direct OpenAI Mini | Open Harness",
-  "description": "Single-thread OpenAI mini baseline with the same open detailed-answer policy as the critical MSP Para runs.",
+  "armId": "direct-xai-fast-pure",
+  "title": "Pure Direct xAI Fast | Prompt Only",
+  "description": "Single-call xAI fast-model baseline where answer generation receives only objective, constraints, session context, and the direct harness. The judge may still use memory for compliance scoring.",
   "type": "direct",
   "runtime": {
     "executionMode": "live",
-    "provider": "openai",
-    "model": "gpt-5-mini",
-    "directProvider": "openai",
-    "directModel": "gpt-5-mini",
-    "directMemoryMode": "knowledgebase",
-    "summarizerProvider": "openai",
-    "summarizerModel": "gpt-5-mini",
+    "provider": "xai",
+    "model": "grok-4-1-fast-reasoning",
+    "directProvider": "xai",
+    "directModel": "grok-4-1-fast-reasoning",
+    "directMemoryMode": "off",
+    "summarizerProvider": "xai",
+    "summarizerModel": "grok-4-1-fast-reasoning",
     "reasoningEffort": "low",
     "budget": {
       "maxTotalTokens": 0,
-      "maxCostUsd": 1.5
+      "maxCostUsd": 2
     },
     "research": {
       "enabled": false,

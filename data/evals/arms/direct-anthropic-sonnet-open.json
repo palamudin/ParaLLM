@@ -9,6 +9,7 @@
     "model": "claude-sonnet-4-6",
     "directProvider": "anthropic",
     "directModel": "claude-sonnet-4-6",
+    "directMemoryMode": "knowledgebase",
     "summarizerProvider": "anthropic",
     "summarizerModel": "claude-sonnet-4-6",
     "reasoningEffort": "low",
@@ -23,6 +24,20 @@
     },
     "vetting": {
       "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "msp-knowledgebase",
+      "maxRecords": 10,
+      "maxTokens": 1800,
+      "includeRuntime": true,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": [
+        "msp"
+      ],
+      "tagsMatch": "any"
     },
     "preferredLoop": {
       "rounds": 1,

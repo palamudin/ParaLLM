@@ -9,6 +9,7 @@
     "model": "grok-4-1-fast-reasoning",
     "directProvider": "xai",
     "directModel": "grok-4-1-fast-reasoning",
+    "directMemoryMode": "knowledgebase",
     "summarizerProvider": "xai",
     "summarizerModel": "grok-4-1-fast-reasoning",
     "reasoningEffort": "low",

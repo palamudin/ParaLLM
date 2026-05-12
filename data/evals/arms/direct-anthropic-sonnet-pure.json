@@ -1,21 +1,21 @@
 {
-  "armId": "direct-openai-mini-open",
-  "title": "Direct OpenAI Mini | Open Harness",
-  "description": "Single-thread OpenAI mini baseline with the same open detailed-answer policy as the critical MSP Para runs.",
+  "armId": "direct-anthropic-sonnet-pure",
+  "title": "Pure Direct Anthropic Sonnet | Prompt Only",
+  "description": "Single-call Anthropic Sonnet baseline where answer generation receives only objective, constraints, session context, and the direct harness. The judge may still use memory for compliance scoring.",
   "type": "direct",
   "runtime": {
     "executionMode": "live",
-    "provider": "openai",
-    "model": "gpt-5-mini",
-    "directProvider": "openai",
-    "directModel": "gpt-5-mini",
-    "directMemoryMode": "knowledgebase",
-    "summarizerProvider": "openai",
-    "summarizerModel": "gpt-5-mini",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "directProvider": "anthropic",
+    "directModel": "claude-sonnet-4-6",
+    "directMemoryMode": "off",
+    "summarizerProvider": "anthropic",
+    "summarizerModel": "claude-sonnet-4-6",
     "reasoningEffort": "low",
     "budget": {
       "maxTotalTokens": 0,
-      "maxCostUsd": 1.5
+      "maxCostUsd": 4
     },
     "research": {
       "enabled": false,

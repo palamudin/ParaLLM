@@ -160,6 +160,7 @@ class EvalRunnerTests(unittest.TestCase):
                     "directBaselineMode": "both",
                     "directProvider": "ollama",
                     "directModel": "qwen3.5:2b",
+                    "directMemoryMode": "off",
                     "ollamaBaseUrl": "http://192.168.0.26:11434/api",
                     "targetTimeouts": {"directBaseline": 300, "commanderReview": 540, "summarizer": 720},
                 },
@@ -172,6 +173,7 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(manifest["runtime"]["directBaselineMode"], "both")
         self.assertEqual(manifest["runtime"]["directProvider"], "ollama")
         self.assertEqual(manifest["runtime"]["directModel"], "qwen3.5:2b")
+        self.assertEqual(manifest["runtime"]["directMemoryMode"], "off")
         self.assertEqual(manifest["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
         self.assertEqual(manifest["runtime"]["targetTimeouts"]["directBaseline"], 300)
         self.assertEqual(manifest["runtime"]["targetTimeouts"]["commanderReview"], 540)
@@ -449,13 +451,16 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("Use one short answer block.", prompt["instructions"])
         self.assertNotIn("This should not leak into direct.", prompt["instructions"])
 
-    def test_build_direct_answer_prompt_does_not_feed_memory_to_direct_candidate(self) -> None:
+    def test_build_direct_answer_prompt_renders_explicit_knowledgebase(self) -> None:
         class FakeRuntime:
             def build_knowledgebase_recall_packet(self, task, runtime, target, **kwargs):
-                raise AssertionError("Direct answer generation must not receive memory recall.")
+                self.task = task
+                self.runtime = runtime
+                self.target = target
+                return {"selectedEvidenceIds": ["mem_msp_rmm_control_plane"]}
 
             def render_knowledgebase_prompt_block(self, packet):
-                raise AssertionError("Direct answer generation must not render memory recall.")
+                return "MSP knowledgebase recall (ranked operational memory; binding when relevant):\nmem_msp_rmm_control_plane\n"
 
         fake_runtime = FakeRuntime()
         prompt = eval_runner.build_direct_answer_prompt(
@@ -471,6 +476,35 @@ class EvalRunnerTests(unittest.TestCase):
                 "knowledgebase": {"enabled": True, "bankId": "msp-knowledgebase"},
             },
             runtime=fake_runtime,
+        )
+
+        self.assertEqual(fake_runtime.target, "direct_baseline")
+        self.assertEqual(fake_runtime.task["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
+        self.assertIn("mem_msp_rmm_control_plane", prompt["inputText"])
+        self.assertIn("mem_msp_rmm_control_plane", prompt["fullPrompt"])
+
+    def test_build_direct_answer_prompt_can_disable_memory_for_pure_direct(self) -> None:
+        class FakeRuntime:
+            def build_knowledgebase_recall_packet(self, task, runtime, target, **kwargs):
+                raise AssertionError("Pure direct answer generation must not receive memory recall.")
+
+            def render_knowledgebase_prompt_block(self, packet):
+                raise AssertionError("Pure direct answer generation must not render memory recall.")
+
+        prompt = eval_runner.build_direct_answer_prompt(
+            {
+                "caseId": "case-a",
+                "objective": "Stop the bad rollout.",
+                "constraints": ["Be direct."],
+                "sessionContext": "none",
+            },
+            {
+                "directHarness": {"concision": "tight", "instruction": ""},
+                "directMemoryMode": "off",
+                "knowledgebaseExplicit": True,
+                "knowledgebase": {"enabled": True, "bankId": "msp-knowledgebase"},
+            },
+            runtime=FakeRuntime(),
         )
 
         self.assertNotIn("MSP knowledgebase recall", prompt["inputText"])

@@ -743,7 +743,7 @@ Those results remain useful only as historical constrained evidence. They were p
 
 ### Current Evaluation Snapshot
 
-Current review position as of `2026-05-12`: ParaLLM now has a five-scenario, three-provider MSP evaluation snapshot with memory-aware judging, direct baselines, and Para orchestration results. Payload audit found that the direct answer-generation prompt was mistakenly given explicit MSP knowledgebase recall, so the current direct rows are memory-assisted direct baselines rather than clean model-only baselines. The snapshot remains useful for orchestration/eval plumbing and audit-surface review, but the direct-vs-Para deltas must be rerun before being used as a clean commercial benchmark.
+Current review position as of `2026-05-12`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot with memory-aware judging, memory-bound direct baselines, and Para orchestration results. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in this sweep, and it exposes a separate control-discipline audit that direct single-thread answers do not provide.
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
@@ -753,12 +753,20 @@ Commercial positioning: the current MSP wedge is an SLT / service-manager incide
 
 This is not limited to MSP work. The same shell/API/memory pattern can support other documented operational domains, such as car repair, compliance review, facilities operations, or engineering triage, once the knowledgebase, tools, and scoring rubric are replaced with that domain's evidence and SOPs.
 
+Memory-use classification:
+
+| Lane | Answer-generation memory | Judge memory | Arm ids / use | Readout |
+| --- | --- | --- | --- | --- |
+| ParaLLM multi-lane orchestration | Yes. Recall can be injected into commander, worker, review, and summarizer lanes. | Yes | Para eval arms | Full pressurized orchestration with memory, review lanes, merge gates, and control audit. |
+| Direct memory-bound single call | Yes. `directMemoryMode: knowledgebase` injects explicit recall into the single Direct answer prompt. | Yes | `direct-xai-fast-open`, `direct-openai-mini-open`, `direct-anthropic-sonnet-open` | The current Direct score table measures this discovered cheap memory-bound single-call path. |
+| Pure Direct prompt-only | No. `directMemoryMode: off` blocks answer-time recall even when judge memory remains available. | Yes, for scoring fairness | `direct-xai-fast-pure`, `direct-openai-mini-pure`, `direct-anthropic-sonnet-pure` | Clean no-memory model baseline for the next scoring run. |
+
 | Architecture | Completed cells | Quality mean | Health mean | Control mean | Corporate readout |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Direct single-thread baseline | `15 / 15` | `8.49` | `8.64` | `n/a` | Strong direct answers, especially from OpenAI and xAI, but no internal orchestration-control score. |
+| Direct memory-bound single-call baseline | `15 / 15` | `8.49` | `8.64` | `n/a` | Strong single-call answers, especially from OpenAI and xAI, when direct prompts receive explicit MSP recall. |
 | ParaLLM multi-lane orchestration | `15 / 15` | `8.92` | `9.11` | `7.80` | Higher aggregate score plus auditable control discipline across worker/review/summary lanes. |
 
-Measured delta on this sweep: ParaLLM scored `+0.43` on quality and `+0.47` on answer health versus the memory-assisted direct baselines. Control is not a direct-vs-Para metric because it grades Para's internal orchestration behavior. A clean direct rerun is required before presenting the delta as a model-only baseline comparison.
+Measured delta on this sweep: ParaLLM scored `+0.43` on quality and `+0.47` on answer health versus memory-bound direct single-call baselines. Control is not a direct-vs-Para metric because it grades Para's internal orchestration behavior.
 
 | Provider family | Direct quality | Direct health | Para quality | Para health | Para control | Readout |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -770,7 +778,7 @@ Operational scrutiny view:
 
 | Path | Real-life pass | Conditional pass | Audit risk / likely damage | Governance readout |
 | --- | ---: | ---: | ---: | --- |
-| Direct single-thread baseline | `4 / 15` | `9 / 15` | `2 / 15` | Direct can produce strong final answers, but it has no internal control trace. Failures are visible only when the final answer itself misses required operational safeguards. |
+| Direct memory-bound single-call baseline | `4 / 15` | `9 / 15` | `2 / 15` | Direct can produce strong final answers from one memory-backed call, but it has no internal control trace. Failures are visible only when the final answer itself misses required operational safeguards. |
 | ParaLLM multi-lane orchestration | `3 / 15` | `9 / 15` | `3 / 15` | Para is judged more harshly because it exposes both final-answer quality and internal control discipline. Some Para risk rows are "good answer, weak audit trail" rather than obviously harmful final advice. |
 
 Audit-risk rows:
@@ -786,11 +794,12 @@ Audit-risk rows:
 Method summary:
 
 - Five hard MSP severity-1 scenarios were run across xAI, OpenAI, and Anthropic provider families.
-- Direct used one single-thread answer. Para used the live multi-lane orchestration path.
+- Direct used one single-thread answer. The scored Direct arms in this snapshot were memory-bound single calls; separate pure prompt-only Direct arms now exist for clean no-memory reruns. Para used the live multi-lane orchestration path.
 - The judge was OpenAI `gpt-5-mini`, scoring blind completed answers for `Quality` and `Health`.
 - Para also received a `Control` score for orchestration discipline: memory use, evidence gates, tenant boundaries, and unsafe-shortcut rejection.
 - Judge memory-compliance fields were captured for all expected audits: Para `45 / 45`, Direct `30 / 30`. This is audit coverage, not a claim that every answer passed every memory obligation.
 - Direct answers were judged for memory compliance inside `Quality` and `Health`, but they were not subject to Para's separate internal `Control` audit because there are no worker/review/merge lanes to inspect.
+- Pure Direct arms are intentionally separate from the current score table. They preserve judge-side memory for evaluation but remove answer-side recall so the next sweep can measure raw provider output against the memory-bound Direct and Para paths.
 - One direct xAI CSP/OAuth cell initially hit a provider max-output completion limit and was rerun as a disclosed supplemental cell before inclusion in the final aggregate.
 
 Calibration: this is an internal benchmark snapshot, not third-party certification. The most important next target is raising Para control scores on the lower-control cousin cases by making retrieved memory obligations mandatory in the final answer whenever relevant memory exists.
