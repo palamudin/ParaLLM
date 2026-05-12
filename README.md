@@ -756,6 +756,8 @@ Pure Direct rerun: [2026-05-12 Pure Direct No-Memory MSP Sweep](docs/eval-result
 
 Compliance audit follow-up: [2026-05-12 Judge Compliance Audit](docs/eval-results/2026-05-12-judge-compliance-audit.md)
 
+Memory conflict-lock proof: [2026-05-12 Memory Conflict Lock OpenAI Sweep](docs/eval-results/2026-05-12-memory-conflict-lock-openai.md)
+
 Commercial positioning: the current MSP wedge is an SLT / service-manager incident-command assistant, not a generic chatbot. The operator sees a normal assistant surface, while ParaLLM runs the deeper layer: provider routing, retained operational memory, adversarial review lanes, evidence gates, and judgeable traces. The value proposition is faster first-hour alignment, safer tenant-specific escalation, and a post-incident audit trail management can inspect.
 
 This is not limited to MSP work. The same shell/API/memory pattern can support other documented operational domains, such as car repair, compliance review, facilities operations, or engineering triage, once the knowledgebase, tools, and scoring rubric are replaced with that domain's evidence and SOPs.
@@ -781,6 +783,14 @@ Measured deltas on this sweep:
 | ParaLLM vs Direct + fractal memory | `+0.43` | `+0.47` | Para still leads after giving Direct the memory-bound single-call advantage. |
 | ParaLLM vs Pure Direct | `+0.91` | `+1.26` | Cleanest architecture delta against raw prompt-only provider output. |
 | Direct + fractal memory vs Pure Direct | `+0.48` | `+0.79` | Answer-time recall has measurable value even before multi-lane orchestration. |
+
+Memory conflict-lock live probe:
+
+| Path | Answer memory | Scenario cells | Quality | Health | Control | Readout |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Pure Direct prompt-only | No | `1 / 1` | `8.0` | `9.0` | `n/a` | Safe broad hold, but weaker actionability and deterministic conflict-lock coverage. |
+| Direct + conflict memory single-call baseline | Yes | `1 / 1` | `9.0` | `9.0` | `n/a` | Clean single-call hold: freeze deletion, preserve evidence, require signed scoped board approval. |
+| ParaLLM + conflict memory | Yes | `1 / 1` | `9.0` | `9.0` | `9.0` | Same user-facing pass plus auditable control discipline from adversarial lanes and summarizer merge. |
 
 Memory integration and value:
 

@@ -16,6 +16,36 @@ import eval_runner  # type: ignore  # noqa: E402
 
 
 class EvalRunnerTests(unittest.TestCase):
+    def test_memory_conflict_lock_eval_manifests_are_available(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        suite_path = root / "data" / "evals" / "suites" / "msp-memory-conflict-lock.json"
+        suite = eval_runner.validate_suite_manifest(json.loads(suite_path.read_text(encoding="utf-8")), suite_path)
+        case = suite["cases"][0]
+        required_ids = {
+            str(group.get("id") or "")
+            for group in case["checks"].get("requiredConceptGroups", [])
+            if isinstance(group, dict)
+        }
+
+        self.assertEqual(suite["suiteId"], "msp-memory-conflict-lock")
+        self.assertEqual(case["caseId"], "msp-memory-board-exception-lock")
+        self.assertIn("memory-conflict-lock", required_ids)
+        self.assertIn("signed-board-approval", required_ids)
+        self.assertIn("safe-hold", required_ids)
+
+        for arm_id, direct_memory_mode in {
+            "direct-openai-mini-conflict-pure": "off",
+            "direct-openai-mini-conflict-memory": "knowledgebase",
+            "para-openai-mini-conflict-double": "knowledgebase",
+        }.items():
+            arm_path = root / "data" / "evals" / "arms" / f"{arm_id}.json"
+            arm = eval_runner.validate_arm_manifest(json.loads(arm_path.read_text(encoding="utf-8")), arm_path)
+            self.assertEqual(arm["runtime"]["knowledgebase"]["bankId"], "msp-memory-conflict-fixture")
+            self.assertEqual(arm["runtime"]["directMemoryMode"], direct_memory_mode)
+
+        memory_path = root / "data" / "knowledgebase" / "banks" / "msp-memory-conflict-fixture" / "memory_units.jsonl"
+        self.assertIn("conflict_unresolved", memory_path.read_text(encoding="utf-8"))
+
     def test_build_task_id_stays_short_for_nested_eval_workspaces(self) -> None:
         task_id = eval_runner.build_task_id(
             "eval-20260427-225359+0000-0202bb:rmm-midnight-malware-push-critical-structured:front-eval-8e9daf1f--loops-1:1"

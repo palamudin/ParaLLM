@@ -1,0 +1,58 @@
+{
+  "armId": "direct-openai-mini-conflict-pure",
+  "title": "Pure Direct OpenAI Mini | Memory Conflict Prompt Only",
+  "description": "Single-call OpenAI mini baseline for the memory-conflict case. Answer generation receives no recall; judge memory remains available for scoring.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "directMemoryMode": "off",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "msp-memory-conflict-fixture",
+      "maxRecords": 6,
+      "maxTokens": 1200,
+      "includeRuntime": false,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": [
+        "msp",
+        "conflict"
+      ],
+      "tagsMatch": "any"
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP compliance and backup-retention decision. Give the first operator response, decision gates, safe holding actions, and evidence/approval requirements. Do not invent authority."
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP compliance and backup-retention decision. Give the first operator response, decision gates, safe holding actions, and evidence/approval requirements. Do not invent authority."
+    },
+    "requireLive": true
+  },
+  "workers": []
+}

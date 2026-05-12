@@ -1,0 +1,58 @@
+{
+  "armId": "direct-openai-mini-conflict-memory",
+  "title": "Direct OpenAI Mini | Memory Conflict Recall",
+  "description": "Single-call OpenAI mini baseline where answer generation receives the dedicated conflict-lock recall packet.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "directMemoryMode": "knowledgebase",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": true,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "msp-memory-conflict-fixture",
+      "maxRecords": 6,
+      "maxTokens": 1200,
+      "includeRuntime": false,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": [
+        "msp",
+        "conflict"
+      ],
+      "tagsMatch": "any"
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP compliance and backup-retention decision. Use retrieved memory as binding when relevant. If retrieved memory conflicts with the current request, freeze the affected action until authority, scope, freshness, and evidence resolve the conflict."
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a live MSP compliance and backup-retention decision. Use retrieved memory as binding when relevant. If retrieved memory conflicts with the current request, freeze the affected action until authority, scope, freshness, and evidence resolve the conflict."
+    },
+    "requireLive": true
+  },
+  "workers": []
+}
