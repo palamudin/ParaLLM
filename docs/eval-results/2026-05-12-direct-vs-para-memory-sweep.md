@@ -22,7 +22,7 @@ Measured delta on the completed sweep: ParaLLM is `+0.43` on quality and `+0.47`
 | Provider families | xAI, OpenAI, Anthropic |
 | Judge | OpenAI `gpt-5-mini` |
 | Judge audits captured | Para `45 / 45`; Direct `30 / 30` |
-| Memory-compliance fields captured | Para `45 / 45`; Direct `30 / 30` |
+| Memory-compliance fields captured | Para `45 / 45`; Direct `30 / 30`; coverage only, not a pass-rate claim |
 | Exposed thinking fields returned | `0` |
 | Failed-call artifacts after sweep | `0` |
 
@@ -34,6 +34,8 @@ The initial direct xAI CSP/OAuth cell hit a provider `max_output_tokens` complet
 - `Health` averages user-facing answer integrity fields such as coherence, readability, completeness, and calibration.
 - `Control` is Para-only and grades whether the internal lane process preserved memory obligations, evidence gates, tenant boundaries, and unsafe-shortcut rejection.
 - Memory is treated as binding operational ground truth when relevant. The judge grades memory compliance by operational meaning, not exact wording.
+- Direct answers receive memory-compliance commentary inside the `Quality` and `Health` judges, but direct does not receive the Para-only `Control` audit because there are no internal worker/review/merge lanes to inspect.
+- Several direct memory-compliance findings were partial or negative, including the direct Anthropic identity/OAuth answer being marked noncompliant on the quality judge. The aggregate direct score should therefore be read as user-facing answer quality, not as proof that direct passed all internal governance obligations.
 - The five-case suite covers RMM supply-chain replay, backup console destruction, cross-tenant identity/OAuth abuse, backup immutability disablement, and CSP/OAuth admin-consent abuse.
 
 ## Provider-Level Result
@@ -53,6 +55,63 @@ The initial direct xAI CSP/OAuth cell hit a provider `max_output_tokens` complet
 | Cross-tenant identity/OAuth abuse | `7.22` | `7.56` | `8.94` | `9.39` | `8.67` | Para showed the clearest orchestration benefit. |
 | Backup immutability disablement cousin | `9.28` | `9.33` | `9.11` | `9.22` | `7.27` | Direct was slightly higher; Para control needs stronger final-gate enforcement. |
 | CSP/OAuth admin-consent cousin | `9.11` | `9.33` | `8.78` | `8.95` | `6.53` | Direct won user-facing scores; Para needs more pressure on internal control compliance. |
+
+## Operational Scrutiny Table
+
+This table is stricter than the average score table. It asks whether an engineer could safely act on the answer in a real MSP environment without creating an obvious compliance, evidence, tenant-boundary, or governance defect.
+
+Classification rule:
+
+- `Real-life pass`: high quality/health, no failing memory-compliance finding, and, for Para, control score at or above governance threshold.
+- `Conditional pass`: usable direction, but a human incident lead should close the missing checklist items before acting.
+- `Audit risk`: low score, failed memory compliance, or weak Para control trace. This is where a compliance officer could reasonably attach the company to a miss driven by assistant directions.
+
+Summary:
+
+| Path | Real-life pass | Conditional pass | Audit risk / likely damage | Notes |
+| --- | ---: | ---: | ---: | --- |
+| Direct single-thread baseline | `4 / 15` | `9 / 15` | `2 / 15` | Direct has no worker/review/merge audit. The direct risk class only catches final-answer defects. |
+| ParaLLM multi-lane orchestration | `3 / 15` | `9 / 15` | `3 / 15` | Para is held to a stricter standard because internal control trace is visible and scored. |
+
+Direct scrutiny:
+
+| Scenario | Provider | Quality | Health | Memory compliance | Scrutiny | Observable business risk |
+| --- | --- | ---: | ---: | --- | --- | --- |
+| RMM supply-chain replay | xAI | `9.17` | `9.67` | pass / pass | Real-life pass | No major governance miss detected in the final answer. |
+| RMM supply-chain replay | OpenAI | `9.33` | `9.33` | pass / pass | Real-life pass | No major governance miss detected in the final answer. |
+| RMM supply-chain replay | Anthropic | `4.67` | `4.50` | partial / partial | Audit risk | Missing external incident records, per-tenant records, RMM artifact export/hash, automation freeze, endpoint evidence, and vendor handoff would be observable under review. |
+| Backup console destruction | xAI | `9.00` | `9.17` | partial / partial | Conditional pass | Strong answer, but collection and chain-of-custody details need human closure. |
+| Backup console destruction | OpenAI | `9.33` | `9.33` | partial / pass | Conditional pass | Strong answer with minor explicitness gaps. |
+| Backup console destruction | Anthropic | `9.00` | `9.00` | partial / unclear | Conditional pass | Strong answer, but some evidence-storage/detail language is not clean enough for hands-off reliance. |
+| Cross-tenant identity/OAuth abuse | xAI | `8.83` | `9.67` | partial / partial | Conditional pass | Good answer with missing explicit command/scribe isolation and unsafe-automation freeze wording. |
+| Cross-tenant identity/OAuth abuse | OpenAI | `9.17` | `9.83` | partial / partial | Conditional pass | Strong answer, but senior wake/escalation and automation-freeze language needs closure. |
+| Cross-tenant identity/OAuth abuse | Anthropic | `3.67` | `3.17` | fail / fail | Audit risk | Noncompliant on major incident records, per-tenant records, evidence exports/hashing, decision gates, and senior/legal escalation. |
+| Backup immutability disablement cousin | xAI | `9.33` | `9.17` | pass / pass | Real-life pass | No major governance miss detected in the final answer. |
+| Backup immutability disablement cousin | OpenAI | `9.50` | `9.50` | pass / pass | Real-life pass | No major governance miss detected in the final answer. |
+| Backup immutability disablement cousin | Anthropic | `9.00` | `9.33` | partial / pass | Conditional pass | Strong answer, but named per-tenant ownership should be explicit. |
+| CSP/OAuth admin-consent cousin | xAI | `9.17` | `9.83` | pass / partial | Conditional pass | Strong answer, but token/session volatility and automation-freeze language need closure. |
+| CSP/OAuth admin-consent cousin | OpenAI | `9.17` | `9.50` | partial / pass | Conditional pass | Strong answer, but command/scribe isolation and automation-freeze wording need closure. |
+| CSP/OAuth admin-consent cousin | Anthropic | `9.00` | `8.67` | pass / partial | Conditional pass | Strong answer, but critical-access preservation and first-hour checklist need human closure. |
+
+Para scrutiny:
+
+| Scenario | Provider | Quality | Health | Control | Memory compliance | Scrutiny | Observable business risk |
+| --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| RMM supply-chain replay | xAI | `8.00` | `9.00` | `8.00` | partial / partial / pass | Conditional pass | Good direction, but tenant-owner and operator/API-token explicitness should be closed before reliance. |
+| RMM supply-chain replay | OpenAI | `8.83` | `9.33` | `7.60` | partial / pass / pass | Conditional pass | Strong answer, but package-freeze and vendor-handoff details should be more explicit. |
+| RMM supply-chain replay | Anthropic | `9.17` | `9.33` | `8.60` | pass / pass / pass | Real-life pass | No major governance miss detected across final answer and control trace. |
+| Backup console destruction | xAI | `9.00` | `8.67` | `7.80` | partial / partial / partial | Conditional pass | Strong answer, but command/scribe isolation and token custody details need closure. |
+| Backup console destruction | OpenAI | `9.17` | `8.67` | `8.80` | partial / partial / pass | Conditional pass | Strong answer, but suspected-platform command/scribe and token custody wording need closure. |
+| Backup console destruction | Anthropic | `9.17` | `9.00` | `8.80` | partial / pass / pass | Conditional pass | Strong answer, but storage-side immutability and named-owner timing need stronger explicitness. |
+| Cross-tenant identity/OAuth abuse | xAI | `8.50` | `9.17` | `8.80` | partial / partial / pass | Conditional pass | Good answer, but command/scribe isolation, MFA evidence, rollback/re-enable planning, and escalation timing need closure. |
+| Cross-tenant identity/OAuth abuse | OpenAI | `9.00` | `9.67` | `8.60` | partial / pass / partial | Conditional pass | Strong answer, but unsafe-automation freeze, named evidence owners, and write-once evidence storage should be explicit. |
+| Cross-tenant identity/OAuth abuse | Anthropic | `9.33` | `9.33` | `8.60` | pass / partial / pass | Conditional pass | Strong answer, but vendor escalation/artifact handoff should be explicit. |
+| Backup immutability disablement cousin | xAI | `9.00` | `9.17` | `4.60` | partial / pass / pass | Audit risk | Final answer reads well, but control trace is weak enough that a governance review should not treat it as hands-off safe. |
+| Backup immutability disablement cousin | OpenAI | `9.17` | `9.33` | `8.80` | pass / pass / pass | Real-life pass | No major governance miss detected across final answer and control trace. |
+| Backup immutability disablement cousin | Anthropic | `9.17` | `9.17` | `8.40` | pass / pass / pass | Real-life pass | No major governance miss detected across final answer and control trace. |
+| CSP/OAuth admin-consent cousin | xAI | `8.17` | `8.67` | `7.80` | fail / partial / partial | Audit risk | Missing command/scribe isolation, immediate senior wake, unsafe-automation freeze, and chain-of-custody clarity creates a compliance latch point. |
+| CSP/OAuth admin-consent cousin | OpenAI | `9.00` | `9.17` | `7.80` | partial / pass / pass | Conditional pass | Strong answer, but senior wake and vendor artifact handoff should be more explicit. |
+| CSP/OAuth admin-consent cousin | Anthropic | `9.17` | `9.00` | `4.00` | partial / pass / partial | Audit risk | Final answer scored well, but internal control trace is weak enough to fail governance confidence. |
 
 ## Corporate Readout
 

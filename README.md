@@ -761,13 +761,31 @@ Measured delta on this sweep: ParaLLM scored `+0.43` on quality and `+0.47` on a
 | OpenAI | `9.30` | `9.50` | `9.03` | `9.23` | `8.32` | Direct was slightly higher on user-facing scores; Para added traceable control discipline. |
 | xAI | `9.10` | `9.50` | `8.53` | `8.94` | `7.40` | Direct xAI was very strong; Para xAI needs tighter final-gate pressure on cousin cases. |
 
+Operational scrutiny view:
+
+| Path | Real-life pass | Conditional pass | Audit risk / likely damage | Governance readout |
+| --- | ---: | ---: | ---: | --- |
+| Direct single-thread baseline | `4 / 15` | `9 / 15` | `2 / 15` | Direct can produce strong final answers, but it has no internal control trace. Failures are visible only when the final answer itself misses required operational safeguards. |
+| ParaLLM multi-lane orchestration | `3 / 15` | `9 / 15` | `3 / 15` | Para is judged more harshly because it exposes both final-answer quality and internal control discipline. Some Para risk rows are "good answer, weak audit trail" rather than obviously harmful final advice. |
+
+Audit-risk rows:
+
+| Path | Scenario | Provider family | Scores | Why this matters in a real MSP environment |
+| --- | --- | --- | --- | --- |
+| Direct | Cross-tenant identity/OAuth abuse | Anthropic | Q `3.67`, H `3.17` | Memory compliance was judged noncompliant: missing major-incident/per-tenant records, evidence exports/hashing, decision gates, and senior/legal escalation. This is the clearest direct-answer damage path. |
+| Direct | RMM supply-chain replay | Anthropic | Q `4.67`, H `4.50` | Omitted or failed to operationalize external incident records, per-tenant records, RMM artifact export/hash, suspect automation freeze, endpoint evidence, and vendor handoff. |
+| Para | Backup immutability disablement cousin | xAI | Q `9.00`, H `9.17`, C `4.60` | Final answer scored well, but the control audit did not trust the orchestration trace enough for governance-grade reliance. |
+| Para | CSP/OAuth admin-consent cousin | Anthropic | Q `9.17`, H `9.00`, C `4.00` | Final answer scored well, but the control score exposed weak internal discipline. This is a management/audit concern even when the text reads acceptably. |
+| Para | CSP/OAuth admin-consent cousin | xAI | Q `8.17`, H `8.67`, C `7.80` | Quality memory compliance failed/was partial on command/scribe isolation, senior wake, and unsafe-automation freeze. This is the clearest Para final-answer governance gap. |
+
 Method summary:
 
 - Five hard MSP severity-1 scenarios were run across xAI, OpenAI, and Anthropic provider families.
 - Direct used one single-thread answer. Para used the live multi-lane orchestration path.
 - The judge was OpenAI `gpt-5-mini`, scoring blind completed answers for `Quality` and `Health`.
 - Para also received a `Control` score for orchestration discipline: memory use, evidence gates, tenant boundaries, and unsafe-shortcut rejection.
-- Judge memory-compliance fields were captured for all expected audits: Para `45 / 45`, Direct `30 / 30`.
+- Judge memory-compliance fields were captured for all expected audits: Para `45 / 45`, Direct `30 / 30`. This is audit coverage, not a claim that every answer passed every memory obligation.
+- Direct answers were judged for memory compliance inside `Quality` and `Health`, but they were not subject to Para's separate internal `Control` audit because there are no worker/review/merge lanes to inspect.
 - One direct xAI CSP/OAuth cell initially hit a provider max-output completion limit and was rerun as a disclosed supplemental cell before inclusion in the final aggregate.
 
 Calibration: this is an internal benchmark snapshot, not third-party certification. The most important next target is raising Para control scores on the lower-control cousin cases by making retrieved memory obligations mandatory in the final answer whenever relevant memory exists.
