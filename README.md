@@ -523,6 +523,7 @@ python scripts/qa_dynamic_spinup_check.py
 python scripts/qa_supply_chain_check.py
 python scripts/qa_container_check.py
 python scripts/qa_python_crossover_check.py
+python scripts/qa_memory_conflict_lock_probe.py
 python scripts/quality_benchmark.py
 python -m unittest backend.tests.test_storage backend.tests.test_control backend.tests.test_metadata backend.tests.test_queueing backend.tests.test_artifacts backend.tests.test_jobs backend.tests.test_dispatch backend.tests.test_settings backend.tests.test_sessions backend.tests.test_evals backend.tests.test_infrastructure backend.tests.test_runtime_auth backend.tests.test_runtime_execution backend.tests.test_app
 ```

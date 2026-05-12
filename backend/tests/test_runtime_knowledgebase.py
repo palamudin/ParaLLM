@@ -6,6 +6,7 @@ from pathlib import Path
 
 from backend.app import knowledgebase
 from runtime.engine import LoopRuntime
+from scripts import qa_memory_conflict_lock_probe
 from scripts import qa_memory_relevance_probe
 from scripts import qa_msp_school_probe
 
@@ -1144,6 +1145,15 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertIn("Hold destructive or irreversible action", answer)
         self.assertIn("Validate signed board approval", answer)
         self.assertIn("memory-conflict-lock-01", fixed["controlAudit"]["selfCheck"])
+
+    def test_memory_conflict_lock_probe_exercises_recall_and_backstop(self) -> None:
+        result = qa_memory_conflict_lock_probe.run_probe(self.root)
+        checks = {str(row.get("label")): row for row in result.get("rows", [])}
+
+        self.assertTrue(result.get("passed"))
+        self.assertEqual(checks["recall_projection"]["status"], "PASS")
+        self.assertEqual(checks["final_backstop"]["status"], "PASS")
+        self.assertGreaterEqual(int(result.get("memoryConflictLockCount") or 0), 1)
 
     def test_contradiction_memory_backstop_adds_missing_msp_tenant_owner_gate(self) -> None:
         task = {
