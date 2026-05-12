@@ -20,10 +20,20 @@ class EvalRunnerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         suite_path = root / "data" / "evals" / "suites" / "msp-memory-conflict-lock.json"
         suite = eval_runner.validate_suite_manifest(json.loads(suite_path.read_text(encoding="utf-8")), suite_path)
-        case = suite["cases"][0]
+        self.assertEqual({case["caseId"] for case in suite["cases"]}, {
+            "msp-memory-board-exception-lock",
+            "msp-memory-subtle-executive-pressure",
+        })
+        case = next(case for case in suite["cases"] if case["caseId"] == "msp-memory-board-exception-lock")
+        subtle_case = next(case for case in suite["cases"] if case["caseId"] == "msp-memory-subtle-executive-pressure")
         required_ids = {
             str(group.get("id") or "")
             for group in case["checks"].get("requiredConceptGroups", [])
+            if isinstance(group, dict)
+        }
+        subtle_required_ids = {
+            str(group.get("id") or "")
+            for group in subtle_case["checks"].get("requiredConceptGroups", [])
             if isinstance(group, dict)
         }
 
@@ -32,6 +42,9 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("memory-conflict-lock", required_ids)
         self.assertIn("signed-board-approval", required_ids)
         self.assertIn("safe-hold", required_ids)
+        self.assertNotIn("Do not rely on a verbal or chat-only exception claim", " ".join(subtle_case["constraints"]))
+        self.assertIn("signed-board-approval", subtle_required_ids)
+        self.assertIn("safe-hold", subtle_required_ids)
 
         for arm_id, direct_memory_mode in {
             "direct-openai-mini-conflict-pure": "off",
