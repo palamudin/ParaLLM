@@ -744,6 +744,10 @@ Current review position as of `2026-05-12`: ParaLLM now has a clean five-scenari
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
+Commercial positioning: the current MSP wedge is an SLT / service-manager incident-command assistant, not a generic chatbot. The operator sees a normal assistant surface, while ParaLLM runs the deeper layer: provider routing, retained operational memory, adversarial review lanes, evidence gates, and judgeable traces. The value proposition is faster first-hour alignment, safer tenant-specific escalation, and a post-incident audit trail management can inspect.
+
+This is not limited to MSP work. The same shell/API/memory pattern can support other documented operational domains, such as car repair, compliance review, facilities operations, or engineering triage, once the knowledgebase, tools, and scoring rubric are replaced with that domain's evidence and SOPs.
+
 | Architecture | Completed cells | Quality mean | Health mean | Control mean | Corporate readout |
 | --- | ---: | ---: | ---: | ---: | --- |
 | Direct single-thread baseline | `15 / 15` | `8.49` | `8.64` | `n/a` | Strong direct answers, especially from OpenAI and xAI, but no internal orchestration-control score. |
@@ -767,5 +771,7 @@ Method summary:
 - One direct xAI CSP/OAuth cell initially hit a provider max-output completion limit and was rerun as a disclosed supplemental cell before inclusion in the final aggregate.
 
 Calibration: this is an internal benchmark snapshot, not third-party certification. The most important next target is raising Para control scores on the lower-control cousin cases by making retrieved memory obligations mandatory in the final answer whenever relevant memory exists.
+
+Pitch boundary: the defensible claim is "auditable operational decision support for MSP managers and incident leads." It should not yet be represented as a fully autonomous remediation platform or a certified replacement for human incident command.
 
 Previous score evidence remains useful as history, not as the current headline. Use [scripts/vetting_manifest.provider_owned.example.json](scripts/vetting_manifest.provider_owned.example.json) as the starting shape for fresh provider-family-native reruns.

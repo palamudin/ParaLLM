@@ -58,5 +58,10 @@ The initial direct xAI CSP/OAuth cell hit a provider `max_output_tokens` complet
 
 The current evidence supports ParaLLM as an inspectable orchestration layer, not merely a UI wrapper around model calls. The main signal is not that every Para answer beats every direct model. It is that Para produces comparable or better aggregate answers while also exposing a control score, judge memory-compliance audit, and traceable lane artifacts that direct single-thread answers do not naturally provide.
 
+For an MSP leadership pitch, the clean position is: ParaLLM is an SLT / service-manager incident-command assistant. It helps managers, escalation owners, and incident leads align the first hour of response, preserve tenant boundaries, keep evidence discipline visible, and review what the assistant did after the fact.
+
+For broader product direction, the assistant surface is intentionally thin: a shell plus API call into ParaLLM, backed by memory, provider routing, tools, and scoring. MSP is the current validation domain because the scenarios are easy to audit against real operational expectations. The same pattern can be adapted to other documented domains once the memory bank, tool permissions, and evaluation rubric are swapped.
+
 The next evaluation target is tightening Para's final merge gate so memory obligations become mandatory output material whenever relevant memory is retrieved. That should focus on the lower-control cousin cases before expanding the benchmark suite beyond MSP scenarios.
 
+Do not overclaim this as autonomous remediation or third-party-certified benchmark evidence yet. The defensible commercial language is auditable operational decision support with measurable internal scoring and traceable control behavior.
