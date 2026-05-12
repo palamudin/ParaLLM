@@ -590,6 +590,21 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(settings["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(settings["requestTimeoutSeconds"], 612)
 
+    def test_judge_provider_settings_passes_reasoning_effort(self) -> None:
+        settings = eval_runner.judge_provider_settings(
+            {
+                "judgeRuntime": {
+                    "provider": "openai",
+                    "judgeReasoningEffort": "low",
+                    "targetTimeouts": {"arbiter": 240},
+                }
+            },
+            "openai",
+        )
+
+        self.assertEqual(settings["judgeReasoningEffort"], "low")
+        self.assertEqual(settings["requestTimeoutSeconds"], 240)
+
     def test_extract_public_answer_prefers_direct_baseline_for_single_mode(self) -> None:
         answer = eval_runner.extract_public_answer(
             {"type": "steered"},

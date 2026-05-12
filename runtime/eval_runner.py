@@ -2198,6 +2198,9 @@ def judge_provider_settings(run: Dict[str, Any], judge_provider: str) -> Dict[st
             runtime_settings.get("providerRouting") if isinstance(runtime_settings.get("providerRouting"), dict) else {}
         ),
     }
+    judge_reasoning_effort = str(runtime_settings.get("judgeReasoningEffort") or runtime_settings.get("reasoningEffort") or "").strip().lower()
+    if judge_reasoning_effort in {"none", "low", "medium", "high", "xhigh"}:
+        settings["judgeReasoningEffort"] = judge_reasoning_effort
     if provider == "ollama":
         settings["ollamaBaseUrl"] = normalize_ollama_base_url(runtime_settings.get("ollamaBaseUrl", default_ollama_base_url()))
         timeout_mode = normalize_timeout_mode(runtime_settings.get("timeoutMode"), default_timeout_mode())
@@ -2231,12 +2234,21 @@ def invoke_live_judge_json(
     schema: Dict[str, Any],
     max_output_tokens: int,
     provider_settings: Optional[Dict[str, Any]] = None,
+    reasoning_effort: Optional[str] = None,
 ):
+    configured_reasoning = (
+        (provider_settings or {}).get("judgeReasoningEffort")
+        or (provider_settings or {}).get("reasoningEffort")
+        or "high"
+    )
+    normalized_reasoning = str(reasoning_effort or configured_reasoning or "high").strip().lower()
+    if normalized_reasoning not in {"none", "low", "medium", "high", "xhigh"}:
+        normalized_reasoning = "high"
     return runtime.invoke_provider_json(
         provider=judge_provider,
         api_key=api_key,
         model=judge_model,
-        reasoning_effort="high",
+        reasoning_effort=normalized_reasoning,
         instructions=instructions,
         input_text=input_text,
         schema_name=schema_name,
@@ -2559,6 +2571,7 @@ def answer_health_judge_live(
         answer_health_judge_schema(),
         1200,
         provider_settings,
+        reasoning_effort="low",
     )
     parsed = result.parsed
     scores = _extract_live_score_block(parsed, ANSWER_HEALTH_SCORE_FIELDS, ANSWER_HEALTH_SCORE_ALIASES)

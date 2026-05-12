@@ -45,11 +45,11 @@
     },
     "summarizerHarness": {
       "concision": "none",
-      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the answer prompt-only and memory-free. Stay bounded enough for reliable judging: use concise sections or bullets, avoid exhaustive templates, and focus on the first-hour actions, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
     },
     "directHarness": {
       "concision": "none",
-      "instruction": "Treat this as a live MSP severity-1 incident. Keep the steps easy to follow, but provide the most detailed factual response the situation supports. Be explicit about reasoning, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
+      "instruction": "Treat this as a live MSP severity-1 incident. Keep the answer prompt-only and memory-free. Stay bounded enough for reliable judging: use concise sections or bullets, avoid exhaustive templates, and focus on the first-hour actions, decision gates, tenant boundaries, evidence preservation, incident records, and communication safety."
     },
     "requireLive": true
   },
