@@ -26,6 +26,20 @@
     "vetting": {
       "enabled": true
     },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "msp-knowledgebase",
+      "maxRecords": 10,
+      "maxTokens": 1800,
+      "includeRuntime": true,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": [
+        "msp"
+      ],
+      "tagsMatch": "any"
+    },
     "preferredLoop": {
       "rounds": 1,
       "delayMs": 0

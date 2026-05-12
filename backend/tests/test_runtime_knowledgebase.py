@@ -258,6 +258,241 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertTrue(projected["adaptivePackets"])
         self.assertEqual(projected["retrievalPolicy"]["baselineCount"], 1)
 
+    def test_msp_recall_prioritizes_matching_scenario_memory_over_cross_scenario_scars(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "msp-knowledgebase",
+                "tags": ["msp", "sop"],
+                "items": [
+                    {
+                        "title": "MSP common major incident frame",
+                        "documentId": "msp-usecase-sop#common-major-incident",
+                        "content": "Common MSP major incident SOP packet.",
+                        "type": "runbook",
+                        "sop": {
+                            "schemaVersion": "msp-usecase-sop/v1",
+                            "useCase": "MSP common major incident frame",
+                            "eventTypes": ["major-incident", "multi-tenant", "control-plane"],
+                            "firstActions": ["Open internal major incident record"],
+                        },
+                    },
+                    {
+                        "title": "RMM control-plane incident SOP",
+                        "documentId": "msp-usecase-sop#rmm-control-plane",
+                        "content": "Treat RMM console, audit, API, packages, scripts, jobs, and agent logs as evidence requiring corroboration.",
+                        "type": "runbook",
+                        "sop": {
+                            "schemaVersion": "msp-usecase-sop/v1",
+                            "useCase": "RMM control-plane incident SOP",
+                            "eventTypes": ["rmm", "control-plane", "package", "agent"],
+                            "firstActions": ["Export RMM packages, scripts, jobs, audit, operator accounts, API tokens, and agent logs"],
+                            "evidence": ["RMM package export", "RMM audit log", "Endpoint process and command line evidence"],
+                            "decisionGates": ["Do not trust the RMM console without out-of-band corroboration"],
+                        },
+                    },
+                    {
+                        "title": "Backup and restore destruction SOP",
+                        "documentId": "msp-usecase-sop#backup-restore-destruction",
+                        "content": "Backup restore deletion jobs require portal evidence and restore safeguards.",
+                        "type": "runbook",
+                        "sop": {
+                            "schemaVersion": "msp-usecase-sop/v1",
+                            "useCase": "Backup and restore destruction SOP",
+                            "eventTypes": ["backup", "restore", "deletion-job"],
+                            "firstActions": ["Export backup job queue"],
+                        },
+                    },
+                    {
+                        "title": "Learned: Evidence-first containment sequencing (RMM control-plane incident)",
+                        "content": "Preserve volatile, identity, SaaS, endpoint, and control-plane evidence before disruptive cleanup unless a documented emergency gate is crossed.",
+                        "type": "runbook",
+                        "metadata": {
+                            "learning.kind": "judge-score-failure-class",
+                            "learning.scenarioId": "rmm-control-plane",
+                            "learning.failureClass": "evidence-preservation",
+                            "learning.missCount": 49,
+                            "learning.adaptiveWeight": 10.0,
+                        },
+                        "sop": {
+                            "schemaVersion": "msp-learned-sop/v1",
+                            "useCase": "RMM control-plane incident: Evidence-first containment sequencing",
+                            "eventTypes": ["rmm", "control-plane", "evidence"],
+                            "firstActions": ["Preserve control-plane evidence before disruptive cleanup"],
+                            "evidence": ["RMM audit/package/script/job export", "Endpoint process and command-line evidence"],
+                            "decisionGates": ["Emergency cleanup requires a documented evidence-loss gate"],
+                        },
+                    },
+                    {
+                        "title": "Learned: Evidence-first containment sequencing (Backup/restore destruction incident)",
+                        "content": "Backup portal evidence-first scar with many backup restore deletion terms.",
+                        "type": "runbook",
+                        "metadata": {
+                            "learning.kind": "judge-score-failure-class",
+                            "learning.scenarioId": "backup-restore-destruction",
+                            "learning.failureClass": "evidence-preservation",
+                            "learning.missCount": 99,
+                            "learning.adaptiveWeight": 10.0,
+                        },
+                        "sop": {
+                            "schemaVersion": "msp-learned-sop/v1",
+                            "useCase": "Backup/restore destruction incident: Evidence-first containment sequencing",
+                            "eventTypes": ["backup", "restore", "deletion"],
+                            "firstActions": ["Export backup portal evidence"],
+                        },
+                    },
+                ],
+            },
+        )
+        task = {
+            "taskId": "t-rmm-memory",
+            "objective": "RMM package push caused PowerShell spawns across client tenants; treat the RMM control plane as suspect.",
+            "constraints": ["Preserve evidence before cleanup."],
+            "runtime": {
+                "knowledgebase": {
+                    "bankId": "msp-knowledgebase",
+                    "includeRuntime": False,
+                    "includePersistent": True,
+                    "maxRecords": 6,
+                    "tags": ["msp"],
+                }
+            },
+        }
+
+        packet = self.runtime.build_knowledgebase_recall_packet(task, self.runtime.get_task_runtime(task), "summarizer")
+        projected = self.runtime.project_targeted_sop_prompt_packet(self.runtime.project_knowledgebase_prompt_packet(packet))
+        selected_source_ids = [hit.get("sourceId") for hit in packet["hits"]]
+        adaptive_titles = [item["title"] for item in projected["adaptivePackets"]]
+
+        self.assertIn("msp-usecase-sop#rmm-control-plane", selected_source_ids)
+        self.assertIn("Learned: Evidence-first containment sequencing (RMM control-plane incident)", adaptive_titles)
+        self.assertNotIn("Learned: Evidence-first containment sequencing (Backup/restore destruction incident)", adaptive_titles[:1])
+        self.assertIn("memoryObligations", projected)
+        self.assertEqual(projected["memoryAuthority"], "binding_when_relevant")
+
+    def test_memory_obligations_prioritize_exact_scenario_over_common_frame(self) -> None:
+        projected = {
+            "schemaVersion": knowledgebase.SCHEMA_VERSION,
+            "enabled": True,
+            "available": True,
+            "target": "summarizer",
+            "config": {"bankId": "msp-knowledgebase"},
+            "resultCount": 2,
+            "fallbackUsed": False,
+            "degraded": False,
+            "warnings": [],
+            "selectedEvidenceIds": [
+                "mem_sop_msp_common_major_incident_frame_20260501",
+                "mem_sop_msp_backup_restore_destruction_20260501",
+            ],
+            "memoryPlan": {},
+            "hits": [
+                {
+                    "id": "mem_sop_msp_common_major_incident_frame_20260501",
+                    "bankId": "msp-knowledgebase",
+                    "title": "MSP common major incident frame",
+                    "sourceId": "msp-usecase-sop#common-major-incident",
+                    "memoryLayer": "baseline",
+                    "sop": {
+                        "useCase": "MSP common major incident frame",
+                        "firstActions": [
+                            "Declare incident posture",
+                            "Move command and scribe log outside suspect systems if needed",
+                            "Open internal major incident record plus named owner per affected tenant child record",
+                            "Wake senior incident lead when scope is multi-tenant, destructive, regulated, or control-plane related",
+                        ],
+                        "evidence": [
+                            "Incident record",
+                            "Decision log",
+                            "Control-plane exports",
+                            "Hashes and collector/time/source notes",
+                        ],
+                        "decisionGates": [
+                            "Evidence captured or explicit emergency exception recorded",
+                            "Senior authority activated for multi-tenant, destructive, regulated, or control-plane events",
+                        ],
+                    },
+                },
+                {
+                    "id": "mem_sop_msp_backup_restore_destruction_20260501",
+                    "bankId": "msp-knowledgebase",
+                    "title": "Backup and restore destruction SOP",
+                    "sourceId": "msp-usecase-sop#backup-restore-destruction",
+                    "memoryLayer": "baseline",
+                    "sop": {
+                        "useCase": "Backup and restore destruction SOP",
+                        "firstActions": [
+                            "Snapshot portal and job queue state",
+                            "Export session/API/audit/source IP evidence",
+                            "Check active restore dependencies",
+                            "Freeze destructive automation if safe and authorized",
+                            "Verify storage-side immutability and vendor-side job state",
+                        ],
+                        "evidence": [
+                            "Portal session details",
+                            "Job queue export",
+                            "API token use",
+                            "Audit logs",
+                            "Source IPs",
+                            "Admin identity/session logs",
+                            "Storage-side immutability status",
+                            "Restore job status",
+                        ],
+                        "decisionGates": [
+                            "Evidence export complete or deletion execution is imminent",
+                            "Active restore impact assessed",
+                            "Vendor escalation opened with artifact IDs and timestamps",
+                        ],
+                    },
+                },
+            ],
+            "fallbackPolicy": "",
+        }
+
+        targeted = self.runtime.project_targeted_sop_prompt_packet(projected)
+        obligations = [item["requirement"] for item in targeted["memoryObligations"]]
+
+        self.assertIn("Open internal major incident record plus named owner per affected tenant child record", obligations)
+        self.assertIn("Snapshot portal and job queue state", obligations)
+        self.assertIn("Verify storage-side immutability and vendor-side job state", obligations)
+        self.assertIn("Storage-side immutability status", obligations)
+
+    def test_memory_prompt_declares_ranked_authority_not_advisory_background(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "msp-knowledgebase",
+                "tags": ["msp", "sop"],
+                "items": [
+                    {
+                        "title": "RMM control-plane incident SOP",
+                        "documentId": "msp-usecase-sop#rmm-control-plane",
+                        "content": "Treat RMM packages and audit as evidence, not truth.",
+                        "type": "runbook",
+                        "sop": {
+                            "schemaVersion": "msp-usecase-sop/v1",
+                            "useCase": "RMM control-plane incident SOP",
+                            "eventTypes": ["rmm", "control-plane"],
+                            "firstActions": ["Export RMM packages and audit before cleanup"],
+                        },
+                    }
+                ],
+            },
+        )
+        task = {
+            "taskId": "t-rmm-authority",
+            "objective": "RMM control plane is suspect after a package push.",
+            "runtime": {"knowledgebase": {"bankId": "msp-knowledgebase", "includeRuntime": False}},
+        }
+
+        packet = self.runtime.build_knowledgebase_recall_packet(task, self.runtime.get_task_runtime(task), "summarizer")
+        rendered = self.runtime.render_knowledgebase_prompt_block(packet)
+
+        self.assertIn("ranked operational memory", rendered)
+        self.assertIn("binding when relevant", rendered)
+        self.assertIn("Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory", rendered)
+        self.assertNotIn("optional background", rendered)
+
     def test_default_live_recall_does_not_pull_msp_learning_into_non_msp_prompt(self) -> None:
         knowledgebase.retain(
             self.root,
@@ -656,7 +891,7 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
 
         self.assertTrue(packet["available"])
         self.assertGreaterEqual(packet["resultCount"], 1)
-        self.assertIn("Knowledgebase recall (optional background", rendered)
+        self.assertIn("Knowledgebase recall (ranked operational memory", rendered)
         self.assertNotIn("MSP knowledgebase recall", rendered)
         self.assertIn("targeted_usecase_sop_recall", rendered)
         self.assertIn("Cumulonimbus anvil field marker", rendered)
@@ -736,6 +971,66 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
             fixed["frontAnswer"]["answer"],
             "Parallel reasoning can refine one answer without implying subjective feeling.",
         )
+
+    def test_contradiction_memory_backstop_adds_missing_memory_obligations(self) -> None:
+        knowledgebase_packet = {
+            "schemaVersion": "parallm-native-knowledgebase/v0",
+            "enabled": True,
+            "available": True,
+            "target": "summarizer",
+            "config": {"bankId": "msp-knowledgebase"},
+            "hits": [
+                {
+                    "id": "mem_rmm_evidence",
+                    "bankId": "msp-knowledgebase",
+                    "title": "RMM control-plane incident SOP",
+                    "sourceId": "msp-usecase-sop#rmm-control-plane",
+                    "memoryLayer": "baseline",
+                    "sop": {
+                        "useCase": "RMM control-plane incident SOP",
+                        "eventTypes": ["rmm", "control-plane"],
+                        "firstActions": ["Export RMM packages, scripts, jobs, audit, operator accounts, API tokens, and agent logs"],
+                        "evidence": ["Endpoint process and command-line evidence"],
+                        "decisionGates": ["Do not trust the RMM console without out-of-band corroboration"],
+                    },
+                }
+            ],
+            "aiPacket": {"selectedEvidenceIds": ["mem_rmm_evidence"], "contextText": "RMM evidence export"},
+        }
+        task = {
+            "taskId": "t-rmm-obligation",
+            "objective": "RMM package push caused suspicious PowerShell across customer tenants.",
+            "constraints": ["Preserve evidence."],
+            "runtime": {"knowledgebase": {"enabled": True}},
+        }
+
+        packet = self.runtime.build_contradiction_memory_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            {"taskId": "t-rmm-obligation", "round": 1},
+            {},
+            [],
+            knowledgebase_packet,
+            round_number=1,
+        )
+        summary = {
+            "frontAnswer": {
+                "answer": "Pause the rollout and investigate affected endpoints.",
+                "stance": "Contain carefully.",
+                "leadDirection": "Pause rollout.",
+                "adversarialPressure": "",
+                "confidenceNote": "",
+            },
+            "controlAudit": {"heldOutConcerns": [], "selfCheck": ""},
+        }
+
+        fixed = self.runtime.apply_contradiction_memory_final_gates(summary, packet)
+        answer = fixed["frontAnswer"]["answer"]
+
+        self.assertGreater(len(packet["memoryObligationGates"]), 0)
+        self.assertIn("Export RMM packages, scripts, jobs", answer)
+        self.assertIn("Endpoint process and command-line evidence", answer)
+        self.assertIn("memory-obligation", fixed["controlAudit"]["selfCheck"])
 
     def test_contradiction_memory_backstop_adds_missing_msp_tenant_owner_gate(self) -> None:
         task = {

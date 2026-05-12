@@ -458,7 +458,7 @@ class EvalRunnerTests(unittest.TestCase):
                 return {"selectedEvidenceIds": ["mem_msp_rmm_control_plane"]}
 
             def render_knowledgebase_prompt_block(self, packet):
-                return "MSP knowledgebase recall (optional background, never a core dependency):\nmem_msp_rmm_control_plane\n"
+                return "MSP knowledgebase recall (ranked operational memory; binding when relevant):\nmem_msp_rmm_control_plane\n"
 
         fake_runtime = FakeRuntime()
         prompt = eval_runner.build_direct_answer_prompt(
@@ -480,6 +480,39 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(fake_runtime.task["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
         self.assertIn("mem_msp_rmm_control_plane", prompt["inputText"])
         self.assertIn("mem_msp_rmm_control_plane", prompt["fullPrompt"])
+
+    def test_build_judge_memory_context_uses_arm_knowledgebase(self) -> None:
+        class FakeRuntime:
+            def build_knowledgebase_recall_packet(self, task, runtime, target, **kwargs):
+                self.task = task
+                self.runtime = runtime
+                self.target = target
+                self.kwargs = kwargs
+                return {"selectedEvidenceIds": ["mem_msp_esxi_backup_restore"]}
+
+            def render_knowledgebase_prompt_block(self, packet):
+                return "MSP knowledgebase recall (ranked operational memory; binding when relevant):\nmem_msp_esxi_backup_restore\n"
+
+        fake_runtime = FakeRuntime()
+        context = eval_runner.build_judge_memory_context(
+            fake_runtime,
+            {
+                "caseId": "case-memory",
+                "objective": "Assess an ESXi backup outage.",
+                "constraints": ["Preserve evidence."],
+            },
+            {
+                "knowledgebaseExplicit": True,
+                "knowledgebase": {"enabled": True, "bankId": "msp-knowledgebase"},
+            },
+        )
+
+        self.assertEqual(fake_runtime.target, "judge_memory")
+        self.assertEqual(fake_runtime.runtime["knowledgebase"]["bankId"], "msp-knowledgebase")
+        self.assertEqual(fake_runtime.kwargs["role"], "judge")
+        self.assertIn("Judge memory context", context)
+        self.assertIn("mem_msp_esxi_backup_restore", context)
+        self.assertIn("equivalent wording", context)
 
     def test_format_candidate_answer_packets_stays_blind(self) -> None:
         rendered = eval_runner.format_candidate_answer_packets(
@@ -1169,6 +1202,63 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertNotIn("safety-first", prompt["inputText"])
         self.assertNotIn("direct", prompt["inputText"])
         self.assertNotIn("{\"id\"", prompt["inputText"])
+
+    def test_build_vetting_matrix_judge_prompt_includes_judge_memory_context(self) -> None:
+        prompt = eval_runner.build_vetting_matrix_judge_prompt(
+            {
+                "objective": "Contain the blast path.",
+                "constraints": ["Use decision gates."],
+            },
+            {"mustDo": ["Reward operational restraint."]},
+            [
+                {"id": "A", "text": "Direct answer text."},
+                {"id": "B", "text": "Para answer text."},
+            ],
+            judge_memory_context="Judge memory context:\n- preserve job queue exports\n",
+        )
+
+        self.assertIn("Judge memory context:", prompt["inputText"])
+        self.assertIn("preserve job queue exports", prompt["inputText"])
+        self.assertIn("memory compliance", prompt["instructions"].lower())
+
+    def test_quality_judge_live_includes_memory_context_and_returns_compliance(self) -> None:
+        captured = {}
+
+        def fake_invoke(_runtime, _provider, _api_key, _model, instructions, input_text, *_args, **_kwargs):
+            captured["instructions"] = instructions
+            captured["inputText"] = input_text
+
+            class FakeResult:
+                parsed = {
+                    "scores": {field: 8 for field in eval_runner.QUALITY_SCORE_FIELDS},
+                    "verdict": "usable",
+                    "strongestStrength": "It preserved the required job evidence.",
+                    "strongestWeakness": "It could make one dependency check clearer.",
+                    "rationale": "The answer satisfies the relevant memory by operational meaning.",
+                    "memoryCompliance": "used: job queue export and immutability checks are present by equivalent wording.",
+                }
+                output_text = "{}"
+                response_id = "resp-memory"
+
+            return FakeResult()
+
+        with mock.patch.object(eval_runner, "invoke_live_judge_json", side_effect=fake_invoke):
+            result = eval_runner.quality_judge_live(
+                runtime=object(),
+                judge_provider="openai",
+                api_key="key",
+                judge_model="gpt-5.3",
+                case={"objective": "Contain the blast path.", "constraints": []},
+                judge_rubric={},
+                public_answer="Export the job queue and confirm immutability before destructive actions.",
+                provider_settings={},
+                judge_memory_context="Judge memory context:\n- preserve job queue exports\n",
+            )
+
+        self.assertIn("Judge memory context:", captured["inputText"])
+        self.assertIn("memory compliance", captured["instructions"].lower())
+        self.assertIn("equivalent wording", captured["instructions"])
+        self.assertIn("job queue export", result["memoryCompliance"])
 
     def test_normalize_vetting_matrix_result_accepts_answer_key_score_list_shape(self) -> None:
         normalized = eval_runner.normalize_vetting_matrix_result(

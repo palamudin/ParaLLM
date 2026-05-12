@@ -20,7 +20,59 @@ VALID_FACT_TYPES = {"world", "experience", "observation", "runbook", "note", "ev
 MSP_BANK_ID = "msp-knowledgebase"
 MSP_BASELINE_SOURCE_IDS = {
     "msp-usecase-sop#common-major-incident": "major_incident_baseline",
+    "msp-usecase-sop#rmm-control-plane": "rmm_control_plane_baseline",
+    "msp-usecase-sop#backup-restore-destruction": "backup_restore_baseline",
+    "msp-usecase-sop#identity-oauth-saas": "identity_oauth_saas_baseline",
     "msp-usecase-sop#247-operations": "continuity_baseline",
+}
+MSP_SCENARIO_TERMS = {
+    "rmm-control-plane": {
+        "rmm",
+        "control-plane",
+        "control",
+        "plane",
+        "script",
+        "package",
+        "agent",
+        "powershell",
+        "ps",
+        "remote",
+        "rollout",
+        "deployment",
+    },
+    "backup-restore-destruction": {
+        "backup",
+        "restore",
+        "restores",
+        "restoring",
+        "snapshot",
+        "snapshots",
+        "esxi",
+        "hypervisor",
+        "ransomware",
+        "encryption",
+        "veeam",
+        "deletion",
+    },
+    "identity-oauth-saas": {
+        "identity",
+        "oauth",
+        "entra",
+        "microsoft",
+        "365",
+        "mailbox",
+        "email",
+        "phishing",
+        "bec",
+        "token",
+        "consent",
+        "inbox",
+    },
+}
+MSP_SOURCE_SCENARIOS = {
+    "msp-usecase-sop#rmm-control-plane": "rmm-control-plane",
+    "msp-usecase-sop#backup-restore-destruction": "backup-restore-destruction",
+    "msp-usecase-sop#identity-oauth-saas": "identity-oauth-saas",
 }
 MSP_CONTINUITY_TERMS = {
     "24/7",
@@ -689,7 +741,36 @@ def baseline_reason(record: Dict[str, Any], query: str, query_terms: List[str], 
         if terms & MSP_CONTINUITY_TERMS or "24/7" in query_lower or "night shift" in query_lower:
             return reason
         return ""
+    scenario_id = MSP_SOURCE_SCENARIOS.get(source_id, "")
+    if scenario_id and msp_scenario_query_score(query_lower, terms, scenario_id) > 0:
+        return reason
+    if source_id in MSP_SOURCE_SCENARIOS:
+        return ""
     return reason
+
+
+def msp_scenario_query_score(query_lower: str, query_terms: set[str], scenario_id: str) -> float:
+    scenario_id = str(scenario_id or "").strip().lower()
+    terms = MSP_SCENARIO_TERMS.get(scenario_id, set())
+    if not terms:
+        return 0.0
+    overlap = len(terms & query_terms)
+    phrase_bonus = 0.0
+    if scenario_id == "rmm-control-plane" and ("control plane" in query_lower or "rmm" in query_terms):
+        phrase_bonus = 1.5
+    elif scenario_id == "backup-restore-destruction" and ("backup" in query_terms or "restore" in query_terms or "esxi" in query_terms):
+        phrase_bonus = 1.5
+    elif scenario_id == "identity-oauth-saas" and (
+        "oauth" in query_terms
+        or "mailbox" in query_terms
+        or "email" in query_terms
+        or "bec" in query_terms
+        or "cross-tenant" in query_lower
+    ):
+        phrase_bonus = 1.5
+    if overlap <= 0 and phrase_bonus <= 0:
+        return 0.0
+    return min(3.0, overlap * 0.35 + phrase_bonus)
 
 
 def has_msp_recall_context(query: str, query_terms: List[str], wanted_tags: List[str], bank_id: str) -> bool:
@@ -719,7 +800,10 @@ def baseline_priority(record: Dict[str, Any]) -> int:
     source_id = str(record.get("sourceId") or "").strip()
     order = {
         "msp-usecase-sop#common-major-incident": 0,
-        "msp-usecase-sop#247-operations": 1,
+        "msp-usecase-sop#rmm-control-plane": 1,
+        "msp-usecase-sop#backup-restore-destruction": 1,
+        "msp-usecase-sop#identity-oauth-saas": 1,
+        "msp-usecase-sop#247-operations": 2,
     }
     return order.get(source_id, 50)
 
@@ -738,6 +822,8 @@ def parse_timestamp(value: Any) -> Optional[float]:
 def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wanted_tags: List[str]) -> tuple[float, Dict[str, float]]:
     sop = record.get("sop") if isinstance(record.get("sop"), dict) else {}
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    query_lower = str(query or "").lower()
+    query_term_set = set(query_terms)
     haystack = " ".join(
         [
             str(record.get("title") or ""),
@@ -782,6 +868,10 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
         except (TypeError, ValueError):
             miss_count = 0.0
         learning_boost = min(1.4, adaptive_weight * 0.08 + math.log1p(max(0.0, miss_count)) * 0.18)
+    scenario_boost = 0.0
+    if query_terms and record.get("bankId") == MSP_BANK_ID:
+        scenario_id = str(metadata.get("learning.scenarioId") or MSP_SOURCE_SCENARIOS.get(str(record.get("sourceId") or "").strip()) or "").strip()
+        scenario_boost = msp_scenario_query_score(query_lower, query_term_set, scenario_id)
     timestamp = parse_timestamp(record.get("createdAt"))
     recency = 0.0
     if timestamp is not None:
@@ -789,7 +879,7 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
         recency = 1.0 / (1.0 + min(age_days, 90.0) / 14.0)
     if not query_terms:
         keyword = 0.1
-    score = keyword * 4.0 + phrase * 2.0 + tag * 1.2 + source + recency * 0.35 + sop_boost * 1.6 + learning_boost
+    score = keyword * 4.0 + phrase * 2.0 + tag * 1.2 + source + recency * 0.35 + sop_boost * 1.6 + learning_boost + scenario_boost
     return score, {
         "keyword": round(keyword, 4),
         "phrase": phrase,
@@ -798,6 +888,7 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
         "recency": round(recency, 4),
         "sop": round(sop_boost, 4),
         "learning": round(learning_boost, 4),
+        "scenario": round(scenario_boost, 4),
     }
 
 
@@ -900,7 +991,7 @@ def recall(
 
     selected: List[Dict[str, Any]] = []
     used_tokens = 0
-    baseline_limit = min(2, max_records)
+    baseline_limit = min(3, max_records)
     if scored and max_records > 1:
         baseline_limit = min(baseline_limit, max_records - 1)
     for item in baseline_scored[:baseline_limit]:
@@ -976,7 +1067,7 @@ def recall(
         "aiPacket": {
             "intent": "knowledgebase.recall",
             "coreDependency": False,
-            "fallbackPolicy": "If durable memory is empty or unavailable, use runtime state, steps, events, artifacts, and local runbooks.",
+            "fallbackPolicy": "If durable memory is empty or unavailable, use runtime state, steps, events, artifacts, and local runbooks. If durable memory is present and relevant, treat it as the operational memory layer above model priors.",
             "selectedEvidenceIds": [str(hit.get("id") or "") for hit in selected],
             "contextText": "\n".join(context_lines),
         },

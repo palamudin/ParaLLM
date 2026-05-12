@@ -678,7 +678,7 @@ def quality_judge_schema() -> Dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["scores", "verdict", "strongestStrength", "strongestWeakness", "rationale"],
+        "required": ["scores", "verdict", "strongestStrength", "strongestWeakness", "rationale", "memoryCompliance"],
         "properties": {
             "scores": {
                 "type": "object",
@@ -690,6 +690,7 @@ def quality_judge_schema() -> Dict[str, Any]:
             "strongestStrength": {"type": "string"},
             "strongestWeakness": {"type": "string"},
             "rationale": {"type": "string"},
+            "memoryCompliance": {"type": "string"},
         },
     }
 
@@ -704,6 +705,7 @@ def answer_health_judge_schema() -> Dict[str, Any]:
             "strongestStrength",
             "strongestWeakness",
             "rationale",
+            "memoryCompliance",
         ],
         "properties": {
             "scores": {
@@ -716,6 +718,7 @@ def answer_health_judge_schema() -> Dict[str, Any]:
             "strongestStrength": {"type": "string"},
             "strongestWeakness": {"type": "string"},
             "rationale": {"type": "string"},
+            "memoryCompliance": {"type": "string"},
         },
     }
 
@@ -724,7 +727,7 @@ def control_judge_schema() -> Dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["scores", "verdict", "strongestControlStrength", "strongestControlWeakness", "rationale"],
+        "required": ["scores", "verdict", "strongestControlStrength", "strongestControlWeakness", "rationale", "memoryCompliance"],
         "properties": {
             "scores": {
                 "type": "object",
@@ -736,6 +739,7 @@ def control_judge_schema() -> Dict[str, Any]:
             "strongestControlStrength": {"type": "string"},
             "strongestControlWeakness": {"type": "string"},
             "rationale": {"type": "string"},
+            "memoryCompliance": {"type": "string"},
         },
     }
 
@@ -752,6 +756,7 @@ def comparison_judge_schema() -> Dict[str, Any]:
             "primaryEdge",
             "baselineEdge",
             "rationale",
+            "memoryCompliance",
         ],
         "properties": {
             "scores": {
@@ -766,6 +771,7 @@ def comparison_judge_schema() -> Dict[str, Any]:
             "primaryEdge": {"type": "string"},
             "baselineEdge": {"type": "string"},
             "rationale": {"type": "string"},
+            "memoryCompliance": {"type": "string"},
         },
     }
 
@@ -796,6 +802,7 @@ def vetting_matrix_judge_schema(answer_ids: List[str]) -> Dict[str, Any]:
             "trapFindings",
             "answerNotes",
             "rationale",
+            "memoryCompliance",
         ],
         "properties": {
             "scores": {
@@ -858,6 +865,7 @@ def vetting_matrix_judge_schema(answer_ids: List[str]) -> Dict[str, Any]:
                 "properties": {answer_id: {"type": "string"} for answer_id in normalized_ids},
             },
             "rationale": {"type": "string"},
+            "memoryCompliance": {"type": "string"},
         },
     }
 
@@ -1638,6 +1646,7 @@ def normalize_vetting_matrix_result(parsed: Dict[str, Any], answer_ids: List[str
         "categoryLeaders": vetting_category_leaders(score_matrix),
         "advantageSummary": advantage_summary,
         "rationale": rationale,
+        "memoryCompliance": truncate_text(parsed.get("memoryCompliance") or parsed.get("memory_compliance") or "", 1000),
         "responseId": response_id,
     }
 
@@ -2336,6 +2345,47 @@ def build_direct_answer_prompt(
     }
 
 
+def build_judge_memory_context(
+    runtime: Any,
+    case: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+) -> str:
+    if not isinstance(runtime_config, dict) or not runtime_config.get("knowledgebaseExplicit"):
+        return ""
+    if runtime is None or not hasattr(runtime, "build_knowledgebase_recall_packet"):
+        return ""
+    task = {
+        "taskId": sanitize_id(str(case.get("caseId") or "eval-judge")),
+        "objective": str(case.get("objective") or "").strip(),
+        "constraints": list(case.get("constraints", [])) if isinstance(case.get("constraints"), list) else [],
+        "sessionContext": str(case.get("sessionContext") or "").strip(),
+        "runtime": {"knowledgebase": deepcopy(runtime_config.get("knowledgebase", default_knowledgebase_config()))},
+    }
+    packet = runtime.build_knowledgebase_recall_packet(
+        task,
+        task["runtime"],
+        "judge_memory",
+        label="Judge Memory",
+        role="judge",
+        focus="memory compliance for benchmark grading",
+        constraints=task["constraints"],
+    )
+    renderer = getattr(runtime, "render_knowledgebase_prompt_block", None)
+    if not callable(renderer):
+        return ""
+    rendered = str(renderer(packet) or "").strip()
+    if not rendered:
+        return ""
+    return (
+        "Judge memory context:\n"
+        + rendered
+        + "\n"
+        + "Judge memory compliance rule: grade against this memory when it is relevant. "
+        "equivalent wording satisfies a memory requirement when the operational action, evidence, or decision gate is present. "
+        "Do not require exact wording; do penalize omissions, contradictions, or answers that bury required memory so obscurely that an operator could miss it.\n"
+    )
+
+
 def quality_judge_live(
     runtime: LoopRuntime,
     judge_provider: str,
@@ -2345,24 +2395,27 @@ def quality_judge_live(
     judge_rubric: Any,
     public_answer: str,
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     instructions = (
         "You are grading one candidate assistant answer to a benchmark prompt.\n"
         "Score from 1 to 10 on each quality dimension.\n"
         "Reward decisiveness, tradeoff handling, objection absorption, actionability, and a clean single assistant voice.\n"
         "Use the hidden rubric and gold notes as guidance, but do not require exact wording.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = "\n\n".join(
-        [
+    sections = [
             format_prompt_section("Objective", str(case.get("objective") or "").strip()),
             format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
             format_prompt_section("Hidden rubric", format_prompt_value(judge_rubric)),
             format_prompt_section("Hidden gold guidance", format_prompt_value(case.get("gold", {}))),
             format_prompt_section("Candidate answer", str(public_answer or "").strip()),
-        ]
-    ).strip()
+    ]
+    if str(judge_memory_context or "").strip():
+        sections.insert(4, str(judge_memory_context).strip())
+    input_text = "\n\n".join(sections).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -2390,7 +2443,10 @@ def quality_judge_live(
         "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
         "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
         "rationale": str(parsed.get("rationale", "")).strip(),
+        "memoryCompliance": str(parsed.get("memoryCompliance", "")).strip(),
         "responseId": result.response_id,
+        "rawOutputText": result.output_text,
+        "thinkingText": getattr(result, "thinking_text", None),
     }
 
 
@@ -2421,6 +2477,7 @@ def heuristic_quality_judge(public_answer: str) -> Dict[str, Any]:
         "strongestStrength": "Clear recommendation" if has_recommendation else "Readable structure",
         "strongestWeakness": "Needs a more operational next step" if not has_next_step else "Needs stronger objection absorption",
         "rationale": "Heuristic judge used structural quality signals because no live judge model was available.",
+        "memoryCompliance": "not evaluated by heuristic judge",
         "responseId": None,
     }
 
@@ -2434,22 +2491,25 @@ def answer_health_judge_live(
     public_answer: str,
     telemetry: Dict[str, Any],
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     instructions = (
         "You are grading the operational health of one candidate assistant answer.\n"
         "Score from 1 to 10 on instruction fit, structural clarity, confidence calibration, evidence hygiene, and efficiency/discipline.\n"
         "Use telemetry as supporting context, not as a substitute for reading the answer.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = "\n\n".join(
-        [
+    sections = [
             format_prompt_section("Objective", str(case.get("objective") or "").strip()),
             format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
             format_prompt_section("Answer telemetry", format_prompt_value(telemetry)),
             format_prompt_section("Candidate answer", str(public_answer or "").strip()),
-        ]
-    ).strip()
+    ]
+    if str(judge_memory_context or "").strip():
+        sections.insert(3, str(judge_memory_context).strip())
+    input_text = "\n\n".join(sections).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -2477,7 +2537,10 @@ def answer_health_judge_live(
         "strongestStrength": str(parsed.get("strongestStrength", "")).strip(),
         "strongestWeakness": str(parsed.get("strongestWeakness", "")).strip(),
         "rationale": str(parsed.get("rationale", "")).strip(),
+        "memoryCompliance": str(parsed.get("memoryCompliance", "")).strip(),
         "responseId": result.response_id,
+        "rawOutputText": result.output_text,
+        "thinkingText": getattr(result, "thinking_text", None),
         "telemetry": telemetry,
     }
 
@@ -2509,6 +2572,7 @@ def heuristic_answer_health(public_answer: str, telemetry: Dict[str, Any]) -> Di
         "strongestStrength": "The answer stays structurally disciplined." if scores["instructionFit"] >= 8 else "Some structural discipline is present.",
         "strongestWeakness": "Efficiency/calibration signals are weak." if scores["efficiencyDiscipline"] <= 5 else "Evidence handling remains structurally inferred without a live judge.",
         "rationale": "Heuristic judge used telemetry and structural cues because no live judge model was available.",
+        "memoryCompliance": "not evaluated by heuristic judge",
         "responseId": None,
         "telemetry": telemetry,
     }
@@ -2522,6 +2586,7 @@ def control_judge_live(
     case: Dict[str, Any],
     summary: Dict[str, Any],
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     front_answer = summary.get("frontAnswer", {}) if isinstance(summary.get("frontAnswer"), dict) else {}
     opinion = summary.get("summarizerOpinion", {}) if isinstance(summary.get("summarizerOpinion"), dict) else {}
@@ -2530,11 +2595,11 @@ def control_judge_live(
         "You are grading whether a lead assistant thread stayed in control of adversarial pressure.\n"
         "Reward answers where the lead direction is clear, accepted objections are selective, rejected pressure is actually rejected, and the self-check is meaningful.\n"
         "Penalize funnel-like behavior where internal pressure is merely forwarded or averaged into the final answer.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, strengths, weaknesses, or rationale.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = "\n\n".join(
-        [
+    sections = [
             format_prompt_section("Objective", str(case.get("objective") or "").strip()),
             format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
             format_prompt_section("Public answer", str(front_answer.get("answer", "") or "").strip()),
@@ -2548,8 +2613,10 @@ def control_judge_live(
             format_prompt_section("Rejected adversarial points", format_prompt_value(control_audit.get("rejectedAdversarialPoints", []))),
             format_prompt_section("Held-out concerns", format_prompt_value(control_audit.get("heldOutConcerns", []))),
             format_prompt_section("Pre-release self-check", str(control_audit.get("selfCheck", "") or "").strip()),
-        ]
-    ).strip()
+    ]
+    if str(judge_memory_context or "").strip():
+        sections.insert(2, str(judge_memory_context).strip())
+    input_text = "\n\n".join(sections).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -2577,7 +2644,10 @@ def control_judge_live(
         "strongestControlStrength": str(parsed.get("strongestControlStrength", "")).strip(),
         "strongestControlWeakness": str(parsed.get("strongestControlWeakness", "")).strip(),
         "rationale": str(parsed.get("rationale", "")).strip(),
+        "memoryCompliance": str(parsed.get("memoryCompliance", "")).strip(),
         "responseId": result.response_id,
+        "rawOutputText": result.output_text,
+        "thinkingText": getattr(result, "thinking_text", None),
     }
 
 
@@ -2608,6 +2678,7 @@ def heuristic_control_judge(summary: Dict[str, Any]) -> Dict[str, Any]:
         "strongestControlStrength": "Lead-thread structure is explicit." if scores["leadControl"] >= 8 else "Some control audit fields are present.",
         "strongestControlWeakness": "Public answer still leaks process." if mentions_process else "Control is only structurally inferred without a live judge.",
         "rationale": "Heuristic control judge used structural signals because no live judge model was available.",
+        "memoryCompliance": "not evaluated by heuristic judge",
         "responseId": None,
     }
 
@@ -2621,10 +2692,11 @@ def run_quality_judge(
     judge_rubric: Any,
     public_answer: str,
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         def call_judge() -> Dict[str, Any]:
-            result = quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings)
+            result = quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings, judge_memory_context)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in QUALITY_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable quality scores.", 500)
             require_judge_audit_text(result, ["verdict", "strongestStrength", "strongestWeakness", "rationale"], "quality")
@@ -2654,10 +2726,11 @@ def run_answer_health_judge(
     public_answer: str,
     telemetry: Dict[str, Any],
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         def call_judge() -> Dict[str, Any]:
-            result = answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings)
+            result = answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings, judge_memory_context)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in ANSWER_HEALTH_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable answer-health scores.", 500)
             require_judge_audit_text(result, ["verdict", "strongestStrength", "strongestWeakness", "rationale"], "answer-health")
@@ -2686,10 +2759,11 @@ def run_control_judge(
     case: Dict[str, Any],
     summary: Dict[str, Any],
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         def call_judge() -> Dict[str, Any]:
-            result = control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings)
+            result = control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings, judge_memory_context)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in CONTROL_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable control scores.", 500)
             require_judge_audit_text(result, ["verdict", "strongestControlStrength", "strongestControlWeakness", "rationale"], "control")
@@ -2725,6 +2799,7 @@ def comparison_judge_live(
     baseline_health: Dict[str, Any],
     similarity: Dict[str, Any],
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     instructions = (
         "You are comparing a pressurized multi-lane answer against a single-thread baseline for the same prompt.\n"
@@ -2733,11 +2808,11 @@ def comparison_judge_live(
         "Verdict must be exactly one of: pressurized_advantage, baseline_advantage, mixed.\n"
         "decisionRelation must be exactly one of: same_direction, refined_direction, different_direction, opposed_direction.\n"
         "Use the supplied quality/health summaries and similarity metrics as context, but base the verdict on the actual answer texts.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth; assess each answer's memory compliance by equivalent wording and operational meaning, not exact phrasing.\n"
         "Every narrative field must be a non-empty sentence; never return empty strings for verdict, edges, relation, or rationale.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = "\n\n".join(
-        [
+    sections = [
             format_prompt_section("Objective", str(case.get("objective") or "").strip()),
             format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
             format_prompt_section("Hidden rubric", format_prompt_value(judge_rubric)),
@@ -2749,8 +2824,10 @@ def comparison_judge_live(
             format_prompt_section("Similarity metrics", format_prompt_value(similarity)),
             format_prompt_section("Pressurized answer", str(primary_answer or "").strip()),
             format_prompt_section("Single-thread baseline answer", str(baseline_answer or "").strip()),
-        ]
-    ).strip()
+    ]
+    if str(judge_memory_context or "").strip():
+        sections.insert(4, str(judge_memory_context).strip())
+    input_text = "\n\n".join(sections).strip()
     result = invoke_live_judge_json(
         runtime,
         judge_provider,
@@ -2780,7 +2857,10 @@ def comparison_judge_live(
         "primaryEdge": str(parsed.get("primaryEdge", "")).strip(),
         "baselineEdge": str(parsed.get("baselineEdge", "")).strip(),
         "rationale": str(parsed.get("rationale", "")).strip(),
+        "memoryCompliance": str(parsed.get("memoryCompliance", "")).strip(),
         "responseId": result.response_id,
+        "rawOutputText": result.output_text,
+        "thinkingText": getattr(result, "thinking_text", None),
     }
 
 
@@ -2824,6 +2904,7 @@ def heuristic_comparison_judge(
         "primaryEdge": "Pressurized answer shows a stronger net advantage." if overall_delta > 0.4 else "Pressurized answer mostly refines phrasing rather than changing the course.",
         "baselineEdge": "Baseline answer keeps the stronger immediate call and escalation cadence." if overall_delta < -0.4 else "Baseline answer mostly overlaps the same decision.",
         "rationale": "Heuristic comparison used quality deltas plus text-similarity signals because no live comparison judge was available.",
+        "memoryCompliance": "not evaluated by heuristic judge",
         "responseId": None,
     }
 
@@ -2843,6 +2924,7 @@ def run_comparison_judge(
     baseline_health: Dict[str, Any],
     similarity: Dict[str, Any],
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
         def call_judge() -> Dict[str, Any]:
@@ -2861,6 +2943,7 @@ def run_comparison_judge(
                 baseline_health,
                 similarity,
                 provider_settings,
+                judge_memory_context,
             )
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in COMPARISON_SCORE_FIELDS):
                 raise RuntimeErrorWithCode("Live judge returned no usable comparison scores.", 500)
@@ -2891,12 +2974,13 @@ def vetting_matrix_judge_live(
     judge_rubric: Any,
     answers: List[Dict[str, Any]],
     provider_settings: Optional[Dict[str, Any]] = None,
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     normalized_answers = [dict(answer) for answer in answers if isinstance(answer, dict) and str(answer.get("id", "")).strip()]
     if not normalized_answers:
         raise EvalError("Vetting matrix judge requires at least one answer.")
     answer_ids = [str(answer.get("id", "")).strip() for answer in normalized_answers]
-    prompt_packet = build_vetting_matrix_judge_prompt(case, judge_rubric, normalized_answers)
+    prompt_packet = build_vetting_matrix_judge_prompt(case, judge_rubric, normalized_answers, judge_memory_context=judge_memory_context)
     instructions = prompt_packet["instructions"]
     input_text = prompt_packet["inputText"]
     result = invoke_live_judge_json(
@@ -2950,6 +3034,7 @@ def build_vetting_matrix_judge_prompt(
     case: Dict[str, Any],
     judge_rubric: Any,
     answers: List[Dict[str, Any]],
+    judge_memory_context: str = "",
 ) -> Dict[str, Any]:
     normalized_answers = [dict(answer) for answer in answers if isinstance(answer, dict) and str(answer.get("id", "")).strip()]
     answer_packets = []
@@ -2973,17 +3058,19 @@ def build_vetting_matrix_judge_prompt(
         "Score each answer from 0 to 10 in 0.5-point increments for every listed category.\n"
         "Record hire verdicts, hard-fail flags, and trap findings for each answer.\n"
         "An answer that triggers a hard fail should not win best final answer unless every answer hard-fails.\n"
+        "Use judge memory context, when supplied, as relevant operational ground truth and assess memory compliance by meaning rather than exact wording.\n"
         "Choose one best final answer and one best tactical detail answer.\n"
         "Return JSON only that matches the schema."
     )
-    input_text = "\n\n".join(
-        [
+    sections = [
             format_prompt_section("Judge metric", format_prompt_value(judge_rubric)),
             format_prompt_section("Objective", str(case.get("objective") or "").strip()),
             format_prompt_section("Constraints", format_prompt_value(case.get("constraints", []))),
             format_prompt_section("Candidate answers", format_candidate_answer_packets(answer_packets)),
-        ]
-    ).strip()
+    ]
+    if str(judge_memory_context or "").strip():
+        sections.insert(3, str(judge_memory_context).strip())
+    input_text = "\n\n".join(sections).strip()
     return {
         "instructions": instructions,
         "inputText": input_text,
@@ -3573,6 +3660,8 @@ def execute_replicate(
         str(result.get("provider", "") or ""),
         str(result.get("model", "") or ""),
     )
+    judge_memory_runtime = LoopRuntime(Path("."), auth_path=auth_path)
+    judge_memory_context = build_judge_memory_context(judge_memory_runtime, case, arm.get("runtime", {}))
     quality = run_quality_judge(
         judge_runtime,
         judge_provider,
@@ -3582,6 +3671,7 @@ def execute_replicate(
         run.get("suite", {}).get("judgeRubric", {}),
         public_answer,
         judge_runtime_settings,
+        judge_memory_context,
     )
     answer_health = run_answer_health_judge(
         judge_runtime,
@@ -3592,9 +3682,10 @@ def execute_replicate(
         public_answer,
         primary_telemetry,
         judge_runtime_settings,
+        judge_memory_context,
     )
     control = (
-        run_control_judge(judge_runtime, judge_provider, api_key or None, judge_model, case, result["summary"], judge_runtime_settings)
+        run_control_judge(judge_runtime, judge_provider, api_key or None, judge_model, case, result["summary"], judge_runtime_settings, judge_memory_context)
         if arm["type"] == "steered" and isinstance(result.get("summary"), dict)
         else None
     )
@@ -3618,6 +3709,7 @@ def execute_replicate(
                 run.get("suite", {}).get("judgeRubric", {}),
                 baseline_text,
                 judge_runtime_settings,
+                judge_memory_context,
             )
             baseline_answer_health = run_answer_health_judge(
                 judge_runtime,
@@ -3628,6 +3720,7 @@ def execute_replicate(
                 baseline_text,
                 baseline_telemetry,
                 judge_runtime_settings,
+                judge_memory_context,
             )
             primary_scores = quality.get("scores") if isinstance(quality.get("scores"), dict) else {}
             baseline_scores = baseline_quality.get("scores") if isinstance(baseline_quality.get("scores"), dict) else {}
@@ -3648,6 +3741,7 @@ def execute_replicate(
                 baseline_answer_health,
                 similarity,
                 judge_runtime_settings,
+                judge_memory_context,
             )
             comparison = {
                 **comparison,
@@ -3683,6 +3777,7 @@ def execute_replicate(
         "comparison": comparison,
         "usage": result["usage"],
         "answerPathCallPlan": result.get("answerPathCallPlan"),
+        "judgeMemoryContext": judge_memory_context,
         "generatedAt": utc_now(),
     }
     write_json(replicate_dir / "score.json", score_payload)
@@ -3713,6 +3808,7 @@ def execute_replicate(
         "modeState": result.get("modeState", {}),
         "usage": result["usage"],
         "answerPathCallPlan": result.get("answerPathCallPlan"),
+        "judgeMemoryContext": judge_memory_context,
         "publicAnswer": public_answer,
         "answer": result.get("answer"),
         "directBaseline": result.get("directBaseline"),
@@ -3731,6 +3827,7 @@ def execute_replicate(
         "publicAnswer": public_answer,
         "usage": result["usage"],
         "answerPathCallPlan": result.get("answerPathCallPlan"),
+        "judgeMemoryContext": judge_memory_context,
         "mode": result["mode"],
         "answerPath": result.get("answerPath") if arm["type"] == "steered" else "off",
         "contextMode": arm["runtime"].get("contextMode"),

@@ -738,36 +738,34 @@ The pre-reset score publication is archived here:
 
 Those results remain useful only as historical constrained evidence. They were produced under short-form answer-shaping constraints, including five-paragraph style limits, and before advanced memory utilization was active. They also predate the current uncropped live-output verification gate. Treat them as valid for their original constrained review context, not as current benchmark truth.
 
-### Current Score Position
+### Current Evaluation Snapshot
 
-Current review position as of `2026-05-05`: ParaLLM has strong positive evidence on RMM/control-plane incident scenarios, but the broader MSP quality thesis remains under active validation. The latest hard-case runs found that memory and contradiction gates are improving the internals, while final synthesis still needs stricter merge discipline before a larger corporate benchmark claim.
+Current review position as of `2026-05-12`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot with memory-aware judging, direct baselines, and Para orchestration results. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in this sweep, and it exposes a separate control-discipline audit that direct single-thread answers do not provide.
 
-| Evidence | Status | What It Proves | Review Link |
-| --- | --- | --- | --- |
-| OpenAI mini RMM stability, constrained and unconstrained | Publication pass; quality pass | Para beat Direct in every replicate on the RMM PowerShell first-hour response scenario. | [2026-05-01 MSP RMM OpenAI Mini Stability Runs](docs/eval-results/2026-05-01-msp-rmm-openai-mini.md) |
-| OpenAI 5.4 baseline/adaptive memory hard suite | Publication pass; memory validation pass | Targeted baseline/adaptive MSP recall improved average quality and actionability without dumping the full knowledgebase into every prompt. | [2026-05-02 MSP Baseline/Adaptive Memory Scoring](docs/eval-results/2026-05-02-msp-baseline-adaptive-memory.md) |
-| Cross-provider basis sweep | Diagnostic fail for broad proof | Infrastructure was usable across providers, but same-provider judges preferred Direct in most backup and identity cases. | [2026-05-02 MSP Basis Council and Provider-Owned Sweep](docs/eval-results/2026-05-02-msp-basis-council-provider-owned.md) |
-| OpenAI 5.4 backup/identity rub test | Diagnostic fail for Para backup synthesis | Direct scored `9/9/9` on the backup case; Para scored `9/5/6` and lost explicit per-tenant ownership and evidence handling in final synthesis. | [2026-05-02 OpenAI 5.4 Rub Test: Backup/Identity](docs/eval-results/2026-05-02-openai54-rub-test-backup-identity.md) |
-| DeepSeek contradiction-memory validation | Feature validation pass; operational caution | Contradiction memory and final-answer gates fired, but later DeepSeek retries failed strict JSON parsing before clean quality scoring. | [2026-05-02 DeepSeek Contradiction Memory Validation](docs/eval-results/2026-05-02-deepseek-contradiction-memory-validation.md) |
+Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
-Current publishable RMM score:
+| Architecture | Completed cells | Quality mean | Health mean | Control mean | Corporate readout |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Direct single-thread baseline | `15 / 15` | `8.49` | `8.64` | `n/a` | Strong direct answers, especially from OpenAI and xAI, but no internal orchestration-control score. |
+| ParaLLM multi-lane orchestration | `15 / 15` | `8.92` | `9.11` | `7.80` | Higher aggregate score plus auditable control discipline across worker/review/summary lanes. |
 
-| Regime | Arm | Replicates | Quality Mean | Quality Range | Health Mean | Control Mean | Result |
-| --- | --- | ---: | ---: | --- | ---: | ---: | --- |
-| Constrained | `direct-openai-mini-open` | `5` | `3.60` | `2-6` | `8.20` | `n/a` | baseline |
-| Constrained | `para-openai-mini-critical-double--loops-1` | `5` | `7.20` | `4-9` | `8.80` | `7.20` | Para quality pass |
-| Unconstrained | `direct-openai-mini-unconstrained` | `5` | `2.00` | `2-2` | `8.40` | `n/a` | baseline |
-| Unconstrained | `para-openai-mini-unconstrained-double--loops-1` | `5` | `6.60` | `4-8` | `8.20` | `6.40` | Para quality pass |
+Measured delta on this sweep: ParaLLM scored `+0.43` on quality and `+0.47` on answer health versus direct single-thread baselines. Control is not a direct-vs-Para metric because it grades Para's internal orchestration behavior.
 
-Current memory-enabled hard-suite score:
+| Provider family | Direct quality | Direct health | Para quality | Para health | Para control | Readout |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Anthropic | `7.07` | `6.93` | `9.20` | `9.17` | `7.68` | Para materially improved weaker direct results on RMM and identity cases. |
+| OpenAI | `9.30` | `9.50` | `9.03` | `9.23` | `8.32` | Direct was slightly higher on user-facing scores; Para added traceable control discipline. |
+| xAI | `9.10` | `9.50` | `8.53` | `8.94` | `7.40` | Direct xAI was very strong; Para xAI needs tighter final-gate pressure on cousin cases. |
 
-| Metric | Previous Memory Run | Baseline/Adaptive Run | Delta |
-| --- | ---: | ---: | ---: |
-| Average overall quality | `8.33` | `8.67` | `+0.34` |
-| Average actionability | `8.50` | `9.17` | `+0.67` |
-| Average answer health | `9.50` | `9.33` | `-0.17` |
-| Average control | `9.00` | `7.67` | `-1.33` |
+Method summary:
 
-Review conclusion: the current scoring record supports continued development and internal review, not a broad external performance claim. The next clean benchmark should rerun the backup/identity hard cases after final merge gates and contradiction memory are exercised under stable provider JSON handling.
+- Five hard MSP severity-1 scenarios were run across xAI, OpenAI, and Anthropic provider families.
+- Direct used one single-thread answer. Para used the live multi-lane orchestration path.
+- The judge was OpenAI `gpt-5-mini`, scoring blind completed answers for `Quality` and `Health`.
+- Para also received a `Control` score for orchestration discipline: memory use, evidence gates, tenant boundaries, and unsafe-shortcut rejection.
+- Judge memory-compliance fields were captured for all expected audits: Para `45 / 45`, Direct `30 / 30`.
+- One direct xAI CSP/OAuth cell initially hit a provider max-output completion limit and was rerun as a disclosed supplemental cell before inclusion in the final aggregate.
 
-Use [scripts/vetting_manifest.provider_owned.example.json](scripts/vetting_manifest.provider_owned.example.json) as the starting shape for fresh provider-family-native reruns.
+Calibration: this is an internal benchmark snapshot, not third-party certification. The most important next target is raising Para control scores on the lower-control cousin cases by making retrieved memory obligations mandatory in the final answer whenever relevant memory exists.
+
+Previous score evidence remains useful as history, not as the current headline. Use [scripts/vetting_manifest.provider_owned.example.json](scripts/vetting_manifest.provider_owned.example.json) as the starting shape for fresh provider-family-native reruns.

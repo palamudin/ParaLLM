@@ -551,8 +551,8 @@ def default_knowledgebase_config() -> Dict[str, Any]:
         "enabled": True,
         "scope": "shared",
         "bankId": "",
-        "maxRecords": 6,
-        "maxTokens": 900,
+        "maxRecords": 10,
+        "maxTokens": 1800,
         "includeRuntime": True,
         "includePersistent": True,
         "fallbackToShared": True,
@@ -5523,7 +5523,7 @@ class LoopRuntime:
                 for hit in hits[:8]
                 if isinstance(hit, dict)
             ],
-            "fallbackPolicy": str(ai_packet.get("fallbackPolicy") or "Memory is optional; current task context and inspected evidence win."),
+            "fallbackPolicy": str(ai_packet.get("fallbackPolicy") or "If memory is present and relevant, treat it as ranked operational memory above model priors; current case facts and inspected evidence can still override it."),
         }
 
     def project_targeted_sop_prompt_packet(self, projected: Dict[str, Any]) -> Dict[str, Any]:
@@ -5569,8 +5569,8 @@ class LoopRuntime:
                 "eventTypes": short_items(sop.get("eventTypes", []), 8, 80),
                 "summary": truncate_text(sop.get("summary") or "", 220),
                 "triggers": short_items(sop.get("triggers", []), 4),
-                "firstActions": short_items(sop.get("firstActions", []), 4),
-                "evidence": short_items(sop.get("evidence", []), 5, 120),
+                "firstActions": short_items(sop.get("firstActions", []), 5),
+                "evidence": short_items(sop.get("evidence", []), 8, 120),
                 "decisionGates": short_items(sop.get("decisionGates", []), 4),
                 "communications": short_items(sop.get("communications", []), 3),
                 "escalation": short_items(sop.get("escalation", []), 3),
@@ -5589,6 +5589,102 @@ class LoopRuntime:
         config = projected.get("config") if isinstance(projected.get("config"), dict) else {}
         memory_plan = projected.get("memoryPlan") if isinstance(projected.get("memoryPlan"), dict) else {}
         sop_packets = [*baseline_packets, *adaptive_packets]
+        memory_obligations: List[Dict[str, str]] = []
+
+        def is_common_major_packet(packet: Dict[str, Any]) -> bool:
+            haystack = " ".join(
+                [
+                    str(packet.get("id") or ""),
+                    str(packet.get("title") or ""),
+                    str(packet.get("useCase") or ""),
+                    str(packet.get("baselineReason") or ""),
+                ]
+            ).lower()
+            return "common major incident" in haystack or "mem_sop_msp_common_major_incident" in haystack
+
+        common_packets = [packet for packet in baseline_packets if isinstance(packet, dict) and is_common_major_packet(packet)]
+        specific_baseline_packets = [
+            packet for packet in baseline_packets if isinstance(packet, dict) and not is_common_major_packet(packet)
+        ]
+
+        obligation_seen: Dict[str, bool] = {}
+
+        def add_obligation(packet: Dict[str, Any], field: str, label: str, item: str) -> None:
+            requirement = truncate_text(item, 180)
+            if not requirement:
+                return
+            dedupe_key = requirement.lower()
+            if obligation_seen.get(dedupe_key):
+                return
+            obligation_seen[dedupe_key] = True
+            source_id = str(packet.get("id") or "")
+            title = truncate_text(packet.get("title") or packet.get("useCase") or source_id, 100)
+            memory_obligations.append(
+                {
+                    "id": truncate_text(f"{source_id}:{field}:{len(memory_obligations) + 1}", 140),
+                    "sourceMemoryId": source_id,
+                    "sourceTitle": title,
+                    "kind": label,
+                    "requirement": requirement,
+                }
+            )
+
+        def add_packet_items(packet: Dict[str, Any], field: str, label: str, count: int) -> None:
+            for item in limit_string_list(packet.get(field, []), count, 180):
+                add_obligation(packet, field, label, item)
+
+        # Keep universal MSP command obligations, but do not let them crowd out the
+        # exact scenario packet. The final gate needs the sharp memory first.
+        common_needles = (
+            "declare incident posture",
+            "open internal major incident",
+            "named owner per affected tenant",
+            "evidence captured or explicit emergency",
+            "senior authority activated",
+            "hashes and collector",
+        )
+        for packet in common_packets:
+            for field, label in [
+                ("firstActions", "first action"),
+                ("decisionGates", "decision gate"),
+                ("evidence", "evidence"),
+            ]:
+                for item in limit_string_list(packet.get(field, []), 8, 180):
+                    if any(needle in item.lower() for needle in common_needles):
+                        add_obligation(packet, field, label, item)
+
+        for packet in specific_baseline_packets[:3]:
+            for field, label, count in [
+                ("firstActions", "first action", 5),
+                ("evidence", "evidence", 8),
+                ("decisionGates", "decision gate", 4),
+                ("avoid", "avoid", 3),
+                ("communications", "communication", 2),
+                ("escalation", "escalation", 2),
+            ]:
+                add_packet_items(packet, field, label, count)
+
+        for packet in adaptive_packets[:5]:
+            for field, label, count in [
+                ("firstActions", "first action", 2),
+                ("evidence", "evidence", 2),
+                ("decisionGates", "decision gate", 2),
+                ("avoid", "avoid", 1),
+                ("communications", "communication", 1),
+                ("escalation", "escalation", 1),
+            ]:
+                add_packet_items(packet, field, label, count)
+
+        for packet in common_packets:
+            for field, label, count in [
+                ("firstActions", "first action", 4),
+                ("evidence", "evidence", 4),
+                ("decisionGates", "decision gate", 4),
+                ("avoid", "avoid", 2),
+                ("communications", "communication", 2),
+                ("escalation", "escalation", 2),
+            ]:
+                add_packet_items(packet, field, label, count)
         return {
             "schemaVersion": projected["schemaVersion"],
             "intent": "targeted_usecase_sop_recall",
@@ -5603,16 +5699,19 @@ class LoopRuntime:
             "warnings": projected["warnings"],
             "selectedEvidenceIds": projected["selectedEvidenceIds"],
             "memoryMode": "baseline_and_adaptive_sop_packets",
+            "memoryAuthority": "binding_when_relevant",
             "omittedFullText": True,
             "retrievalPolicy": {
                 "mode": str(memory_plan.get("mode") or "baseline_and_adaptive"),
                 "baselineCount": memory_plan.get("baselineCount", len(baseline_packets)),
                 "adaptiveCount": memory_plan.get("adaptiveCount", len(adaptive_packets)),
                 "baselinePolicy": str(memory_plan.get("baselinePolicy") or "Baseline packets are mandatory guardrails; adaptive packets are scenario/learning recall."),
+                "authority": "Relevant memory outranks fresh model priors. Current task facts, inspected files, and live tool evidence may override it only when the conflict is explicit.",
             },
-            "baselinePackets": baseline_packets[:2],
-            "adaptivePackets": adaptive_packets[:3],
-            "sopPackets": sop_packets[:5],
+            "baselinePackets": baseline_packets[:3],
+            "adaptivePackets": adaptive_packets[:5],
+            "sopPackets": sop_packets[:8],
+            "memoryObligations": memory_obligations[:24],
             "supportingHits": non_sop_hits[:3],
             "fallbackPolicy": projected["fallbackPolicy"],
         }
@@ -5629,12 +5728,12 @@ class LoopRuntime:
             for hit in projected.get("hits", [])
             if isinstance(hit, dict)
         )
-        heading = "MSP knowledgebase recall (optional background, never a core dependency):\n" if msp_recall else "Knowledgebase recall (optional background, never a core dependency):\n"
+        heading = "MSP knowledgebase recall (ranked operational memory; binding when relevant):\n" if msp_recall else "Knowledgebase recall (ranked operational memory; binding when relevant):\n"
         return (
             heading
             + json.dumps(prompt_packet, ensure_ascii=False, indent=2)
             + "\n\n"
-            "Memory handling rule: use this as supporting context only. Current user input, current constraints, live tool evidence, and inspected files override stale or conflicting memory.\n\n"
+            "Memory authority rule: if this packet contains relevant memory, build the answer from it. Current user input, current constraints, live tool evidence, and inspected files can override memory only when they explicitly conflict. Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory. Integrate each applicable memoryObligation naturally in the answer, or explicitly reject it in controlAudit.selfCheck with the current evidence that makes it inapplicable.\n\n"
         )
 
     def task_matches_msp_contradiction_gate(self, task: Dict[str, Any], prompt_packet: Optional[Dict[str, Any]] = None) -> bool:
@@ -5664,6 +5763,35 @@ class LoopRuntime:
         if any(item in lowered for item in match_any):
             if gate_id != "msp-tenant-ownership":
                 return True
+        if gate_id.startswith("memory-obligation"):
+            requirement = str(gate.get("requirement") or gate.get("title") or "").lower()
+            words = [
+                word
+                for word in re.findall(r"[a-z0-9][a-z0-9-]{3,}", requirement)
+                if word not in {
+                    "this",
+                    "that",
+                    "with",
+                    "from",
+                    "before",
+                    "after",
+                    "must",
+                    "should",
+                    "when",
+                    "then",
+                    "than",
+                    "into",
+                    "each",
+                    "only",
+                    "over",
+                    "under",
+                    "without",
+                }
+            ]
+            if not words:
+                return False
+            hits = sum(1 for word in dict.fromkeys(words[:8]) if word in lowered)
+            return hits >= min(3, max(1, len(set(words[:8]))))
         if gate_id == "msp-tenant-ownership":
             has_major_record = any(
                 item in lowered
@@ -5820,7 +5948,28 @@ class LoopRuntime:
                     )
 
         sop_obligations: List[str] = []
+        memory_obligation_gates: List[Dict[str, str]] = []
         if isinstance(prompt_packet, dict):
+            prompt_packet_text = json.dumps(prompt_packet, ensure_ascii=False).lower()
+            prompt_packet_is_msp = any(marker in prompt_packet_text for marker in ("msp", "rmm", "psa", "tenant", "control-plane", "control plane"))
+            allow_memory_obligation_gates = (not prompt_packet_is_msp) or self.task_matches_msp_contradiction_gate(task, prompt_packet)
+            if allow_memory_obligation_gates:
+                for obligation in prompt_packet.get("memoryObligations", []) if isinstance(prompt_packet.get("memoryObligations"), list) else []:
+                    if not isinstance(obligation, dict):
+                        continue
+                    requirement = truncate_text(obligation.get("requirement") or "", 220)
+                    if not requirement:
+                        continue
+                    if requirement not in sop_obligations:
+                        sop_obligations.append(requirement)
+                    memory_obligation_gates.append(
+                        {
+                            "id": f"memory-obligation-{len(memory_obligation_gates) + 1:02d}",
+                            "title": truncate_text(obligation.get("sourceTitle") or "Retrieved memory obligation", 100),
+                            "requirement": requirement,
+                            "source": truncate_text(obligation.get("sourceMemoryId") or "knowledgebase", 140),
+                        }
+                    )
             for key in ("baselinePackets", "adaptivePackets"):
                 for sop in prompt_packet.get(key, []) if isinstance(prompt_packet.get(key), list) else []:
                     if not isinstance(sop, dict):
@@ -5837,9 +5986,10 @@ class LoopRuntime:
             "round": int(round_number or review_projection.get("round", 0) or 0),
             "source": "commander_review + worker_pressure + msp_knowledgebase_recall",
             "openContradictions": open_items[:8],
-            "sopObligations": sop_obligations[:10],
+            "sopObligations": sop_obligations[:16],
+            "memoryObligationGates": memory_obligation_gates[:16],
             "finalAnswerGates": final_gates[:6],
-            "fallbackPolicy": "If this packet is empty, continue normally. If non-empty, satisfy or explicitly reject each finalAnswerGate before the public answer leaves the summarizer.",
+            "fallbackPolicy": "If this packet is empty, continue normally. If non-empty, satisfy or explicitly reject each finalAnswerGate and memoryObligationGate before the public answer leaves the summarizer.",
         }
         return packet
 
@@ -5852,7 +6002,17 @@ class LoopRuntime:
             "coreDependency": False,
             "round": int(packet.get("round") or 0),
             "openContradictions": limit_string_list(packet.get("openContradictions", []), 6, 180),
-            "sopObligations": limit_string_list(packet.get("sopObligations", []), 8, 180),
+            "sopObligations": limit_string_list(packet.get("sopObligations", []), 16, 180),
+            "memoryObligationGates": [
+                {
+                    "id": str(gate.get("id") or ""),
+                    "title": truncate_text(gate.get("title") or "", 100),
+                    "requirement": truncate_text(gate.get("requirement") or "", 220),
+                    "source": str(gate.get("source") or ""),
+                }
+                for gate in packet.get("memoryObligationGates", [])[:16]
+                if isinstance(gate, dict)
+            ],
             "finalAnswerGates": [
                 {
                     "id": str(gate.get("id") or ""),
@@ -5869,25 +6029,27 @@ class LoopRuntime:
             "Cross-round contradiction memory (mandatory final-answer coverage check):\n"
             + json.dumps(projected, ensure_ascii=False, indent=2)
             + "\n\n"
-            "Contradiction handling rule: do not parrot this packet. Resolve each finalAnswerGate naturally inside the answer, or explicitly reject it in controlAudit.selfCheck with a reason. Do not drop a gate just because the lead draft already feels complete.\n\n"
+            "Contradiction and memory handling rule: do not parrot this packet. Resolve each finalAnswerGate and memoryObligationGate naturally inside the answer, or explicitly reject it in controlAudit.selfCheck with current evidence. Do not drop a gate just because the lead draft already feels complete.\n\n"
         )
 
     def apply_contradiction_memory_final_gates(self, summary: Dict[str, Any], packet: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(summary, dict) or not isinstance(packet, dict) or not packet.get("enabled"):
             return summary
         final_gates = [gate for gate in packet.get("finalAnswerGates", []) if isinstance(gate, dict)]
-        if not final_gates:
+        memory_gates = [gate for gate in packet.get("memoryObligationGates", []) if isinstance(gate, dict)]
+        all_gates = [*final_gates, *memory_gates]
+        if not all_gates:
             return summary
         front_answer = summary.get("frontAnswer") if isinstance(summary.get("frontAnswer"), dict) else {}
         answer_text = str(front_answer.get("answer") or "").strip()
-        missing = [gate for gate in final_gates if not self.final_answer_satisfies_gate(answer_text, gate)]
+        missing = [gate for gate in all_gates if not self.final_answer_satisfies_gate(answer_text, gate)]
         if not missing:
             return summary
         gate_lines = [
             f"- {truncate_text(gate.get('requirement') or gate.get('title') or gate.get('id') or '', 260)}"
-            for gate in missing[:6]
+            for gate in missing[:10]
         ]
-        backstop = "Operational gates to keep explicit:\n" + "\n".join(gate_lines)
+        backstop = "Operational memory gates to keep explicit:\n" + "\n".join(gate_lines)
         front_answer["answer"] = (answer_text + "\n\n" + backstop).strip() if answer_text else backstop
         summary["frontAnswer"] = front_answer
         control_audit = summary.get("controlAudit") if isinstance(summary.get("controlAudit"), dict) else {}
@@ -5913,6 +6075,7 @@ class LoopRuntime:
             "round": int(packet.get("round") or 0) if isinstance(packet, dict) else 0,
             "openContradictionCount": len(packet.get("openContradictions", [])) if isinstance(packet, dict) and isinstance(packet.get("openContradictions"), list) else 0,
             "sopObligationCount": len(packet.get("sopObligations", [])) if isinstance(packet, dict) and isinstance(packet.get("sopObligations"), list) else 0,
+            "memoryObligationGateCount": len(packet.get("memoryObligationGates", [])) if isinstance(packet, dict) and isinstance(packet.get("memoryObligationGates"), list) else 0,
             "finalGateCount": len(packet.get("finalAnswerGates", [])) if isinstance(packet, dict) and isinstance(packet.get("finalAnswerGates"), list) else 0,
             "gateIds": [
                 str(gate.get("id") or "")
