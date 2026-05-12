@@ -2430,6 +2430,7 @@ def build_judge_memory_context(
         + "\n"
         + "Judge memory compliance rule: grade against this memory when it is relevant. "
         "Treat memoryObligations as the compact release checklist and baseline packet firstActions, decisionGates, and avoid items as binding guardrails when applicable. "
+        "Treat memoryConflictLocks as hard unresolved-action holds: if an answer authorizes the affected action before resolving authority, scope, freshness, and evidence, mark memory compliance partial or failing according to severity. "
         "equivalent wording satisfies a memory requirement when the operational action, evidence, or decision gate is present. "
         "Do not require exact wording; do penalize omissions, contradictions, or answers that bury required memory so obscurely that an operator could miss it. "
         "When you mark memory compliance partial or failing, name the missing requirement source as memoryObligations or the packet field that made it binding.\n"

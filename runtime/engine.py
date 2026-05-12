@@ -5532,13 +5532,100 @@ class LoopRuntime:
         baseline_packets: List[Dict[str, Any]] = []
         adaptive_packets: List[Dict[str, Any]] = []
         non_sop_hits: List[Dict[str, Any]] = []
+        memory_conflict_locks: List[Dict[str, str]] = []
 
         def short_items(value: Any, count: int, limit: int = 150) -> List[str]:
             return [truncate_text(item, limit) for item in normalize_string_array_preserve_items(value)[:count] if truncate_text(item, limit)]
 
+        def metadata_value(source: Dict[str, Any], *keys: str) -> Any:
+            metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+            for key in keys:
+                if key in metadata:
+                    return metadata.get(key)
+                if key in source:
+                    return source.get(key)
+            return ""
+
+        def normalized_conflict_list(value: Any) -> List[str]:
+            if isinstance(value, str):
+                raw_items = re.split(r"[,;]+", value)
+                return [truncate_text(item.strip(), 140) for item in raw_items if item.strip()]
+            return [truncate_text(item, 140) for item in normalize_string_array_preserve_items(value) if truncate_text(item, 140)]
+
+        def add_memory_conflict_lock(hit: Dict[str, Any]) -> None:
+            state = str(
+                metadata_value(
+                    hit,
+                    "memory.state",
+                    "memoryState",
+                    "conflict.status",
+                    "conflictStatus",
+                    "state",
+                )
+                or ""
+            ).strip().lower().replace("-", "_").replace(" ", "_")
+            conflicts_with = normalized_conflict_list(
+                metadata_value(hit, "conflictsWith", "conflict.with", "conflictWith", "conflictingMemoryIds")
+            )
+            override_ref = str(
+                metadata_value(hit, "overriddenBy", "override.memoryId", "supersededBy", "resolvedBy") or ""
+            ).strip()
+            resolved_states = {
+                "clean",
+                "resolved",
+                "overridden",
+                "superseded",
+                "approved_override",
+                "overmatch",
+                "overmatched",
+            }
+            unresolved_states = {
+                "conflict",
+                "conflicting",
+                "unresolved",
+                "conflict_unresolved",
+                "unresolved_conflict",
+                "material_conflict",
+            }
+            has_unresolved_conflict = state in unresolved_states or (
+                bool(conflicts_with) and state not in resolved_states and not override_ref
+            )
+            if not has_unresolved_conflict:
+                return
+            memory_id = str(hit.get("id") or hit.get("sourceId") or "").strip()
+            if not memory_id:
+                return
+            if any(lock.get("memoryId") == memory_id for lock in memory_conflict_locks):
+                return
+            memory_conflict_locks.append(
+                {
+                    "id": f"memory-conflict-lock-{len(memory_conflict_locks) + 1:02d}",
+                    "memoryId": truncate_text(memory_id, 140),
+                    "title": truncate_text(hit.get("title") or hit.get("sourceId") or memory_id, 140),
+                    "state": state or "conflict_unresolved",
+                    "conflictsWith": ", ".join(conflicts_with[:4]),
+                    "reason": truncate_text(
+                        metadata_value(hit, "conflict.reason", "conflictReason", "reason")
+                        or "Retrieved memory has an unresolved material conflict.",
+                        260,
+                    ),
+                    "requiredResolution": truncate_text(
+                        metadata_value(hit, "conflict.requiredResolution", "requiredResolution", "resolver", "conflict.resolver")
+                        or "Resolve authority, scope, freshness, and evidence before authorizing the affected action.",
+                        260,
+                    ),
+                    "freezeAction": truncate_text(
+                        metadata_value(hit, "conflict.freezeAction", "freezeAction")
+                        or "Hold destructive or irreversible action; preserve evidence and service continuity while the conflict is resolved.",
+                        260,
+                    ),
+                }
+            )
+
         for hit in projected.get("hits", []):
             if not isinstance(hit, dict):
                 continue
+            add_memory_conflict_lock(hit)
             sop = hit.get("sop") if isinstance(hit.get("sop"), dict) else {}
             metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
             learning_meta = {}
@@ -5587,6 +5674,20 @@ class LoopRuntime:
             else:
                 adaptive_packets.append(packet)
         if not baseline_packets and not adaptive_packets:
+            if memory_conflict_locks:
+                conflict_projection = dict(projected)
+                conflict_projection["memoryAuthority"] = "binding_when_relevant"
+                conflict_projection["memoryResolutionPolicy"] = {
+                    "clean": "Use relevant memory as binding context.",
+                    "overridden": "Use the higher-authority memory only inside its scope.",
+                    "conflict_unresolved": "Freeze affected action; name the conflict, required resolver, and safe holding action.",
+                }
+                conflict_projection["memoryConflictLocks"] = memory_conflict_locks[:8]
+                conflict_projection["retrievalPolicy"] = {
+                    "authority": "Relevant memory outranks fresh model priors.",
+                    "conflictPolicy": "Unresolved material memory conflicts freeze the affected operational action until a retrieved or inspected authority resolves the conflict.",
+                }
+                return conflict_projection
             return projected
         config = projected.get("config") if isinstance(projected.get("config"), dict) else {}
         memory_plan = projected.get("memoryPlan") if isinstance(projected.get("memoryPlan"), dict) else {}
@@ -5715,7 +5816,14 @@ class LoopRuntime:
                 "adaptiveCount": memory_plan.get("adaptiveCount", len(adaptive_packets)),
                 "baselinePolicy": str(memory_plan.get("baselinePolicy") or "Baseline packets are mandatory guardrails; adaptive packets are scenario/learning recall."),
                 "authority": "Relevant memory outranks fresh model priors. Current task facts, inspected files, and live tool evidence may override it only when the conflict is explicit.",
+                "conflictPolicy": "Unresolved material memory conflicts freeze the affected operational action. More specific, fresher, scoped, or signed authority may overmatch generic memory only when the overmatch is itself retrieved or inspected evidence.",
             },
+            "memoryResolutionPolicy": {
+                "clean": "Use relevant memory as binding context.",
+                "overridden": "Use the higher-authority memory only inside its scope.",
+                "conflict_unresolved": "Freeze affected action; name the conflict, required resolver, and safe holding action.",
+            },
+            "memoryConflictLocks": memory_conflict_locks[:8],
             "baselinePackets": baseline_packets[:3],
             "adaptivePackets": adaptive_packets[:5],
             "sopPackets": sop_packets[:8],
@@ -5741,7 +5849,7 @@ class LoopRuntime:
             heading
             + json.dumps(prompt_packet, ensure_ascii=False, indent=2)
             + "\n\n"
-            "Memory authority rule: if this packet contains relevant memory, build the answer from it. Current user input, current constraints, live tool evidence, and inspected files can override memory only when they explicitly conflict. Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory. Treat baselinePackets firstActions, decisionGates, and avoid items as mandatory guardrails when relevant; memoryObligations is the compact release checklist. Integrate each applicable memoryObligation naturally in the answer, or explicitly reject it in controlAudit.selfCheck with the current evidence that makes it inapplicable.\n\n"
+            "Memory authority rule: if this packet contains relevant memory, build the answer from it. Current user input, current constraints, live tool evidence, and inspected files can override memory only when they explicitly conflict. Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory. Treat baselinePackets firstActions, decisionGates, and avoid items as mandatory guardrails when relevant; memoryObligations is the compact release checklist. Integrate each applicable memoryObligation naturally in the answer, or explicitly reject it in controlAudit.selfCheck with the current evidence that makes it inapplicable. If memoryConflictLocks is non-empty, freeze affected operational action until the required resolution is satisfied; do not authorize, average, or improvise through an unresolved memory conflict.\n\n"
         )
 
     def task_matches_msp_contradiction_gate(self, task: Dict[str, Any], prompt_packet: Optional[Dict[str, Any]] = None) -> bool:
@@ -5957,7 +6065,23 @@ class LoopRuntime:
 
         sop_obligations: List[str] = []
         memory_obligation_gates: List[Dict[str, str]] = []
+        memory_conflict_locks: List[Dict[str, str]] = []
         if isinstance(prompt_packet, dict):
+            for lock in prompt_packet.get("memoryConflictLocks", []) if isinstance(prompt_packet.get("memoryConflictLocks"), list) else []:
+                if not isinstance(lock, dict):
+                    continue
+                memory_conflict_locks.append(
+                    {
+                        "id": str(lock.get("id") or f"memory-conflict-lock-{len(memory_conflict_locks) + 1:02d}"),
+                        "title": truncate_text(lock.get("title") or "Unresolved memory conflict", 140),
+                        "state": str(lock.get("state") or "conflict_unresolved"),
+                        "reason": truncate_text(lock.get("reason") or "", 260),
+                        "requiredResolution": truncate_text(lock.get("requiredResolution") or "", 260),
+                        "freezeAction": truncate_text(lock.get("freezeAction") or "", 260),
+                        "memoryId": truncate_text(lock.get("memoryId") or "", 140),
+                        "conflictsWith": truncate_text(lock.get("conflictsWith") or "", 180),
+                    }
+                )
             prompt_packet_text = json.dumps(prompt_packet, ensure_ascii=False).lower()
             prompt_packet_is_msp = any(marker in prompt_packet_text for marker in ("msp", "rmm", "psa", "tenant", "control-plane", "control plane"))
             allow_memory_obligation_gates = (not prompt_packet_is_msp) or self.task_matches_msp_contradiction_gate(task, prompt_packet)
@@ -5989,15 +6113,16 @@ class LoopRuntime:
         packet = {
             "schemaVersion": "contradiction-memory/v1",
             "intent": "cross_round_final_answer_gate",
-            "enabled": bool(final_gates or open_items or sop_obligations),
+            "enabled": bool(final_gates or open_items or sop_obligations or memory_conflict_locks),
             "coreDependency": False,
             "round": int(round_number or review_projection.get("round", 0) or 0),
             "source": "commander_review + worker_pressure + msp_knowledgebase_recall",
             "openContradictions": open_items[:8],
             "sopObligations": sop_obligations[:24],
+            "memoryConflictLocks": memory_conflict_locks[:8],
             "memoryObligationGates": memory_obligation_gates[:24],
             "finalAnswerGates": final_gates[:6],
-            "fallbackPolicy": "If this packet is empty, continue normally. If non-empty, satisfy or explicitly reject each finalAnswerGate and memoryObligationGate before the public answer leaves the summarizer.",
+            "fallbackPolicy": "If this packet is empty, continue normally. If non-empty, satisfy or explicitly reject each finalAnswerGate and memoryObligationGate before the public answer leaves the summarizer. If memoryConflictLocks is non-empty, freeze the affected action until authority, scope, freshness, and evidence resolve the conflict.",
         }
         return packet
 
@@ -6011,6 +6136,18 @@ class LoopRuntime:
             "round": int(packet.get("round") or 0),
             "openContradictions": limit_string_list(packet.get("openContradictions", []), 6, 180),
             "sopObligations": limit_string_list(packet.get("sopObligations", []), 16, 180),
+            "memoryConflictLocks": [
+                {
+                    "id": str(lock.get("id") or ""),
+                    "title": truncate_text(lock.get("title") or "", 140),
+                    "state": str(lock.get("state") or "conflict_unresolved"),
+                    "reason": truncate_text(lock.get("reason") or "", 220),
+                    "requiredResolution": truncate_text(lock.get("requiredResolution") or "", 220),
+                    "freezeAction": truncate_text(lock.get("freezeAction") or "", 220),
+                }
+                for lock in packet.get("memoryConflictLocks", [])[:8]
+                if isinstance(lock, dict)
+            ],
             "memoryObligationGates": [
                 {
                     "id": str(gate.get("id") or ""),
@@ -6037,31 +6174,58 @@ class LoopRuntime:
             "Cross-round contradiction memory (mandatory final-answer coverage check):\n"
             + json.dumps(projected, ensure_ascii=False, indent=2)
             + "\n\n"
-            "Contradiction and memory handling rule: do not parrot this packet. Resolve each finalAnswerGate and memoryObligationGate naturally inside the answer, or explicitly reject it in controlAudit.selfCheck with current evidence. Do not drop a gate just because the lead draft already feels complete.\n\n"
+            "Contradiction and memory handling rule: do not parrot this packet. Resolve each finalAnswerGate and memoryObligationGate naturally inside the answer, or explicitly reject it in controlAudit.selfCheck with current evidence. If memoryConflictLocks is non-empty, do not authorize the affected action; present the conflict, safe holding action, and required resolution. Do not drop a gate just because the lead draft already feels complete.\n\n"
         )
 
     def apply_contradiction_memory_final_gates(self, summary: Dict[str, Any], packet: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(summary, dict) or not isinstance(packet, dict) or not packet.get("enabled"):
             return summary
+        conflict_locks = [lock for lock in packet.get("memoryConflictLocks", []) if isinstance(lock, dict)]
         final_gates = [gate for gate in packet.get("finalAnswerGates", []) if isinstance(gate, dict)]
         memory_gates = [gate for gate in packet.get("memoryObligationGates", []) if isinstance(gate, dict)]
         all_gates = [*final_gates, *memory_gates]
-        if not all_gates:
+        if not all_gates and not conflict_locks:
             return summary
         front_answer = summary.get("frontAnswer") if isinstance(summary.get("frontAnswer"), dict) else {}
         answer_text = str(front_answer.get("answer") or "").strip()
+        missing_locks = [lock for lock in conflict_locks if not self.final_answer_satisfies_memory_conflict_lock(answer_text, lock)]
         missing = [gate for gate in all_gates if not self.final_answer_satisfies_gate(answer_text, gate)]
-        if not missing:
+        if not missing and not missing_locks:
             return summary
-        gate_lines = [
-            f"- {truncate_text(gate.get('requirement') or gate.get('title') or gate.get('id') or '', 260)}"
-            for gate in missing[:10]
-        ]
-        backstop = "Operational memory gates to keep explicit:\n" + "\n".join(gate_lines)
+        backstop_blocks: List[str] = []
+        if missing_locks:
+            lock_lines = []
+            for lock in missing_locks[:6]:
+                freeze_action = truncate_text(
+                    lock.get("freezeAction")
+                    or "Hold destructive or irreversible action; preserve evidence and service continuity only.",
+                    260,
+                )
+                required_resolution = truncate_text(
+                    lock.get("requiredResolution")
+                    or "Resolve authority, scope, freshness, and evidence before authorizing the affected action.",
+                    260,
+                )
+                reason = truncate_text(lock.get("reason") or lock.get("title") or lock.get("id") or "", 220)
+                lock_lines.append(
+                    f"- {reason} {freeze_action} Required resolution: {required_resolution}".strip()
+                )
+            backstop_blocks.append("Unresolved memory conflict lock:\n" + "\n".join(lock_lines))
+        if missing:
+            gate_lines = [
+                f"- {truncate_text(gate.get('requirement') or gate.get('title') or gate.get('id') or '', 260)}"
+                for gate in missing[:10]
+            ]
+            backstop_blocks.append("Operational memory gates to keep explicit:\n" + "\n".join(gate_lines))
+        backstop = "\n\n".join(backstop_blocks).strip()
         front_answer["answer"] = (answer_text + "\n\n" + backstop).strip() if answer_text else backstop
         summary["frontAnswer"] = front_answer
         control_audit = summary.get("controlAudit") if isinstance(summary.get("controlAudit"), dict) else {}
         held_out = normalize_string_array_preserve_items(control_audit.get("heldOutConcerns", []))
+        for lock in missing_locks[:6]:
+            note = truncate_text(f"Final answer backstop inserted: {lock.get('title') or lock.get('id')}", 180)
+            if note not in held_out:
+                held_out.append(note)
         for gate in missing[:6]:
             note = truncate_text(f"Final answer backstop inserted: {gate.get('title') or gate.get('id')}", 180)
             if note not in held_out:
@@ -6069,12 +6233,53 @@ class LoopRuntime:
         control_audit["heldOutConcerns"] = held_out[:8]
         existing_self_check = str(control_audit.get("selfCheck") or "").strip()
         inserted = ", ".join(str(gate.get("id") or "") for gate in missing[:6] if str(gate.get("id") or "").strip())
-        self_check = f"Contradiction-memory backstop verified mandatory MSP gates and inserted missing gates: {inserted}."
+        inserted_locks = ", ".join(str(lock.get("id") or "") for lock in missing_locks[:6] if str(lock.get("id") or "").strip())
+        insert_parts = []
+        if inserted_locks:
+            insert_parts.append(f"inserted unresolved memory conflict locks: {inserted_locks}")
+        if inserted:
+            insert_parts.append(f"inserted missing gates: {inserted}")
+        self_check = "Contradiction-memory backstop verified mandatory memory handling and " + "; ".join(insert_parts) + "."
         control_audit["selfCheck"] = truncate_text((existing_self_check + " " + self_check).strip(), 900)
         summary["controlAudit"] = control_audit
         summary["publicAnswer"] = str(front_answer.get("answer") or "").strip()
         summary["flattenedOutputText"] = flatten_output_payload_text(summary, "summary_output")
         return summary
+
+    def final_answer_satisfies_memory_conflict_lock(self, answer_text: str, lock: Dict[str, Any]) -> bool:
+        lowered = str(answer_text or "").lower()
+        if not lowered:
+            return False
+        has_hold_language = any(
+            phrase in lowered
+            for phrase in (
+                "hold destructive",
+                "hold irreversible",
+                "do not proceed",
+                "do not authorize",
+                "freeze",
+                "pause",
+                "stop",
+                "block",
+            )
+        )
+        has_resolution_language = any(
+            phrase in lowered
+            for phrase in (
+                "resolve",
+                "validate",
+                "verify",
+                "approval",
+                "authority",
+                "scope",
+                "freshness",
+                "signed",
+                "exception",
+                "quorum",
+            )
+        )
+        has_conflict_language = "conflict" in lowered or "contradict" in lowered or "exception" in lowered
+        return has_hold_language and has_resolution_language and has_conflict_language
 
     def contradiction_memory_call_meta(self, packet: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -6083,12 +6288,18 @@ class LoopRuntime:
             "round": int(packet.get("round") or 0) if isinstance(packet, dict) else 0,
             "openContradictionCount": len(packet.get("openContradictions", [])) if isinstance(packet, dict) and isinstance(packet.get("openContradictions"), list) else 0,
             "sopObligationCount": len(packet.get("sopObligations", [])) if isinstance(packet, dict) and isinstance(packet.get("sopObligations"), list) else 0,
+            "memoryConflictLockCount": len(packet.get("memoryConflictLocks", [])) if isinstance(packet, dict) and isinstance(packet.get("memoryConflictLocks"), list) else 0,
             "memoryObligationGateCount": len(packet.get("memoryObligationGates", [])) if isinstance(packet, dict) and isinstance(packet.get("memoryObligationGates"), list) else 0,
             "finalGateCount": len(packet.get("finalAnswerGates", [])) if isinstance(packet, dict) and isinstance(packet.get("finalAnswerGates"), list) else 0,
             "gateIds": [
                 str(gate.get("id") or "")
                 for gate in packet.get("finalAnswerGates", [])[:8]
                 if isinstance(gate, dict) and str(gate.get("id") or "").strip()
+            ] if isinstance(packet, dict) else [],
+            "conflictLockIds": [
+                str(lock.get("id") or "")
+                for lock in packet.get("memoryConflictLocks", [])[:8]
+                if isinstance(lock, dict) and str(lock.get("id") or "").strip()
             ] if isinstance(packet, dict) else [],
         }
 
@@ -9958,7 +10169,7 @@ class LoopRuntime:
             "Leave suggestedLaneTypes empty when the current roster is sufficient.\n"
             "Keep uncertainty honest, but do not become timid or vague.\n"
             + (
-                "Main-thread full context is active. Read the fuller background packet below, but Objective and current Constraints still win on conflicts.\n"
+                "Main-thread full context is active. Read the fuller background packet below. Objective and current Constraints frame the request; relevant retrieved memory remains binding unless explicit current evidence conflicts, and unresolved memory conflict locks freeze affected actions.\n"
                 + (
                     "Workers for this task are set to Light Workers mode, so later adversarial lanes will receive weighted digests instead of the full packet.\n"
                     if worker_context_mode == "weighted"
@@ -10339,7 +10550,7 @@ class LoopRuntime:
                 "remainingUncertainty should capture what still stays unresolved after this reevaluation.\n"
                 "sourceWorkers should list the workers whose checkpoints materially informed the reevaluation.\n"
                 + (
-                    "Main-thread full context is active. Read the fuller background packet below during reevaluation, but Objective and current Constraints still win on conflicts.\n"
+                    "Main-thread full context is active. Read the fuller background packet below during reevaluation. Objective and current Constraints frame the request; relevant retrieved memory remains binding unless explicit current evidence conflicts, and unresolved memory conflict locks freeze affected actions.\n"
                     + (
                         "Workers for this task are set to Light Workers mode, so lane prompts were intentionally lighter than the full packet.\n"
                         if worker_context_mode == "weighted"
@@ -10680,7 +10891,7 @@ class LoopRuntime:
                 "Light Workers mode is active. Treat Objective and current Constraints as primary. Treat the commander draft as high-weight. Treat peer steer and prior summary as medium-weight. Treat carry-forward session context as low-weight background.\n"
                 if worker_context_mode == "weighted"
                 else
-                "Full Workers mode is active. The fuller background packet below should inform your lane's judgment, but Objective and current Constraints still win on conflicts.\n"
+                "Full Workers mode is active. The fuller background packet below should inform your lane's judgment. Objective and current Constraints frame the request; relevant retrieved memory remains binding unless explicit current evidence conflicts, and unresolved memory conflict locks freeze affected actions.\n"
             )
             + (
                 "If local file tools are available, inspect the relevant workspace files before asserting repository-specific details.\n"
@@ -11957,7 +12168,7 @@ class LoopRuntime:
                 "Do not do new research.\n"
                 "If vetting is disabled, keep verdicts conservative and mark unsupported confidence clearly.\n"
                 + (
-                    "Main-thread full context is active. Read the full task and worker packet below, but Objective and current Constraints still win on conflicts.\n"
+                    "Main-thread full context is active. Read the full task and worker packet below. Objective and current Constraints frame the request; relevant retrieved memory remains binding unless explicit current evidence conflicts, and unresolved memory conflict locks freeze affected actions.\n"
                     + (
                         "Workers for this task are set to Light Workers mode.\n"
                         if worker_context_mode == "weighted"

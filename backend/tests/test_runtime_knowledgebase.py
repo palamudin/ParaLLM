@@ -495,6 +495,80 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertIn("Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory", rendered)
         self.assertNotIn("optional background", rendered)
 
+    def test_memory_prompt_marks_unresolved_conflict_as_action_lock(self) -> None:
+        knowledgebase_packet = {
+            "schemaVersion": "parallm-native-knowledgebase/v0",
+            "enabled": True,
+            "available": True,
+            "target": "summarizer",
+            "config": {"bankId": "msp-knowledgebase"},
+            "hits": [
+                {
+                    "id": "mem_default_change_hold",
+                    "bankId": "msp-knowledgebase",
+                    "title": "Default change compliance hold",
+                    "sourceId": "client-policy#default-change",
+                    "memoryLayer": "baseline",
+                    "metadata": {
+                        "memory.state": "conflict_unresolved",
+                        "conflictsWith": "mem_board_exception",
+                        "conflict.reason": "Default compliance blocks the action, but a board exception is claimed.",
+                        "conflict.requiredResolution": "Validate the signed board exception, scope, dates, and quorum.",
+                    },
+                    "sop": {
+                        "useCase": "Client change compliance",
+                        "firstActions": ["Hold destructive action until approval authority is verified"],
+                        "decisionGates": ["Validate exception scope before proceeding"],
+                    },
+                }
+            ],
+            "aiPacket": {"selectedEvidenceIds": ["mem_default_change_hold"], "contextText": "approval conflict"},
+        }
+
+        projected = self.runtime.project_targeted_sop_prompt_packet(
+            self.runtime.project_knowledgebase_prompt_packet(knowledgebase_packet)
+        )
+        rendered = self.runtime.render_knowledgebase_prompt_block(knowledgebase_packet)
+
+        self.assertEqual(projected["memoryConflictLocks"][0]["state"], "conflict_unresolved")
+        self.assertIn("Validate the signed board exception", projected["memoryConflictLocks"][0]["requiredResolution"])
+        self.assertIn("memoryConflictLocks", rendered)
+        self.assertIn("freeze affected operational action", rendered)
+
+    def test_non_sop_memory_conflict_still_becomes_action_lock(self) -> None:
+        knowledgebase_packet = {
+            "schemaVersion": "parallm-native-knowledgebase/v0",
+            "enabled": True,
+            "available": True,
+            "target": "summarizer",
+            "config": {"bankId": "client-alpha"},
+            "hits": [
+                {
+                    "id": "mem_client_exception_claim",
+                    "bankId": "client-alpha",
+                    "title": "Client exception claim",
+                    "sourceId": "client-alpha#exception-claim",
+                    "metadata": {
+                        "conflictStatus": "unresolved",
+                        "conflictsWith": "mem_default_policy",
+                        "conflict.reason": "A client-specific exception is claimed but the signed approval is not attached.",
+                        "conflict.requiredResolution": "Attach the signed approval packet before proceeding.",
+                    },
+                    "summary": "Client claims an exception to the default policy.",
+                }
+            ],
+            "aiPacket": {"selectedEvidenceIds": ["mem_client_exception_claim"], "contextText": "exception claim"},
+        }
+
+        projected = self.runtime.project_targeted_sop_prompt_packet(
+            self.runtime.project_knowledgebase_prompt_packet(knowledgebase_packet)
+        )
+        rendered = self.runtime.render_knowledgebase_prompt_block(knowledgebase_packet)
+
+        self.assertEqual(projected["memoryConflictLocks"][0]["state"], "unresolved")
+        self.assertIn("Attach the signed approval packet", rendered)
+        self.assertIn('"memoryConflictLocks"', rendered)
+
     def test_default_live_recall_does_not_pull_msp_learning_into_non_msp_prompt(self) -> None:
         knowledgebase.retain(
             self.root,
@@ -1033,6 +1107,43 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertIn("Export RMM packages, scripts, jobs", answer)
         self.assertIn("Endpoint process and command-line evidence", answer)
         self.assertIn("memory-obligation", fixed["controlAudit"]["selfCheck"])
+
+    def test_unresolved_memory_conflict_backstop_freezes_permission(self) -> None:
+        packet = {
+            "schemaVersion": "contradiction-memory/v1",
+            "intent": "cross_round_final_answer_gate",
+            "enabled": True,
+            "memoryConflictLocks": [
+                {
+                    "id": "memory-conflict-lock-01",
+                    "title": "Default compliance hold vs board exception",
+                    "state": "conflict_unresolved",
+                    "reason": "Default compliance blocks the action, while an exception claims approval.",
+                    "requiredResolution": "Validate signed board approval, exact scope, dates, and quorum before action.",
+                    "freezeAction": "Hold destructive or irreversible action; preserve evidence and service continuity only.",
+                }
+            ],
+            "finalAnswerGates": [],
+            "memoryObligationGates": [],
+        }
+        summary = {
+            "frontAnswer": {
+                "answer": "Proceed with the deletion because the owner says the exception exists.",
+                "stance": "Proceed.",
+                "leadDirection": "Proceed.",
+                "adversarialPressure": "",
+                "confidenceNote": "",
+            },
+            "controlAudit": {"heldOutConcerns": [], "selfCheck": ""},
+        }
+
+        fixed = self.runtime.apply_contradiction_memory_final_gates(summary, packet)
+        answer = fixed["frontAnswer"]["answer"]
+
+        self.assertIn("Unresolved memory conflict lock", answer)
+        self.assertIn("Hold destructive or irreversible action", answer)
+        self.assertIn("Validate signed board approval", answer)
+        self.assertIn("memory-conflict-lock-01", fixed["controlAudit"]["selfCheck"])
 
     def test_contradiction_memory_backstop_adds_missing_msp_tenant_owner_gate(self) -> None:
         task = {

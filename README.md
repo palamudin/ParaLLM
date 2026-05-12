@@ -73,7 +73,10 @@ flowchart LR
 - All adversarial lanes should receive the same user objective.
 - Full user objective and current constraints stay shared across lanes; only background context routing is allowed to vary.
 - Session memory is background context, not authoritative truth.
-- Memory is optional infrastructure: durable recall can enrich lanes, but the runtime must always fall back to current state, steps, events, artifacts, and local runbooks.
+- Retrieved knowledgebase memory with source/provenance is binding when relevant: workers and summarizers should build from it instead of treating it as optional flavor text.
+- Unresolved memory conflicts freeze the affected action. The answer should name the conflict, safe holding action, and required resolution instead of averaging contradictory guidance.
+- More specific, fresher, scoped, or signed memory can overmatch generic memory only when that overmatch is itself retrieved or inspected evidence.
+- Memory is optional infrastructure: durable recall can enrich lanes, but the runtime must always fall back to current state, steps, events, artifacts, and local runbooks when no relevant memory exists.
 - Contradictions should remain visible in review artifacts.
 - Cost should be controlled, but not by starving the primary reasoning path of user context.
 
@@ -179,6 +182,7 @@ Current Home operator surface:
 - Native MSP knowledgebase endpoints now expose local `retain` / `recall` / `reflect` verbs with JSONL memory banks and a runtime-log fallback, so memory can bolt on without becoming a hard dependency
 - Live commander, worker, review, and summarizer dispatch now receive a compact optional MSP knowledgebase recall packet before forming their prompt; `runtime.knowledgebase.scope` can be `shared`, `lane`, `runtime`, `strict`, or `off`, with lane scope falling back to shared/runtime readout when its private trail is empty
 - MSP recall now uses a baseline/adaptive shape: mandatory compact baseline SOP packets provide incident guardrails first, then adaptive judge-learned memories fill the remaining prompt budget; the full rulebook stays inspectable instead of being blindly loaded
+- Memory conflict locks now flow through recall, summarizer contradiction gates, final-answer backstops, and judge context: unresolved material memory disputes hold the affected action until authority, scope, freshness, and evidence resolve the conflict
 - Repo graph and memory graph endpoints produce operator-readable and AI-readable topology packets without requiring runtime prompts to ingest the whole repo blindly
 - Provider-normalized response parsing keeps direct, Para, and judge artifacts comparable across OpenAI, DeepSeek, Anthropic, xAI, MiniMax, and Ollama paths
 - Provider-call ledger artifacts are written under `data/provider_calls/` for every `invoke_provider_json` request/response pair, with full prompt/response envelopes retained locally and auth material redacted for review, eval, and retrieval debugging
