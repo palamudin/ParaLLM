@@ -751,7 +751,7 @@ Those results remain useful only as historical constrained evidence. They were p
 
 ### Current Evaluation Snapshot
 
-Current review position as of `2026-05-12`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot with memory-aware judging, memory-bound direct baselines, pure no-memory Direct baselines, and Para orchestration results. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in both comparisons, and it exposes a separate control-discipline audit that direct single-thread answers do not provide.
+Current review position as of `2026-05-13`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot plus a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide.
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
@@ -762,6 +762,8 @@ Compliance audit follow-up: [2026-05-12 Judge Compliance Audit](docs/eval-result
 Memory conflict-lock proof: [2026-05-12 Memory Conflict Lock OpenAI Sweep](docs/eval-results/2026-05-12-memory-conflict-lock-openai.md)
 
 Owner-audit rerun: [2026-05-12 Memory Conflict Owner-Audit Rerun](docs/eval-results/2026-05-12-memory-conflict-owner-audit-rerun.md)
+
+Provider council rejudge: [2026-05-13 Provider Council Rejudge](docs/eval-results/2026-05-13-provider-council-rejudge.md)
 
 Commercial positioning: the current MSP wedge is an SLT / service-manager incident-command assistant, not a generic chatbot. The operator sees a normal assistant surface, while ParaLLM runs the deeper layer: provider routing, retained operational memory, adversarial review lanes, evidence gates, and judgeable traces. The value proposition is faster first-hour alignment, safer tenant-specific escalation, and a post-incident audit trail management can inspect.
 
@@ -797,13 +799,28 @@ Memory conflict-lock live probe:
 | Direct + conflict memory single-call baseline | Yes | `2 / 2` | `9.0` | `9.0` | `n/a` | Clean single-call hold: freeze deletion, preserve evidence, require signed scoped board approval and resolver details. |
 | ParaLLM + conflict memory | Yes | `2 / 2` | `9.0` | `9.0` | `9.5` | Same user-facing pass plus auditable control discipline from adversarial lanes and summarizer merge. |
 
-Latest owner-audit rerun:
+Owner-verdict consistency rerun:
 
-| Path | Quality owner audit | Health owner audit | Control owner audit | Readout |
-| --- | ---: | ---: | ---: | --- |
-| Pure Direct prompt-only | `9.5` | `10.0` | `n/a` | Scenario wording alone still made OpenAI mini safely refuse deletion. |
-| Direct + conflict memory single-call baseline | `9.5` | `9.5` | `n/a` | Strong memory-backed answer, but subtle-case quality notes still exposed a missing internal decision record/log. |
-| ParaLLM + conflict memory | `10.0` | `9.5` | `9.5` | Best control readout, with one subtle-case wording ambiguity around verification completion before destructive action. |
+Run id: `memory-conflict-lock-owner-cap-openai-20260513`
+
+| Path | Deterministic pass | Quality | Quality owner audit | Health | Health owner audit | Control | Control owner audit | Readout |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Pure Direct prompt-only | `0 / 2` | `6.0` | `6.0` | `8.0` | `8.5` | `n/a` | `n/a` | Correctly refused deletion, but the owner-verdict cap now marks missing memory-specific resolver evidence as conditional rather than a clean pass. |
+| Direct + conflict memory single-call baseline | `1 / 2` | `8.5` | `8.5` | `9.0` | `9.5` | `n/a` | `n/a` | Memory-backed Direct is much stronger, but still missed or softened some explicit conflict-lock wording in the board-exception case. |
+| ParaLLM + conflict memory | `2 / 2` | `9.0` | `9.5` | `9.0` | `9.5` | `9.0` | `10.0` | Best focused-run result: clean deterministic pass, strongest owner protection, and a separate control audit. |
+
+Provider council rejudge on the same answer artifacts:
+
+| Judge family | Judge model | Completed | Errors | Quality | Owner quality | Health | Owner health | Control | Owner control | Readout |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| OpenAI | `gpt-5-mini` | `6 / 6` | `0` | `7.83` | `8.00` | `8.67` | `9.17` | `9.00` | `10.00` | Source judge; clean strict-schema execution. |
+| xAI | `grok-4.20-reasoning` | `6 / 6` | `0` | `8.67` | `9.00` | `8.83` | `8.83` | `9.00` | `9.00` | Clean second judge lane; agrees with the Pure Direct -> Direct + memory -> Para gradient. |
+| DeepSeek | `deepseek-v4-pro` | `5 / 6` | `1` | `7.33` | `8.00` | `7.50` | `7.83` | `10.00` | `10.00` | Mostly agrees where it completes, but one cell failed the judge contract. |
+| MiniMax | `MiniMax-M2.7` | `3 / 6` | `3` | `3.83` | `3.83` | `4.17` | `4.17` | `0.00` | `0.00` | Diagnostic only: half the cells failed. |
+| Anthropic Opus | `claude-opus-4-7` | `0 / 6` | `6` | `0.00` | `0.00` | `0.00` | `0.00` | `0.00` | `0.00` | Not judge-contract reliable in this path due overload and score-only payloads. |
+| Anthropic Sonnet | `claude-sonnet-4-6` | `0 / 6` | `6` | `0.00` | `0.00` | `0.00` | `0.00` | `0.00` | `0.00` | Not judge-contract reliable in this path due no-usable-score and score-only payloads. |
+
+Council interpretation: OpenAI and xAI are currently usable for strict provider-council judging and preserve the same architectural gradient. DeepSeek is promising but still fragile. MiniMax and Anthropic should be treated as judge-adapter hardening targets, not as negative judgement of the answer artifacts.
 
 Memory integration and value:
 
