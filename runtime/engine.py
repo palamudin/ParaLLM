@@ -12227,6 +12227,28 @@ class LoopRuntime:
             task_id=str(task["taskId"]),
         )
         parsed = dict(result.parsed)
+        raw_summary: Dict[str, Any] = {}
+        if str(result.output_text or "").strip():
+            raw_text = strip_structured_output_prefix(str(result.output_text or ""))
+            try:
+                raw_candidate = json.loads(raw_text)
+                raw_summary = raw_candidate if isinstance(raw_candidate, dict) else {}
+            except Exception:
+                try:
+                    raw_summary = parse_structured_output_text(str(result.output_text or ""))
+                except Exception:
+                    raw_summary = {}
+        raw_front_answer = raw_summary.get("frontAnswer") if isinstance(raw_summary.get("frontAnswer"), dict) else {}
+        parsed_front_answer = parsed.get("frontAnswer") if isinstance(parsed.get("frontAnswer"), dict) else {}
+        raw_answer = str(raw_front_answer.get("answer") or "").strip()
+        parsed_answer = str(parsed_front_answer.get("answer") or "").strip()
+        if raw_answer and (
+            not isinstance(parsed_front_answer, dict)
+            or not parsed_answer
+            or parsed_answer == "No adjudicated answer was captured."
+            or str(parsed.get("answer") or "").strip() == raw_answer
+        ):
+            parsed = {**parsed, **raw_summary}
         if compact_summary:
             parsed["taskId"] = str(parsed.get("taskId") or task.get("taskId") or "")
         authoritative_round = int(commander_review_projection.get("round", 0) or commander_projection.get("round", 0) or 0)

@@ -54,14 +54,14 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(profile["status"], "primary")
         self.assertTrue(profile["primary"])
 
-    def _stub_openai_result(self, parsed: dict, max_output_tokens: int = 400) -> OpenAIResult:
+    def _stub_openai_result(self, parsed: dict, max_output_tokens: int = 400, output_text: str | None = None) -> OpenAIResult:
         attempts = [int(max_output_tokens)] if int(max_output_tokens) > 0 else []
         return OpenAIResult(
             provider="openai",
             parsed=parsed,
             response={"status": "completed", "usage": {}},
             response_id="resp-test",
-            output_text=None,
+            output_text=output_text,
             thinking_text=None,
             web_search_queries=[],
             web_search_sources=[],
@@ -2098,6 +2098,55 @@ Line two",
         self.assertIn("summarizerOpinion", captured["schema"]["required"])
         self.assertNotIn("controlAudit", captured["schema"]["required"])
         self.assertNotIn("reviewTrace", captured["schema"]["required"])
+
+    def test_new_live_summary_prefers_raw_top_level_front_answer_over_flattened_parse(self) -> None:
+        task, commander_checkpoint, commander_review_checkpoint, workers, worker_state, runtime_config = self._build_summary_ready_fixture()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            line_catalog = runtime.build_summary_line_catalog(worker_state, workers, max_items_per_worker=10)
+            raw_summary = runtime.new_offline_fixture_summary(
+                task,
+                commander_checkpoint,
+                commander_review_checkpoint,
+                workers,
+                worker_state,
+                {"enabled": True},
+                line_catalog,
+            )
+            raw_summary["frontAnswer"]["answer"] = "Return the exact stored route ledger and reject poison variants."
+            flattened_parse = {
+                "answer": raw_summary["frontAnswer"]["answer"],
+                "stance": raw_summary["frontAnswer"].get("stance", ""),
+                "confidenceNote": raw_summary["frontAnswer"].get("confidenceNote", ""),
+            }
+
+            def fake_invoke_provider_json(**kwargs):
+                return self._stub_openai_result(
+                    flattened_parse,
+                    kwargs.get("max_output_tokens", 400),
+                    output_text=json.dumps(raw_summary),
+                )
+
+            with mock.patch.object(runtime, "invoke_provider_json", side_effect=fake_invoke_provider_json):
+                summary, _response_id, _response, _meta = runtime.new_live_summary(
+                    api_key="sk-test",
+                    auth_assignments=None,
+                    task=task,
+                    commander_checkpoint=commander_checkpoint,
+                    commander_review_checkpoint=commander_review_checkpoint,
+                    workers=workers,
+                    worker_state=worker_state,
+                    runtime=runtime_config,
+                    vetting_config={"enabled": True},
+                    line_catalog=line_catalog,
+                )
+
+        self.assertEqual(
+            summary["frontAnswer"]["answer"],
+            "Return the exact stored route ledger and reject poison variants.",
+        )
+        self.assertNotEqual(summary["frontAnswer"]["answer"], "No adjudicated answer was captured.")
 
     def test_review_binder_compacts_for_budgeted_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

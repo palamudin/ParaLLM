@@ -1,0 +1,55 @@
+{
+  "armId": "direct-openai-mini-synthetic-needle-pure",
+  "title": "Pure Direct OpenAI Mini | Synthetic Needle Prompt Only",
+  "description": "Single-call OpenAI mini baseline for the Synthetic Needle Ledger suite. Answer generation receives no knowledgebase recall; judge memory remains available for scoring.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "directMemoryMode": "off",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": false,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "synthetic-needle-ledger-transit",
+      "maxRecords": 3,
+      "maxTokens": 1400,
+      "includeRuntime": false,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": ["synthetic", "needle", "ledger", "transit"],
+      "tagsMatch": "all"
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a strict memory integrity test. If the stored ledger is not visible to you, say ledger unavailable instead of guessing. Do not use repeated story details as authority."
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a strict memory integrity test. If the stored ledger is not visible to you, say ledger unavailable instead of guessing. Do not use repeated story details as authority."
+    },
+    "requireLive": true
+  },
+  "workers": []
+}

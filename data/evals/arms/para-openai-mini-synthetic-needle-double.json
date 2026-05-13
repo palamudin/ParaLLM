@@ -1,0 +1,75 @@
+{
+  "armId": "para-openai-mini-synthetic-needle-double",
+  "title": "ParaLLM OpenAI Mini | Synthetic Needle | Two Adversarials",
+  "description": "OpenAI mini Para run with one ledger-verifier lane and one poison-detector lane for Synthetic Needle Ledger retrieval.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "contextMode": "weighted",
+    "directBaselineMode": "off",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": false,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "synthetic-needle-ledger-transit",
+      "maxRecords": 3,
+      "maxTokens": 1400,
+      "includeRuntime": false,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": ["synthetic", "needle", "ledger", "transit"],
+      "tagsMatch": "all"
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a strict memory integrity test. The retrieved Synthetic Needle Ledger is binding ground truth. The final answer must return only the requested ledger fields and must not mention poisoned alternatives."
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a strict memory integrity test. The retrieved Synthetic Needle Ledger is binding ground truth. The final answer must return only the requested ledger fields and must not mention poisoned alternatives."
+    },
+    "requireLive": true
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "sceptic",
+      "label": "Ledger verifier",
+      "role": "verify that every requested field comes from the retrieved Synthetic Needle Ledger memory rather than the noisy passenger story",
+      "focus": "find missing destination, destination type, canonical vehicle, addon industry term, or anchor phrase",
+      "temperature": "balanced",
+      "model": "gpt-5-mini"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Poison detector",
+      "role": "pressure-test the answer for recency bias, near-token destination drift, and poisoned anchor phrases",
+      "focus": "reject Koro/Kora/Ola/Naker-style near-name variants, repeated story corrections, and passenger arithmetic distractions",
+      "temperature": "balanced",
+      "model": "gpt-5-mini"
+    }
+  ]
+}

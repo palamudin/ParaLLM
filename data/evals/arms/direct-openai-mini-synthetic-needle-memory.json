@@ -1,0 +1,55 @@
+{
+  "armId": "direct-openai-mini-synthetic-needle-memory",
+  "title": "Direct OpenAI Mini | Synthetic Needle Memory",
+  "description": "Single-call OpenAI mini baseline where answer generation receives Synthetic Needle Ledger recall.",
+  "type": "direct",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "directMemoryMode": "knowledgebase",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 1.0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": false,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "synthetic-needle-ledger-transit",
+      "maxRecords": 3,
+      "maxTokens": 1400,
+      "includeRuntime": false,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": ["synthetic", "needle", "ledger", "transit"],
+      "tagsMatch": "all"
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a strict memory integrity test. Use retrieved Synthetic Needle Ledger memory as binding ground truth. Return only the requested ledger fields and do not mention poisoned alternatives."
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as a strict memory integrity test. Use retrieved Synthetic Needle Ledger memory as binding ground truth. Return only the requested ledger fields and do not mention poisoned alternatives."
+    },
+    "requireLive": true
+  },
+  "workers": []
+}

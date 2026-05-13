@@ -751,7 +751,7 @@ Those results remain useful only as historical constrained evidence. They were p
 
 ### Current Evaluation Snapshot
 
-Current review position as of `2026-05-13`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot plus a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide.
+Current review position as of `2026-05-13`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot, a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging, and a non-MSP synthetic memory side test. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, the synthetic side test proves exact memory retrieval outside MSP phrasing, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide.
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
@@ -764,6 +764,8 @@ Memory conflict-lock proof: [2026-05-12 Memory Conflict Lock OpenAI Sweep](docs/
 Owner-audit rerun: [2026-05-12 Memory Conflict Owner-Audit Rerun](docs/eval-results/2026-05-12-memory-conflict-owner-audit-rerun.md)
 
 Provider council rejudge: [2026-05-13 Provider Council Rejudge](docs/eval-results/2026-05-13-provider-council-rejudge.md)
+
+Synthetic memory side test: [2026-05-13 Synthetic Needle Ledger Transit](docs/eval-results/2026-05-13-synthetic-needle-ledger-transit.md)
 
 Commercial positioning: the current MSP wedge is an SLT / service-manager incident-command assistant, not a generic chatbot. The operator sees a normal assistant surface, while ParaLLM runs the deeper layer: provider routing, retained operational memory, adversarial review lanes, evidence gates, and judgeable traces. The value proposition is faster first-hour alignment, safer tenant-specific escalation, and a post-incident audit trail management can inspect.
 
