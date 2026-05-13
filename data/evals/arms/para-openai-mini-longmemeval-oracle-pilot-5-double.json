@@ -1,0 +1,80 @@
+{
+  "armId": "para-openai-mini-longmemeval-oracle-pilot-5-double",
+  "title": "ParaLLM OpenAI Mini | LongMemEval Oracle | Two Adversarials",
+  "description": "ParaLLM OpenAI Mini | LongMemEval Oracle | Two Adversarials for the LongMemEval oracle pilot.",
+  "type": "steered",
+  "runtime": {
+    "executionMode": "live",
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "directProvider": "openai",
+    "directModel": "gpt-5-mini",
+    "directMemoryMode": "knowledgebase",
+    "summarizerProvider": "openai",
+    "summarizerModel": "gpt-5-mini",
+    "reasoningEffort": "low",
+    "budget": {
+      "maxTotalTokens": 0,
+      "maxCostUsd": 2.0
+    },
+    "research": {
+      "enabled": false,
+      "externalWebAccess": false,
+      "domains": []
+    },
+    "vetting": {
+      "enabled": true
+    },
+    "knowledgebase": {
+      "enabled": true,
+      "scope": "shared",
+      "bankId": "longmemeval-oracle-pilot-5",
+      "maxRecords": 6,
+      "maxTokens": 5000,
+      "includeRuntime": false,
+      "includePersistent": true,
+      "fallbackToShared": true,
+      "tags": [
+        "longmemeval",
+        "oracle",
+        "pilot"
+      ],
+      "tagsMatch": "all"
+    },
+    "preferredLoop": {
+      "rounds": 1,
+      "delayMs": 0
+    },
+    "directHarness": {
+      "concision": "none",
+      "instruction": "Treat this as an external long-term memory QA benchmark. Use retained LongMemEval memory as binding ground truth when available. For temporal, update, or counting questions, first build a small chronology from retrieved memory: identify the anchor event, later matching events, and each distinct pickup/return/obligation before answering. Later explicit updates supersede earlier facts about the same detail. If no relevant memory is available, say memory unavailable instead of guessing."
+    },
+    "summarizerHarness": {
+      "concision": "none",
+      "instruction": "Treat this as an external long-term memory QA benchmark. Retrieved LongMemEval memory is binding ground truth. For temporal, update, or counting questions, build a compact chronology from retrieved memory before finalizing. Later explicit updates supersede earlier facts about the same detail; count each distinct pickup/return/obligation. Return a brief natural answer, reject unsupported guesses, and do not expose internal benchmark metadata."
+    },
+    "requireLive": true,
+    "contextMode": "weighted",
+    "directBaselineMode": "off"
+  },
+  "workers": [
+    {
+      "id": "A",
+      "type": "sceptic",
+      "label": "Memory verifier",
+      "role": "verify that the answer is supported by retained LongMemEval evidence",
+      "focus": "find missing, invented, or over-specific details",
+      "temperature": "balanced",
+      "model": "gpt-5-mini"
+    },
+    {
+      "id": "B",
+      "type": "sceptic",
+      "label": "Gold-distance auditor",
+      "role": "pressure-test whether the answer matches the expected memory fact by meaning",
+      "focus": "reject guesses and unrelated details that do not come from memory",
+      "temperature": "balanced",
+      "model": "gpt-5-mini"
+    }
+  ]
+}

@@ -25,6 +25,7 @@ data/backend-live.err.log
 data/backend-*.log
 data/backend-*.err.log
 data/exports/
+data/external/
 data/*smoke_runtime/
 data/*.json
 !data/model_capacities.json

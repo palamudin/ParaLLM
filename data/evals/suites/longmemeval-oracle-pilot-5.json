@@ -1,0 +1,254 @@
+{
+  "suiteId": "longmemeval-oracle-pilot-5",
+  "title": "LongMemEval Oracle Pilot",
+  "description": "Small external memory-quality pilot adapted from LongMemEval oracle. Evidence sessions are placed in ParaLLM memory; prompt-only Direct receives no answer-time memory.",
+  "judgeRubric": {
+    "qualifier": "External Long-Term Memory Retrieval",
+    "candidateStandard": "Judge whether the answer retrieves the expected LongMemEval fact from retained memory. The gold answer is authoritative for this pilot.",
+    "mustDo": [
+      "Reward answers that include the gold answer by meaning, with concise wording.",
+      "Reward calibrated refusal only when answer-time memory was intentionally unavailable.",
+      "Penalize answers that infer from general knowledge instead of retrieved memory.",
+      "Penalize invented names, dates, preferences, or events."
+    ],
+    "hardFailRules": [
+      "If the answer contradicts the gold answer, it fails.",
+      "If the answer guesses when memory was unavailable, it fails the safety bar.",
+      "If the answer exposes hidden benchmark metadata instead of answering naturally, it fails."
+    ],
+    "categories": {
+      "memoryRecall": "Did the answer retrieve the correct stored fact?",
+      "grounding": "Did it avoid unsupported inference?",
+      "brevity": "Was it concise enough for a memory QA response?",
+      "uncertaintyHandling": "Did it refuse cleanly when memory was unavailable?",
+      "overall": "Would this pass a LongMemEval-style memory QA check?"
+    }
+  },
+  "cases": [
+    {
+      "caseId": "lme-temporal-reasoning-gpt4-2655b836",
+      "title": "LongMemEval oracle pilot | temporal-reasoning",
+      "objective": "Answer this LongMemEval memory question using only retained memory. If the relevant memory is not available, say memory unavailable. Question: What was the first issue I had with my new car after its first service?",
+      "constraints": [
+        "Use retained LongMemEval memory as the only answer source.",
+        "Answer briefly and do not invent details when memory is absent.",
+        "Do not mention internal benchmark metadata, case ids, or hidden gold guidance."
+      ],
+      "sessionContext": "This is a LongMemEval oracle pilot case. The user question is intentionally separated from the evidence memories so prompt-only Direct does not receive answer-time context.",
+      "checks": {
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "gps-system",
+            "label": "GPS system",
+            "allOf": [
+              "GPS system"
+            ]
+          },
+          {
+            "id": "not-functioning",
+            "label": "Not functioning",
+            "allOf": [
+              "not functioning"
+            ]
+          }
+        ],
+        "forbiddenPhrases": [
+          "memory unavailable",
+          "ledger unavailable"
+        ],
+        "maxParagraphs": 3
+      },
+      "gold": {
+        "source": "LongMemEval oracle",
+        "questionId": "gpt4_2655b836",
+        "questionType": "temporal-reasoning",
+        "questionDate": "2023/04/10 (Mon) 23:07",
+        "answer": "GPS system not functioning correctly",
+        "answerSessionIds": [
+          "answer_4be1b6b4_2",
+          "answer_4be1b6b4_3",
+          "answer_4be1b6b4_1"
+        ],
+        "knowledgeBank": "longmemeval-oracle-pilot-5"
+      }
+    },
+    {
+      "caseId": "lme-multi-session-0a995998",
+      "title": "LongMemEval oracle pilot | multi-session",
+      "objective": "Answer this LongMemEval memory question using only retained memory. If the relevant memory is not available, say memory unavailable. Question: How many items of clothing do I need to pick up or return from a store?",
+      "constraints": [
+        "Use retained LongMemEval memory as the only answer source.",
+        "Answer briefly and do not invent details when memory is absent.",
+        "Do not mention internal benchmark metadata, case ids, or hidden gold guidance."
+      ],
+      "sessionContext": "This is a LongMemEval oracle pilot case. The user question is intentionally separated from the evidence memories so prompt-only Direct does not receive answer-time context.",
+      "checks": {
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "item-count",
+            "label": "Item count",
+            "allOf": [
+              "3"
+            ]
+          }
+        ],
+        "forbiddenPhrases": [
+          "memory unavailable",
+          "ledger unavailable"
+        ],
+        "maxParagraphs": 3
+      },
+      "gold": {
+        "source": "LongMemEval oracle",
+        "questionId": "0a995998",
+        "questionType": "multi-session",
+        "questionDate": "2023/02/15 (Wed) 19:47",
+        "answer": "3",
+        "answerSessionIds": [
+          "answer_afa9873b_2",
+          "answer_afa9873b_3",
+          "answer_afa9873b_1"
+        ],
+        "knowledgeBank": "longmemeval-oracle-pilot-5"
+      }
+    },
+    {
+      "caseId": "lme-knowledge-update-6a1eabeb",
+      "title": "LongMemEval oracle pilot | knowledge-update",
+      "objective": "Answer this LongMemEval memory question using only retained memory. If the relevant memory is not available, say memory unavailable. Question: What was my personal best time in the charity 5K run?",
+      "constraints": [
+        "Use retained LongMemEval memory as the only answer source.",
+        "Answer briefly and do not invent details when memory is absent.",
+        "Do not mention internal benchmark metadata, case ids, or hidden gold guidance."
+      ],
+      "sessionContext": "This is a LongMemEval oracle pilot case. The user question is intentionally separated from the evidence memories so prompt-only Direct does not receive answer-time context.",
+      "checks": {
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "five-k-time",
+            "label": "5K time",
+            "anyOf": [
+              "25 minutes and 50 seconds",
+              "25:50"
+            ]
+          }
+        ],
+        "forbiddenPhrases": [
+          "memory unavailable",
+          "ledger unavailable"
+        ],
+        "maxParagraphs": 3
+      },
+      "gold": {
+        "source": "LongMemEval oracle",
+        "questionId": "6a1eabeb",
+        "questionType": "knowledge-update",
+        "questionDate": "2023/06/01 (Thu) 00:58",
+        "answer": "25 minutes and 50 seconds (or 25:50)",
+        "answerSessionIds": [
+          "answer_a25d4a91_1",
+          "answer_a25d4a91_2"
+        ],
+        "knowledgeBank": "longmemeval-oracle-pilot-5"
+      }
+    },
+    {
+      "caseId": "lme-single-session-assistant-7161e7e2",
+      "title": "LongMemEval oracle pilot | single-session-assistant",
+      "objective": "Answer this LongMemEval memory question using only retained memory. If the relevant memory is not available, say memory unavailable. Question: I'm checking our previous chat about the shift rotation sheet for GM social media agents. Can you remind me what was the rotation for Admon on a Sunday?",
+      "constraints": [
+        "Use retained LongMemEval memory as the only answer source.",
+        "Answer briefly and do not invent details when memory is absent.",
+        "Do not mention internal benchmark metadata, case ids, or hidden gold guidance."
+      ],
+      "sessionContext": "This is a LongMemEval oracle pilot case. The user question is intentionally separated from the evidence memories so prompt-only Direct does not receive answer-time context.",
+      "checks": {
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "admon",
+            "label": "Admon",
+            "allOf": [
+              "Admon"
+            ]
+          },
+          {
+            "id": "sunday-shift",
+            "label": "Sunday day shift",
+            "anyOf": [
+              "8 am - 4 pm",
+              "8:00 AM-4:00 PM",
+              "8:00 AM–4:00 PM",
+              "Day Shift"
+            ]
+          },
+          {
+            "id": "sunday",
+            "label": "Sunday",
+            "allOf": [
+              "Sunday"
+            ]
+          }
+        ],
+        "forbiddenPhrases": [
+          "memory unavailable",
+          "ledger unavailable"
+        ],
+        "maxParagraphs": 3
+      },
+      "gold": {
+        "source": "LongMemEval oracle",
+        "questionId": "7161e7e2",
+        "questionType": "single-session-assistant",
+        "questionDate": "2023/05/26 (Fri) 02:28",
+        "answer": "Admon was assigned to the 8 am - 4 pm (Day Shift) on Sundays.",
+        "answerSessionIds": [
+          "answer_sharegpt_5Lzox6N_0"
+        ],
+        "knowledgeBank": "longmemeval-oracle-pilot-5"
+      }
+    },
+    {
+      "caseId": "lme-single-session-user-e47becba",
+      "title": "LongMemEval oracle pilot | single-session-user",
+      "objective": "Answer this LongMemEval memory question using only retained memory. If the relevant memory is not available, say memory unavailable. Question: What degree did I graduate with?",
+      "constraints": [
+        "Use retained LongMemEval memory as the only answer source.",
+        "Answer briefly and do not invent details when memory is absent.",
+        "Do not mention internal benchmark metadata, case ids, or hidden gold guidance."
+      ],
+      "sessionContext": "This is a LongMemEval oracle pilot case. The user question is intentionally separated from the evidence memories so prompt-only Direct does not receive answer-time context.",
+      "checks": {
+        "requireLive": true,
+        "requiredConceptGroups": [
+          {
+            "id": "degree",
+            "label": "Degree",
+            "allOf": [
+              "Business Administration"
+            ]
+          }
+        ],
+        "forbiddenPhrases": [
+          "memory unavailable",
+          "ledger unavailable"
+        ],
+        "maxParagraphs": 3
+      },
+      "gold": {
+        "source": "LongMemEval oracle",
+        "questionId": "e47becba",
+        "questionType": "single-session-user",
+        "questionDate": "2023/05/23 (Tue) 19:11",
+        "answer": "Business Administration",
+        "answerSessionIds": [
+          "answer_280352e9"
+        ],
+        "knowledgeBank": "longmemeval-oracle-pilot-5"
+      }
+    }
+  ]
+}

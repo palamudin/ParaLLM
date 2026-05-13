@@ -20,17 +20,15 @@ The three routes were `cinder-7`, `amber-12`, and `vellum-4`. Required fields we
 
 | Run | Scope | Errors | Tokens | Cost |
 | --- | --- | ---: | ---: | ---: |
-| `synthetic-needle-ledger-openai-20260513-fix1` | Pure Direct, Direct + memory, Para before capture fix | `0` | `94,481` | `$0.040236` |
-| `synthetic-needle-ledger-openai-20260513-para-fix4` | Para after capture fix | `0` | `84,826` | `$0.037090` |
+| `judge-20260513-205357+0000-6bcde9` | Pure Direct, Direct + memory, and Para after capture fix | `0` | `95,444` | `$0.044204` |
 
 ## Results
 
 | Path | Answer-time memory | Deterministic pass | Quality | Health | Control | Owner quality | Owner control | Readout |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Pure Direct prompt-only | No | `0 / 3` | `1.67` | `2.00` | `n/a` | `1.67` | `n/a` | Safe no-guess behavior, but no ledger retrieval. |
+| Pure Direct prompt-only | No | `0 / 3` | `1.33` | `2.00` | `n/a` | `1.67` | `n/a` | Safe no-guess behavior, but no ledger retrieval. |
 | Direct + synthetic memory | Yes | `3 / 3` | `10.00` | `10.00` | `n/a` | `10.00` | `n/a` | Exact retrieval from a single memory-backed call. |
-| Para before capture fix | Yes | `0 / 3` | `1.00` | `1.00` | `2.33` | `1.33` | `2.00` | Plumbing failure: raw summarizer output had the right answer, but the public answer capture surfaced the fallback. |
-| Para after capture fix | Yes | `3 / 3` | `10.00` | `10.00` | `7.67` | `10.00` | `8.33` | Exact retrieval with visible multi-lane control pressure. |
+| ParaLLM multi-lane orchestration | Yes | `3 / 3` | `10.00` | `10.00` | `5.67` | `10.00` | `6.67` | Exact retrieval with visible multi-lane control pressure. |
 
 ## Valuable Failure
 
@@ -39,6 +37,8 @@ The initial Para failure was not a reasoning failure. The worker and summarizer 
 Runtime fix: `runtime/engine.py` now checks the literal top-level provider JSON for `frontAnswer.answer` before falling back to the generic parser. If the parsed payload is flattened or contains the fallback, the raw top-level summary wins.
 
 Regression coverage: `backend/tests/test_runtime_auth.py::RuntimeAuthTests::test_new_live_summary_prefers_raw_top_level_front_answer_over_flattened_parse`.
+
+The scored run above was produced after this capture fix, so the reported Para score reflects the corrected public answer path rather than the earlier fallback artifact.
 
 ## Interpretation
 
