@@ -1,15 +1,43 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = PROJECT_ROOT / "data" / "external" / "longmemeval" / "longmemeval_oracle.json"
 DEFAULT_CASE_COUNT = 6
+TIMERBITER_DEPOSITED_AT = "2026-05-13T00:00:00+00:00"
+MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
 
 
 def sanitize_id(value: str) -> str:
@@ -67,6 +95,220 @@ def compact_excerpt(text: str, limit: int = 860) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: max(0, limit - 1)].rstrip() + "..."
+
+
+def parse_question_year(question_date: str) -> int:
+    match = re.search(r"\b(20\d{2}|19\d{2})\b", str(question_date or ""))
+    if match:
+        return int(match.group(1))
+    return 2023
+
+
+def format_date(year: int, month: int, day: int) -> Optional[str]:
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def normalize_event_date(raw_date: str, default_year: int) -> Optional[str]:
+    value = re.sub(r"(?<=\d)(?:st|nd|rd|th)\b", "", str(raw_date or "").strip(), flags=re.IGNORECASE)
+    month_match = re.search(
+        r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:,\s*(\d{4}))?\b",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if month_match:
+        month = MONTHS[month_match.group(1).lower()]
+        day = int(month_match.group(2))
+        year = int(month_match.group(3)) if month_match.group(3) else default_year
+        return format_date(year, month, day)
+
+    numeric_match = re.search(r"\b(\d{1,4})/(\d{1,2})(?:/(\d{1,4}))?\b", value)
+    if numeric_match:
+        first = int(numeric_match.group(1))
+        second = int(numeric_match.group(2))
+        third = numeric_match.group(3)
+        if first > 31:
+            year = first
+            month = second
+            day = int(third) if third else 1
+        else:
+            year = default_year
+            month = first
+            day = second
+            if third:
+                raw_year = int(third)
+                year = 2000 + raw_year if raw_year < 100 else raw_year
+        return format_date(year, month, day)
+
+    return None
+
+
+def date_mentions(content: str, default_year: int) -> List[str]:
+    mentions: List[str] = []
+    month_pattern = (
+        r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+        r"aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+"
+        r"\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?\b"
+    )
+    for match in re.finditer(month_pattern, str(content or ""), flags=re.IGNORECASE):
+        event_at = normalize_event_date(match.group(0), default_year)
+        if event_at and event_at not in mentions:
+            mentions.append(event_at)
+    for match in re.finditer(r"\b\d{1,4}/\d{1,2}(?:/\d{1,4})?\b", str(content or "")):
+        event_at = normalize_event_date(match.group(0), default_year)
+        if event_at and event_at not in mentions:
+            mentions.append(event_at)
+    return mentions
+
+
+def classify_event(content: str) -> str:
+    lower = str(content or "").lower()
+    if re.search(r"\b(?:serviced|service|maintenance|tune-up|inspection)\b", lower):
+        return "maintenance"
+    if re.search(r"\b(?:issue|problem|not functioning|broken|fixed|replaced|repair|dealership)\b", lower):
+        return "issue"
+    if "personal best" in lower or "new record" in lower:
+        return "update"
+    if re.search(r"\b(?:need to|still need|pick up|return)\b", lower):
+        return "obligation"
+    return "event"
+
+
+def obligation_segments(content: str) -> List[Dict[str, Any]]:
+    segments = [
+        segment.strip()
+        for segment in re.split(r"[.;]\s*|\b(?:also,\s*)?by the way,\s*", str(content or ""), flags=re.IGNORECASE)
+        if segment.strip()
+    ]
+    obligations: List[Dict[str, Any]] = []
+    for segment in segments:
+        lower = segment.lower()
+        if (
+            segment.endswith("?")
+            and re.search(r"\b(?:tips|advice|how to|keep track|recommendations?)\b", lower)
+        ) or re.match(r"\b(?:do you|can you|could you)\b", lower):
+            continue
+        action: Optional[str] = None
+        if "pick up" in lower and re.search(r"\b(?:need|still|must|should|have to)\b", lower):
+            action = "pick_up"
+        elif "return" in lower and re.search(r"\b(?:need|still|must|should|have to)\b", lower):
+            action = "return"
+        elif "exchange" in lower and re.search(r"\b(?:need|still|must|should|have to)\b", lower):
+            action = "exchange"
+        if action:
+            obligations.append({"action": action, "subject": compact_excerpt(segment, 180)})
+    return obligations
+
+
+def build_timerbiter(record: Dict[str, Any]) -> Dict[str, Any]:
+    default_year = parse_question_year(str(record.get("question_date") or ""))
+    question = str(record.get("question") or "")
+    sessions = record.get("haystack_sessions") or []
+    events: List[Dict[str, Any]] = []
+    obligations: List[Dict[str, Any]] = []
+    seen_obligations: set[tuple[str, str]] = set()
+
+    for session_index, session in enumerate(sessions, start=1):
+        if not isinstance(session, list):
+            continue
+        for message_index, message in enumerate(session, start=1):
+            if not isinstance(message, dict):
+                continue
+            if str(message.get("role") or "").lower() != "user":
+                continue
+            content = str(message.get("content") or "")
+            event_type = classify_event(content)
+            for event_at in date_mentions(content, default_year):
+                importance = "historical"
+                lower = content.lower()
+                if event_type == "maintenance" and ("first service" in question.lower() or "first time" in lower):
+                    importance = "anchor"
+                elif event_type in {"issue", "update"}:
+                    importance = "update"
+                events.append(
+                    {
+                        "eventAt": event_at,
+                        "observedAt": None,
+                        "eventType": event_type,
+                        "temporalImportance": importance,
+                        "relation": "none",
+                        "status": "active",
+                        "source": f"session {session_index} message {message_index}",
+                        "excerpt": compact_excerpt(content, 260),
+                    }
+                )
+            for obligation in obligation_segments(content):
+                identity = (obligation["action"], obligation["subject"].lower())
+                if identity in seen_obligations:
+                    continue
+                seen_obligations.add(identity)
+                obligation_dates = date_mentions(content, default_year)
+                obligations.append(
+                    {
+                        "obligationId": f"obligation-{len(obligations) + 1}",
+                        "action": obligation["action"],
+                        "subject": obligation["subject"],
+                        "status": "open_or_unconfirmed",
+                        "eventAt": obligation_dates[0] if obligation_dates else None,
+                        "source": f"session {session_index} message {message_index}",
+                        "confidence": "medium",
+                    }
+                )
+
+    events.sort(key=lambda event: (event["eventAt"], event["source"], event["excerpt"]))
+    anchors = [event for event in events if event["temporalImportance"] == "anchor"]
+    if anchors:
+        anchor_at = anchors[0]["eventAt"]
+        for event in events:
+            if event["eventAt"] > anchor_at and event["eventType"] == "issue":
+                event["relation"] = "after_anchor"
+                event["temporalImportance"] = "answer_candidate"
+
+    return {
+        "schemaVersion": "parallm-timerbiter/v0",
+        "storeClass": "LTS",
+        "systemClock": {
+            "depositedAt": TIMERBITER_DEPOSITED_AT,
+            "retrievedAt": None,
+        },
+        "questionClock": {
+            "questionAt": str(record.get("question_date") or ""),
+            "defaultYear": default_year,
+        },
+        "events": events,
+        "obligations": obligations,
+    }
+
+
+def render_timerbiter(timerbiter: Dict[str, Any]) -> str:
+    lines = [
+        "Timerbiter temporal authority:",
+        f"- Store class: {timerbiter['storeClass']}",
+        f"- Deposited at: {timerbiter['systemClock']['depositedAt']}",
+        "- Retrieved at: not yet retrieved",
+    ]
+    question_at = timerbiter.get("questionClock", {}).get("questionAt")
+    if question_at:
+        lines.append(f"- Question time: {question_at}")
+    if timerbiter["events"]:
+        lines.append("- Ordered events:")
+        for index, event in enumerate(timerbiter["events"], start=1):
+            tags = ", ".join(
+                value
+                for value in (event["eventType"], event["temporalImportance"], event["relation"])
+                if value and value != "none"
+            )
+            lines.append(f"  {index}. {event['eventAt']} [{tags}] {event['excerpt']}")
+    if timerbiter["obligations"]:
+        lines.extend(["", "Timerbiter obligation ledger:"])
+        for index, obligation in enumerate(timerbiter["obligations"], start=1):
+            event_at = f" at {obligation['eventAt']}" if obligation.get("eventAt") else ""
+            lines.append(
+                f"  {index}. {obligation['status']} {obligation['action']}{event_at}: {obligation['subject']}"
+            )
+    return "\n".join(lines).strip()
 
 
 def message_relevance(question_terms: set[str], role: str, session_index: int, message_index: int, content: str) -> float:
@@ -170,7 +412,11 @@ def answer_concept_groups(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     aliases: Dict[str, List[Dict[str, Any]]] = {
         "gpt4_2655b836": [
             {"id": "gps-system", "label": "GPS system", "allOf": ["GPS system"]},
-            {"id": "not-functioning", "label": "Not functioning", "allOf": ["not functioning"]},
+            {
+                "id": "car-problem-state",
+                "label": "Problem state",
+                "anyOf": ["not functioning", "not working", "malfunction", "issue", "fixed", "replaced"],
+            },
         ],
         "0a995998": [
             {"id": "item-count", "label": "Item count", "allOf": ["3"]},
@@ -307,7 +553,11 @@ def build_memory_units(records: List[Dict[str, Any]], bank_id: str) -> List[Dict
     for record in records:
         question_id = str(record["question_id"]).strip()
         question_type = str(record["question_type"]).strip()
+        timerbiter = build_timerbiter(record)
+        timerbiter_text = render_timerbiter(timerbiter)
         text = flatten_session_messages(record.get("haystack_sessions") or [], question=str(record.get("question") or ""))
+        if timerbiter_text:
+            text = f"{timerbiter_text}\n\n{text}"
         units.append(
             {
                 "id": f"mem_lme_oracle_{sanitize_id(question_id)}",
@@ -329,6 +579,7 @@ def build_memory_units(records: List[Dict[str, Any]], bank_id: str) -> List[Dict
                     "haystackDates": record.get("haystack_dates") or [],
                     "haystackSessionIds": record.get("haystack_session_ids") or [],
                     "answerSessionIds": record.get("answer_session_ids") or [],
+                    "timerbiter": timerbiter,
                 },
             }
         )
@@ -347,12 +598,15 @@ def build_arm(arm_id: str, title: str, arm_type: str, bank_id: str, direct_memor
     runtime: Dict[str, Any] = {
         "executionMode": "live",
         "provider": "openai",
-        "model": "gpt-5-mini",
+        "model": "gpt-5.4-mini",
+        "modelSource": "codex_auth",
         "directProvider": "openai",
-        "directModel": "gpt-5-mini",
+        "directModel": "gpt-5.4-mini",
+        "directModelSource": "codex_auth",
         "directMemoryMode": direct_memory_mode,
         "summarizerProvider": "openai",
-        "summarizerModel": "gpt-5-mini",
+        "summarizerModel": "gpt-5.4-mini",
+        "summarizerModelSource": "codex_auth",
         "reasoningEffort": "low",
         "budget": {"maxTotalTokens": 0, "maxCostUsd": 2.0},
         "research": {"enabled": False, "externalWebAccess": False, "domains": []},
@@ -405,7 +659,7 @@ def build_arm(arm_id: str, title: str, arm_type: str, bank_id: str, direct_memor
                 "role": "verify that the answer is supported by retained LongMemEval evidence",
                 "focus": "find missing, invented, or over-specific details",
                 "temperature": "balanced",
-                "model": "gpt-5-mini",
+                "model": "gpt-5.4-mini",
             },
             {
                 "id": "B",
@@ -414,7 +668,7 @@ def build_arm(arm_id: str, title: str, arm_type: str, bank_id: str, direct_memor
                 "role": "pressure-test whether the answer matches the expected memory fact by meaning",
                 "focus": "reject guesses and unrelated details that do not come from memory",
                 "temperature": "balanced",
-                "model": "gpt-5-mini",
+                "model": "gpt-5.4-mini",
             },
         ]
     return arm

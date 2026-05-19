@@ -22,6 +22,7 @@ from runtime.engine import (
     parse_structured_output_text,
     provider_capability_profile,
     read_api_key_pool,
+    task_workers,
 )
 
 
@@ -53,6 +54,146 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(profile["provider"], "deepseek")
         self.assertEqual(profile["status"], "primary")
         self.assertTrue(profile["primary"])
+
+    def test_invoke_provider_json_uses_codex_cli_for_codex_auth_openai_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            codex_payload = {
+                "status": "completed",
+                "threadId": "codex-thread-123",
+                "responseText": '{"answer":"Codex-auth answer","stance":"Use Codex auth","confidenceNote":"high"}',
+                "usage": {
+                    "calls": 1,
+                    "inputTokens": 12,
+                    "cachedInputTokens": 2,
+                    "billableInputTokens": 10,
+                    "outputTokens": 7,
+                    "reasoningTokens": 0,
+                    "totalTokens": 19,
+                    "estimatedCostUsd": 0.0,
+                },
+                "warnings": [],
+            }
+
+            seen_root_exists_at_call: list[bool] = []
+
+            def fake_run_codex(request):
+                seen_root_exists_at_call.append(request.root.exists())
+                return codex_payload
+
+            with mock.patch("backend.app.codex_lanes.run_codex_lane", side_effect=fake_run_codex) as run_codex:
+                result = runtime.invoke_provider_json(
+                    provider="openai",
+                    api_key="",
+                    model="gpt-5.4-mini",
+                    reasoning_effort="low",
+                    instructions="Return the answer.",
+                    input_text="Question?",
+                    schema_name="eval_direct_answer",
+                    schema={
+                        "type": "object",
+                        "properties": {
+                            "answer": {"type": "string"},
+                            "stance": {"type": "string"},
+                            "confidenceNote": {"type": "string"},
+                        },
+                        "required": ["answer", "stance", "confidenceNote"],
+                        "additionalProperties": False,
+                    },
+                    provider_settings={"modelSource": "codex_auth"},
+                )
+
+            self.assertEqual(result.provider, "openai")
+            self.assertEqual(result.response_id, "codex-thread-123")
+            self.assertEqual(result.parsed["answer"], "Codex-auth answer")
+            self.assertEqual(result.response["usage"]["input_tokens"], 12)
+            self.assertEqual(result.response["usage"]["input_tokens_details"]["cached_tokens"], 2)
+            self.assertEqual(run_codex.call_args.args[0].model, "gpt-5.4-mini")
+
+    def test_codex_auth_provider_call_uses_long_timeout_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            codex_payload = {
+                "status": "completed",
+                "threadId": "codex-thread-timeout",
+                "responseText": '{"answer":"ok"}',
+                "usage": {"calls": 1, "inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                "warnings": [],
+            }
+
+            with mock.patch("backend.app.codex_lanes.run_codex_lane", return_value=codex_payload) as run_codex:
+                runtime.invoke_codex_auth_json(
+                    model="gpt-5.4-mini",
+                    reasoning_effort="low",
+                    instructions="Return JSON.",
+                    input_text="Question?",
+                    schema_name="eval_direct_answer",
+                    schema={
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                        "additionalProperties": False,
+                    },
+                    request_timeout_seconds=180,
+                )
+
+            self.assertEqual(run_codex.call_args.args[0].timeout_seconds, 600)
+
+    def test_codex_auth_provider_call_creates_runtime_root_before_exec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_root = Path(tmpdir) / "missing-runtime-root"
+            runtime = LoopRuntime(runtime_root)
+            codex_payload = {
+                "status": "completed",
+                "threadId": "codex-thread-456",
+                "responseText": '{"answer":"ready","stance":"support","confidenceNote":"high"}',
+                "usage": {"calls": 1, "inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                "warnings": [],
+            }
+
+            seen_root_exists_at_call: list[bool] = []
+
+            def fake_run_codex(request):
+                seen_root_exists_at_call.append(request.root.exists())
+                return codex_payload
+
+            with mock.patch("backend.app.codex_lanes.run_codex_lane", side_effect=fake_run_codex) as run_codex:
+                runtime.invoke_provider_json(
+                    provider="openai",
+                    api_key="",
+                    model="gpt-5.4-mini",
+                    reasoning_effort="low",
+                    instructions="Return JSON.",
+                    input_text="Question?",
+                    schema_name="eval_direct_answer",
+                    schema={
+                        "type": "object",
+                        "properties": {
+                            "answer": {"type": "string"},
+                            "stance": {"type": "string"},
+                            "confidenceNote": {"type": "string"},
+                        },
+                        "required": ["answer", "stance", "confidenceNote"],
+                        "additionalProperties": False,
+                    },
+                    provider_settings={"modelSource": "codex_auth"},
+                )
+
+            self.assertEqual(seen_root_exists_at_call, [True])
+            self.assertTrue(run_codex.call_args.args[0].root.exists())
+
+    def test_codex_openai_catalog_models_survive_worker_normalization(self) -> None:
+        workers = task_workers(
+            {
+                "runtime": {
+                    "provider": "openai",
+                    "model": "gpt-5.5",
+                    "modelSource": "codex_auth",
+                }
+            }
+        )
+
+        self.assertEqual([worker["model"] for worker in workers], ["gpt-5.5", "gpt-5.5"])
 
     def _stub_openai_result(self, parsed: dict, max_output_tokens: int = 400, output_text: str | None = None) -> OpenAIResult:
         attempts = [int(max_output_tokens)] if int(max_output_tokens) > 0 else []

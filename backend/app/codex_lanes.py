@@ -80,6 +80,7 @@ CODEX_MODEL_PRICING_USD_PER_1M: Dict[str, Dict[str, float]] = {
     "gpt-5.4-mini": {"input": 0.75, "cachedInput": 0.075, "output": 4.50},
     "gpt-5.4-nano": {"input": 0.20, "cachedInput": 0.02, "output": 1.25},
     "gpt-5.3-codex": {"input": 1.75, "cachedInput": 0.175, "output": 14.00},
+    "gpt-5.3-codex-spark": {"input": 1.75, "cachedInput": 0.175, "output": 14.00},
     "gpt-5.2-codex": {"input": 1.75, "cachedInput": 0.175, "output": 14.00},
     "gpt-5.1-codex-max": {"input": 1.25, "cachedInput": 0.125, "output": 10.00},
     "gpt-5.1-codex": {"input": 1.25, "cachedInput": 0.125, "output": 10.00},
@@ -939,8 +940,6 @@ def build_codex_exec_command(request: CodexLaneRequest, schema_path: Path) -> Li
         command.append("--ephemeral")
     if request.disable_plugins:
         command.extend(["--disable", "plugins"])
-    if request.disable_general_analytics:
-        command.extend(["--disable", "general_analytics"])
     command.extend(
         [
             "--sandbox",

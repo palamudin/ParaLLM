@@ -6,12 +6,15 @@
   "runtime": {
     "executionMode": "live",
     "provider": "openai",
-    "model": "gpt-5-mini",
+    "model": "gpt-5.4-mini",
+    "modelSource": "codex_auth",
     "directProvider": "openai",
-    "directModel": "gpt-5-mini",
+    "directModel": "gpt-5.4-mini",
+    "directModelSource": "codex_auth",
     "directMemoryMode": "knowledgebase",
     "summarizerProvider": "openai",
-    "summarizerModel": "gpt-5-mini",
+    "summarizerModel": "gpt-5.4-mini",
+    "summarizerModelSource": "codex_auth",
     "reasoningEffort": "low",
     "budget": {
       "maxTotalTokens": 0,

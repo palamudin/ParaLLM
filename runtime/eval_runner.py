@@ -49,6 +49,7 @@ from runtime.engine import (
     normalize_harness_config,
     normalize_knowledgebase_config,
     normalize_model_id,
+    normalize_model_source,
     normalize_ollama_base_url,
     normalize_ollama_timeout_profile,
     normalize_target_timeout_config,
@@ -60,6 +61,7 @@ from runtime.engine import (
     normalize_usage_state,
     normalize_vetting_config,
     provider_capability_profile,
+    provider_settings_use_codex_auth,
     task_workers,
     target_timeout_seconds,
     utc_now,
@@ -1990,12 +1992,14 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
     runtime_payload = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     provider = normalize_provider_id(str(runtime_payload.get("provider", "")).strip(), "openai")
     model = normalize_model_id(str(runtime_payload.get("model", "")).strip(), default_model_for_provider(provider), provider)
+    model_source = normalize_model_source(runtime_payload.get("modelSource"))
     summarizer_provider = normalize_provider_id(str(runtime_payload.get("summarizerProvider", "")).strip(), provider)
     summarizer_model = normalize_model_id(
         str(runtime_payload.get("summarizerModel", "")).strip(),
         model,
         summarizer_provider,
     )
+    summarizer_model_source = normalize_model_source(runtime_payload.get("summarizerModelSource"), model_source)
     reasoning_effort = str(runtime_payload.get("reasoningEffort", "low")).strip().lower()
     if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
         reasoning_effort = "low"
@@ -2013,6 +2017,7 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         default_model_for_provider(direct_provider),
         direct_provider,
     )
+    direct_model_source = normalize_model_source(runtime_payload.get("directModelSource"), model_source)
     budget = normalize_budget_config(runtime_payload.get("budget") if isinstance(runtime_payload.get("budget"), dict) else {})
     research = normalize_research_config(runtime_payload.get("research") if isinstance(runtime_payload.get("research"), dict) else {})
     vetting = normalize_vetting_config(runtime_payload.get("vetting") if isinstance(runtime_payload.get("vetting"), dict) else {})
@@ -2050,12 +2055,15 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "directBaselineMode": direct_baseline_mode,
             "provider": provider,
             "model": model,
+            "modelSource": model_source,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "directModelSource": direct_model_source,
             "ollamaBaseUrl": ollama_base_url,
             "providerRouting": provider_routing,
             "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
+            "summarizerModelSource": summarizer_model_source,
             "summarizerHarness": summarizer_harness,
             "directHarness": direct_harness,
             "directMemoryMode": direct_memory_mode,
@@ -2094,8 +2102,10 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "directBaselineMode": runtime_config["directBaselineMode"],
             "provider": runtime_config["provider"],
             "model": runtime_config["model"],
+            "modelSource": runtime_config["modelSource"],
             "directProvider": runtime_config["directProvider"],
             "directModel": runtime_config["directModel"],
+            "directModelSource": runtime_config["directModelSource"],
             "directHarness": deepcopy(runtime_config["directHarness"]),
             "ollamaBaseUrl": runtime_config["ollamaBaseUrl"],
             "providerRouting": deepcopy(runtime_config["providerRouting"]),
@@ -2113,6 +2123,7 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "label": "Summarizer",
             "provider": runtime_config["summarizerProvider"],
             "model": runtime_config["summarizerModel"],
+            "modelSource": runtime_config["summarizerModelSource"],
             "harness": deepcopy(runtime_config["summarizerHarness"]),
         },
         "syncPolicy": {
@@ -2222,12 +2233,13 @@ def run_direct_answer(
         else None
     )
     api_key = str(primary_assignment.get("apiKey")) if isinstance(primary_assignment, dict) else ""
-    if provider == "openai" and not api_key:
+    runtime_config = arm["runtime"]
+    codex_auth = provider_settings_use_codex_auth(provider, runtime_config)
+    if provider == "openai" and not api_key and not codex_auth:
         api_key = runtime.get_api_key()
     if provider != "openai":
         api_key = runtime.provider_live_api_key(provider, auth_assignments)
     auth_meta = runtime.live_auth_meta(provider, primary_assignment)
-    runtime_config = arm["runtime"]
     model = runtime_config["model"]
     reasoning_effort = runtime_config["reasoningEffort"]
     direct_memory_mode = normalize_direct_memory_mode(runtime_config.get("directMemoryMode"))
@@ -2237,14 +2249,15 @@ def run_direct_answer(
     prompt_packet = build_direct_answer_prompt(case, runtime_config, runtime=runtime)
     instructions = prompt_packet["instructions"]
     input_text = prompt_packet["inputText"]
-    if not (runtime_config["executionMode"] == "live" and (api_key or not runtime.provider_requires_api_key(provider))):
+    can_call_live = api_key or not runtime.provider_requires_api_key(provider) or codex_auth
+    if not (runtime_config["executionMode"] == "live" and can_call_live):
         runtime.raise_live_stage_missing_credentials(
             stage="eval_direct_answer",
             target_label="direct_baseline",
             task_id=sanitize_id(str(case.get("caseId") or "eval-direct")),
             auth_meta=auth_meta,
         )
-    if runtime_config["executionMode"] == "live" and (api_key or not runtime.provider_requires_api_key(provider)):
+    if runtime_config["executionMode"] == "live" and can_call_live:
         try:
             result = runtime.invoke_provider_json(
                 provider=provider,
@@ -2418,6 +2431,7 @@ def judge_provider_settings(run: Dict[str, Any], judge_provider: str) -> Dict[st
     provider = normalize_provider_id(judge_provider, "openai")
     settings: Dict[str, Any] = {
         "requestTimeoutSeconds": target_timeout_seconds(default_target_timeout_config(), "arbiter"),
+        "modelSource": normalize_model_source(runtime_settings.get("modelSource")),
         "providerRouting": normalize_provider_routing_config(
             runtime_settings.get("providerRouting") if isinstance(runtime_settings.get("providerRouting"), dict) else {}
         ),
@@ -3015,7 +3029,7 @@ def run_quality_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
     judge_memory_context: str = "",
 ) -> Dict[str, Any]:
-    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider) or provider_settings_use_codex_auth(judge_provider, provider_settings):
         def call_judge() -> Dict[str, Any]:
             result = quality_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, judge_rubric, public_answer, provider_settings, judge_memory_context)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in QUALITY_SCORE_FIELDS):
@@ -3049,7 +3063,7 @@ def run_answer_health_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
     judge_memory_context: str = "",
 ) -> Dict[str, Any]:
-    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider) or provider_settings_use_codex_auth(judge_provider, provider_settings):
         def call_judge() -> Dict[str, Any]:
             result = answer_health_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, public_answer, telemetry, provider_settings, judge_memory_context)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in ANSWER_HEALTH_SCORE_FIELDS):
@@ -3082,7 +3096,7 @@ def run_control_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
     judge_memory_context: str = "",
 ) -> Dict[str, Any]:
-    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider) or provider_settings_use_codex_auth(judge_provider, provider_settings):
         def call_judge() -> Dict[str, Any]:
             result = control_judge_live(judge_runtime, judge_provider, api_key or "", judge_model, case, summary, provider_settings, judge_memory_context)
             if not any(int((result.get("scores") or {}).get(field, 0) or 0) > 0 for field in CONTROL_SCORE_FIELDS):
@@ -3247,7 +3261,7 @@ def run_comparison_judge(
     provider_settings: Optional[Dict[str, Any]] = None,
     judge_memory_context: str = "",
 ) -> Dict[str, Any]:
-    if api_key or not judge_runtime.provider_requires_api_key(judge_provider):
+    if api_key or not judge_runtime.provider_requires_api_key(judge_provider) or provider_settings_use_codex_auth(judge_provider, provider_settings):
         def call_judge() -> Dict[str, Any]:
             result = comparison_judge_live(
                 judge_runtime,
@@ -3448,17 +3462,35 @@ def normalize_required_concept_groups(checks: Dict[str, Any]) -> List[Dict[str, 
     return groups
 
 
+def normalize_concept_match_text(value: Any) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"(\d)(a\.?m\.?|p\.?m\.?)\b", r"\1 \2", text)
+    text = re.sub(r"\b(a)\.m\.\b", "am", text)
+    text = re.sub(r"\b(p)\.m\.\b", "pm", text)
+    text = re.sub(r"\b(to|till|until|through|thru)\b", " ", text)
+    text = re.sub(r"[-\u2010-\u2015/]+", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def concept_phrase_matches(public_answer: str, phrase: str) -> bool:
+    if phrase.lower() in public_answer.lower():
+        return True
+    normalized_answer = normalize_concept_match_text(public_answer)
+    normalized_phrase = normalize_concept_match_text(phrase)
+    return bool(normalized_phrase and normalized_phrase in normalized_answer)
+
+
 def evaluate_required_concept_groups(public_answer: str, checks: Dict[str, Any]) -> Dict[str, Any]:
     groups = normalize_required_concept_groups(checks)
     if not groups:
         return {"passed": True, "detail": "No required concept groups configured.", "groups": []}
-    lowered_answer = public_answer.lower()
     results: List[Dict[str, Any]] = []
     for group in groups:
         any_of = list(group.get("anyOf") or [])
         all_of = list(group.get("allOf") or [])
-        matched_any = [phrase for phrase in any_of if phrase.lower() in lowered_answer]
-        missing_all = [phrase for phrase in all_of if phrase.lower() not in lowered_answer]
+        matched_any = [phrase for phrase in any_of if concept_phrase_matches(public_answer, phrase)]
+        missing_all = [phrase for phrase in all_of if not concept_phrase_matches(public_answer, phrase)]
         any_passed = bool(matched_any) if any_of else True
         passed = any_passed and not missing_all
         results.append(

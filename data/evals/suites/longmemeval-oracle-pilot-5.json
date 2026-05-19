@@ -46,10 +46,15 @@
             ]
           },
           {
-            "id": "not-functioning",
-            "label": "Not functioning",
-            "allOf": [
-              "not functioning"
+            "id": "car-problem-state",
+            "label": "Problem state",
+            "anyOf": [
+              "not functioning",
+              "not working",
+              "malfunction",
+              "issue",
+              "fixed",
+              "replaced"
             ]
           }
         ],

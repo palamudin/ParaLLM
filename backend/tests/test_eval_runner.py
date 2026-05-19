@@ -794,6 +794,112 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(result["answer"]["confidenceNote"], "medium")
         self.assertTrue(str(result["fullPrompt"]).startswith("Instructions:"))
 
+    def test_validate_arm_manifest_preserves_openai_codex_model_sources(self) -> None:
+        arm = eval_runner.validate_arm_manifest(
+            {
+                "armId": "codex-sourced-openai",
+                "title": "Codex sourced OpenAI",
+                "type": "direct",
+                "runtime": {
+                    "executionMode": "live",
+                    "provider": "openai",
+                    "model": "gpt-5.4-mini",
+                    "modelSource": "codex_auth",
+                    "directProvider": "openai",
+                    "directModel": "gpt-5.4-mini",
+                    "directModelSource": "codex_auth",
+                    "summarizerProvider": "openai",
+                    "summarizerModel": "gpt-5.4-mini",
+                    "summarizerModelSource": "codex_auth",
+                },
+            },
+            Path("codex-sourced-openai.json"),
+        )
+
+        self.assertEqual(arm["runtime"]["modelSource"], "codex_auth")
+        self.assertEqual(arm["runtime"]["directModelSource"], "codex_auth")
+        self.assertEqual(arm["runtime"]["summarizerModelSource"], "codex_auth")
+
+    def test_run_direct_answer_allows_codex_auth_without_openai_api_key(self) -> None:
+        class FakeResult:
+            parsed = {
+                "answer": "GPS system not functioning correctly.",
+                "stance": "Use Timerbiter chronology.",
+                "confidenceNote": "high",
+            }
+            response = {"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}
+            response_id = "codex-thread-1"
+            output_text = "{\"answer\":\"GPS system not functioning correctly.\"}"
+            requested_max_output_tokens = 0
+            effective_max_output_tokens = 0
+            attempts = [0]
+            recovered_from_incomplete = False
+
+        class FakeRuntime:
+            def __init__(self) -> None:
+                self.kwargs = {}
+
+            def provider_requires_api_key(self, provider):
+                return True
+
+            def provider_live_api_key(self, provider, auth_assignments=None):
+                return ""
+
+            def get_api_key(self):
+                return ""
+
+            def live_auth_meta(self, provider, assignment):
+                return {"provider": provider}
+
+            def invoke_provider_json(self, **kwargs):
+                self.kwargs = kwargs
+                return FakeResult()
+
+            def get_response_usage_delta(self, response, model):
+                return {"totalTokens": 15, "estimatedCostUsd": 0.0}
+
+            def get_response_web_search_queries(self, response):
+                return []
+
+            def get_response_web_search_sources(self, response):
+                return []
+
+            def get_response_url_citations(self, response):
+                return []
+
+        arm = eval_runner.validate_arm_manifest(
+            {
+                "armId": "direct-codex-auth",
+                "title": "Direct Codex Auth",
+                "type": "direct",
+                "runtime": {
+                    "executionMode": "live",
+                    "provider": "openai",
+                    "model": "gpt-5.4-mini",
+                    "modelSource": "codex_auth",
+                    "directMemoryMode": "off",
+                },
+            },
+            Path("direct-codex-auth.json"),
+        )
+
+        runtime = FakeRuntime()
+        result = eval_runner.run_direct_answer(
+            runtime,
+            [],
+            {
+                "objective": "What was the car issue after service?",
+                "constraints": ["Use memory only."],
+                "sessionContext": "none",
+            },
+            arm,
+        )
+
+        self.assertEqual(result["mode"], "live")
+        self.assertEqual(runtime.kwargs["api_key"], "")
+        self.assertEqual(runtime.kwargs["provider_settings"]["modelSource"], "codex_auth")
+        self.assertEqual(result["answer"]["answer"], "GPS system not functioning correctly.")
+
     def test_run_direct_answer_normalizes_nested_plan_shape(self) -> None:
         class FakeResult:
             parsed = {
@@ -938,6 +1044,24 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("Vendor escalation", concept_check["detail"])
         self.assertTrue(concept_check["groups"][0]["passed"])
         self.assertFalse(concept_check["groups"][1]["passed"])
+
+    def test_required_concept_groups_normalize_time_range_wording(self) -> None:
+        result = eval_runner.evaluate_required_concept_groups(
+            "Admon was on the 8 am to 4 pm shift on Sunday.",
+            {
+                "requiredConceptGroups": [
+                    {
+                        "id": "sunday-day-shift",
+                        "label": "Sunday day shift",
+                        "anyOf": ["8 am - 4 pm", "8am-4pm", "Day Shift"],
+                    }
+                ]
+            },
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["groups"][0]["passed"])
+        self.assertIn("8 am - 4 pm", result["groups"][0]["matchedAnyOf"])
 
     def test_answer_similarity_metrics_detect_near_duplicate_answers(self) -> None:
         metrics = eval_runner.answer_similarity_metrics(

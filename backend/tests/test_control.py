@@ -163,6 +163,19 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertIn("openai_api", domains)
         self.assertEqual(status["missing"], [])
 
+    def test_auth_requirements_default_openai_models_use_codex_chatgpt_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as codex_home:
+            with mock.patch.dict(
+                "os.environ",
+                {"CODEX_HOME": codex_home, "LOOP_SECRET_BACKEND": "local_file"},
+                clear=False,
+            ):
+                status = control.auth_requirements_status({"provider": "openai"}, self.root)
+
+        self.assertFalse(status["ready"])
+        self.assertEqual({item["domain"] for item in status["requirements"]}, {"codex_chatgpt"})
+        self.assertEqual(status["missing"][0]["action"], "sign_in_codex")
+
     def test_auth_file_path_honors_docker_secret_backend(self) -> None:
         secret_path = self.root / "secrets" / "openai_api_keys"
         previous_backend = os.environ.get("LOOP_SECRET_BACKEND")
@@ -273,11 +286,27 @@ class ControlPlaneTests(unittest.TestCase):
 
         self.assertEqual(draft["maxTotalTokens"], 0)
         self.assertEqual(draft["maxOutputTokens"], 0)
+        self.assertEqual(draft["modelSource"], "codex_auth")
+        self.assertEqual(draft["summarizerModelSource"], "codex_auth")
+        self.assertEqual(draft["directModelSource"], "codex_auth")
         self.assertEqual(draft["budgetTargets"]["commander"]["maxTotalTokens"], 0)
         self.assertEqual(draft["budgetTargets"]["worker"]["maxTotalTokens"], 0)
         self.assertEqual(draft["budgetTargets"]["summarizer"]["maxTotalTokens"], 0)
         self.assertFalse(draft["knowledgebaseEnabled"])
         self.assertFalse(draft["knowledgebase"]["enabled"])
+
+    def test_create_task_defaults_openai_arms_to_codex_auth(self) -> None:
+        control.create_task({"objective": "Codex is the default OpenAI-family arm."}, self.root)
+        state = storage.read_state_payload(storage.project_paths(self.root))
+
+        runtime = state["activeTask"]["runtime"]
+        self.assertEqual(runtime["provider"], "openai")
+        self.assertEqual(runtime["modelSource"], "codex_auth")
+        self.assertEqual(runtime["directModelSource"], "codex_auth")
+        self.assertEqual(state["activeTask"]["summarizer"]["modelSource"], "codex_auth")
+        self.assertEqual(state["draft"]["modelSource"], "codex_auth")
+        self.assertEqual(state["draft"]["summarizerModelSource"], "codex_auth")
+        self.assertEqual(state["draft"]["directModelSource"], "codex_auth")
 
     def test_create_task_defaults_memory_off_and_honors_switch(self) -> None:
         control.create_task({"objective": "No ambient memory by default."}, self.root)

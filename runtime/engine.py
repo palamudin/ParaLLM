@@ -43,9 +43,12 @@ from backend.app.secrets import (
 
 
 MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "gpt-5.5": {"label": "GPT-5.5", "inputPer1M": 5.00, "cachedInputPer1M": 0.50, "outputPer1M": 30.00},
     "gpt-5.4": {"label": "GPT-5.4", "inputPer1M": 2.50, "cachedInputPer1M": 0.25, "outputPer1M": 15.00},
     "gpt-5.4-mini": {"label": "GPT-5.4 mini", "inputPer1M": 0.75, "cachedInputPer1M": 0.075, "outputPer1M": 4.50},
     "gpt-5.4-nano": {"label": "GPT-5.4 nano", "inputPer1M": 0.20, "cachedInputPer1M": 0.02, "outputPer1M": 1.25},
+    "gpt-5.3-codex": {"label": "GPT-5.3 Codex", "inputPer1M": 1.75, "cachedInputPer1M": 0.175, "outputPer1M": 14.00},
+    "gpt-5.3-codex-spark": {"label": "GPT-5.3 Codex Spark", "inputPer1M": 1.75, "cachedInputPer1M": 0.175, "outputPer1M": 14.00},
     "gpt-5.2": {"label": "GPT-5.2", "inputPer1M": 1.75, "cachedInputPer1M": 0.175, "outputPer1M": 14.00},
     "gpt-5.1": {"label": "GPT-5.1", "inputPer1M": 1.25, "cachedInputPer1M": 0.125, "outputPer1M": 10.00},
     "gpt-5": {"label": "GPT-5", "inputPer1M": 1.25, "cachedInputPer1M": 0.125, "outputPer1M": 10.00},
@@ -318,6 +321,8 @@ DEFAULT_WORKER_TYPE_SEQUENCE: List[str] = [
 DEFAULT_MODEL_ID = "gpt-5-mini"
 DEFAULT_PROVIDER_ID = "openai"
 DEFAULT_OLLAMA_MODEL_ID = "qwen3"
+OPENAI_API_MODEL_SOURCE = "openai_api"
+OPENAI_CODEX_MODEL_SOURCE = "codex_auth"
 EXECUTION_CANCELLED_MESSAGE = "Execution cancelled by operator."
 WEB_SEARCH_TOOL_CALL_PRICE_USD = 0.01
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -344,6 +349,23 @@ SENSITIVE_FILE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx", ".asc")
 def provider_model_catalog(provider: Optional[str]) -> Dict[str, Dict[str, Any]]:
     normalized = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     return PROVIDER_MODEL_CATALOG.get(normalized, {})
+
+
+def normalize_model_source(value: Any, default: str = OPENAI_API_MODEL_SOURCE) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {OPENAI_CODEX_MODEL_SOURCE, "codex", "codex_cli"}:
+        return OPENAI_CODEX_MODEL_SOURCE
+    if normalized in {OPENAI_API_MODEL_SOURCE, "api", "api_key", "openai", "openai_responses"}:
+        return OPENAI_API_MODEL_SOURCE
+    return default if default in {OPENAI_API_MODEL_SOURCE, OPENAI_CODEX_MODEL_SOURCE} else OPENAI_API_MODEL_SOURCE
+
+
+def provider_settings_use_codex_auth(provider: Optional[str], provider_settings: Optional[Dict[str, Any]]) -> bool:
+    return (
+        normalize_provider_id(provider, DEFAULT_PROVIDER_ID) == "openai"
+        and isinstance(provider_settings, dict)
+        and normalize_model_source(provider_settings.get("modelSource")) == OPENAI_CODEX_MODEL_SOURCE
+    )
 
 
 def provider_display_label(provider: Optional[str]) -> str:
@@ -2337,6 +2359,7 @@ def summarizer_config(task: Dict[str, Any]) -> Dict[str, str]:
     runtime_config = task.get("runtime") if isinstance(task.get("runtime"), dict) else {}
     runtime_provider = normalize_provider_id(runtime_config.get("provider"), DEFAULT_PROVIDER_ID)
     default_model = normalize_model_id(runtime_config.get("model"), default_model_for_provider(runtime_provider), runtime_provider)
+    runtime_model_source = normalize_model_source(runtime_config.get("modelSource"), OPENAI_API_MODEL_SOURCE)
     summary = task.get("summarizer") if isinstance(task.get("summarizer"), dict) else {}
     provider = normalize_provider_id(summary.get("provider"), runtime_provider)
     return {
@@ -2344,6 +2367,7 @@ def summarizer_config(task: Dict[str, Any]) -> Dict[str, str]:
         "label": str(summary.get("label", "Summarizer")).strip() or "Summarizer",
         "provider": provider,
         "model": normalize_model_id(summary.get("model"), default_model_for_provider(provider), provider),
+        "modelSource": normalize_model_source(summary.get("modelSource"), runtime_model_source),
         "harness": normalize_harness_config(summary.get("harness"), default_summarizer_harness()["concision"]),
     }
 
@@ -5108,6 +5132,7 @@ class LoopRuntime:
             "executionMode": "live",
             "provider": DEFAULT_PROVIDER_ID,
             "model": DEFAULT_MODEL_ID,
+            "modelSource": OPENAI_API_MODEL_SOURCE,
             "frontMode": default_front_mode(),
             "engineVersion": default_engine_version(),
             "engineGraph": default_engine_graph(),
@@ -5117,6 +5142,7 @@ class LoopRuntime:
             "directBaselineMode": default_direct_baseline_mode(),
             "directProvider": DEFAULT_PROVIDER_ID,
             "directModel": DEFAULT_MODEL_ID,
+            "directModelSource": OPENAI_API_MODEL_SOURCE,
             "ollamaBaseUrl": default_ollama_base_url(),
             "timeoutMode": default_timeout_mode(),
             "ollamaTimeoutProfile": default_ollama_timeout_profile(),
@@ -5146,6 +5172,7 @@ class LoopRuntime:
                 default_model_for_provider(runtime["provider"]),
                 runtime["provider"],
             )
+            runtime["modelSource"] = normalize_model_source(task_runtime.get("modelSource"), runtime["modelSource"])
             runtime["frontMode"] = normalize_front_mode(task_runtime.get("frontMode"), runtime["frontMode"])
             runtime["engineVersion"] = normalize_engine_version(task_runtime.get("engineVersion"), runtime["engineVersion"])
             runtime["engineGraph"] = normalize_engine_graph(task_runtime.get("engineGraph", runtime["engineGraph"]))
@@ -5159,6 +5186,10 @@ class LoopRuntime:
                 task_runtime.get("directModel"),
                 default_model_for_provider(runtime["directProvider"]),
                 runtime["directProvider"],
+            )
+            runtime["directModelSource"] = normalize_model_source(
+                task_runtime.get("directModelSource"),
+                runtime["modelSource"],
             )
             runtime["ollamaBaseUrl"] = normalize_ollama_base_url(task_runtime.get("ollamaBaseUrl"))
             runtime["timeoutMode"] = normalize_timeout_mode(task_runtime.get("timeoutMode"), runtime["timeoutMode"])
@@ -5180,6 +5211,9 @@ class LoopRuntime:
         runtime["requestTimeoutSeconds"] = self.get_request_timeout_seconds(task, budget_target)
         if provider_override:
             runtime["provider"] = normalize_provider_id(provider_override, runtime["provider"])
+            summary = task.get("summarizer") if isinstance(task.get("summarizer"), dict) else {}
+            if budget_target in {"commander", "commander_review", "summarizer", "answer_now"} and isinstance(summary, dict):
+                runtime["modelSource"] = normalize_model_source(summary.get("modelSource"), runtime["modelSource"])
         if model_override:
             runtime["model"] = normalize_model_id(model_override, runtime["model"], runtime["provider"])
         runtime["enginePlan"] = compile_engine_graph(runtime["engineGraph"], task=task, runtime_config=runtime)
@@ -5199,6 +5233,7 @@ class LoopRuntime:
             "executionMode": runtime["executionMode"],
             "provider": provider,
             "model": model,
+            "modelSource": normalize_model_source(task_runtime.get("directModelSource"), runtime.get("modelSource", OPENAI_API_MODEL_SOURCE)),
             "reasoningEffort": runtime["reasoningEffort"],
             "maxOutputTokens": runtime["maxOutputTokens"],
             "ollamaBaseUrl": normalize_ollama_base_url(task_runtime.get("ollamaBaseUrl", runtime.get("ollamaBaseUrl"))),
@@ -5219,6 +5254,13 @@ class LoopRuntime:
 
     def provider_requires_api_key(self, provider: Optional[str]) -> bool:
         return self.provider_uses_api_key_pool(provider)
+
+    def runtime_uses_codex_auth(self, runtime_config: Optional[Dict[str, Any]]) -> bool:
+        config = runtime_config if isinstance(runtime_config, dict) else {}
+        return provider_settings_use_codex_auth(config.get("provider"), config)
+
+    def runtime_can_call_without_api_key(self, provider: Optional[str], runtime_config: Optional[Dict[str, Any]] = None) -> bool:
+        return not self.provider_requires_api_key(provider) or self.runtime_uses_codex_auth(runtime_config)
 
     def provider_auth_assignments(
         self,
@@ -9505,6 +9547,101 @@ class LoopRuntime:
             raise last_error
         raise RuntimeErrorWithCode("Ollama response did not produce a usable structured output.", 500)
 
+    def invoke_codex_auth_json(
+        self,
+        *,
+        model: str,
+        reasoning_effort: str,
+        instructions: str,
+        input_text: str,
+        schema_name: str,
+        schema: Dict[str, Any],
+        max_output_tokens: int = 0,
+        target_kind: str = "generic",
+        request_timeout_seconds: int = 900,
+    ) -> OpenAIResult:
+        from backend.app import codex_lanes
+
+        prompt = "\n\n".join(
+            [
+                "ParaLLM structured provider call through Codex ChatGPT auth.",
+                "Use the supplied instructions and input as the task. Return only JSON matching the provided output schema.",
+                f"Reasoning effort requested: {reasoning_effort or 'low'}",
+                "Instructions:\n" + str(instructions or "").strip(),
+                "Input:\n" + str(input_text or "").strip(),
+            ]
+        ).strip()
+        self.root.mkdir(parents=True, exist_ok=True)
+        lane_slug = re.sub(r"[^a-zA-Z0-9_]+", "_", str(schema_name or target_kind or "json")).strip("_").lower() or "json"
+        request = codex_lanes.CodexLaneRequest(
+            lane_id=f"codex_{lane_slug}",
+            prompt=prompt,
+            root=self.root,
+            model=str(model or "gpt-5.4-mini").strip() or "gpt-5.4-mini",
+            sandbox="read-only",
+            timeout_seconds=max(600, int(request_timeout_seconds or 900)),
+            max_total_tokens=0,
+            max_cost_usd=0.0,
+            output_schema=schema,
+            ignore_user_config=False,
+            auth_mode=codex_lanes.CODEX_AUTH_MODE_INHERIT,
+            ephemeral=True,
+            disable_plugins=True,
+            disable_general_analytics=True,
+        )
+        artifact = codex_lanes.run_codex_lane(request)
+        if str(artifact.get("status") or "") not in {"completed", "budget_exhausted"}:
+            warnings = artifact.get("warnings") if isinstance(artifact.get("warnings"), list) else []
+            detail = "; ".join(str(warning) for warning in warnings if str(warning).strip())
+            raise RuntimeErrorWithCode(
+                f"Codex auth provider call failed for {schema_name or target_kind}: {detail or artifact.get('status') or 'unknown error'}",
+                502,
+            )
+        output_text = str(artifact.get("responseText") or "").strip()
+        parsed = parse_structured_output_text(output_text)
+        usage = artifact.get("usage") if isinstance(artifact.get("usage"), dict) else {}
+        response = {
+            "id": str(artifact.get("threadId") or ""),
+            "status": "completed",
+            "provider": "codex_cli",
+            "model": str(model or ""),
+            "usage": {
+                "input_tokens": int(usage.get("inputTokens", 0) or 0),
+                "output_tokens": int(usage.get("outputTokens", 0) or 0),
+                "total_tokens": int(usage.get("totalTokens", 0) or 0),
+                "input_tokens_details": {"cached_tokens": int(usage.get("cachedInputTokens", 0) or 0)},
+                "output_tokens_details": {"reasoning_tokens": int(usage.get("reasoningTokens", 0) or 0)},
+            },
+            "codexArtifact": artifact,
+        }
+        return OpenAIResult(
+            provider="openai",
+            parsed=parsed,
+            response=response,
+            response_id=str(artifact.get("threadId") or ""),
+            output_text=output_text,
+            thinking_text=None,
+            web_search_queries=[],
+            web_search_sources=[],
+            url_citations=[],
+            requested_max_output_tokens=max(0, int(max_output_tokens or 0)),
+            effective_max_output_tokens=max(0, int(max_output_tokens or 0)),
+            attempts=[max(0, int(max_output_tokens or 0))],
+            recovered_from_incomplete=False,
+            executed_tools=[],
+            auth_assignment={"provider": "openai", "source": OPENAI_CODEX_MODEL_SOURCE, "interface": "codex_cli"},
+            auth_failover_history=[],
+            provider_trace={
+                "provider": "openai",
+                "transport": "codex_cli",
+                "modelSource": OPENAI_CODEX_MODEL_SOURCE,
+                "stage": "completed",
+                "stageLabel": PROVIDER_TRACE_STAGE_LABELS["completed"],
+                "completedAt": utc_now(),
+                "providerResponseId": str(artifact.get("threadId") or ""),
+            },
+        )
+
     def invoke_provider_json(
         self,
         provider: str,
@@ -9579,6 +9716,18 @@ class LoopRuntime:
                 pass
             return result
 
+        if provider_settings_use_codex_auth(normalized_provider, provider_settings if isinstance(provider_settings, dict) else {}):
+            return call_and_record(lambda: self.invoke_codex_auth_json(
+                model=model,
+                reasoning_effort=reasoning_effort,
+                instructions=instructions,
+                input_text=input_text,
+                schema_name=schema_name,
+                schema=schema,
+                max_output_tokens=max_output_tokens,
+                target_kind=target_kind,
+                request_timeout_seconds=request_timeout_seconds,
+            ))
         if normalized_provider == "openai":
             return call_and_record(lambda: self.invoke_openai_json(
                 api_key=api_key,
@@ -13178,7 +13327,7 @@ class LoopRuntime:
         auth_meta = self.live_auth_meta(direct_runtime["provider"], auth_assignment)
         if direct_runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(direct_runtime["provider"], auth_assignments)
-            if api_key or not self.provider_requires_api_key(direct_runtime["provider"]):
+            if api_key or self.runtime_can_call_without_api_key(direct_runtime["provider"], direct_runtime):
                 self.assert_budget_available("direct_baseline", task)
                 (baseline_answer, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
                     stage="direct_baseline",
@@ -13201,7 +13350,7 @@ class LoopRuntime:
                 usage_snapshot = self.update_usage_tracking("direct_baseline", str(task["taskId"]), direct_runtime["model"], response_id, response)
                 mode_used = "live"
             else:
-                if self.provider_uses_api_key_pool(direct_runtime["provider"]):
+                if self.provider_uses_api_key_pool(direct_runtime["provider"]) and not self.runtime_uses_codex_auth(direct_runtime):
                     self.raise_if_managed_secret_backend_unavailable(
                         "direct_baseline",
                         str(task["taskId"]),
@@ -13363,7 +13512,7 @@ class LoopRuntime:
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
-            if api_key or not self.provider_requires_api_key(runtime["provider"]):
+            if api_key or self.runtime_can_call_without_api_key(runtime["provider"], runtime):
                 self.assert_budget_available("commander", task)
                 (checkpoint, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
                     stage="commander",
@@ -13389,7 +13538,7 @@ class LoopRuntime:
                 usage_snapshot = self.update_usage_tracking("commander", str(task["taskId"]), runtime["model"], response_id, response)
                 mode_used = "live"
             else:
-                if self.provider_uses_api_key_pool(runtime["provider"]):
+                if self.provider_uses_api_key_pool(runtime["provider"]) and not self.runtime_uses_codex_auth(runtime):
                     self.raise_if_managed_secret_backend_unavailable("commander", str(task["taskId"]), runtime["model"], "commander", runtime["provider"])
                 self.raise_live_stage_missing_credentials(
                     stage="commander",
@@ -13587,7 +13736,7 @@ class LoopRuntime:
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
-            if api_key or not self.provider_requires_api_key(runtime["provider"]):
+            if api_key or self.runtime_can_call_without_api_key(runtime["provider"], runtime):
                 self.assert_budget_available("commander_review", task)
                 (checkpoint, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
                     stage="commander_review",
@@ -13615,7 +13764,7 @@ class LoopRuntime:
                 usage_snapshot = self.update_usage_tracking("commander_review", str(task["taskId"]), runtime["model"], response_id, response)
                 mode_used = "live"
             else:
-                if self.provider_uses_api_key_pool(runtime["provider"]):
+                if self.provider_uses_api_key_pool(runtime["provider"]) and not self.runtime_uses_codex_auth(runtime):
                     self.raise_if_managed_secret_backend_unavailable("commander_review", str(task["taskId"]), runtime["model"], "commander_review", runtime["provider"])
                 self.raise_live_stage_missing_credentials(
                     stage="commander_review",
@@ -13864,7 +14013,7 @@ class LoopRuntime:
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
-            if api_key or not self.provider_requires_api_key(runtime["provider"]):
+            if api_key or self.runtime_can_call_without_api_key(runtime["provider"], runtime):
                 self.assert_budget_available(worker_id, task)
                 (checkpoint, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
                     stage=f"worker_{worker_id}",
@@ -13896,7 +14045,7 @@ class LoopRuntime:
                 usage_snapshot = self.update_usage_tracking(worker_id, str(task["taskId"]), runtime["model"], response_id, response)
                 mode_used = "live"
             else:
-                if self.provider_uses_api_key_pool(runtime["provider"]):
+                if self.provider_uses_api_key_pool(runtime["provider"]) and not self.runtime_uses_codex_auth(runtime):
                     self.raise_if_managed_secret_backend_unavailable(f"worker_{worker_id}", str(task["taskId"]), runtime["model"], worker_id, runtime["provider"])
                 self.raise_live_stage_missing_credentials(
                     stage=f"worker_{worker_id}",
@@ -14115,7 +14264,7 @@ class LoopRuntime:
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
-            if api_key or not self.provider_requires_api_key(runtime["provider"]):
+            if api_key or self.runtime_can_call_without_api_key(runtime["provider"], runtime):
                 self.assert_budget_available("summarizer", task)
                 (summary, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
                     stage="summarizer",
@@ -14144,7 +14293,7 @@ class LoopRuntime:
                 usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                 mode_used = "live"
             else:
-                if self.provider_uses_api_key_pool(runtime["provider"]):
+                if self.provider_uses_api_key_pool(runtime["provider"]) and not self.runtime_uses_codex_auth(runtime):
                     self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "summarizer", runtime["provider"])
                 self.raise_live_stage_missing_credentials(
                     stage="summarizer",
@@ -14340,7 +14489,7 @@ class LoopRuntime:
         auth_meta = self.live_auth_meta(runtime["provider"], auth_assignment)
         if runtime["executionMode"] == "live":
             api_key = self.provider_live_api_key(runtime["provider"], auth_assignments)
-            if api_key or not self.provider_requires_api_key(runtime["provider"]):
+            if api_key or self.runtime_can_call_without_api_key(runtime["provider"], runtime):
                 self.assert_budget_available("summarizer", task)
                 (summary, response_id, response, call_meta), live_attempts = self.execute_live_stage_with_retry(
                     stage="summarizer",
@@ -14374,7 +14523,7 @@ class LoopRuntime:
                 usage_snapshot = self.update_usage_tracking("summarizer", str(task["taskId"]), runtime["model"], response_id, response)
                 mode_used = "live"
             else:
-                if self.provider_uses_api_key_pool(runtime["provider"]):
+                if self.provider_uses_api_key_pool(runtime["provider"]) and not self.runtime_uses_codex_auth(runtime):
                     self.raise_if_managed_secret_backend_unavailable("summarizer", str(task["taskId"]), runtime["model"], "answer_now", runtime["provider"])
                 self.raise_live_stage_missing_credentials(
                     stage="summarizer",

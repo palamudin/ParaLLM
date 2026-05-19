@@ -999,6 +999,276 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertEqual(biology["hits"][0]["bankId"], "biology-lab")
         self.assertIn("egg-laying mammals", biology["hits"][0]["text"])
 
+    def test_non_sop_recall_projects_query_focused_excerpts_from_deep_memory(self) -> None:
+        filler = " ".join(f"filler-{index}" for index in range(140))
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "memory-lab",
+                "tags": ["longmemeval", "oracle", "pilot"],
+                "items": [
+                    {
+                        "title": "Deep car transcript",
+                        "content": (
+                            "The user bought a silver Honda Civic and discussed ordinary fuel economy. "
+                            + filler
+                            + " Later, after the first service, the first issue was the GPS system not functioning correctly. "
+                            "The dealership replaced the entire GPS system."
+                        ),
+                        "type": "conversation",
+                    }
+                ],
+            },
+        )
+
+        result = knowledgebase.recall(
+            self.root,
+            query="What was the first issue with the car after its first service?",
+            bank_id="memory-lab",
+            tags=["longmemeval", "oracle", "pilot"],
+            tags_match="all",
+            include_runtime=False,
+            include_persistent=True,
+            max_records=1,
+            max_tokens=5000,
+        )
+
+        self.assertEqual(result["resultCount"], 1)
+        self.assertIn("GPS system not functioning correctly", result["aiPacket"]["contextText"])
+
+    def test_query_focused_excerpts_keep_late_discriminators_and_table_meaning(self) -> None:
+        generic_draft = (
+            "Session draft assistant: Here's a shift rotation sheet for GM social media agents. "
+            "| | Monday | Tuesday | Wednesday | Thursday | Friday | Saturday | Sunday | "
+            "| Week 1 | Agent 1 | Agent 2 | Agent 3 | Agent 4 | Agent 5 | Agent 6 | Agent 7 | "
+            "This generic rotation draft has no named agents yet. "
+        )
+        filler = " ".join(f"unrelated-{index}" for index in range(180))
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "memory-lab",
+                "tags": ["longmemeval", "oracle", "pilot"],
+                "items": [
+                    {
+                        "title": "Shift rotation transcript",
+                        "content": (
+                            generic_draft * 5
+                            + filler
+                            + " Session 1 message 14 assistant: Thank you for providing the agent names. "
+                            "Here's the updated shift rotation sheet for GM social media agents: "
+                            "| | 8 am - 4 pm (Day Shift) | 12 pm - 8 pm (Afternoon Shift) | "
+                            "4 pm - 12 am (Evening Shift) | 12 am - 8 am (Night Shift) | "
+                            "| Sunday | Admon | Magdy | Ehab | Sara | "
+                            "| Monday | Mostafa | Nemr | Adam | Admon |"
+                        ),
+                        "type": "conversation",
+                    }
+                ],
+            },
+        )
+
+        query = (
+            "Answer this LongMemEval memory question using only retained memory. "
+            "If the relevant memory is not available, say memory unavailable. "
+            "Question: I'm checking our previous chat about the shift rotation sheet for GM social media agents. "
+            "Can you remind me what was the rotation for Admon on a Sunday?"
+        )
+        excerpt_terms = knowledgebase.query_excerpt_terms(knowledgebase.tokenize(query))
+        self.assertIn("admon", excerpt_terms)
+        self.assertIn("sunday", excerpt_terms)
+        self.assertNotIn("question", excerpt_terms)
+
+        result = knowledgebase.recall(
+            self.root,
+            query=query,
+            bank_id="memory-lab",
+            tags=["longmemeval", "oracle", "pilot"],
+            tags_match="all",
+            include_runtime=False,
+            include_persistent=True,
+            max_records=1,
+            max_tokens=5000,
+        )
+        context = result["aiPacket"]["contextText"]
+
+        self.assertEqual(result["resultCount"], 1)
+        self.assertIn("8 am - 4 pm (Day Shift)", context)
+        self.assertIn("Sunday | Admon", context)
+
+    def test_timerbiter_obligation_rows_are_projected_as_countable_math(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "memory-lab",
+                "tags": ["longmemeval", "oracle", "pilot"],
+                "items": [
+                    {
+                        "title": "Clothing obligation transcript",
+                        "content": (
+                            "Timerbiter obligation ledger:\n"
+                            "  1. open_or_unconfirmed pick_up: I still need to pick up my dry cleaning for the navy blue blazer.\n"
+                            "  2. open_or_unconfirmed return at 2023-02-05: I need to return some boots to Zara.\n"
+                            "  3. open_or_unconfirmed pick_up at 2023-02-05: I still need to pick up the new pair from Zara.\n\n"
+                            "Full transcript follows with ordinary closet advice."
+                        ),
+                        "type": "conversation",
+                    }
+                ],
+            },
+        )
+
+        result = knowledgebase.recall(
+            self.root,
+            query="How many items of clothing do I need to pick up or return from a store?",
+            bank_id="memory-lab",
+            tags=["longmemeval", "oracle", "pilot"],
+            tags_match="all",
+            include_runtime=False,
+            include_persistent=True,
+            max_records=1,
+            max_tokens=5000,
+        )
+        context = result["aiPacket"]["contextText"]
+
+        self.assertEqual(result["resultCount"], 1)
+        self.assertIn("Open obligation count: 3", context)
+        self.assertIn("COUNTABLE ROW 3", context)
+
+    def test_timerbiter_event_rows_mark_first_after_anchor_candidate(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "memory-lab",
+                "tags": ["longmemeval", "oracle", "pilot"],
+                "items": [
+                    {
+                        "title": "Car temporal transcript",
+                        "content": (
+                            "Session 1 message 1 user: The car was serviced for the first time on March 15th.\n"
+                            "Session 2 message 3 user: I recently had an issue with my car's GPS system on 3/22, "
+                            "and I had to take it back to the dealership to get it fixed."
+                        ),
+                        "metadata": {
+                            "timerbiter": {
+                                "schemaVersion": "parallm-timerbiter/v0",
+                                "storeClass": "LTS",
+                                "systemClock": {"depositedAt": "2026-05-13T00:00:00+00:00", "retrievedAt": None},
+                                "questionClock": {"questionAt": "2023/04/10 (Mon) 23:07", "defaultYear": 2023},
+                                "events": [
+                                    {
+                                        "eventAt": "2023-03-15",
+                                        "eventType": "maintenance",
+                                        "temporalImportance": "anchor",
+                                        "relation": "none",
+                                        "status": "active",
+                                        "source": "session 1 message 1",
+                                        "excerpt": "The car was serviced for the first time on March 15th.",
+                                    },
+                                    {
+                                        "eventAt": "2023-03-22",
+                                        "eventType": "issue",
+                                        "temporalImportance": "answer_candidate",
+                                        "relation": "after_anchor",
+                                        "status": "active",
+                                        "source": "session 2 message 3",
+                                        "excerpt": "I had an issue with my car's GPS system on 3/22 and took it back to the dealership.",
+                                    },
+                                ],
+                                "obligations": [],
+                            }
+                        },
+                        "type": "conversation",
+                    }
+                ],
+            },
+        )
+
+        result = knowledgebase.recall(
+            self.root,
+            query="What was the first issue I had with my new car after its first service?",
+            bank_id="memory-lab",
+            tags=["longmemeval", "oracle", "pilot"],
+            tags_match="all",
+            include_runtime=False,
+            include_persistent=True,
+            max_records=1,
+            max_tokens=5000,
+        )
+        context = result["aiPacket"]["contextText"]
+
+        self.assertIn("FIRST_AFTER_ANCHOR_CANDIDATE", context)
+        self.assertIn("GPS system", context)
+        self.assertIn("dealership", context)
+
+    def test_query_evidence_precedes_nondecisive_temporal_background(self) -> None:
+        long_tennis_note = (
+            "I am getting ready for a tennis tournament and need serve drills, toss consistency, "
+            "warmup planning, recovery notes, racket string advice, and a practice schedule."
+        )
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "memory-lab",
+                "tags": ["longmemeval", "oracle", "pilot"],
+                "items": [
+                    {
+                        "title": "Fitness update transcript",
+                        "content": (
+                            "Session 2 message 1 user: I'm training for another charity 5K run coming up. "
+                            "By the way, I'm hoping to beat my personal best time of 25:50 this time around."
+                        ),
+                        "metadata": {
+                            "timerbiter": {
+                                "schemaVersion": "parallm-timerbiter/v0",
+                                "storeClass": "LTS",
+                                "systemClock": {"depositedAt": "2026-05-13T00:00:00+00:00", "retrievedAt": None},
+                                "questionClock": {"questionAt": "2023/06/01 (Thu) 00:58", "defaultYear": 2023},
+                                "events": [
+                                    {
+                                        "eventAt": "2023-05-06",
+                                        "eventType": "event",
+                                        "temporalImportance": "historical",
+                                        "relation": "none",
+                                        "status": "active",
+                                        "source": "session 1 message 9",
+                                        "excerpt": long_tennis_note,
+                                    },
+                                    {
+                                        "eventAt": "2023-05-06",
+                                        "eventType": "event",
+                                        "temporalImportance": "historical",
+                                        "relation": "none",
+                                        "status": "active",
+                                        "source": "session 2 message 7",
+                                        "excerpt": long_tennis_note,
+                                    },
+                                ],
+                                "obligations": [],
+                            }
+                        },
+                        "type": "conversation",
+                    }
+                ],
+            },
+        )
+
+        result = knowledgebase.recall(
+            self.root,
+            query="What was my personal best time in the charity 5K run?",
+            bank_id="memory-lab",
+            tags=["longmemeval", "oracle", "pilot"],
+            tags_match="all",
+            include_runtime=False,
+            include_persistent=True,
+            max_records=1,
+            max_tokens=5000,
+        )
+        context = result["aiPacket"]["contextText"]
+
+        self.assertIn("25:50", context)
+        self.assertLess(context.index("25:50"), context.index("EVENT ROW 1"))
+
     def test_non_msp_task_does_not_activate_final_gates_from_recalled_msp_packet(self) -> None:
         task = {
             "taskId": "t-philosophy-gate",

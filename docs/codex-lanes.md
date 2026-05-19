@@ -1,6 +1,6 @@
 # Codex Lanes
 
-ParaLLM can use Codex as a specialist lane without making Codex the whole orchestration brain.
+ParaLLM can use Codex as the default OpenAI-family local operator source and as a specialist lane without making Codex the whole orchestration brain.
 
 The first supported shape is a read-only OpenAI-family Codex agent arm around `codex exec --json`. Para owns the run contract, budget, merge gates, and artifact retention. Codex receives a bounded packet, returns a compact advisor artifact, and Para decides whether that artifact changes the public answer, the implementation plan, or the next verification step.
 
@@ -20,11 +20,11 @@ The initial adapter is intentionally read-only. Write-capable Codex lanes should
 The low-level adapter can run Codex non-interactively:
 
 ```text
-codex exec --json --ignore-user-config --ephemeral --disable plugins --disable general_analytics --sandbox read-only --cd <repo> --model <model> --output-schema <schema> -
+codex exec --json --ignore-user-config --ephemeral --disable plugins --sandbox read-only --cd <repo> --model <model> --output-schema <schema> -
 ```
 
-The prompt is passed through stdin, not embedded into a shell command. The process is launched without `shell=True`, and Windows runs request `CREATE_NO_WINDOW` so the live UI does not spawn visible command windows. The adapter ignores user-level Codex config by default so automation lanes do not inherit UI plugins, personal MCP servers, or plugin sync failures.
-The lane also disables Codex plugins and general analytics because plugin marketplace/cache calls are unrelated to a Para advisor lane and can fail before model execution.
+The prompt is passed through stdin, not embedded into a shell command. The process is launched without `shell=True`, and Windows runs request `CREATE_NO_WINDOW` so the live UI does not spawn visible command windows. The standalone lane adapter can ignore user-level Codex config for isolated automation lanes.
+The lane disables Codex plugins because plugin marketplace/cache calls are unrelated to a Para advisor lane and can fail before model execution.
 
 The Para-facing arm route is `/v1/codex/lanes/run`. That route currently defaults to:
 
@@ -36,6 +36,8 @@ The Para-facing arm route is `/v1/codex/lanes/run`. That route currently default
 - `disablePlugins`: `true`
 
 So the first operator-triggered arm uses local Codex auth/config like the local Codex agent surface, but still keeps plugins disabled until there is an explicit MCP/plugin allowlist for Para lanes.
+
+OpenAI-family run-contract defaults now prefer `modelSource: codex_auth`. The API-key OpenAI Responses path remains available as `modelSource: openai_api` when selected explicitly.
 
 Each raw lane artifact includes:
 
@@ -86,6 +88,8 @@ The adapter has two budget gates:
 - Post-run: mark the artifact `budget_exhausted` if observed usage crosses the local Para run contract.
 
 Post-run enforcement cannot recover already-spent tokens. It exists so the operator and scheduler can stop follow-on lanes, not to pretend the spend never happened.
+
+Pending fallback work: if one arm hits `no credit`, provider quota, rate-limit, or local budget exhaustion, the scheduler should offer a configured fallback arm and the frontend should show a clear notification naming the failed arm, selected fallback, and answer degradation state.
 
 ## Settings Plane
 

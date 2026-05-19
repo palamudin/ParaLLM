@@ -431,14 +431,15 @@ The secret backend is now hosted-aware too:
 ### First Run
 
 1. Open `Settings / Integrations`
-2. Prefer setting the provider env vars you actually plan to use before launch, especially `LOOP_OPENAI_API_KEYS` for the current full-featured live path
-3. If you explicitly start with `LOOP_SECRET_BACKEND=local_file`, paste keys into the matching provider group cards in Settings
-4. Pick a runtime profile in `Home` or `Settings`
-5. If workers, judge lanes, or the summarizer use `ollama`, set `Ollama base URL` in Runtime controls to the actual host such as `http://192.168.0.26:11434`
-6. If you want multiple Ollama servers in one local pool, add them to `providers.txt` and choose a routing mode in Runtime controls
-7. Write a prompt in `Home`
-8. Press `Send`
-9. Inspect `Review` if you want the internal adjudication trace
+2. For OpenAI-family lanes, the local operator default is now Codex/ChatGPT auth via the Codex arm; use the API-key OpenAI source only when you explicitly select it
+3. Prefer setting provider env vars for non-Codex arms you actually plan to use, such as `LOOP_DEEPSEEK_API_KEYS`, `LOOP_ANTHROPIC_API_KEYS`, `LOOP_XAI_API_KEYS`, `LOOP_MINIMAX_API_KEYS`, or `LOOP_OPENAI_API_KEYS` for explicit OpenAI API-key lanes
+4. If you explicitly start with `LOOP_SECRET_BACKEND=local_file`, paste keys into the matching provider group cards in Settings
+5. Pick a runtime profile in `Home` or `Settings`
+6. If workers, judge lanes, or the summarizer use `ollama`, set `Ollama base URL` in Runtime controls to the actual host such as `http://192.168.0.26:11434`
+7. If you want multiple Ollama servers in one local pool, add them to `providers.txt` and choose a routing mode in Runtime controls
+8. Write a prompt in `Home`
+9. Press `Send`
+10. Inspect `Review` if you want the internal adjudication trace
 
 ## Local API Key Pool
 
@@ -616,9 +617,11 @@ The next work is not to imitate another project. It is to make ParaLLM better at
   - add clearer queue state, cancellation, retry policy, rate-limit behavior, and key leasing per provider pool
   - evaluate GitHub Models as the clean Copilot-adjacent provider path, while keeping Copilot CLI/SDK as a separate experimental agent lane rather than pretending it is a normal model-only API arm
 - `Codex Specialist Lanes`
+  - make Codex-auth OpenAI-family models the default local operator path while keeping API-key OpenAI models available as an explicit source choice
   - wire read-only Codex commander, adversarial, and reliability lanes through the Para artifact contract as an OpenAI-family agent arm, not as a raw model-only worker slot
   - keep Codex spend visible with local budget gates, JSONL usage parsing, and explicit unknowns for provider-side RPM/TPM limits
   - expose Codex arm auth, model caps, local catalog context, measured smoke usage, manual account-limit snapshots, and an operator-triggered read-only smoke in `Settings -> Codex agent arm`
+  - TODO: add arm-level fallback policy for `no credit`, quota, rate-limit, and local budget stops, with visible frontend notifications that explain which arm failed, which fallback was selected, and whether the answer is degraded or blocked
   - require isolated worktrees, file ownership, and merge review before enabling write-capable Codex builder lanes
 - `Vendor Callback Harvesting`
   - promote `data/provider_calls/` into the canonical outbound-call ledger for prompt/response review, eval replay, retrieval, and provider-behavior debugging
@@ -751,7 +754,7 @@ Those results remain useful only as historical constrained evidence. They were p
 
 ### Current Evaluation Snapshot
 
-Current review position as of `2026-05-13`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot, a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging, a non-MSP synthetic needle test, and a five-case LongMemEval oracle pilot. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, the synthetic side test proves exact memory retrieval outside MSP phrasing, the LongMemEval pilot exposes realistic temporal/counting memory-shaping work still to do, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide.
+Current review position as of `2026-05-14`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot, a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging, a non-MSP synthetic needle test, and a five-case LongMemEval oracle pilot. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, the synthetic side test proves exact memory retrieval outside MSP phrasing, the LongMemEval pilot exposes realistic temporal/counting memory-shaping work still to do, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide. Timerbiter-lite now adds deterministic temporal and obligation scaffolding to the LongMemEval memory bank; the next live rerun is pending provider quota rather than code readiness.
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
@@ -774,7 +777,7 @@ Focused memory benchmark readout:
 | Benchmark | Pure Direct prompt-only | Direct + memory single call | ParaLLM multi-lane | Corporate readout |
 | --- | ---: | ---: | ---: | --- |
 | Synthetic Needle Ledger Transit | `0 / 3` | `3 / 3` | `3 / 3` | Internal control proving exact non-MSP memory retrieval under context poison. |
-| LongMemEval oracle pilot | `0 / 5` | `3 / 5` | `3 / 5` | Leak-free external pilot. Simple recall/update cases pass; temporal sequencing and multi-session counting remain the next memory-shaping target. |
+| LongMemEval oracle pilot | `0 / 5` | `3 / 5` | `3 / 5` | Leak-free external pilot. Last valid score predates Timerbiter-lite; the new temporal/obligation ledger is mechanically validated, but the live rerun was blocked by OpenAI quota. |
 
 Commercial positioning: the current MSP wedge is an SLT / service-manager incident-command assistant, not a generic chatbot. The operator sees a normal assistant surface, while ParaLLM runs the deeper layer: provider routing, retained operational memory, adversarial review lanes, evidence gates, and judgeable traces. The value proposition is faster first-hour alignment, safer tenant-specific escalation, and a post-incident audit trail management can inspect.
 

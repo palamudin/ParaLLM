@@ -108,6 +108,19 @@ def normalize_model_source(value: Any, default: str = OPENAI_API_MODEL_SOURCE) -
     return default if default in {OPENAI_API_MODEL_SOURCE, OPENAI_CODEX_MODEL_SOURCE} else OPENAI_API_MODEL_SOURCE
 
 
+def default_model_source_for_provider(provider: Any) -> str:
+    normalized_provider = normalize_provider_id(str(provider or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
+    return OPENAI_CODEX_MODEL_SOURCE if normalized_provider == "openai" else OPENAI_API_MODEL_SOURCE
+
+
+def default_model_for_source(provider: Any, source: Any) -> str:
+    normalized_provider = normalize_provider_id(str(provider or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
+    normalized_source = normalize_model_source(source, default_model_source_for_provider(normalized_provider))
+    if normalized_provider == "openai" and normalized_source == OPENAI_CODEX_MODEL_SOURCE:
+        return "gpt-5.4-mini"
+    return default_model_for_provider(normalized_provider)
+
+
 def normalize_sourced_model_id(model: Any, fallback: str, provider: str, source: Any) -> str:
     normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
     normalized_source = normalize_model_source(source)
@@ -138,7 +151,7 @@ def normalize_loop_preferences(config: Optional[Dict[str, Any]] = None) -> Dict[
 
 def default_draft_state() -> Dict[str, Any]:
     budget = default_budget_config()
-    model = DEFAULT_MODEL_ID
+    model = "gpt-5.4-mini"
     provider = DEFAULT_PROVIDER_ID
     loop = default_loop_preferences()
     local_files = default_local_file_tool_config()
@@ -152,10 +165,10 @@ def default_draft_state() -> Dict[str, Any]:
         "executionMode": "live",
         "provider": provider,
         "model": model,
-        "modelSource": OPENAI_API_MODEL_SOURCE,
+        "modelSource": OPENAI_CODEX_MODEL_SOURCE,
         "summarizerProvider": provider,
         "summarizerModel": model,
-        "summarizerModelSource": OPENAI_API_MODEL_SOURCE,
+        "summarizerModelSource": OPENAI_CODEX_MODEL_SOURCE,
         "frontMode": default_front_mode(),
         "engineVersion": default_engine_version(),
         "engineGraph": default_engine_graph(),
@@ -164,7 +177,7 @@ def default_draft_state() -> Dict[str, Any]:
         "directBaselineMode": default_direct_baseline_mode(),
         "directProvider": provider,
         "directModel": model,
-        "directModelSource": OPENAI_API_MODEL_SOURCE,
+        "directModelSource": OPENAI_CODEX_MODEL_SOURCE,
         "ollamaBaseUrl": default_ollama_base_url(),
         "timeoutMode": default_timeout_mode(),
         "ollamaTimeoutProfile": default_ollama_timeout_profile(),
@@ -911,22 +924,27 @@ def _auth_requirement_for_domain(
 def auth_requirements_status(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str, Any]:
     current = payload if isinstance(payload, dict) else {}
     provider = normalize_provider_id(str(current.get("provider", DEFAULT_PROVIDER_ID)), DEFAULT_PROVIDER_ID)
-    model_source = normalize_model_source(current.get("modelSource", OPENAI_API_MODEL_SOURCE), OPENAI_API_MODEL_SOURCE)
-    model = normalize_sourced_model_id(current.get("model", default_model_for_provider(provider)), default_model_for_provider(provider), provider, model_source)
+    model_source_default = default_model_source_for_provider(provider)
+    model_source = normalize_model_source(current.get("modelSource", model_source_default), model_source_default)
+    model_default = default_model_for_source(provider, model_source)
+    model = normalize_sourced_model_id(current.get("model", model_default), model_default, provider, model_source)
     summarizer_provider = normalize_provider_id(str(current.get("summarizerProvider", provider)), provider)
-    summarizer_model_source = normalize_model_source(current.get("summarizerModelSource", OPENAI_API_MODEL_SOURCE), OPENAI_API_MODEL_SOURCE)
+    summarizer_model_source_default = model_source if summarizer_provider == provider else default_model_source_for_provider(summarizer_provider)
+    summarizer_model_source = normalize_model_source(current.get("summarizerModelSource", summarizer_model_source_default), summarizer_model_source_default)
+    summarizer_model_default = default_model_for_source(summarizer_provider, summarizer_model_source)
     summarizer_model = normalize_sourced_model_id(
-        current.get("summarizerModel", default_model_for_provider(summarizer_provider)),
-        default_model_for_provider(summarizer_provider),
+        current.get("summarizerModel", summarizer_model_default),
+        summarizer_model_default,
         summarizer_provider,
         summarizer_model_source,
     )
     direct_mode = normalize_direct_baseline_mode(current.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     direct_provider = normalize_provider_id(str(current.get("directProvider", provider)), provider)
     direct_model_source = normalize_model_source(current.get("directModelSource", model_source), model_source)
+    direct_model_default = default_model_for_source(direct_provider, direct_model_source)
     direct_model = normalize_sourced_model_id(
-        current.get("directModel", default_model_for_provider(direct_provider)),
-        default_model_for_provider(direct_provider),
+        current.get("directModel", direct_model_default),
+        direct_model_default,
         direct_provider,
         direct_model_source,
     )
@@ -1131,16 +1149,20 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
         raise RuntimeErrorWithCode("Only live execution mode is supported. Configure a real provider/key instead of a synthetic run.", 400)
     execution_mode = "live"
     provider = normalize_provider_id(str(payload.get("provider", DEFAULT_PROVIDER_ID)), DEFAULT_PROVIDER_ID)
-    model_source = normalize_model_source(payload.get("modelSource", OPENAI_API_MODEL_SOURCE), OPENAI_API_MODEL_SOURCE)
-    model = normalize_sourced_model_id(payload.get("model", default_model_for_provider(provider)), default_model_for_provider(provider), provider, model_source)
+    model_source_default = default_model_source_for_provider(provider)
+    model_source = normalize_model_source(payload.get("modelSource", model_source_default), model_source_default)
+    model_default = default_model_for_source(provider, model_source)
+    model = normalize_sourced_model_id(payload.get("model", model_default), model_default, provider, model_source)
     summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider", provider)), provider)
+    summarizer_model_source_default = model_source if summarizer_provider == provider else default_model_source_for_provider(summarizer_provider)
     summarizer_model_source = normalize_model_source(
-        payload.get("summarizerModelSource", OPENAI_API_MODEL_SOURCE),
-        OPENAI_API_MODEL_SOURCE,
+        payload.get("summarizerModelSource", summarizer_model_source_default),
+        summarizer_model_source_default,
     )
+    summarizer_model_default = default_model_for_source(summarizer_provider, summarizer_model_source)
     summarizer_model = normalize_sourced_model_id(
-        payload.get("summarizerModel", default_model_for_provider(summarizer_provider)),
-        default_model_for_provider(summarizer_provider),
+        payload.get("summarizerModel", summarizer_model_default),
+        summarizer_model_default,
         summarizer_provider,
         summarizer_model_source,
     )
@@ -1150,9 +1172,10 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     direct_provider = normalize_provider_id(str(payload.get("directProvider", provider)), provider)
     direct_model_source = normalize_model_source(payload.get("directModelSource", model_source), model_source)
+    direct_model_default = default_model_for_source(direct_provider, direct_model_source)
     direct_model = normalize_sourced_model_id(
-        payload.get("directModel", default_model_for_provider(direct_provider)),
-        default_model_for_provider(direct_provider),
+        payload.get("directModel", direct_model_default),
+        direct_model_default,
         direct_provider,
         direct_model_source,
     )

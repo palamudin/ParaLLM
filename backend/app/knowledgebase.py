@@ -132,6 +132,72 @@ MSP_AMBIENT_RECALL_TERMS = {
     "overnight",
     "control-plane",
 }
+QUERY_EXCERPT_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "answer",
+    "available",
+    "before",
+    "briefly",
+    "case",
+    "can",
+    "chat",
+    "checking",
+    "context",
+    "detail",
+    "from",
+    "for",
+    "have",
+    "into",
+    "longmemeval",
+    "me",
+    "memory",
+    "not",
+    "only",
+    "our",
+    "previous",
+    "question",
+    "relevant",
+    "remind",
+    "retained",
+    "say",
+    "source",
+    "that",
+    "the",
+    "this",
+    "unavailable",
+    "using",
+    "was",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "you",
+}
+TEMPORAL_QUERY_TERMS = {
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "first",
+    "second",
+    "third",
+    "fourth",
+    "fifth",
+    "last",
+    "next",
+    "before",
+    "after",
+}
 
 
 @dataclass(frozen=True)
@@ -176,7 +242,11 @@ def bank_records_path(root: Path | str, bank_id: str) -> Path:
 
 
 def tokenize(value: Any) -> List[str]:
-    return [token for token in re.findall(r"[a-z0-9][a-z0-9._:-]{1,80}", str(value or "").lower()) if token]
+    return [
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9._:-]{0,80}", str(value or "").lower())
+        if len(token) > 1 or token.isdigit()
+    ]
 
 
 def approx_tokens(value: Any) -> int:
@@ -236,7 +306,9 @@ def metadata_field(payload: Any, key: str = "metadata") -> Dict[str, Any]:
         field = str(raw_key or "").strip()
         if not field:
             continue
-        if raw_value is None or isinstance(raw_value, (str, int, float, bool)):
+        if field == "timerbiter" and isinstance(raw_value, dict):
+            clean[field] = raw_value
+        elif raw_value is None or isinstance(raw_value, (str, int, float, bool)):
             clean[field] = raw_value
         else:
             clean[field] = compact(raw_value, 400)
@@ -892,10 +964,223 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
     }
 
 
-def sop_context_line(hit: Dict[str, Any]) -> str:
+def query_excerpt_terms(query_terms: List[str]) -> List[str]:
+    candidates: List[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for term in query_terms:
+        normalized = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", str(term or "").strip().lower())
+        if not normalized or normalized in seen:
+            continue
+        if len(normalized) < 3 and not normalized.isdigit():
+            continue
+        if normalized in QUERY_EXCERPT_STOPWORDS:
+            continue
+        seen.add(normalized)
+        score = 0
+        if normalized.isdigit() or re.match(r"^\d+(st|nd|rd|th)$", normalized):
+            score += 8
+        if normalized in TEMPORAL_QUERY_TERMS:
+            score += 7
+        if len(normalized) >= 6:
+            score += 3
+        elif len(normalized) >= 4:
+            score += 1
+        if any(ch.isdigit() for ch in normalized):
+            score += 2
+        candidates.append((score, len(candidates), normalized))
+
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return [term for _, _, term in candidates[:24]]
+
+
+def query_focused_excerpts(text: Any, query_terms: List[str], *, max_excerpts: int = 4, window: int = 280) -> List[str]:
+    body = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not body:
+        return []
+    lowered = body.lower()
+    terms = query_excerpt_terms(query_terms)
+    if not terms:
+        return [compact(body, min(window * 2, 520))]
+
+    candidates: List[tuple[int, int, str]] = []
+    seen_ranges: List[tuple[int, int]] = []
+    for term in terms:
+        start = 0
+        hits_for_term = 0
+        while hits_for_term < 4:
+            index = lowered.find(term, start)
+            if index < 0:
+                break
+            left = max(0, index - window)
+            right = min(len(body), index + len(term) + window)
+            while left > 0 and body[left - 1] not in ".!?\n":
+                left -= 1
+                if index - left > window + 160:
+                    left = max(0, index - window)
+                    break
+            while right < len(body) and body[right - 1] not in ".!?\n":
+                right += 1
+                if right - index > window + 240:
+                    right = min(len(body), index + len(term) + window)
+                    break
+            if any(left <= prior_right and right >= prior_left for prior_left, prior_right in seen_ranges):
+                start = index + len(term)
+                hits_for_term += 1
+                continue
+            excerpt = compact(body[left:right].strip(" -;:"), 620)
+            excerpt_lower = excerpt.lower()
+            score = sum(1 for candidate in terms if candidate in excerpt_lower)
+            candidates.append((score, index, excerpt))
+            seen_ranges.append((left, right))
+            start = index + len(term)
+            hits_for_term += 1
+
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    excerpts: List[str] = []
+    for _, _, excerpt in candidates:
+        if excerpt and excerpt not in excerpts:
+            excerpts.append(excerpt)
+        if len(excerpts) >= max_excerpts:
+            break
+    return excerpts or [compact(body, min(window * 2, 520))]
+
+
+def timerbiter_context(hit: Dict[str, Any]) -> str:
+    metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+    timerbiter = metadata.get("timerbiter") if isinstance(metadata.get("timerbiter"), dict) else {}
+    parts: List[str] = []
+    events = timerbiter.get("events") if isinstance(timerbiter.get("events"), list) else []
+    sorted_events = sorted(
+        [event for event in events if isinstance(event, dict)],
+        key=lambda event: (
+            str(event.get("eventAt") or ""),
+            str(event.get("source") or ""),
+            str(event.get("excerpt") or ""),
+        ),
+    )
+
+    def source_excerpt_for_event(event: Dict[str, Any]) -> str:
+        source = str(event.get("source") or "").strip()
+        match = re.search(r"session\s+(\d+)\s+message\s+(\d+)", source, flags=re.IGNORECASE)
+        if not match:
+            return str(event.get("excerpt") or "").strip()
+        text = str(hit.get("text") or "")
+        pattern = (
+            rf"Session\s+{re.escape(match.group(1))}\s+message\s+{re.escape(match.group(2))}\s+\w+:\s+"
+            r"(.*?)(?=\nSession\s+\d+\s+message\s+\d+\s+\w+:|\n\n|$)"
+        )
+        found = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if found:
+            excerpt = re.sub(r"\s+", " ", found.group(1)).strip()
+            if excerpt:
+                return excerpt
+        return str(event.get("excerpt") or "").strip()
+
+    def event_context_label(event: Dict[str, Any]) -> str:
+        excerpt = source_excerpt_for_event(event)
+        label = " ".join(
+            item
+            for item in [
+                str(event.get("eventAt") or "").strip(),
+                str(event.get("eventType") or "").strip(),
+                f"importance={str(event.get('temporalImportance') or '').strip()}" if str(event.get("temporalImportance") or "").strip() else "",
+                f"relation={str(event.get('relation') or '').strip()}" if str(event.get("relation") or "").strip() else "",
+                f"status={str(event.get('status') or '').strip()}" if str(event.get("status") or "").strip() else "",
+                excerpt,
+            ]
+            if item
+        )
+        return label
+
+    first_after_anchor = next(
+        (
+            event
+            for event in sorted_events
+            if str(event.get("relation") or "").strip() == "after_anchor"
+            or str(event.get("temporalImportance") or "").strip() == "answer_candidate"
+        ),
+        None,
+    )
+    if first_after_anchor:
+        parts.append("FIRST_AFTER_ANCHOR_CANDIDATE: " + event_context_label(first_after_anchor))
+
+    for index, event in enumerate(sorted_events[:8], start=1):
+        if not isinstance(event, dict):
+            continue
+        row_prefix = f"EVENT ROW {index}:"
+        if event is first_after_anchor:
+            row_prefix = f"EVENT ROW {index} FIRST_AFTER_ANCHOR_CANDIDATE:"
+        label = f"{row_prefix} {event_context_label(event)}"
+        if label:
+            parts.append(label)
+    obligations = timerbiter.get("obligations") if isinstance(timerbiter.get("obligations"), list) else []
+    if not obligations:
+        text = str(hit.get("text") or "")
+        obligation_lines = [
+            line.strip()
+            for line in text.splitlines()
+            if re.match(r"^\d+\.\s+open_or_unconfirmed\s+", line.strip())
+        ]
+        if not obligation_lines:
+            flattened = re.sub(r"\s+", " ", text).strip()
+            obligation_lines = [
+                match.group(0).strip()
+                for match in re.finditer(
+                    r"\d+\.\s+open_or_unconfirmed\s+.*?(?=\s+\d+\.\s+open_or_unconfirmed\s+|$)",
+                    flattened,
+                    flags=re.IGNORECASE,
+                )
+            ]
+        if obligation_lines:
+            parts.append(f"Open obligation count: {len(obligation_lines)}")
+            for index, line in enumerate(obligation_lines[:8], start=1):
+                parts.append(f"COUNTABLE ROW {index}: {compact(line, 240)}")
+    for obligation_index, obligation in enumerate(obligations[:8], start=1):
+        if not isinstance(obligation, dict):
+            continue
+        action = str(obligation.get("action") or obligation.get("kind") or obligation.get("type") or "").strip()
+        subject = str(obligation.get("subject") or obligation.get("item") or obligation.get("text") or obligation.get("excerpt") or "").strip()
+        label = " ".join(
+            item
+            for item in [
+                f"COUNTABLE ROW {obligation_index}:",
+                str(obligation.get("status") or "").strip(),
+                action,
+                subject,
+            ]
+            if item
+        )
+        if label:
+            parts.append(label)
+    if obligations:
+        open_count = sum(1 for obligation in obligations if str((obligation or {}).get("status") or "").strip() == "open_or_unconfirmed")
+        parts.insert(0, f"Open obligation count: {open_count}")
+    return " | ".join(compact(part, 380) for part in parts if part)
+
+
+def sop_context_line(hit: Dict[str, Any], query_terms: Optional[List[str]] = None) -> str:
     sop = hit.get("sop") if isinstance(hit.get("sop"), dict) else {}
     if not sop:
-        return compact(hit.get("text"), 700)
+        query_terms = query_terms or []
+        parts: List[str] = []
+        temporal = timerbiter_context(hit)
+        temporal_part = ""
+        if temporal:
+            temporal_part = (
+                "Temporal/event ledger (dates are ordered; for first/after/before/latest questions, use the relevant ordered event row before loose transcript excerpts; count each open obligation row independently unless a later resolved/superseded row explicitly closes it): "
+                + compact(temporal, 1200)
+            )
+        excerpts = query_focused_excerpts(hit.get("text"), query_terms, max_excerpts=4)
+        temporal_is_decisive = "FIRST_AFTER_ANCHOR_CANDIDATE" in temporal or "Open obligation count:" in temporal
+        if temporal_part and temporal_is_decisive:
+            parts.append(temporal_part)
+        if excerpts:
+            parts.append("Query-focused excerpts: " + " || ".join(excerpts))
+        if temporal_part and not temporal_is_decisive:
+            parts.append(temporal_part)
+        if not parts:
+            parts.append(compact(hit.get("text"), 900))
+        return compact(" ".join(parts), 2200)
     parts = [
         f"useCase={sop.get('useCase')}",
         f"events={', '.join(sop.get('eventTypes') or [])}",
@@ -1013,7 +1298,7 @@ def recall(
             break
 
     context_lines = [
-        f"[{index}] {hit.get('title')} ({hit.get('type')}, {hit.get('sourceId')}): {sop_context_line(hit)}"
+        f"[{index}] {hit.get('title')} ({hit.get('type')}, {hit.get('sourceId')}): {sop_context_line(hit, query_terms)}"
         for index, hit in enumerate(selected, start=1)
     ]
     selected_has_msp = any(hit.get("bankId") == MSP_BANK_ID or "msp" in (hit.get("tags") or []) for hit in selected)

@@ -253,9 +253,40 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         current_reasoning_effort = "low"
 
     current_provider = normalize_provider_id(str(runtime_config.get("provider") or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
+    current_model_source = control.normalize_model_source(
+        runtime_config.get("modelSource", control.default_model_source_for_provider(current_provider)),
+        control.default_model_source_for_provider(current_provider),
+    )
+    current_model = control.normalize_sourced_model_id(
+        runtime_config.get("model", control.default_model_for_source(current_provider, current_model_source)),
+        control.default_model_for_source(current_provider, current_model_source),
+        current_provider,
+        current_model_source,
+    )
     current_summarizer_provider = normalize_provider_id(
         str((active_task.get("summarizer") or {}).get("provider") or current_provider),
         current_provider,
+    )
+    current_summarizer_model_source_default = (
+        current_model_source
+        if current_summarizer_provider == current_provider
+        else control.default_model_source_for_provider(current_summarizer_provider)
+    )
+    current_summarizer_model_source = control.normalize_model_source(
+        ((active_task.get("summarizer") or {}) if isinstance(active_task.get("summarizer"), dict) else {}).get(
+            "modelSource",
+            current_summarizer_model_source_default,
+        ),
+        current_summarizer_model_source_default,
+    )
+    current_summarizer_model = control.normalize_sourced_model_id(
+        ((active_task.get("summarizer") or {}) if isinstance(active_task.get("summarizer"), dict) else {}).get(
+            "model",
+            control.default_model_for_source(current_summarizer_provider, current_summarizer_model_source),
+        ),
+        control.default_model_for_source(current_summarizer_provider, current_summarizer_model_source),
+        current_summarizer_provider,
+        current_summarizer_model_source,
     )
     current_front_mode = normalize_front_mode(runtime_config.get("frontMode", default_front_mode()), default_front_mode())
     current_engine_version = normalize_engine_version(runtime_config.get("engineVersion", default_engine_version()), default_engine_version())
@@ -266,6 +297,21 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     current_context_mode = normalize_context_mode(runtime_config.get("contextMode", default_context_mode()), default_context_mode())
     current_direct_baseline_mode = normalize_direct_baseline_mode(runtime_config.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     current_direct_provider = normalize_provider_id(str(runtime_config.get("directProvider") or current_provider), current_provider)
+    current_direct_model_source_default = (
+        current_model_source
+        if current_direct_provider == current_provider
+        else control.default_model_source_for_provider(current_direct_provider)
+    )
+    current_direct_model_source = control.normalize_model_source(
+        runtime_config.get("directModelSource", current_direct_model_source_default),
+        current_direct_model_source_default,
+    )
+    current_direct_model = control.normalize_sourced_model_id(
+        runtime_config.get("directModel", control.default_model_for_source(current_direct_provider, current_direct_model_source)),
+        control.default_model_for_source(current_direct_provider, current_direct_model_source),
+        current_direct_provider,
+        current_direct_model_source,
+    )
     current_ollama_base_url = normalize_ollama_base_url(runtime_config.get("ollamaBaseUrl", default_ollama_base_url()))
     current_timeout_mode = normalize_timeout_mode(runtime_config.get("timeoutMode", default_timeout_mode()), default_timeout_mode())
     current_ollama_timeout_profile = normalize_ollama_timeout_profile(
@@ -284,15 +330,30 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     )
     provider = normalize_provider_id(str(payload.get("provider") or current_provider), current_provider)
     summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider") or current_summarizer_provider), provider)
-    model = normalize_model_id(
-        str(payload.get("model") or default_model_for_provider(provider)),
-        default_model_for_provider(provider),
+    model_source_default = current_model_source if provider == current_provider else control.default_model_source_for_provider(provider)
+    model_source = control.normalize_model_source(payload.get("modelSource", model_source_default), model_source_default)
+    model_default = control.default_model_for_source(provider, model_source)
+    model = control.normalize_sourced_model_id(
+        payload.get("model", current_model if provider == current_provider else model_default),
+        model_default,
         provider,
+        model_source,
     )
-    summarizer_model = normalize_model_id(
-        str(payload.get("summarizerModel") or default_model_for_provider(summarizer_provider)),
-        default_model_for_provider(summarizer_provider),
+    summarizer_model_source_default = (
+        current_summarizer_model_source
+        if summarizer_provider == current_summarizer_provider
+        else (model_source if summarizer_provider == provider else control.default_model_source_for_provider(summarizer_provider))
+    )
+    summarizer_model_source = control.normalize_model_source(
+        payload.get("summarizerModelSource", summarizer_model_source_default),
+        summarizer_model_source_default,
+    )
+    summarizer_model_default = control.default_model_for_source(summarizer_provider, summarizer_model_source)
+    summarizer_model = control.normalize_sourced_model_id(
+        payload.get("summarizerModel", current_summarizer_model if summarizer_provider == current_summarizer_provider else summarizer_model_default),
+        summarizer_model_default,
         summarizer_provider,
+        summarizer_model_source,
     )
     front_mode = normalize_front_mode(payload.get("frontMode", current_front_mode), current_front_mode)
     engine_version = normalize_engine_version(payload.get("engineVersion", current_engine_version), current_engine_version)
@@ -305,10 +366,21 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     context_mode = normalize_context_mode(payload.get("contextMode", current_context_mode), current_context_mode)
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", current_direct_baseline_mode), current_direct_baseline_mode)
     direct_provider = normalize_provider_id(str(payload.get("directProvider") or current_direct_provider), provider)
-    direct_model = normalize_model_id(
-        str(payload.get("directModel") or default_model_for_provider(direct_provider)),
-        default_model_for_provider(direct_provider),
+    direct_model_source_default = (
+        current_direct_model_source
+        if direct_provider == current_direct_provider
+        else (model_source if direct_provider == provider else control.default_model_source_for_provider(direct_provider))
+    )
+    direct_model_source = control.normalize_model_source(
+        payload.get("directModelSource", direct_model_source_default),
+        direct_model_source_default,
+    )
+    direct_model_default = control.default_model_for_source(direct_provider, direct_model_source)
+    direct_model = control.normalize_sourced_model_id(
+        payload.get("directModel", current_direct_model if direct_provider == current_direct_provider else direct_model_default),
+        direct_model_default,
         direct_provider,
+        direct_model_source,
     )
     ollama_base_url = normalize_ollama_base_url(payload.get("ollamaBaseUrl", current_ollama_base_url))
     timeout_mode = normalize_timeout_mode(payload.get("timeoutMode", current_timeout_mode), current_timeout_mode)
@@ -399,6 +471,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime = dict(task.get("runtime") if isinstance(task.get("runtime"), dict) else {})
         task_runtime["provider"] = provider
         task_runtime["model"] = model
+        task_runtime["modelSource"] = model_source
         task_runtime["frontMode"] = front_mode
         task_runtime["engineVersion"] = engine_version
         task_runtime["engineGraph"] = engine_graph
@@ -408,6 +481,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["directBaselineMode"] = direct_baseline_mode
         task_runtime["directProvider"] = direct_provider
         task_runtime["directModel"] = direct_model
+        task_runtime["directModelSource"] = direct_model_source
         task_runtime["directHarness"] = direct_harness
         task_runtime["ollamaBaseUrl"] = ollama_base_url
         task_runtime["timeoutMode"] = timeout_mode
@@ -426,6 +500,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         summary = summarizer_config(task)
         summary["provider"] = summarizer_provider
         summary["model"] = summarizer_model
+        summary["modelSource"] = summarizer_model_source
         summary["harness"] = summarizer_harness
         task["summarizer"] = summary
         task_runtime["enginePlan"] = compile_engine_graph(engine_graph, task=task, runtime_config=task_runtime)
@@ -439,8 +514,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 **existing_draft,
                 "provider": provider,
                 "model": model,
+                "modelSource": model_source,
                 "summarizerProvider": summarizer_provider,
                 "summarizerModel": summarizer_model,
+                "summarizerModelSource": summarizer_model_source,
                 "frontMode": front_mode,
                 "engineVersion": engine_version,
                 "engineGraph": engine_graph,
@@ -449,6 +526,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "directBaselineMode": direct_baseline_mode,
                 "directProvider": direct_provider,
                 "directModel": direct_model,
+                "directModelSource": direct_model_source,
                 "ollamaBaseUrl": ollama_base_url,
                 "timeoutMode": timeout_mode,
                 "ollamaTimeoutProfile": ollama_timeout_profile,
@@ -487,7 +565,9 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         {
             "taskId": updated_state["activeTask"].get("taskId"),
             "workerModel": model,
+            "modelSource": model_source,
             "summarizerModel": summarizer_model,
+            "summarizerModelSource": summarizer_model_source,
             "frontMode": front_mode,
             "engineVersion": engine_version,
             "engineGraph": engine_graph,
@@ -497,6 +577,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "directModelSource": direct_model_source,
             "directHarness": direct_harness,
             "summarizerHarness": summarizer_harness,
             "ollamaBaseUrl": ollama_base_url,
@@ -519,8 +600,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "message": "Applied runtime settings to the active task.",
         "provider": provider,
         "workerModel": model,
+        "modelSource": model_source,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
+        "summarizerModelSource": summarizer_model_source,
         "frontMode": front_mode,
         "engineVersion": engine_version,
         "engineGraph": engine_graph,
@@ -530,6 +613,7 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
         "directModel": direct_model,
+        "directModelSource": direct_model_source,
         "directHarness": direct_harness,
         "summarizerHarness": summarizer_harness,
         "ollamaBaseUrl": ollama_base_url,

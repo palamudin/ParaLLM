@@ -17,6 +17,7 @@ from runtime.engine import (
     default_timeout_mode,
     normalize_ollama_base_url,
     normalize_ollama_timeout_profile,
+    normalize_model_source,
     normalize_provider_id,
     normalize_target_timeout_config,
     normalize_timeout_mode,
@@ -276,6 +277,7 @@ def _front_judge_runtime(payload: Dict[str, Any]) -> Dict[str, Any]:
         effective = normalize_target_timeout_config(ollama_profile.get("targetTimeouts"))
     return {
         "provider": provider,
+        "modelSource": normalize_model_source(payload.get("judgeModelSource") or payload.get("modelSource"), "codex_auth"),
         "ollamaBaseUrl": normalize_ollama_base_url(payload.get("ollamaBaseUrl")),
         "requestTimeoutSeconds": target_timeout_seconds(effective, "arbiter"),
         "timeoutMode": timeout_mode,
@@ -317,7 +319,7 @@ def _front_worker_list(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
     provider = str(payload.get("provider") or "openai").strip() or "openai"
     model = str(payload.get("model") or "").strip()
-    model_source = str(payload.get("modelSource") or "openai_api").strip() or "openai_api"
+    model_source = str(payload.get("modelSource") or "codex_auth").strip() or "codex_auth"
     summarizer_provider = str(payload.get("summarizerProvider") or provider).strip() or provider
     summarizer_model = str(payload.get("summarizerModel") or model).strip() or model
     summarizer_model_source = str(payload.get("summarizerModelSource") or model_source).strip() or model_source

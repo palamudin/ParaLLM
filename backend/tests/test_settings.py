@@ -321,6 +321,29 @@ class SettingsTests(unittest.TestCase):
         refreshed = storage.read_state_payload(paths)
         self.assertIsNone(refreshed["arbiter"])
 
+    def test_apply_runtime_settings_preserves_codex_model_sources_by_default(self) -> None:
+        result = settings.apply_runtime_settings(
+            {
+                "model": "gpt-5.4-mini",
+                "summarizerModel": "gpt-5.4-mini",
+                "directBaselineMode": "both",
+                "directModel": "gpt-5.4-mini",
+            },
+            self.root,
+        )
+
+        self.assertEqual(result["modelSource"], "codex_auth")
+        self.assertEqual(result["summarizerModelSource"], "codex_auth")
+        self.assertEqual(result["directModelSource"], "codex_auth")
+
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertEqual(state["activeTask"]["runtime"]["modelSource"], "codex_auth")
+        self.assertEqual(state["activeTask"]["runtime"]["directModelSource"], "codex_auth")
+        self.assertEqual(state["activeTask"]["summarizer"]["modelSource"], "codex_auth")
+        self.assertEqual(state["draft"]["modelSource"], "codex_auth")
+        self.assertEqual(state["draft"]["summarizerModelSource"], "codex_auth")
+        self.assertEqual(state["draft"]["directModelSource"], "codex_auth")
+
     def test_apply_runtime_settings_preserves_staged_draft_worker_roster(self) -> None:
         settings.add_adversarial_worker({"type": "reliability"}, self.root)
         settings.update_worker_config({"workerId": "B", "type": "security", "temperature": "hot"}, self.root)
