@@ -98,6 +98,80 @@ class JudgeLearningTests(unittest.TestCase):
         self.assertTrue(all(record.get("sop") for record in learned))
         self.assertTrue(any((record.get("metadata") or {}).get("learning.adaptiveWeight") for record in learned))
 
+    def test_non_msp_eval_scores_do_not_create_msp_learning_packets(self) -> None:
+        run_id = "judge-longmemeval-no-msp-learning"
+        run_dir = self.root / "data" / "evals" / "runs" / run_id
+        write_json(
+            run_dir / "run.json",
+            {
+                "runId": run_id,
+                "inlineSuite": {
+                    "cases": [
+                        {
+                            "caseId": "lme-temporal-reasoning-gpt4-2655b836",
+                            "title": "LongMemEval oracle pilot | temporal-reasoning",
+                            "objective": "Answer this LongMemEval memory question using only retained memory.",
+                            "constraints": ["Do not mention internal benchmark metadata."],
+                            "sessionContext": "External memory QA benchmark case.",
+                        }
+                    ]
+                },
+            },
+        )
+        write_json(
+            run_dir
+            / "cases"
+            / "lme-temporal-reasoning-gpt4-2655b836"
+            / "para-test--loops-1"
+            / "replicate-001"
+            / "score.json",
+            {
+                "runId": run_id,
+                "caseId": "lme-temporal-reasoning-gpt4-2655b836",
+                "armId": "para-test",
+                "variantId": "para-test--loops-1",
+                "quality": {
+                    "scores": {
+                        "tradeoffHandling": 8,
+                        "objectionAbsorption": 8,
+                        "overallQuality": 9,
+                    },
+                    "strongestWeakness": "The answer is concise but evidence hygiene is thin.",
+                    "rationale": "The answer is memory-grounded and safe.",
+                },
+                "answerHealth": {
+                    "scores": {
+                        "evidenceHygiene": 7,
+                        "efficiencyDiscipline": 8,
+                        "overallHealth": 9,
+                    },
+                    "strongestWeakness": "Evidence source is not explicit.",
+                },
+                "control": {
+                    "scores": {
+                        "selfCheckQuality": 8,
+                        "adversarialDiscipline": 8,
+                        "overallControl": 8,
+                    },
+                    "strongestControlWeakness": "Self-check could be deeper.",
+                },
+            },
+        )
+
+        result = judge_learning.learn_from_eval_runs(
+            self.root,
+            run_ids=[run_id],
+            bank_id="longmemeval-oracle-pilot-5",
+            dry_run=False,
+        )
+
+        self.assertEqual(result["learnedRecordCount"], 0)
+        self.assertEqual(result["scoreFilesSeen"], 1)
+        self.assertEqual(result["scoreFilesLearned"], 0)
+        self.assertFalse(
+            (self.root / "data" / "knowledgebase" / "banks" / "longmemeval-oracle-pilot-5" / "learning_events.jsonl").exists()
+        )
+
     def test_learning_upsert_is_idempotent_for_same_score_refs(self) -> None:
         run_id = self.seed_eval_run()
 

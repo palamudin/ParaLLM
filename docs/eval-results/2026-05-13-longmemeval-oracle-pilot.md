@@ -25,6 +25,8 @@ The initial publishable diagnostic run is `judge-20260513-214149+0000-55f943`.
 
 The current repaired direct-memory run is `judge-20260514-104149+0000-ac6eb6`. It uses Codex-auth OpenAI execution, the same five-case pilot suite, and the direct + LongMemEval memory arm after Timerbiter projection fixes.
 
+The current repaired Para multi-lane run is `judge-20260519-082722+0000-para-4925d0`. It uses the same repaired LongMemEval memory surface with the Para two-adversarial-lane arm.
+
 Excluded runs:
 
 - `judge-20260513-211918+0000-108e9f`: diagnostic only. The memory bank still exposed gold answers through metadata/entities, so it was too easy and not a clean score claim.
@@ -40,6 +42,7 @@ Excluded runs:
 | `judge-20260513-220034+0000-0545d6` | Same suite after v2 event-ledger adapter | `15 / 15` cells failed before answer generation | `0 scored` | `n/a` | Blocked by OpenAI API quota, excluded from score claims. |
 | `judge-20260513-234706+0000-8e3788` | Same suite after Timerbiter-lite temporal ledger | `15 / 15` cells failed before answer generation | `0 scored` | `n/a` | Blocked by OpenAI API quota, excluded from score claims. |
 | `judge-20260514-104149+0000-ac6eb6` | Direct + LongMemEval memory after Timerbiter projection repair | `0` | `131,113` | `$0.061670` | Clean 5/5 direct-memory run. |
+| `judge-20260519-082722+0000-para-4925d0` | Para multi-lane after Timerbiter projection repair | `0` | `1,185,135` | `$1.558076` | Para produced semantically correct answers on all five cases; deterministic readout is 4/5 because one accepted answer used `problem` where the concept checker expected `issue/not working/malfunction/fixed/replaced`. |
 
 ## Results
 
@@ -70,6 +73,24 @@ The repaired path changed the memory surface, not the benchmark facts:
 - Open obligations are projected as countable rows, so the model treats multiple open actions as arithmetic rows rather than one vague shopping topic.
 - Non-decisive dated background no longer crowds out direct query evidence. In the 5K case, the `25:50` update is shown before unrelated tennis event rows.
 - Deterministic concept checks normalize equivalent time range wording, such as `8 am - 4 pm`, `8am-4pm`, and `8 am to 4 pm`.
+
+## Repaired Para Multi-Lane Result
+
+Run: `judge-20260519-082722+0000-para-4925d0`
+
+| Case | Deterministic pass | Quality | Health | Control | Owner readout | Answer |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| `gpt4_2655b836` | `0.0` | `9.0` | `10.0` | `9.0` | Judge and owner verdict pass by meaning; deterministic phrase check missed `problem` as equivalent problem-state wording. | A problem with the car's GPS system. |
+| `0a995998` | `1.0` | `10.0` | `10.0` | `7.0` | Pass. | 3 items. |
+| `6a1eabeb` | `1.0` | `10.0` | `10.0` | `9.0` | Pass. | Your charity 5K personal best was 25:50. |
+| `7161e7e2` | `1.0` | `10.0` | `8.0` | `9.0` | Pass. | Admon was on the Sunday day shift (8 am - 4 pm). |
+| `e47becba` | `1.0` | `10.0` | `10.0` | `10.0` | Pass. | You graduated with a degree in Business Administration. |
+
+Aggregate: deterministic `4 / 5`, average quality `9.8`, average answer health `9.6`, average control `8.8`, average quality owner protection `10.0`, average answer-health owner protection `9.6`, average control owner protection `10.0`.
+
+The single deterministic miss is a scoring-language issue, not a memory-use issue. The public answer `A problem with the car's GPS system` satisfies the retained memory by meaning, and the live judge marked quality, health, and control as pass. The concept checker should either include `problem` in the problem-state synonym group or move this check fully to semantic concept matching before being used as a hard scoreboard row.
+
+Operational note: this run also exposed that judge-learning was too eager for non-MSP evals. The MSP-specific judge learner tried to write learned MSP SOP packets into the LongMemEval bank because front judge learning inferred the arm knowledge bank. That is now guarded in code: non-MSP eval cases are skipped by the MSP learner instead of contaminating external benchmark memory.
 
 ## Case Detail
 
@@ -105,7 +126,7 @@ This pilot supports three useful conclusions:
 
 - Pure Direct is a clean no-memory baseline and should not be expected to pass memory QA.
 - Direct + memory is already valuable, but long-memory quality depends heavily on how raw memories are shaped before they reach the model.
-- Para's lanes do not automatically fix a poor memory surface; they amplify the same source material.
+- Para's lanes do not automatically fix a poor memory surface; they amplify the same source material. Once the memory surface is repaired, the lanes preserve and pressure-test the same facts rather than replacing the memory layer.
 - Timerbiter-lite is the next memory transformation layer: deterministic temporal and obligation scaffolding before probabilistic answer generation.
 
-Next step: rerun Para multi-lane on the same repaired memory surface, then expand beyond five cases into a larger LongMemEval or LoCoMo-style memory suite.
+Next step: tighten deterministic semantic matching, then expand beyond five cases into a larger LongMemEval or LoCoMo-style memory suite.

@@ -161,6 +161,30 @@ SCENARIO_RULES: tuple[tuple[str, tuple[str, ...], str, tuple[str, ...]], ...] = 
     ("azure-hosting", ("azure", "app service", "rbac", "key vault", "nsg", "dns", "subscription"), "Azure hosting incident", ("azure", "hosting")),
 )
 
+MSP_DOMAIN_KEYWORDS: tuple[str, ...] = (
+    "msp",
+    "managed service",
+    "managed services",
+    "tenant",
+    "multi-tenant",
+    "major incident",
+    "security incident",
+    "breach",
+    "rmm",
+    "psa",
+    "endpoint",
+    "entra",
+    "microsoft 365",
+    "conditional access",
+    "service desk",
+    "offboarding",
+    "onboarding",
+    "backup",
+    "restore",
+    "runbook",
+    "compliance",
+)
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -297,8 +321,10 @@ def classify_scenario(case: Dict[str, Any]) -> Dict[str, Any]:
     )
     for scenario_id, keywords, title, tags in SCENARIO_RULES:
         if any(keyword in haystack for keyword in keywords):
-            return {"scenarioId": scenario_id, "scenarioTitle": title, "tags": list(tags)}
-    return {"scenarioId": "msp-major-incident", "scenarioTitle": "MSP major incident", "tags": ["major-incident", "msp"]}
+            return {"scenarioId": scenario_id, "scenarioTitle": title, "tags": list(tags), "learningEligible": True}
+    if any(keyword in haystack for keyword in MSP_DOMAIN_KEYWORDS):
+        return {"scenarioId": "msp-major-incident", "scenarioTitle": "MSP major incident", "tags": ["major-incident", "msp"], "learningEligible": True}
+    return {"scenarioId": "non-msp-eval", "scenarioTitle": "Non-MSP eval", "tags": [], "learningEligible": False}
 
 
 def metric_failure_classes(score: Dict[str, Any]) -> List[str]:
@@ -1125,6 +1151,9 @@ def learn_from_eval_runs(
             case_id = str(score.get("caseId") or score_path.parts[-4] if len(score_path.parts) >= 4 else "")
             case = cases.get(case_id) or {"caseId": case_id, "objective": "", "constraints": [], "sessionContext": ""}
             scenario = classify_scenario(case)
+            if not bool(scenario.get("learningEligible", True)):
+                warnings.append(f"Skipped judge learning for non-MSP case: {case_id}")
+                continue
             score_ref = str(score_path.relative_to(paths.root)).replace("\\", "/")
             for failure in failures:
                 key = (str(scenario.get("scenarioId") or "msp-major-incident"), failure.class_id, str(case.get("caseId") or ""))
