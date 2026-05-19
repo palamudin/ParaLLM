@@ -754,7 +754,7 @@ Those results remain useful only as historical constrained evidence. They were p
 
 ### Current Evaluation Snapshot
 
-Current review position as of `2026-05-19`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot, a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging, a Codex-auth non-MSP synthetic needle refresh, and a five-case LongMemEval oracle pilot. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, the synthetic side test proves exact memory retrieval outside MSP phrasing, the LongMemEval pilot exposes realistic temporal/counting memory-shaping work still to do, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide. Timerbiter-lite now adds deterministic temporal and obligation scaffolding to the LongMemEval memory bank; the next external-memory rerun is ready to use Codex-auth lanes instead of API-key quota.
+Current review position as of `2026-05-20`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot, a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging, a Codex-auth non-MSP synthetic needle refresh, and a refreshed five-case LongMemEval oracle pilot. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, the synthetic side test proves exact memory retrieval outside MSP phrasing, the LongMemEval refresh now separates no-memory failure from repaired answer-time memory success, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide. Timerbiter-lite now adds deterministic temporal and obligation scaffolding to the LongMemEval memory bank, including temporal anchors, update precedence, and countable obligation rows.
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
@@ -779,7 +779,7 @@ Focused memory benchmark readout:
 | Benchmark | Pure Direct prompt-only | Direct + memory single call | ParaLLM multi-lane | Corporate readout |
 | --- | ---: | ---: | ---: | --- |
 | Synthetic Needle Ledger Transit | `0 / 3` | `3 / 3` | `3 / 3` | Codex-auth refresh. Exact non-MSP memory retrieval under context poison; prompt-only Direct safely refused but could not retrieve. |
-| LongMemEval oracle pilot | `0 / 5` | `5 / 5` | `4 / 5` recorded deterministic, `5 / 5` semantic | Repaired Timerbiter projection. The remaining recorded Para deterministic miss was wording-only: the answer used `problem` where the concept checker expected issue/fixed/malfunction wording. The committed suite and builder now accept that synonym for future reruns. |
+| LongMemEval oracle pilot | `0 / 5` | `5 / 5` | `5 / 5` | Codex-auth full refresh after Timerbiter projection and semantic checker repair. Pure Direct safely refused without memory; Direct + memory and Para both answered all five retained-memory cases. |
 
 Latest synthetic refresh details:
 

@@ -27,6 +27,8 @@ The current repaired direct-memory run is `judge-20260514-104149+0000-ac6eb6`. I
 
 The current repaired Para multi-lane run is `judge-20260519-082722+0000-para-4925d0`. It uses the same repaired LongMemEval memory surface with the Para two-adversarial-lane arm.
 
+The current full Codex-auth refresh is `judge-20260519-224650+0000-lme-codex-refresh`. It reruns all five pilot cases across Pure Direct, Direct + memory, and Para after the deterministic checker accepted `problem` as issue-state wording.
+
 Excluded runs:
 
 - `judge-20260513-211918+0000-108e9f`: diagnostic only. The memory bank still exposed gold answers through metadata/entities, so it was too easy and not a clean score claim.
@@ -43,6 +45,29 @@ Excluded runs:
 | `judge-20260513-234706+0000-8e3788` | Same suite after Timerbiter-lite temporal ledger | `15 / 15` cells failed before answer generation | `0 scored` | `n/a` | Blocked by OpenAI API quota, excluded from score claims. |
 | `judge-20260514-104149+0000-ac6eb6` | Direct + LongMemEval memory after Timerbiter projection repair | `0` | `131,113` | `$0.061670` | Clean 5/5 direct-memory run. |
 | `judge-20260519-082722+0000-para-4925d0` | Para multi-lane after Timerbiter projection repair | `0` | `1,185,135` | `$1.558076` | Para produced semantically correct answers on all five cases; deterministic readout is 4/5 because one accepted answer used `problem` where the concept checker expected `issue/not working/malfunction/fixed/replaced`. |
+| `judge-20260519-224650+0000-lme-codex-refresh` | Full Codex-auth refresh across Pure Direct, Direct + memory, and Para after checker repair | `0` | `1,529,025` | `$1.891211` | Clean separation: Pure Direct `0/5`, Direct + memory `5/5`, Para `5/5`. |
+
+## Current Codex-Auth Full Refresh
+
+Run: `judge-20260519-224650+0000-lme-codex-refresh`
+
+| Path | Answer-time memory | Deterministic pass | Quality | Health | Control | Tokens | Cost | Readout |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Pure Direct prompt-only | No | `0 / 5` | `1.40` | `2.00` | `n/a` | `231,094` | `$0.114772` | Clean no-memory baseline: every case safely returned memory unavailable instead of guessing. |
+| Direct + LongMemEval memory | Yes | `5 / 5` | `9.80` | `9.80` | `n/a` | `147,380` | `$0.095982` | Single-call answer-time memory now handles temporal, update, counting, assistant-table, and user-fact recall. |
+| ParaLLM multi-lane orchestration | Yes | `5 / 5` | `9.40` | `9.80` | `9.60` | `1,150,551` | `$1.680457` | Multi-lane path preserved the repaired memory facts while adding control-audit scoring. |
+
+Case answers:
+
+| Case | Pure Direct | Direct + memory | Para |
+| --- | --- | --- | --- |
+| `gpt4_2655b836` | memory unavailable | The first issue was a GPS system problem. | The first issue shown after the first service was a GPS system issue. |
+| `0a995998` | memory unavailable | 3 items. | 3 items: one return and two pickups. |
+| `6a1eabeb` | Memory unavailable. | 25:50. | 25:50 |
+| `7161e7e2` | memory unavailable | Admon was on the 8 am - 4 pm day shift on Sunday. | Admon was on Sunday, likely the first shift (8 am to 4 pm). |
+| `e47becba` | memory unavailable | Business Administration. | You graduated with a degree in Business Administration. |
+
+Operator note: the Para `7161e7e2` answer passed by fact but added the hedge `likely`. That is an answer-polish issue, not a memory retrieval miss, and it gives the next summarizer tightening target: when retained memory is explicit, final prose should avoid unnecessary uncertainty.
 
 ## Initial Diagnostic Results
 
@@ -130,5 +155,6 @@ This pilot supports three useful conclusions:
 - Direct + memory is already valuable, but long-memory quality depends heavily on how raw memories are shaped before they reach the model.
 - Para's lanes do not automatically fix a poor memory surface; they amplify the same source material. Once the memory surface is repaired, the lanes preserve and pressure-test the same facts rather than replacing the memory layer.
 - Timerbiter-lite is the next memory transformation layer: deterministic temporal and obligation scaffolding before probabilistic answer generation.
+- The refreshed run now gives a clean memory-use gradient: no answer-time memory fails safely, single-call memory passes all five, and Para passes all five while adding a control audit.
 
-Next step: tighten deterministic semantic matching, then expand beyond five cases into a larger LongMemEval or LoCoMo-style memory suite.
+Next step: expand beyond five cases into a larger LongMemEval or LoCoMo-style memory suite, and tighten summarizer prose so explicit retained facts are not unnecessarily hedged.
