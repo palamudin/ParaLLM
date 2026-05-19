@@ -113,6 +113,18 @@ class LongMemEvalTimerbiterTests(unittest.TestCase):
 
         self.assertEqual(timerbiter["obligations"], [])
 
+    def test_temporal_car_concept_groups_accept_problem_wording(self) -> None:
+        groups = build_longmemeval_pilot.answer_concept_groups(
+            {
+                "question_id": "gpt4_2655b836",
+                "answer": "GPS system not functioning correctly",
+            }
+        )
+
+        problem_group = next(group for group in groups if group["id"] == "car-problem-state")
+
+        self.assertIn("problem", problem_group["anyOf"])
+
 
 if __name__ == "__main__":
     unittest.main()

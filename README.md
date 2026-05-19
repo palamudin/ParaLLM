@@ -779,7 +779,7 @@ Focused memory benchmark readout:
 | Benchmark | Pure Direct prompt-only | Direct + memory single call | ParaLLM multi-lane | Corporate readout |
 | --- | ---: | ---: | ---: | --- |
 | Synthetic Needle Ledger Transit | `0 / 3` | `3 / 3` | `3 / 3` | Codex-auth refresh. Exact non-MSP memory retrieval under context poison; prompt-only Direct safely refused but could not retrieve. |
-| LongMemEval oracle pilot | `0 / 5` | `5 / 5` | `4 / 5` deterministic, `5 / 5` semantic | Repaired Timerbiter projection. The remaining Para deterministic miss is wording-only: the answer used `problem` where the concept checker expected issue/fixed/malfunction wording, while judge and owner audit passed it by meaning. |
+| LongMemEval oracle pilot | `0 / 5` | `5 / 5` | `4 / 5` recorded deterministic, `5 / 5` semantic | Repaired Timerbiter projection. The remaining recorded Para deterministic miss was wording-only: the answer used `problem` where the concept checker expected issue/fixed/malfunction wording. The committed suite and builder now accept that synonym for future reruns. |
 
 Latest synthetic refresh details:
 

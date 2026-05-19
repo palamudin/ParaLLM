@@ -1068,6 +1068,19 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertTrue(result["groups"][0]["passed"])
         self.assertIn("8 am - 4 pm", result["groups"][0]["matchedAnyOf"])
 
+    def test_longmemeval_temporal_car_checks_accept_problem_wording(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        suite_path = root / "data" / "evals" / "suites" / "longmemeval-oracle-pilot-5.json"
+        suite = eval_runner.validate_suite_manifest(json.loads(suite_path.read_text(encoding="utf-8")), suite_path)
+        case = next(case for case in suite["cases"] if case["caseId"] == "lme-temporal-reasoning-gpt4-2655b836")
+
+        result = eval_runner.evaluate_required_concept_groups(
+            "A problem with the car's GPS system.",
+            case["checks"],
+        )
+
+        self.assertTrue(result["passed"], result)
+
     def test_answer_similarity_metrics_detect_near_duplicate_answers(self) -> None:
         metrics = eval_runner.answer_similarity_metrics(
             "Ship with guardrails and review the rollout after launch.",

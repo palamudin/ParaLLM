@@ -90,7 +90,7 @@ Run: `judge-20260519-082722+0000-para-4925d0`
 
 Aggregate: deterministic `4 / 5`, average quality `9.8`, average answer health `9.6`, average control `8.8`, average quality owner protection `10.0`, average answer-health owner protection `9.6`, average control owner protection `10.0`.
 
-The single deterministic miss is a scoring-language issue, not a memory-use issue. The public answer `A problem with the car's GPS system` satisfies the retained memory by meaning, and the live judge marked quality, health, and control as pass. The concept checker should either include `problem` in the problem-state synonym group or move this check fully to semantic concept matching before being used as a hard scoreboard row.
+The single deterministic miss is a scoring-language issue, not a memory-use issue. The public answer `A problem with the car's GPS system` satisfies the retained memory by meaning, and the live judge marked quality, health, and control as pass. Root cause: the concept checker expected issue/fixed/malfunction wording while the LongMemEval builder already classified `problem` as issue-state language. The committed suite and builder now include `problem` in the `car-problem-state` concept group for future reruns without weakening the checker globally.
 
 Operational note: this run also exposed that judge-learning was too eager for non-MSP evals. The MSP-specific judge learner tried to write learned MSP SOP packets into the LongMemEval bank because front judge learning inferred the arm knowledge bank. That is now guarded in code: non-MSP eval cases are skipped by the MSP learner instead of contaminating external benchmark memory.
 

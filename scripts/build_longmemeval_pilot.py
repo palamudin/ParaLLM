@@ -415,7 +415,7 @@ def answer_concept_groups(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             {
                 "id": "car-problem-state",
                 "label": "Problem state",
-                "anyOf": ["not functioning", "not working", "malfunction", "issue", "fixed", "replaced"],
+                "anyOf": ["not functioning", "not working", "malfunction", "issue", "problem", "fixed", "replaced"],
             },
         ],
         "0a995998": [
