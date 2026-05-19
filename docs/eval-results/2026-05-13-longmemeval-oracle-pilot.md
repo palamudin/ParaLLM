@@ -44,7 +44,9 @@ Excluded runs:
 | `judge-20260514-104149+0000-ac6eb6` | Direct + LongMemEval memory after Timerbiter projection repair | `0` | `131,113` | `$0.061670` | Clean 5/5 direct-memory run. |
 | `judge-20260519-082722+0000-para-4925d0` | Para multi-lane after Timerbiter projection repair | `0` | `1,185,135` | `$1.558076` | Para produced semantically correct answers on all five cases; deterministic readout is 4/5 because one accepted answer used `problem` where the concept checker expected `issue/not working/malfunction/fixed/replaced`. |
 
-## Results
+## Initial Diagnostic Results
+
+These are the original leak-free diagnostic scores from `judge-20260513-214149+0000-55f943`. They use the older LongMemEval memory surface before Timerbiter projection repairs. They remain useful as the failure that identified the temporal and counting-memory shape problems, not as the current repaired headline.
 
 | Path | Answer-time memory | Deterministic pass | Quality | Health | Control | Owner quality | Owner health | Owner control | Readout |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
