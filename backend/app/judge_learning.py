@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from . import knowledgebase, storage
+from . import knowledgebase, memory_deposit, storage
 
 
 SCHEMA_VERSION = "parallm-judge-learning/v0"
@@ -154,7 +154,7 @@ FAILURE_CLASSES: tuple[FailureClass, ...] = (
 
 
 SCENARIO_RULES: tuple[tuple[str, tuple[str, ...], str, tuple[str, ...]], ...] = (
-    ("rmm-control-plane", ("rmm", "powershell", "vendor plugin", "agent", "supply chain"), "RMM control-plane incident", ("rmm", "control-plane", "remote-access")),
+    ("rmm-control-plane", ("rmm", "powershell", "vendor plugin", "rmm agent", "supply chain"), "RMM control-plane incident", ("rmm", "control-plane", "remote-access")),
     ("backup-restore-destruction", ("backup", "restore", "immutable", "deletion job", "job queue"), "Backup/restore destruction incident", ("backup", "restore", "destructive-job")),
     ("identity-oauth-saas", ("oauth", "microsoft 365", "entra", "mailbox", "conditional access", "sign-in"), "Identity/OAuth SaaS incident", ("identity", "oauth", "saas")),
     ("service-desk-access", ("password", "mfa", "offboarding", "caller", "access request"), "Service desk access incident", ("service-desk", "access")),
@@ -183,6 +183,15 @@ MSP_DOMAIN_KEYWORDS: tuple[str, ...] = (
     "restore",
     "runbook",
     "compliance",
+)
+
+NON_MSP_EVAL_KEYWORDS: tuple[str, ...] = (
+    "longmemeval",
+    "locomo",
+    "needle",
+    "external memory qa benchmark",
+    "oracle pilot",
+    "benchmark case",
 )
 
 
@@ -319,6 +328,8 @@ def classify_scenario(case: Dict[str, Any]) -> Dict[str, Any]:
             ]
         )
     )
+    if any(keyword in haystack for keyword in NON_MSP_EVAL_KEYWORDS):
+        return {"scenarioId": "non-msp-eval", "scenarioTitle": "Non-MSP eval", "tags": [], "learningEligible": False}
     for scenario_id, keywords, title, tags in SCENARIO_RULES:
         if any(keyword in haystack for keyword in keywords):
             return {"scenarioId": scenario_id, "scenarioTitle": title, "tags": list(tags), "learningEligible": True}
@@ -789,6 +800,22 @@ def merge_learning_record(
 
 def upsert_records(root: Path, bank_id: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
     path = knowledgebase.bank_records_path(root, bank_id)
+    if not records:
+        existing_events, event_warnings = read_learning_events(root, bank_id)
+        return {
+            "inserted": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "path": str(path),
+            "eventLedger": {
+                "inserted": 0,
+                "updated": 0,
+                "unchanged": 0,
+                "count": len(existing_events),
+                "path": str(learning_event_ledger_path(root, bank_id)),
+                "warnings": event_warnings,
+            },
+        }
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_events, event_warnings = read_learning_events(root, bank_id)
     refs_by_memory = event_refs_by_memory(existing_events)
@@ -1129,6 +1156,7 @@ def learn_from_eval_runs(
         selected_run_ids = latest_eval_run_ids(paths.root, latest)
 
     grouped: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    candidate_records: List[Dict[str, Any]] = []
     score_files_seen = 0
     score_files_learned = 0
     warnings: List[str] = []
@@ -1145,11 +1173,21 @@ def learn_from_eval_runs(
             score = load_json(score_path)
             if not score or score.get("error"):
                 continue
+            case_id = str(score.get("caseId") or score_path.parts[-4] if len(score_path.parts) >= 4 else "")
+            case = cases.get(case_id) or {"caseId": case_id, "objective": "", "constraints": [], "sessionContext": ""}
+            candidate_records.append(
+                memory_deposit.build_eval_score_candidate(
+                    paths.root,
+                    run_id=run_id,
+                    score_path=score_path,
+                    score=score,
+                    case=case,
+                    requested_bank_id=normalized_bank,
+                )
+            )
             failures = matched_failure_classes(score)
             if not failures:
                 continue
-            case_id = str(score.get("caseId") or score_path.parts[-4] if len(score_path.parts) >= 4 else "")
-            case = cases.get(case_id) or {"caseId": case_id, "objective": "", "constraints": [], "sessionContext": ""}
             scenario = classify_scenario(case)
             if not bool(scenario.get("learningEligible", True)):
                 warnings.append(f"Skipped judge learning for non-MSP case: {case_id}")
@@ -1186,7 +1224,16 @@ def learn_from_eval_runs(
     records.sort(key=lambda item: (str((item.get("metadata") or {}).get("learning.scenarioId") or ""), str((item.get("metadata") or {}).get("learning.failureClass") or "")))
 
     write_result = {"inserted": 0, "updated": 0, "unchanged": 0, "path": str(knowledgebase.bank_records_path(paths.root, normalized_bank))}
+    candidate_write = {
+        "inserted": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "count": 0,
+        "path": str(memory_deposit.candidate_ledger_path(paths.root)),
+        "warnings": [],
+    }
     if not dry_run:
+        candidate_write = memory_deposit.write_candidate_ledger(paths.root, candidate_records)
         write_result = upsert_records(paths.root, normalized_bank, records)
 
     event_ledger = write_result.get("eventLedger") if isinstance(write_result.get("eventLedger"), dict) else {}
@@ -1228,6 +1275,8 @@ def learn_from_eval_runs(
         "runIds": selected_run_ids,
         "scoreFilesSeen": score_files_seen,
         "scoreFilesLearned": score_files_learned,
+        "candidateRecordCount": len(candidate_records),
+        "candidateLedger": candidate_write,
         "learnedRecordCount": len(records),
         "write": write_result,
         "librarian": librarian_summary,

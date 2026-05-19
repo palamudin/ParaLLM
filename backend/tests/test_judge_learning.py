@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app import judge_learning, knowledgebase
+from backend.app import judge_learning, knowledgebase, memory_deposit
 from runtime.engine import LoopRuntime
 
 
@@ -110,7 +110,7 @@ class JudgeLearningTests(unittest.TestCase):
                         {
                             "caseId": "lme-temporal-reasoning-gpt4-2655b836",
                             "title": "LongMemEval oracle pilot | temporal-reasoning",
-                            "objective": "Answer this LongMemEval memory question using only retained memory.",
+                            "objective": "Answer this LongMemEval memory question about social media agents using only retained memory.",
                             "constraints": ["Do not mention internal benchmark metadata."],
                             "sessionContext": "External memory QA benchmark case.",
                         }
@@ -157,6 +157,10 @@ class JudgeLearningTests(unittest.TestCase):
                 },
             },
         )
+        record_path = self.root / "data" / "knowledgebase" / "banks" / "longmemeval-oracle-pilot-5" / "memory_units.jsonl"
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_bank_text = '{"id":"existing_lme","bankId":"longmemeval-oracle-pilot-5","type":"conversation","title":"Existing LME memory","text":"Do not rewrite this file when no durable learning records exist."}\n'
+        record_path.write_text(existing_bank_text, encoding="utf-8")
 
         result = judge_learning.learn_from_eval_runs(
             self.root,
@@ -168,9 +172,30 @@ class JudgeLearningTests(unittest.TestCase):
         self.assertEqual(result["learnedRecordCount"], 0)
         self.assertEqual(result["scoreFilesSeen"], 1)
         self.assertEqual(result["scoreFilesLearned"], 0)
+        self.assertEqual(result["candidateLedger"]["inserted"], 1)
+        candidates, candidate_warnings = memory_deposit.read_candidate_ledger(self.root)
+        self.assertEqual(candidate_warnings, [])
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["routing"]["status"], "pending_context_review")
+        self.assertEqual(candidates[0]["routing"]["destination"], "quarantine")
         self.assertFalse(
             (self.root / "data" / "knowledgebase" / "banks" / "longmemeval-oracle-pilot-5" / "learning_events.jsonl").exists()
         )
+        self.assertEqual(record_path.read_text(encoding="utf-8"), existing_bank_text)
+
+    def test_generic_agent_word_does_not_make_case_rmm_learning_eligible(self) -> None:
+        scenario = judge_learning.classify_scenario(
+            {
+                "caseId": "crm-social-routing",
+                "title": "Social media agent rotation",
+                "objective": "Answer a question about GM social media agents and Sunday shifts.",
+                "constraints": ["Use only retained memory."],
+                "sessionContext": "Customer-support staffing memory check.",
+            }
+        )
+
+        self.assertFalse(scenario["learningEligible"])
+        self.assertEqual(scenario["scenarioId"], "non-msp-eval")
 
     def test_learning_upsert_is_idempotent_for_same_score_refs(self) -> None:
         run_id = self.seed_eval_run()

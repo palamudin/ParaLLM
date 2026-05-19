@@ -220,6 +220,8 @@ def compact_judge_learning_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "runIds": normalize_string_array_preserve_items(result.get("runIds", []))[:12],
         "scoreFilesSeen": int(result.get("scoreFilesSeen") or 0),
         "scoreFilesLearned": int(result.get("scoreFilesLearned") or 0),
+        "candidateRecordCount": int(result.get("candidateRecordCount") or 0),
+        "candidateLedger": result.get("candidateLedger") if isinstance(result.get("candidateLedger"), dict) else {},
         "learnedRecordCount": int(result.get("learnedRecordCount") or 0),
         "write": result.get("write") if isinstance(result.get("write"), dict) else {},
         "librarian": result.get("librarian") if isinstance(result.get("librarian"), dict) else {},

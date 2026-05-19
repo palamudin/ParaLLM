@@ -13,6 +13,7 @@ data/failed_calls/
 data/provider_calls/
 data/sessions/
 data/handoffs/
+data/knowledgebase/candidates/
 data/node_transfers/
 data/tasks/
 data/task_states/
