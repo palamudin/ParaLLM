@@ -754,7 +754,7 @@ Those results remain useful only as historical constrained evidence. They were p
 
 ### Current Evaluation Snapshot
 
-Current review position as of `2026-05-14`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot, a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging, a non-MSP synthetic needle test, and a five-case LongMemEval oracle pilot. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, the synthetic side test proves exact memory retrieval outside MSP phrasing, the LongMemEval pilot exposes realistic temporal/counting memory-shaping work still to do, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide. Timerbiter-lite now adds deterministic temporal and obligation scaffolding to the LongMemEval memory bank; the next live rerun is pending provider quota rather than code readiness.
+Current review position as of `2026-05-19`: ParaLLM now has a clean five-scenario, three-provider MSP evaluation snapshot, a focused two-case memory-conflict probe with owner-verdict consistency gating and provider-council rejudging, a Codex-auth non-MSP synthetic needle refresh, and a five-case LongMemEval oracle pilot. The evidence supports continued corporate review of the architecture: Para is ahead on aggregate quality and health in the wider MSP sweep, the focused memory probe shows a clear Pure Direct -> Direct + memory -> Para gradient, the synthetic side test proves exact memory retrieval outside MSP phrasing, the LongMemEval pilot exposes realistic temporal/counting memory-shaping work still to do, and Para exposes a separate control-discipline audit that direct single-thread answers do not provide. Timerbiter-lite now adds deterministic temporal and obligation scaffolding to the LongMemEval memory bank; the next external-memory rerun is ready to use Codex-auth lanes instead of API-key quota.
 
 Full detail: [2026-05-12 Direct vs Para Memory-Aware MSP Sweep](docs/eval-results/2026-05-12-direct-vs-para-memory-sweep.md)
 
@@ -770,14 +770,24 @@ Provider council rejudge: [2026-05-13 Provider Council Rejudge](docs/eval-result
 
 Synthetic memory side test: [2026-05-13 Synthetic Needle Ledger Transit](docs/eval-results/2026-05-13-synthetic-needle-ledger-transit.md)
 
+Codex-auth synthetic memory refresh: [2026-05-19 Synthetic Needle Ledger Codex-Auth Refresh](docs/eval-results/2026-05-19-synthetic-needle-ledger-codex-auth.md)
+
 External memory pilot: [2026-05-13 LongMemEval Oracle Pilot](docs/eval-results/2026-05-13-longmemeval-oracle-pilot.md)
 
 Focused memory benchmark readout:
 
 | Benchmark | Pure Direct prompt-only | Direct + memory single call | ParaLLM multi-lane | Corporate readout |
 | --- | ---: | ---: | ---: | --- |
-| Synthetic Needle Ledger Transit | `0 / 3` | `3 / 3` | `3 / 3` | Internal control proving exact non-MSP memory retrieval under context poison. |
-| LongMemEval oracle pilot | `0 / 5` | `3 / 5` | `3 / 5` | Leak-free external pilot. Last valid score predates Timerbiter-lite; the new temporal/obligation ledger is mechanically validated, but the live rerun was blocked by OpenAI quota. |
+| Synthetic Needle Ledger Transit | `0 / 3` | `3 / 3` | `3 / 3` | Codex-auth refresh. Exact non-MSP memory retrieval under context poison; prompt-only Direct safely refused but could not retrieve. |
+| LongMemEval oracle pilot | `0 / 5` | `3 / 5` | `3 / 5` | Leak-free external pilot. Last valid score predates Timerbiter-lite; the new temporal/obligation ledger is mechanically validated, and the next rerun should use Codex-auth lanes instead of API-key quota. |
+
+Latest synthetic refresh details:
+
+| Run | Cells | Errors | Tokens | Estimated cost | Learning readout |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `judge-20260519-162718+0000-snl-codex` | `9` | `0` | `1,137,950` | `$1.439108` | `9` candidate records captured, `0` durable non-MSP promotions. |
+
+Journey note: [2026-05-19 Memory Evidence Journey](docs/journal/2026-05-19-memory-evidence-journey.md) starts the narrative record of how the benchmark claims were pressure-tested, contradicted, and cleaned up before being treated as evidence.
 
 Commercial positioning: the current MSP wedge is an SLT / service-manager incident-command assistant, not a generic chatbot. The operator sees a normal assistant surface, while ParaLLM runs the deeper layer: provider routing, retained operational memory, adversarial review lanes, evidence gates, and judgeable traces. The value proposition is faster first-hour alignment, safer tenant-specific escalation, and a post-incident audit trail management can inspect.
 
