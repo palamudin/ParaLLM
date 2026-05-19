@@ -3428,6 +3428,15 @@ def extract_public_answer(arm: Dict[str, Any], result: Dict[str, Any]) -> str:
     return str(front_answer.get("answer", "")).strip()
 
 
+def result_answer_payload(result: Dict[str, Any], public_answer: str) -> Dict[str, Any]:
+    answer = result.get("answer")
+    if isinstance(answer, dict) and str(answer.get("answer") or "").strip():
+        return answer
+    if str(public_answer or "").strip():
+        return {"answer": str(public_answer).strip()}
+    return {}
+
+
 def mode_summary_for_steered(workspace_root: Path, task_id: str, loop_rounds: int) -> Dict[str, Any]:
     output_dir = workspace_root / "data" / "outputs"
     modes: Dict[str, str] = {}
@@ -4205,7 +4214,7 @@ def execute_replicate(
         "answerPathCallPlan": result.get("answerPathCallPlan"),
         "judgeMemoryContext": judge_memory_context,
         "publicAnswer": public_answer,
-        "answer": result.get("answer"),
+        "answer": result_answer_payload(result, public_answer),
         "directBaseline": result.get("directBaseline"),
         "answerHealth": answer_health,
         "baselineQuality": baseline_quality,

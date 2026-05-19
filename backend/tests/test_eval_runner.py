@@ -665,6 +665,11 @@ class EvalRunnerTests(unittest.TestCase):
 
         self.assertEqual(answer, "Use the direct baseline answer.")
 
+    def test_result_answer_payload_falls_back_to_public_answer(self) -> None:
+        payload = eval_runner.result_answer_payload({"summary": {"frontAnswer": {"answer": "Exact ledger answer."}}}, "Exact ledger answer.")
+
+        self.assertEqual(payload, {"answer": "Exact ledger answer."})
+
     def test_run_direct_answer_uses_non_openai_assignment_key(self) -> None:
         class FakeResult:
             parsed = {"answer": "Live xAI direct answer.", "stance": "Proceed carefully.", "confidenceNote": "high"}
