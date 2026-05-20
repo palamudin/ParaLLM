@@ -696,6 +696,60 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertNotIn("amber-12", " ".join(obligations))
         self.assertNotIn("vellum-4", " ".join(obligations))
 
+    def test_non_sop_obligation_uses_answer_excerpt_not_timerbiter_scaffold(self) -> None:
+        projected = {
+            "schemaVersion": knowledgebase.SCHEMA_VERSION,
+            "intent": "advisor_dispatch_recall",
+            "enabled": True,
+            "available": True,
+            "query": "What degree did I graduate with?",
+            "target": "summarizer",
+            "config": {"bankId": "longmemeval-oracle-pilot-5"},
+            "memoryPlan": {},
+            "resultCount": 2,
+            "fallbackUsed": False,
+            "degraded": False,
+            "warnings": [],
+            "selectedEvidenceIds": ["mem_degree", "mem_car"],
+            "hits": [
+                {
+                    "id": "mem_degree",
+                    "title": "LongMemEval oracle evidence e47becba",
+                    "type": "conversation",
+                    "sourceId": "longmemeval#e47becba",
+                    "summary": (
+                        "Timerbiter temporal authority: - Store class: LTS - Deposited at: 2026-05-13T00:00:00+00:00 "
+                        "Question-focused excerpts ranked by lexical overlap and recency. "
+                        "Session 1 message 5 user: I graduated with a degree in Business Administration, which has definitely helped me."
+                    ),
+                    "score": 3.7,
+                    "scoreParts": {"demand": 3.4},
+                    "memoryLayer": "supporting",
+                },
+                {
+                    "id": "mem_car",
+                    "title": "LongMemEval oracle evidence gpt4_2655b836",
+                    "type": "conversation",
+                    "sourceId": "longmemeval#gpt4_2655b836",
+                    "summary": (
+                        "Timerbiter temporal authority: - Store class: LTS - Ordered events: GPS system issue after service."
+                    ),
+                    "score": 3.3,
+                    "scoreParts": {"demand": 3.0},
+                    "memoryLayer": "supporting",
+                },
+            ],
+            "fallbackPolicy": "",
+        }
+
+        targeted = self.runtime.project_targeted_sop_prompt_packet(projected)
+        obligations = [item["requirement"] for item in targeted["memoryObligations"]]
+
+        self.assertEqual(len(obligations), 1)
+        self.assertIn("Business Administration", obligations[0])
+        self.assertNotIn("Timerbiter", obligations[0])
+        self.assertNotIn("GPS system", obligations[0])
+
     def test_default_live_recall_does_not_pull_msp_learning_into_non_msp_prompt(self) -> None:
         knowledgebase.retain(
             self.root,

@@ -5618,10 +5618,10 @@ class LoopRuntime:
             )
 
         def add_generic_memory_obligation(hit: Dict[str, Any]) -> None:
-            summary = truncate_text(hit.get("summary") or "", 220)
-            if not summary:
+            requirement = self.generic_memory_obligation_requirement(hit)
+            if not requirement:
                 return
-            add_obligation(hit, "summary", "retrieved fact", summary, limit=220)
+            add_obligation(hit, "summary", "retrieved fact", requirement, limit=220)
 
         def hit_identifier_tokens(hit: Dict[str, Any]) -> set[str]:
             text = " ".join(
@@ -5656,6 +5656,16 @@ class LoopRuntime:
             if len(hit_ids) == 1
             for hit_id in hit_ids
         }
+        first_non_sop_hit_id = ""
+        for hit in projected.get("hits", []) if isinstance(projected.get("hits"), list) else []:
+            if not isinstance(hit, dict):
+                continue
+            if isinstance(hit.get("sop"), dict) and hit.get("sop"):
+                continue
+            first_non_sop_hit_id = str(hit.get("id") or hit.get("sourceId") or hit.get("title") or "")
+            if first_non_sop_hit_id:
+                break
+        generic_obligation_hit_ids = selected_identifier_hit_ids or ({first_non_sop_hit_id} if first_non_sop_hit_id else set())
 
         def add_memory_conflict_lock(hit: Dict[str, Any]) -> None:
             state = str(
@@ -5747,7 +5757,7 @@ class LoopRuntime:
                 }
             if not sop:
                 hit_id = str(hit.get("id") or hit.get("sourceId") or hit.get("title") or "")
-                if not selected_identifier_hit_ids or hit_id in selected_identifier_hit_ids:
+                if not generic_obligation_hit_ids or hit_id in generic_obligation_hit_ids:
                     add_generic_memory_obligation(hit)
                 non_sop_hits.append(
                     {
@@ -5949,6 +5959,27 @@ class LoopRuntime:
             + "\n\n"
             "Memory authority rule: if this packet contains relevant memory, build the answer from it. Current user input, current constraints, live tool evidence, and inspected files can override memory only when they explicitly conflict. Fresh model priors, generic reasoning, and worker improvisation do not override relevant memory. Treat baselinePackets firstActions, decisionGates, and avoid items as mandatory guardrails when relevant; memoryObligations is the compact release checklist. Integrate each applicable memoryObligation naturally in the answer, or explicitly reject it in controlAudit.selfCheck with the current evidence that makes it inapplicable. If memoryConflictLocks is non-empty, freeze affected operational action until the required resolution is satisfied; do not authorize, average, or improvise through an unresolved memory conflict.\n\n"
         )
+
+    def generic_memory_obligation_requirement(self, hit: Dict[str, Any]) -> str:
+        summary = str(hit.get("summary") or "").strip()
+        if not summary:
+            return ""
+        if "Question-focused excerpts" in summary:
+            tail = summary.split("Question-focused excerpts", 1)[1]
+            session_match = re.search(
+                r"(Session\s+\d+\s+message\s+\d+\s+\w+:\s+.*?)(?=\s+Session\s+\d+\s+message\s+\d+\s+\w+:|$)",
+                tail,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if session_match:
+                return truncate_text(re.sub(r"\s+", " ", session_match.group(1)).strip(), 220)
+            return truncate_text(re.sub(r"\s+", " ", tail).strip(" .:-"), 220)
+        for marker in ("FIRST_AFTER_ANCHOR_CANDIDATE:", "Open obligation count:", "COUNTABLE ROW 1:"):
+            if marker in summary:
+                return truncate_text(summary[summary.find(marker):], 220)
+        if summary.lower().startswith("timerbiter temporal authority"):
+            return ""
+        return truncate_text(summary, 220)
 
     def task_matches_msp_contradiction_gate(self, task: Dict[str, Any], prompt_packet: Optional[Dict[str, Any]] = None) -> bool:
         task_text = " ".join(
