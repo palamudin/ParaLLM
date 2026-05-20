@@ -5533,6 +5533,7 @@ class LoopRuntime:
             "intent": str(packet.get("intent") or "advisor_dispatch_recall"),
             "enabled": bool(packet.get("enabled")),
             "available": bool(packet.get("available")),
+            "query": truncate_text(packet.get("query") or "", 520),
             "coreDependency": False,
             "target": str(packet.get("target") or ""),
             "route": packet.get("route") if isinstance(packet.get("route"), dict) else {},
@@ -5621,6 +5622,40 @@ class LoopRuntime:
             if not summary:
                 return
             add_obligation(hit, "summary", "retrieved fact", summary, limit=220)
+
+        def hit_identifier_tokens(hit: Dict[str, Any]) -> set[str]:
+            text = " ".join(
+                [
+                    str(hit.get("id") or ""),
+                    str(hit.get("title") or ""),
+                    str(hit.get("sourceId") or ""),
+                ]
+            ).lower()
+            tokens: set[str] = set()
+            for token in re.findall(r"[a-z0-9][a-z0-9-]{2,}", text):
+                if any(char.isdigit() for char in token) or "-" in token:
+                    tokens.add(token)
+            return tokens
+
+        query_identifier_terms = {
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9-]{2,}", str(projected.get("query") or "").lower())
+            if any(char.isdigit() for char in token) or "-" in token
+        }
+        identifier_hits: Dict[str, List[str]] = {}
+        if query_identifier_terms:
+            for hit in projected.get("hits", []) if isinstance(projected.get("hits"), list) else []:
+                if not isinstance(hit, dict):
+                    continue
+                hit_id = str(hit.get("id") or hit.get("sourceId") or hit.get("title") or "")
+                for token in hit_identifier_tokens(hit) & query_identifier_terms:
+                    identifier_hits.setdefault(token, []).append(hit_id)
+        selected_identifier_hit_ids = {
+            hit_id
+            for hit_ids in identifier_hits.values()
+            if len(hit_ids) == 1
+            for hit_id in hit_ids
+        }
 
         def add_memory_conflict_lock(hit: Dict[str, Any]) -> None:
             state = str(
@@ -5711,7 +5746,9 @@ class LoopRuntime:
                     "replayIntervalDays": metadata.get("learning.replayIntervalDays"),
                 }
             if not sop:
-                add_generic_memory_obligation(hit)
+                hit_id = str(hit.get("id") or hit.get("sourceId") or hit.get("title") or "")
+                if not selected_identifier_hit_ids or hit_id in selected_identifier_hit_ids:
+                    add_generic_memory_obligation(hit)
                 non_sop_hits.append(
                     {
                         "id": hit.get("id"),

@@ -1272,7 +1272,14 @@ def recall(
         ),
         reverse=True,
     )
-    scored.sort(key=lambda item: (float(item.get("score") or 0), parse_timestamp(item.get("createdAt")) or 0), reverse=True)
+    def adaptive_sort_score(item: Dict[str, Any]) -> float:
+        parts = item.get("scoreParts") if isinstance(item.get("scoreParts"), dict) else {}
+        return float(item.get("score") or 0) + float(parts.get("demand") or 0) * 0.7
+
+    scored.sort(
+        key=lambda item: (adaptive_sort_score(item), parse_timestamp(item.get("createdAt")) or 0),
+        reverse=True,
+    )
 
     selected: List[Dict[str, Any]] = []
     used_tokens = 0

@@ -575,6 +575,7 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
             "schemaVersion": "parallm-native-knowledgebase/v0",
             "enabled": True,
             "available": True,
+            "query": "What was the first issue I had with my new car after its first service?",
             "target": "summarizer",
             "config": {"bankId": "memory-lab"},
             "hits": [
@@ -636,6 +637,64 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
 
         self.assertIn("GPS system not functioning correctly", fixed["frontAnswer"]["answer"])
         self.assertIn("memory-obligation", fixed["controlAudit"]["selfCheck"])
+
+    def test_non_sop_obligations_filter_to_query_selected_memory_id(self) -> None:
+        projected = {
+            "schemaVersion": knowledgebase.SCHEMA_VERSION,
+            "intent": "advisor_dispatch_recall",
+            "enabled": True,
+            "available": True,
+            "query": "Retrieve the authoritative stored ledger for route cinder-7.",
+            "target": "summarizer",
+            "config": {"bankId": "synthetic-needle-ledger-transit"},
+            "memoryPlan": {},
+            "resultCount": 3,
+            "fallbackUsed": False,
+            "degraded": False,
+            "warnings": [],
+            "selectedEvidenceIds": ["mem_cinder", "mem_amber", "mem_vellum"],
+            "hits": [
+                {
+                    "id": "mem_cinder",
+                    "title": "Synthetic transit ledger cinder-7",
+                    "type": "runbook",
+                    "sourceId": "synthetic-needle-ledger#cinder-7",
+                    "summary": "route cinder-7 destination is Koru Harbor and anchor phrase is blue ticket before dawn.",
+                    "score": 3.2,
+                    "scoreParts": {"demand": 2.9},
+                    "memoryLayer": "supporting",
+                },
+                {
+                    "id": "mem_amber",
+                    "title": "Synthetic transit ledger amber-12",
+                    "type": "runbook",
+                    "sourceId": "synthetic-needle-ledger#amber-12",
+                    "summary": "route amber-12 destination is Nacre Aerodrome and anchor phrase is green manifest under glass.",
+                    "score": 2.8,
+                    "scoreParts": {"demand": 2.5},
+                    "memoryLayer": "supporting",
+                },
+                {
+                    "id": "mem_vellum",
+                    "title": "Synthetic transit ledger vellum-4",
+                    "type": "runbook",
+                    "sourceId": "synthetic-needle-ledger#vellum-4",
+                    "summary": "route vellum-4 destination is Orla Glasshouse and anchor phrase is silver latch before rain.",
+                    "score": 2.8,
+                    "scoreParts": {"demand": 2.5},
+                    "memoryLayer": "supporting",
+                },
+            ],
+            "fallbackPolicy": "",
+        }
+
+        targeted = self.runtime.project_targeted_sop_prompt_packet(projected)
+        obligations = [item["requirement"] for item in targeted["memoryObligations"]]
+
+        self.assertEqual(len(obligations), 1)
+        self.assertIn("cinder-7", obligations[0])
+        self.assertNotIn("amber-12", " ".join(obligations))
+        self.assertNotIn("vellum-4", " ".join(obligations))
 
     def test_default_live_recall_does_not_pull_msp_learning_into_non_msp_prompt(self) -> None:
         knowledgebase.retain(
@@ -754,6 +813,64 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertEqual(rows["new-useful-msp-lesson"]["action"], "learn")
         self.assertEqual(rows["new-useful-msp-lesson"]["stored"], 1)
         self.assertEqual(rows["irrelevant-dessert-fact"]["action"], "reject")
+        self.assertGreater(result["newLessonRecallRank"], 0)
+
+    def test_msp_school_probe_keeps_exact_new_lesson_visible_in_populated_bank(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "msp-knowledgebase",
+                "tags": ["msp", "judge-learning", "identity", "oauth"],
+                "items": [
+                    {
+                        "title": "Learned: Evidence-first containment sequencing (Identity/OAuth SaaS incident)",
+                        "content": (
+                            "Identity/OAuth incidents need evidence-first containment with tenant-safe ownership, "
+                            "artifact export, and staged service continuity."
+                        ),
+                        "type": "runbook",
+                        "metadata": {
+                            "learning.kind": "judge-score-failure-class",
+                            "learning.scenarioId": "identity-oauth-saas",
+                            "learning.missCount": 40,
+                            "learning.adaptiveWeight": 10.0,
+                        },
+                        "sop": {
+                            "schemaVersion": "msp-learning/v1",
+                            "useCase": "Identity/OAuth SaaS incident",
+                            "eventTypes": ["identity", "oauth", "tenant"],
+                            "firstActions": ["Preserve tenant ownership and export identity evidence"],
+                            "decisionGates": ["Do not trade evidence for speed without emergency authority"],
+                        },
+                    },
+                    {
+                        "title": "Learned: Service continuity containment gate (Identity/OAuth SaaS incident)",
+                        "content": (
+                            "Identity containment must protect service continuity while app consent and sign-in "
+                            "artifacts are preserved."
+                        ),
+                        "type": "runbook",
+                        "metadata": {
+                            "learning.kind": "judge-score-failure-class",
+                            "learning.scenarioId": "identity-oauth-saas",
+                            "learning.missCount": 30,
+                            "learning.adaptiveWeight": 9.0,
+                        },
+                        "sop": {
+                            "schemaVersion": "msp-learning/v1",
+                            "useCase": "Identity/OAuth SaaS incident",
+                            "eventTypes": ["identity", "oauth", "tenant"],
+                            "firstActions": ["Stage containment so customer service remains stable"],
+                            "decisionGates": ["Confirm rollback before broad identity revocation"],
+                        },
+                    },
+                ],
+            },
+        )
+
+        result = qa_msp_school_probe.run_school_probe(self.root)
+
+        self.assertTrue(result["passed"], result)
         self.assertGreater(result["newLessonRecallRank"], 0)
 
     def test_first_cousin_relevance_uses_common_and_industry_names(self) -> None:
