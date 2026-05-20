@@ -5557,6 +5557,7 @@ class LoopRuntime:
                     "source": str(hit.get("source") or ""),
                     "sourceId": truncate_text(hit.get("sourceId") or "", 180),
                     "summary": truncate_text(hit.get("summary") or hit.get("text") or "", 520),
+                    "text": truncate_text(hit.get("text") or "", 2400),
                     "metadata": hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {},
                     "sop": hit.get("sop") if isinstance(hit.get("sop"), dict) else {},
                     "memoryLayer": str(hit.get("memoryLayer") or "adaptive"),
@@ -5964,8 +5965,13 @@ class LoopRuntime:
         summary = str(hit.get("summary") or "").strip()
         if not summary:
             return ""
+        full_text = str(hit.get("text") or summary).strip()
+        table_requirement = self.generic_memory_table_requirement(full_text, hit)
+        if table_requirement:
+            return table_requirement
         if "Question-focused excerpts" in summary:
-            tail = summary.split("Question-focused excerpts", 1)[1]
+            tail_source = full_text if "Question-focused excerpts" in full_text else summary
+            tail = tail_source.split("Question-focused excerpts", 1)[1]
             session_match = re.search(
                 r"(Session\s+\d+\s+message\s+\d+\s+\w+:\s+.*?)(?=\s+Session\s+\d+\s+message\s+\d+\s+\w+:|$)",
                 tail,
@@ -5980,6 +5986,100 @@ class LoopRuntime:
         if summary.lower().startswith("timerbiter temporal authority"):
             return ""
         return truncate_text(summary, 220)
+
+    def generic_memory_table_requirement(self, text: str, hit: Dict[str, Any]) -> str:
+        metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+        question = str(metadata.get("question") or "").strip()
+        if not question or "|" not in str(text or ""):
+            return ""
+        query_terms = [
+            word
+            for word in re.findall(r"[a-z0-9][a-z0-9-]{2,}", question.lower())
+            if word not in {
+                "about",
+                "again",
+                "answer",
+                "can",
+                "checking",
+                "for",
+                "from",
+                "how",
+                "our",
+                "previous",
+                "remind",
+                "the",
+                "this",
+                "was",
+                "what",
+                "with",
+                "you",
+            }
+        ]
+        query_terms = list(dict.fromkeys(query_terms))
+        if len(query_terms) < 2:
+            return ""
+        header: List[str] = []
+        day_cell = ""
+        for raw_line in str(text or "").splitlines():
+            line = raw_line.strip()
+            if not line.startswith("|") or not line.endswith("|"):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if len(cells) < 2:
+                continue
+            if all(re.fullmatch(r":?-{2,}:?", cell or "") for cell in cells):
+                continue
+            lowered_cells = [cell.lower() for cell in cells]
+            row_text = " ".join(lowered_cells)
+            row_hits = sum(1 for term in query_terms if term in row_text)
+            has_time_header = any(re.search(r"\b(am|pm)\b", cell.lower()) for cell in cells)
+            if has_time_header:
+                header = cells
+                continue
+            if not header or row_hits < 2:
+                continue
+            day_cell = cells[0]
+            for idx, cell in enumerate(cells[1:], start=1):
+                if idx >= len(header):
+                    continue
+                cell_text = cell.lower()
+                if any(term in cell_text for term in query_terms):
+                    shift = header[idx].strip()
+                    if day_cell and cell and shift:
+                        return truncate_text(f"{day_cell} row places {cell} under {shift}.", 220)
+        pipe_cells = [cell.strip() for cell in str(text or "").split("|")]
+        for idx, cell in enumerate(pipe_cells):
+            if cell:
+                continue
+            header_values: List[str] = []
+            cursor = idx + 1
+            while cursor < len(pipe_cells) and pipe_cells[cursor].strip():
+                header_values.append(pipe_cells[cursor].strip())
+                cursor += 1
+            if sum(1 for value in header_values if re.search(r"\b(am|pm)\b", value.lower())) < 2:
+                continue
+            header = ["", *header_values]
+            width = len(header)
+            if width < 3:
+                continue
+            for row_idx in range(cursor + 1, len(pipe_cells) - width + 1):
+                row = [value.strip() for value in pipe_cells[row_idx : row_idx + width]]
+                if not row or any(not value for value in row):
+                    continue
+                if all(re.fullmatch(r":?-{2,}:?", value) for value in row):
+                    continue
+                row_text = " ".join(value.lower() for value in row)
+                if sum(1 for term in query_terms if term in row_text) < 2:
+                    continue
+                day_cell = row[0]
+                for cell_idx, row_cell in enumerate(row[1:], start=1):
+                    if cell_idx >= len(header):
+                        continue
+                    if any(term in row_cell.lower() for term in query_terms):
+                        shift = header[cell_idx].strip()
+                        if day_cell and row_cell and shift:
+                            return truncate_text(f"{day_cell} row places {row_cell} under {shift}.", 220)
+        return ""
 
     def task_matches_msp_contradiction_gate(self, task: Dict[str, Any], prompt_packet: Optional[Dict[str, Any]] = None) -> bool:
         task_text = " ".join(

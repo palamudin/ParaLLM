@@ -750,6 +750,36 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertNotIn("Timerbiter", obligations[0])
         self.assertNotIn("GPS system", obligations[0])
 
+    def test_non_sop_table_obligation_extracts_answer_row(self) -> None:
+        hit = {
+            "id": "mem_lme_oracle_7161e7e2",
+            "summary": (
+                "Timerbiter temporal authority: - Store class: LTS "
+                "Question-focused excerpts ranked by lexical overlap and recency."
+            ),
+            "text": (
+                "Timerbiter temporal authority:\n"
+                "Question-focused excerpts ranked by lexical overlap and recency.\n"
+                "Session 1 message 14 assistant: Thank you for providing the agent names.\n"
+                "|  | 8 am - 4 pm (Day Shift) | 12 pm - 8 pm (Afternoon Shift) | 4 pm - 12 am (Evening Shift) | 12 am - 8 am (Night Shift) |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| Sunday | Admon | Magdy | Ehab | Sara |\n"
+                "| Monday | Mostafa | Nemr | Adam | Admon |\n"
+            ),
+            "metadata": {
+                "question": (
+                    "I'm checking our previous chat about the shift rotation sheet for GM social media agents. "
+                    "Can you remind me what was the rotation for Admon on a Sunday?"
+                )
+            },
+        }
+
+        requirement = self.runtime.generic_memory_obligation_requirement(hit)
+
+        self.assertIn("Sunday row places Admon under 8 am - 4 pm", requirement)
+        self.assertNotIn("Timerbiter", requirement)
+        self.assertNotIn("Magdy", requirement)
+
     def test_default_live_recall_does_not_pull_msp_learning_into_non_msp_prompt(self) -> None:
         knowledgebase.retain(
             self.root,
