@@ -5575,6 +5575,8 @@ class LoopRuntime:
         adaptive_packets: List[Dict[str, Any]] = []
         non_sop_hits: List[Dict[str, Any]] = []
         memory_conflict_locks: List[Dict[str, str]] = []
+        memory_obligations: List[Dict[str, str]] = []
+        obligation_seen: Dict[str, bool] = {}
 
         def short_items(value: Any, count: int, limit: int = 150) -> List[str]:
             return [truncate_text(item, limit) for item in normalize_string_array_preserve_items(value)[:count] if truncate_text(item, limit)]
@@ -5593,6 +5595,32 @@ class LoopRuntime:
                 raw_items = re.split(r"[,;]+", value)
                 return [truncate_text(item.strip(), 140) for item in raw_items if item.strip()]
             return [truncate_text(item, 140) for item in normalize_string_array_preserve_items(value) if truncate_text(item, 140)]
+
+        def add_obligation(packet: Dict[str, Any], field: str, label: str, item: str, *, limit: int = 180) -> None:
+            requirement = truncate_text(item, limit)
+            if not requirement:
+                return
+            dedupe_key = re.sub(r"\s+", " ", requirement.lower()).strip()
+            if obligation_seen.get(dedupe_key):
+                return
+            obligation_seen[dedupe_key] = True
+            source_id = str(packet.get("id") or packet.get("sourceId") or "")
+            title = truncate_text(packet.get("title") or packet.get("useCase") or source_id, 100)
+            memory_obligations.append(
+                {
+                    "id": truncate_text(f"{source_id}:{field}:{len(memory_obligations) + 1}", 140),
+                    "sourceMemoryId": source_id,
+                    "sourceTitle": title,
+                    "kind": label,
+                    "requirement": requirement,
+                }
+            )
+
+        def add_generic_memory_obligation(hit: Dict[str, Any]) -> None:
+            summary = truncate_text(hit.get("summary") or "", 220)
+            if not summary:
+                return
+            add_obligation(hit, "summary", "retrieved fact", summary, limit=220)
 
         def add_memory_conflict_lock(hit: Dict[str, Any]) -> None:
             state = str(
@@ -5683,6 +5711,7 @@ class LoopRuntime:
                     "replayIntervalDays": metadata.get("learning.replayIntervalDays"),
                 }
             if not sop:
+                add_generic_memory_obligation(hit)
                 non_sop_hits.append(
                     {
                         "id": hit.get("id"),
@@ -5725,16 +5754,28 @@ class LoopRuntime:
                     "conflict_unresolved": "Freeze affected action; name the conflict, required resolver, and safe holding action.",
                 }
                 conflict_projection["memoryConflictLocks"] = memory_conflict_locks[:8]
+                conflict_projection["memoryObligations"] = memory_obligations[:8]
+                conflict_projection["supportingHits"] = non_sop_hits[:5]
                 conflict_projection["retrievalPolicy"] = {
                     "authority": "Relevant memory outranks fresh model priors.",
                     "conflictPolicy": "Unresolved material memory conflicts freeze the affected operational action until a retrieved or inspected authority resolves the conflict.",
                 }
                 return conflict_projection
-            return projected
+            generic_projection = dict(projected)
+            generic_projection["intent"] = "targeted_memory_recall"
+            generic_projection["memoryAuthority"] = "binding_when_relevant"
+            generic_projection["memoryMode"] = "ranked_non_sop_memory"
+            generic_projection["memoryObligations"] = memory_obligations[:8]
+            generic_projection["supportingHits"] = non_sop_hits[:5]
+            generic_projection["retrievalPolicy"] = {
+                "mode": str((projected.get("memoryPlan") if isinstance(projected.get("memoryPlan"), dict) else {}).get("mode") or "ranked_recall"),
+                "authority": "Relevant memory outranks fresh model priors. Current task facts, inspected files, and live tool evidence may override it only when the conflict is explicit.",
+                "coveragePolicy": "Use each applicable memoryObligation as an answer-building fact, or explicitly reject it with current evidence.",
+            }
+            return generic_projection
         config = projected.get("config") if isinstance(projected.get("config"), dict) else {}
         memory_plan = projected.get("memoryPlan") if isinstance(projected.get("memoryPlan"), dict) else {}
         sop_packets = [*baseline_packets, *adaptive_packets]
-        memory_obligations: List[Dict[str, str]] = []
 
         def is_common_major_packet(packet: Dict[str, Any]) -> bool:
             haystack = " ".join(
@@ -5751,28 +5792,6 @@ class LoopRuntime:
         specific_baseline_packets = [
             packet for packet in baseline_packets if isinstance(packet, dict) and not is_common_major_packet(packet)
         ]
-
-        obligation_seen: Dict[str, bool] = {}
-
-        def add_obligation(packet: Dict[str, Any], field: str, label: str, item: str) -> None:
-            requirement = truncate_text(item, 180)
-            if not requirement:
-                return
-            dedupe_key = requirement.lower()
-            if obligation_seen.get(dedupe_key):
-                return
-            obligation_seen[dedupe_key] = True
-            source_id = str(packet.get("id") or "")
-            title = truncate_text(packet.get("title") or packet.get("useCase") or source_id, 100)
-            memory_obligations.append(
-                {
-                    "id": truncate_text(f"{source_id}:{field}:{len(memory_obligations) + 1}", 140),
-                    "sourceMemoryId": source_id,
-                    "sourceTitle": title,
-                    "kind": label,
-                    "requirement": requirement,
-                }
-            )
 
         def add_packet_items(packet: Dict[str, Any], field: str, label: str, count: int) -> None:
             for item in limit_string_list(packet.get(field, []), count, 180):
@@ -5910,6 +5929,61 @@ class LoopRuntime:
         triggers = [str(item).lower() for item in gate.get("triggers", []) if str(item).strip()]
         return not triggers or any(trigger in task_text for trigger in triggers)
 
+    def memory_obligation_distinctive_terms(self, requirement: str) -> List[str]:
+        stopwords = {
+            "about",
+            "after",
+            "again",
+            "answer",
+            "before",
+            "being",
+            "case",
+            "correct",
+            "current",
+            "detail",
+            "details",
+            "does",
+            "during",
+            "each",
+            "first",
+            "from",
+            "general",
+            "issue",
+            "later",
+            "memory",
+            "need",
+            "needs",
+            "only",
+            "question",
+            "record",
+            "related",
+            "service",
+            "should",
+            "source",
+            "that",
+            "their",
+            "then",
+            "there",
+            "this",
+            "through",
+            "until",
+            "user",
+            "when",
+            "where",
+            "which",
+            "with",
+            "would",
+        }
+        terms: List[str] = []
+        for word in re.findall(r"[a-z0-9][a-z0-9-]{2,}", str(requirement or "").lower()):
+            if word in stopwords:
+                continue
+            if word not in terms:
+                terms.append(word)
+            if len(terms) >= 10:
+                break
+        return terms
+
     def final_answer_satisfies_gate(self, answer_text: str, gate: Dict[str, Any]) -> bool:
         lowered = str(answer_text or "").lower()
         if not lowered:
@@ -5923,6 +5997,15 @@ class LoopRuntime:
                 return True
         if gate_id.startswith("memory-obligation"):
             requirement = str(gate.get("requirement") or gate.get("title") or "").lower()
+            distinctive_terms = [
+                str(term).lower()
+                for term in gate.get("distinctiveTerms", [])
+                if str(term).strip()
+            ] if isinstance(gate.get("distinctiveTerms"), list) else []
+            if distinctive_terms:
+                distinctive_hits = sum(1 for term in distinctive_terms[:8] if term in lowered)
+                if distinctive_hits < min(2, len(distinctive_terms[:8])):
+                    return False
             words = [
                 word
                 for word in re.findall(r"[a-z0-9][a-z0-9-]{3,}", requirement)
@@ -5944,6 +6027,9 @@ class LoopRuntime:
                     "over",
                     "under",
                     "without",
+                    "first",
+                    "issue",
+                    "service",
                 }
             ]
             if not words:
@@ -6142,6 +6228,7 @@ class LoopRuntime:
                             "title": truncate_text(obligation.get("sourceTitle") or "Retrieved memory obligation", 100),
                             "requirement": requirement,
                             "source": truncate_text(obligation.get("sourceMemoryId") or "knowledgebase", 140),
+                            "distinctiveTerms": self.memory_obligation_distinctive_terms(requirement),
                         }
                     )
             for key in ("baselinePackets", "adaptivePackets"):
@@ -6196,6 +6283,7 @@ class LoopRuntime:
                     "title": truncate_text(gate.get("title") or "", 100),
                     "requirement": truncate_text(gate.get("requirement") or "", 220),
                     "source": str(gate.get("source") or ""),
+                    "distinctiveTerms": limit_string_list(gate.get("distinctiveTerms", []), 8, 40),
                 }
                 for gate in packet.get("memoryObligationGates", [])[:16]
                 if isinstance(gate, dict)

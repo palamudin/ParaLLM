@@ -570,6 +570,73 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
         self.assertIn("Attach the signed approval packet", rendered)
         self.assertIn('"memoryConflictLocks"', rendered)
 
+    def test_non_sop_recall_becomes_memory_obligation_gate(self) -> None:
+        knowledgebase_packet = {
+            "schemaVersion": "parallm-native-knowledgebase/v0",
+            "enabled": True,
+            "available": True,
+            "target": "summarizer",
+            "config": {"bankId": "memory-lab"},
+            "hits": [
+                {
+                    "id": "mem_car_gps_issue",
+                    "bankId": "memory-lab",
+                    "title": "Car service issue transcript",
+                    "type": "conversation",
+                    "sourceId": "longmemeval#car-gps",
+                    "memoryLayer": "adaptive",
+                    "summary": (
+                        "After the first service, the first car issue was the GPS system not "
+                        "functioning correctly; the dealership replaced the entire GPS system."
+                    ),
+                }
+            ],
+            "aiPacket": {
+                "selectedEvidenceIds": ["mem_car_gps_issue"],
+                "contextText": (
+                    "[1] Car service issue transcript (conversation, longmemeval#car-gps): "
+                    "Query-focused excerpts: Later, after the first service, the first issue "
+                    "was the GPS system not functioning correctly. The dealership replaced "
+                    "the entire GPS system."
+                ),
+            },
+        }
+        task = {
+            "taskId": "t-car-gps",
+            "objective": "What was the first issue I had with my new car after its first service?",
+            "runtime": {"knowledgebase": {"enabled": True}},
+        }
+
+        packet = self.runtime.build_contradiction_memory_packet(
+            task,
+            self.runtime.get_task_runtime(task),
+            {"taskId": "t-car-gps", "round": 1},
+            {},
+            [],
+            knowledgebase_packet,
+            round_number=1,
+        )
+
+        self.assertTrue(packet["enabled"])
+        self.assertGreater(len(packet["memoryObligationGates"]), 0)
+        requirements = [gate["requirement"] for gate in packet["memoryObligationGates"]]
+        self.assertTrue(any("GPS system not functioning correctly" in item for item in requirements))
+
+        summary = {
+            "frontAnswer": {
+                "answer": "The first issue was a general maintenance concern after service.",
+                "stance": "Answer from memory.",
+                "leadDirection": "Answer directly.",
+                "adversarialPressure": "",
+                "confidenceNote": "",
+            },
+            "controlAudit": {"heldOutConcerns": [], "selfCheck": ""},
+        }
+        fixed = self.runtime.apply_contradiction_memory_final_gates(summary, packet)
+
+        self.assertIn("GPS system not functioning correctly", fixed["frontAnswer"]["answer"])
+        self.assertIn("memory-obligation", fixed["controlAudit"]["selfCheck"])
+
     def test_default_live_recall_does_not_pull_msp_learning_into_non_msp_prompt(self) -> None:
         knowledgebase.retain(
             self.root,
