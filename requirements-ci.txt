@@ -1,4 +1,4 @@
-boto3==1.40.59
+boto3==1.43.14
 pytest==9.0.3
 annotated-doc==0.0.4
 annotated-types==0.7.0
