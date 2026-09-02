@@ -22,6 +22,7 @@ API_ROUTE_MAP = {
     "draft": "/v1/draft",
     "auth_status": "/v1/auth/status",
     "auth_keys": "/v1/auth/keys",
+    "models": "/v1/models",
     "eval_artifact": "/v1/evals/artifact",
     "eval_history": "/v1/evals/history",
     "session_export": "/v1/session/export",

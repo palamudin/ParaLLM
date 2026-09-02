@@ -6,9 +6,9 @@
   <title>ParaLLM</title>
   <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
-  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260506-012" />
+  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260903-001" />
   <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
-  <link rel="stylesheet" href="assets/repo-review.css?v=20260507-001" />
+  <link rel="stylesheet" href="assets/repo-review.css?v=20260829-001" />
 </head>
 <body class="igs-shell-body">
   <div class="igs-shell-app">
@@ -66,9 +66,8 @@
 
           <select id="previewEngineVersion" class="igs-native-pill-select">
             <option value="v2" selected>V2</option>
-            <option value="v1">V1</option>
           </select>
-          <button type="button" class="igs-header-cycle" data-contract-control-tile="Engine" data-control-tone="blue" data-control-state="info" data-select-cycle="previewEngineVersion" data-cycle-values="v2,v1" data-cycle-press-levels="none,full" data-press-level="none" data-state-label="V2" data-state-tone="v2" aria-pressed="false" aria-label="Engine: V2"><span class="igs-state-text">Engine</span></button>
+          <button type="button" class="igs-header-cycle" data-contract-control-tile="Engine" data-control-tone="blue" data-control-state="info" data-state-label="V2" data-state-tone="v2" aria-disabled="true" aria-label="Engine: V2"><span class="igs-state-text">Engine</span></button>
 
           <select id="previewDirectBaselineMode" class="igs-native-pill-select">
             <option value="off" selected>Off</option>
@@ -121,51 +120,16 @@
                   <div class="igs-control-pack igs-control-pack-routing" data-control-pack="routing">
                     <div class="igs-control-tile igs-control-tile-provider igs-provider-selector-tile" data-contract-control-tile="Providers" data-control-tone="green" data-control-state="online">
                       <select id="previewWorkerProvider" class="igs-native-pill-select">
-                        <option value="deepseek">DeepSeek</option>
-                        <option value="openai">OpenAI</option>
-                        <option value="anthropic">Anthropic</option>
-                        <option value="xai">xAI</option>
+                        <option value="">Loading providers...</option>
                       </select>
                       <select id="previewSummarizerProvider" class="igs-native-pill-select">
-                        <option value="deepseek">DeepSeek</option>
-                        <option value="openai">OpenAI</option>
-                        <option value="anthropic">Anthropic</option>
-                        <option value="xai">xAI</option>
+                        <option value="">Loading providers...</option>
                       </select>
                       <div class="igs-provider-role-segment" role="group" aria-label="Provider role">
                         <button type="button" class="igs-provider-role-btn is-active" data-provider-role-option="worker" aria-pressed="true">Worker</button>
                         <button type="button" class="igs-provider-role-btn" data-provider-role-option="summarizer" aria-pressed="false">Summarizer</button>
                       </div>
-                      <div class="igs-segment igs-segment-wrap igs-provider-segment" role="group" aria-label="Provider">
-                        <button type="button" class="igs-segment-btn igs-provider-actuator is-active" data-provider-option="deepseek" aria-pressed="true">
-                          <span class="actuator-spark" aria-hidden="true"></span>
-                          <span class="actuator-depth" aria-hidden="true"></span>
-                          <span class="actuator-orbit" aria-hidden="true"></span>
-                          <span class="actuator-title">DeepSeek</span>
-                          <span class="actuator-indicator" aria-hidden="true"></span>
-                        </button>
-                        <button type="button" class="igs-segment-btn igs-provider-actuator" data-provider-option="openai" aria-pressed="false">
-                          <span class="actuator-spark" aria-hidden="true"></span>
-                          <span class="actuator-depth" aria-hidden="true"></span>
-                          <span class="actuator-orbit" aria-hidden="true"></span>
-                          <span class="actuator-title">OpenAI</span>
-                          <span class="actuator-indicator" aria-hidden="true"></span>
-                        </button>
-                        <button type="button" class="igs-segment-btn igs-provider-actuator" data-provider-option="anthropic" aria-pressed="false">
-                          <span class="actuator-spark" aria-hidden="true"></span>
-                          <span class="actuator-depth" aria-hidden="true"></span>
-                          <span class="actuator-orbit" aria-hidden="true"></span>
-                          <span class="actuator-title">ANT</span>
-                          <span class="actuator-indicator" aria-hidden="true"></span>
-                        </button>
-                        <button type="button" class="igs-segment-btn igs-provider-actuator" data-provider-option="xai" aria-pressed="false">
-                          <span class="actuator-spark" aria-hidden="true"></span>
-                          <span class="actuator-depth" aria-hidden="true"></span>
-                          <span class="actuator-orbit" aria-hidden="true"></span>
-                          <span class="actuator-title">XAI</span>
-                          <span class="actuator-indicator" aria-hidden="true"></span>
-                        </button>
-                      </div>
+                      <div class="igs-segment igs-segment-wrap igs-provider-segment" role="group" aria-label="Provider" aria-busy="true"></div>
                     </div>
                   </div>
 
@@ -198,6 +162,7 @@
                         <option value="full">Full</option>
                       </select>
                       <select id="previewReasoningEffort" class="igs-native-pill-select">
+                        <option value="none">None</option>
                         <option value="low" selected>Low</option>
                         <option value="medium">Medium</option>
                         <option value="high">High</option>
@@ -257,6 +222,110 @@
                 </div>
               </section>
             </aside>
+
+            <section class="igs-surface igs-agent-surface" data-home-panel="agents">
+              <div class="igs-surface-head">
+                <div>
+                  <div class="igs-surface-kicker">Teamwork</div>
+                  <h4>Agents</h4>
+                </div>
+                <button type="button" class="igs-pill igs-pill-muted igs-collapse-pill" data-home-collapse-toggle="agents" aria-expanded="true">Agent fabric</button>
+              </div>
+
+              <div class="igs-agent-commandbar">
+                <label class="igs-agent-project-control" for="previewAgentProjectSelect">
+                  <span>Project</span>
+                  <select id="previewAgentProjectSelect" aria-label="Agent project">
+                    <option value="project_default">Default project</option>
+                  </select>
+                </label>
+                <div class="igs-agent-statline" aria-live="polite">
+                  <span><b id="previewAgentCount">0</b> agents</span>
+                  <span><b id="previewAgentOnline">0</b> online</span>
+                  <span><b id="previewAgentQueued">0</b> queued</span>
+                  <span><b id="previewAgentBlockers">0</b> blockers</span>
+                </div>
+                <span id="previewAgentStatus" class="igs-agent-status">Loading agent fabric...</span>
+                <button type="button" id="previewAgentRefresh" class="igs-agent-secondary">Refresh</button>
+                <details class="igs-agent-project-create">
+                  <summary>New project</summary>
+                  <form id="previewAgentProjectForm" autocomplete="off">
+                    <label for="previewAgentProjectName">Name</label>
+                    <input id="previewAgentProjectName" name="name" maxlength="128" required />
+                    <label for="previewAgentProjectDescription">Description</label>
+                    <input id="previewAgentProjectDescription" name="description" maxlength="512" />
+                    <button type="submit" class="igs-agent-primary">Create</button>
+                  </form>
+                </details>
+              </div>
+
+              <div class="igs-agent-action-grid">
+                <form id="previewAgentSpawnForm" class="igs-agent-command-form" autocomplete="off">
+                  <strong>Spawn agent</strong>
+                  <label for="previewAgentName">Name</label>
+                  <input id="previewAgentName" name="name" maxlength="96" placeholder="Agent name" required />
+                  <label for="previewAgentFunction">Function</label>
+                  <input id="previewAgentFunction" name="function" maxlength="4096" placeholder="Operational function" required />
+                  <label for="previewAgentInstructions">Instructions</label>
+                  <textarea id="previewAgentInstructions" name="instructions" rows="2" maxlength="16384" placeholder="Scope, constraints, and reporting expectations"></textarea>
+                  <button type="submit" class="igs-agent-primary">Spawn</button>
+                </form>
+
+                <form id="previewAgentTaskForm" class="igs-agent-command-form" autocomplete="off">
+                  <strong>Assign work</strong>
+                  <label for="previewAgentTaskTarget">Target</label>
+                  <select id="previewAgentTaskTarget" name="targetAgentId" required>
+                    <option value="">No worker agent available</option>
+                  </select>
+                  <label for="previewAgentTaskObjective">Objective</label>
+                  <textarea id="previewAgentTaskObjective" name="objective" rows="2" maxlength="16384" placeholder="Concrete objective and expected result" required></textarea>
+                  <label for="previewAgentTaskPriority">Priority</label>
+                  <input id="previewAgentTaskPriority" name="priority" type="number" min="1" max="100" value="50" />
+                  <button type="submit" class="igs-agent-primary">Queue task</button>
+                </form>
+              </div>
+
+              <div class="igs-agent-ops-grid">
+                <section class="igs-agent-pane" aria-labelledby="previewAgentRosterTitle">
+                  <div class="igs-agent-pane-head">
+                    <h5 id="previewAgentRosterTitle">Roster</h5>
+                    <span>process / heartbeat</span>
+                  </div>
+                  <div id="previewAgentRoster" class="igs-agent-list">
+                    <div class="igs-agent-empty">No agents loaded.</div>
+                  </div>
+                </section>
+
+                <section class="igs-agent-pane" aria-labelledby="previewAgentJobsTitle">
+                  <div class="igs-agent-pane-head">
+                    <h5 id="previewAgentJobsTitle">Work queue</h5>
+                    <span>latest first</span>
+                  </div>
+                  <div id="previewAgentJobs" class="igs-agent-list">
+                    <div class="igs-agent-empty">No agent tasks.</div>
+                  </div>
+                </section>
+
+                <section class="igs-agent-pane" aria-labelledby="previewAgentBoardTitle">
+                  <div class="igs-agent-pane-head">
+                    <h5 id="previewAgentBoardTitle">Project board</h5>
+                    <span id="previewAgentBoardUnread">0 messages</span>
+                  </div>
+                  <div id="previewAgentBoard" class="igs-agent-board">
+                    <div class="igs-agent-empty">No project messages.</div>
+                  </div>
+                  <form id="previewAgentBoardForm" class="igs-agent-board-form" autocomplete="off">
+                    <label for="previewAgentBoardTarget">Recipient</label>
+                    <select id="previewAgentBoardTarget" name="targetAgentId">
+                      <option value="">All project members</option>
+                    </select>
+                    <label for="previewAgentBoardContent">Message</label>
+                    <input id="previewAgentBoardContent" name="content" maxlength="16384" placeholder="Post to project board" required />
+                    <button type="submit" class="igs-agent-secondary">Post</button>
+                  </form>
+                </section>
+              </div>
+            </section>
 
             <section class="igs-surface igs-home-supporting" data-home-panel="supporting">
               <div class="igs-surface-head">
@@ -393,6 +462,7 @@
                       <div class="igs-composer-tool-submenu" role="group" aria-label="Reasoning level">
                         <div class="igs-composer-tool-subhead">Reasoning</div>
                         <div class="igs-composer-tool-options">
+                          <button type="button" class="igs-composer-tool-option" data-composer-reasoning-option="none" aria-pressed="false">None</button>
                           <button type="button" class="igs-composer-tool-option is-active" data-composer-reasoning-option="low" aria-pressed="true">Low</button>
                           <button type="button" class="igs-composer-tool-option" data-composer-reasoning-option="medium" aria-pressed="false">Medium</button>
                           <button type="button" class="igs-composer-tool-option" data-composer-reasoning-option="high" aria-pressed="false">High</button>
@@ -1071,6 +1141,10 @@
           <span>API key</span>
           <input id="authRequirementKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste provider key" />
         </label>
+        <label class="igs-field igs-auth-workspace-field" id="authRequirementWorkspaceField" for="authRequirementWorkspaceInput" hidden>
+          <span>Workspace ID</span>
+          <input id="authRequirementWorkspaceInput" type="text" maxlength="127" autocomplete="off" spellcheck="false" placeholder="wrkspc_..." />
+        </label>
         <button type="button" class="igs-pill igs-auth-primary" id="authRequirementSaveKey">Save key</button>
         <button type="button" class="igs-pill igs-auth-secondary" id="authRequirementCodexSignIn">Codex sign-in</button>
       </div>
@@ -1078,8 +1152,8 @@
     </div>
   </div>
 
-  <script src="assets/repo-review.js?v=20260507-004"></script>
+  <script src="assets/repo-review.js?v=20260829-001"></script>
   <script src="assets/fractal-memory.js?v=20260501-003"></script>
-  <script src="assets/replacement-shell.js?v=20260506-009"></script>
+  <script src="assets/replacement-shell.js?v=20260903-001"></script>
 </body>
 </html>

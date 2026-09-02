@@ -12,6 +12,12 @@ class ModelCapacitiesTest(unittest.TestCase):
         self.assertEqual(entry.get("maxOutputTokens"), 384_000)
         self.assertGreater(int(entry.get("recommendedReviewBinderBudgetTokens", 0) or 0), 0)
 
+    def test_resolve_gpt_56_family_capacity(self) -> None:
+        for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            entry = model_capacities.resolve_model_capacity("openai", model)
+            self.assertEqual(entry.get("contextWindowTokens"), 1_050_000)
+            self.assertEqual(entry.get("maxOutputTokens"), 128_000)
+
     def test_runtime_output_policy_is_centralized(self) -> None:
         self.assertEqual(model_capacities.max_output_tokens("deepseek", "deepseek-v4-flash"), 384_000)
         self.assertEqual(model_capacities.explicit_output_fallback_tokens("anthropic"), 8192)

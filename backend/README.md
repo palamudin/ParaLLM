@@ -69,6 +69,9 @@ They also honor the same deployment env overrides used by the container path:
 - `LOOP_SECRET_BACKEND`
 - `LOOP_SECRET_FILE`
 - `LOOP_RUNTIME_EXECUTION_BACKEND`
+- `PARALLM_CORE_MODE` (`python`, `native`, or the default `dual`)
+- `PARALLM_NATIVE_CORE_LIBRARY` (optional explicit native-library path)
+- `PARALLM_TIMING_ENABLED` (defaults to enabled)
 - `LOOP_DATABASE_URL`
 - `LOOP_REDIS_URL`
 - `LOOP_OBJECT_STORE_URL`
@@ -78,6 +81,7 @@ They also honor the same deployment env overrides used by the container path:
 - `LOOP_OBJECT_STORE_SECRET_KEY`
 - `LOOP_OBJECT_STORE_REGION`
 - `LOOP_OPENAI_API_KEYS`
+- `LOOP_CODEX_PWSH_PATH` (optional absolute `pwsh` executable used by Codex-auth lanes on Windows)
 - `LOOP_RUNTIME_SERVICE_URL`
 - `LOOP_SECRET_PROVIDER_URL`
 - `LOOP_SECRET_PROVIDER_TOKEN`
@@ -141,7 +145,7 @@ http://127.0.0.1:8787/v1/system/infrastructure
 - worker draft mutation and adversarial roster growth
 - per-position model changes for active task workers and summarizer
 - background loop job creation, cancellation, retry, and resume
-- Python background loop runner for the first hosted-compatible job path
+- bounded in-process background loop, dispatch, and eval pools for the normal local path
 - background target-dispatch queueing for commander, workers, commander-review, summarizer, and Answer Now
 - sync target execution for parity with the existing manual dispatch surface
 - Python-served shell defaults for same-origin `/v1/*` use
@@ -149,11 +153,18 @@ http://127.0.0.1:8787/v1/system/infrastructure
 - optional knowledgebase recall injection for commander, worker, commander-review, summarizer, and Answer Now prompt packets; lane-scoped recall can degrade to shared/runtime readout instead of blocking dispatch
 - typed topology reporting for queue, metadata, artifacts, secrets, and runtime execution backends
 - selectable runtime execution backend:
-  - embedded engine subprocess by default
+  - `embedded_engine` for the normal in-process path
+  - `embedded_engine_subprocess` as an explicit compatibility rollback
   - optional `runtime_service` path for explicit service-boundary testing
 - selectable queue backend:
-  - `local_subprocess` for the current local file + subprocess path
+  - `in_process` for the normal bounded local queue
+  - `local_subprocess` as an explicit compatibility rollback
   - `redis` for real background loop ordering and ready dispatch-launch handoff
+- versioned native-core execution:
+  - `python` keeps the reference implementation authoritative
+  - `native` makes the C17 core authoritative and fails if it is unavailable
+  - `dual` runs both deterministic implementations, keeps Python authoritative, and reports parity counters in `/health`
+- append-only `data/logs/timing.jsonl` spans for queue, background, target, provider, storage, eval, and memory boundaries
 - selectable metadata backend:
   - `json_files` for the local default
   - `postgres` for real shared state, job metadata, task snapshots, and eval run state used by both the backend and runtime engine
@@ -177,7 +188,9 @@ http://127.0.0.1:8787/v1/system/infrastructure
 
 ## Current Principle
 
-The shell and control plane now run through Python only. The next work is hardening, storage evolution, and cleanup.
+The shell and control plane run in-process through Python. A small C17 core now owns only deterministic, parity-testable primitives; model semantics and orchestration remain Python-authoritative until measured dual-mode evidence justifies moving a larger boundary. Normal runtime work does not invoke PowerShell, Bash, or a command shell. Codex CLI remains an explicit external provider adapter and legacy subprocess modes remain available only for rollback.
+
+Codex-backed provider calls inherit ChatGPT authentication but ignore ambient user configuration by default. Plugins and nested provider agents are disabled unless explicitly selected, which keeps Para's own topology accountable and makes timing runs reproducible. Live ChatGPT-authenticated calls must be launched under the authenticated host account; a development sandbox with an isolated `CODEX_HOME` is expected to fail authentication or outbound trust checks.
 
 ## Tests
 

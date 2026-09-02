@@ -48,6 +48,26 @@ class RuntimeExecutionTests(unittest.TestCase):
         self.assertEqual(result["output"], "scored")
         run_arbiter.assert_called_once_with(self.runtime, "task-9", {"force": True})
 
+    def test_legacy_active_task_snapshot_is_migrated_to_v2_plan(self) -> None:
+        legacy_task = {
+            "taskId": "legacy-task",
+            "objective": "Preserve the task while retiring its V1 execution metadata.",
+            "runtime": {
+                "engineVersion": "v1",
+                "engineGraph": {"version": "v1"},
+            },
+        }
+
+        state = self.runtime.normalize_state({"activeTask": legacy_task})
+
+        active_task = state["activeTask"]
+        self.assertEqual(active_task["taskId"], "legacy-task")
+        self.assertEqual(active_task["runtime"]["engineVersion"], "v2")
+        self.assertEqual(active_task["runtime"]["engineGraph"]["version"], "v2")
+        self.assertEqual(active_task["runtime"]["enginePlan"]["version"], "v2")
+        self.assertEqual(active_task["runtime"]["enginePlan"]["runner"]["liveExecution"]["mode"], "v2-plan")
+        self.assertEqual(legacy_task["runtime"]["engineVersion"], "v1")
+
     def test_runtime_service_backend_calls_http_service(self) -> None:
         env = {
             "LOOP_RUNTIME_EXECUTION_BACKEND": "runtime_service",

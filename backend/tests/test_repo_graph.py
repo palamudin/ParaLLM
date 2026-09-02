@@ -46,7 +46,36 @@ class RepoGraphTests(unittest.TestCase):
         self.assertTrue(payload["edges"])
         self.assertIn("aiReadout", payload)
         self.assertTrue(payload["aiReadout"]["topHotspots"])
+        self.assertEqual(payload["architecture"]["schemaVersion"], "repo-architecture-map/v1")
+        self.assertEqual(payload["architecture"]["summary"]["moduleCount"], 2)
+        self.assertEqual(payload["aiReadout"]["architectureSummary"]["moduleCount"], 2)
         self.assertEqual(payload["aiReadout"]["claimCalibration"]["fact"].startswith("Nodes are detected"), True)
+
+    def test_architecture_map_orders_cross_module_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "backend").mkdir()
+            (root / "runtime").mkdir()
+            (root / "backend" / "main.py").write_text(
+                "def dispatch_request():\n    execute_runtime()\n",
+                encoding="utf-8",
+            )
+            (root / "runtime" / "engine.py").write_text(
+                "def execute_runtime():\n    return True\n",
+                encoding="utf-8",
+            )
+
+            payload = repo_graph.build_repo_graph(root)
+
+        architecture = payload["architecture"]
+        dependencies = architecture["dependencies"]
+        self.assertEqual(len(dependencies), 1)
+        self.assertEqual(dependencies[0]["sourceModule"], "backend/main.py")
+        self.assertEqual(dependencies[0]["targetModule"], "runtime/engine.py")
+        modules = {item["module"]: item for item in architecture["modules"]}
+        self.assertLess(modules["backend/main.py"]["layer"], modules["runtime/engine.py"]["layer"])
+        self.assertEqual(modules["backend/main.py"]["outboundDependencies"], 1)
+        self.assertEqual(modules["runtime/engine.py"]["inboundDependencies"], 1)
 
     def test_build_repo_graph_respects_gitignore_and_generated_folders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

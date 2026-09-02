@@ -17,15 +17,23 @@ from runtime.engine import (
     default_timeout_mode,
     normalize_ollama_base_url,
     normalize_ollama_timeout_profile,
-    normalize_model_source,
     normalize_provider_id,
+    normalize_reasoning_effort,
     normalize_target_timeout_config,
     normalize_timeout_mode,
     target_timeout_seconds,
 )
 from runtime.eval_runner import validate_arm_manifest, validate_suite_manifest
+from runtime.provider_torso import (
+    default_provider_id as contract_default_provider_id,
+    model_source_for_auth_route,
+    provider_default_auth_route,
+    provider_default_model,
+    resolve_auth_route,
+)
 
-from . import control, jobs, metadata, storage
+from . import background, control, jobs, metadata, storage
+from .config import deployment_topology
 
 
 def ensure_eval_paths(paths: storage.Paths) -> None:
@@ -76,10 +84,15 @@ def write_eval_run(paths: storage.Paths, run: Dict[str, Any]) -> Dict[str, Any]:
     return run
 
 
-def launch_eval_runner(run_id: str, root: Optional[Path] = None) -> None:
+def launch_eval_runner(run_id: str, root: Optional[Path] = None) -> Optional[str]:
     repo_root = Path(root).resolve() if root else Path(__file__).resolve().parents[2]
+    if deployment_topology(repo_root).queue_backend == "in_process":
+        from runtime.eval_runner import execute_run
+
+        return background.submit("eval", str(run_id or "eval-run"), repo_root, execute_run, repo_root, str(run_id))
     command = [sys.executable, str(repo_root / "runtime" / "eval_runner.py"), f"--root={repo_root}", f"--run-id={run_id}"]
     subprocess.Popen(command, **_subprocess_kwargs())  # noqa: S603,S607
+    return None
 
 
 def _new_run_id(prefix: str) -> str:
@@ -265,8 +278,12 @@ def _front_ollama_timeout_profile(payload: Dict[str, Any]) -> Dict[str, Any]:
     return normalize_ollama_timeout_profile(raw if isinstance(raw, dict) else default_ollama_timeout_profile())
 
 
-def _front_judge_runtime(payload: Dict[str, Any]) -> Dict[str, Any]:
-    provider = normalize_provider_id(payload.get("judgeProvider"), "openai")
+def _front_judge_runtime(
+    payload: Dict[str, Any],
+    selection: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    selected = selection or _front_lane_selection(payload, "judge", judge=True)
+    provider = selected["provider"]
     timeout_mode = normalize_timeout_mode(payload.get("timeoutMode"), default_timeout_mode())
     manual = normalize_target_timeout_config(_front_runtime_timeouts(payload))
     ollama_profile = _front_ollama_timeout_profile(payload)
@@ -277,7 +294,10 @@ def _front_judge_runtime(payload: Dict[str, Any]) -> Dict[str, Any]:
         effective = normalize_target_timeout_config(ollama_profile.get("targetTimeouts"))
     return {
         "provider": provider,
-        "modelSource": normalize_model_source(payload.get("judgeModelSource") or payload.get("modelSource"), "codex_auth"),
+        "authRoute": selected["authRoute"],
+        "modelSource": selected["modelSource"],
+        "codexNoTimeout": _parse_bool(payload.get("codexNoTimeout"), False),
+        "codexSubagentsEnabled": _parse_bool(payload.get("codexSubagentsEnabled"), False),
         "ollamaBaseUrl": normalize_ollama_base_url(payload.get("ollamaBaseUrl")),
         "requestTimeoutSeconds": target_timeout_seconds(effective, "arbiter"),
         "timeoutMode": timeout_mode,
@@ -316,33 +336,114 @@ def _front_worker_list(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return raw if isinstance(raw, list) else []
 
 
+def _front_lane_selection(
+    payload: Dict[str, Any],
+    role: str,
+    *,
+    fallback_provider: Optional[str] = None,
+    fallback_model: Optional[str] = None,
+    fallback_model_source: Optional[str] = None,
+    judge: bool = False,
+) -> Dict[str, str]:
+    prefix = "" if role == "worker" else role
+    provider_key = "provider" if not prefix else f"{prefix}Provider"
+    model_key = "model" if not prefix else f"{prefix}Model"
+    source_key = "modelSource" if not prefix else f"{prefix}ModelSource"
+    route_key = "authRoute" if not prefix else f"{prefix}AuthRoute"
+    provider_fallback = normalize_provider_id(
+        fallback_provider,
+        contract_default_provider_id(judge=judge),
+    )
+    provider = normalize_provider_id(payload.get(provider_key), provider_fallback)
+    requested_model = payload.get(model_key)
+    default_route = provider_default_auth_route(provider, judge=judge)
+    route_candidate = payload.get(route_key) or payload.get(source_key)
+    if (
+        not str(route_candidate or "").strip()
+        and fallback_model_source
+        and provider == provider_fallback
+    ):
+        route_candidate = fallback_model_source
+    if (
+        not str(requested_model or "").strip()
+        and fallback_model
+        and provider == provider_fallback
+    ):
+        requested_model = fallback_model
+    auth_route = resolve_auth_route(
+        provider,
+        route_candidate,
+        model=requested_model,
+        judge=judge,
+    )
+    model_source = model_source_for_auth_route(auth_route)
+    default_model = provider_default_model(provider, auth_route=auth_route, judge=judge)
+    if (
+        not str(requested_model or "").strip()
+        and fallback_model
+        and provider == provider_fallback
+        and model_source == str(fallback_model_source or model_source)
+    ):
+        requested_model = fallback_model
+    model = control.normalize_sourced_model_id(
+        requested_model,
+        default_model,
+        provider,
+        model_source,
+    )
+    return {
+        "provider": provider,
+        "model": model,
+        "authRoute": auth_route,
+        "modelSource": model_source,
+    }
+
+
 def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
-    provider = str(payload.get("provider") or "openai").strip() or "openai"
-    model = str(payload.get("model") or "").strip()
-    model_source = str(payload.get("modelSource") or "codex_auth").strip() or "codex_auth"
-    summarizer_provider = str(payload.get("summarizerProvider") or provider).strip() or provider
-    summarizer_model = str(payload.get("summarizerModel") or model).strip() or model
-    summarizer_model_source = str(payload.get("summarizerModelSource") or model_source).strip() or model_source
-    direct_provider = str(payload.get("directProvider") or provider).strip() or provider
-    direct_model = str(payload.get("directModel") or model).strip() or model
-    direct_model_source = str(payload.get("directModelSource") or model_source).strip() or model_source
+    worker = _front_lane_selection(payload, "worker")
+    summarizer = _front_lane_selection(
+        payload,
+        "summarizer",
+        fallback_provider=worker["provider"],
+        fallback_model=worker["model"],
+        fallback_model_source=worker["modelSource"],
+    )
+    direct = _front_lane_selection(
+        payload,
+        "direct",
+        fallback_provider=worker["provider"],
+        fallback_model=worker["model"],
+        fallback_model_source=worker["modelSource"],
+    )
     requested_execution_mode = str(payload.get("executionMode") or "live").strip().lower() or "live"
     if requested_execution_mode != "live":
         raise RuntimeErrorWithCode("Front evals only support live execution. Configure a real provider/key before starting the run.", 400)
     execution_mode = "live"
-    engine_version = str(payload.get("engineVersion") or "v1").strip() or "v1"
+    engine_version = "v2"
     engine_graph = payload.get("engineGraph") if isinstance(payload.get("engineGraph"), dict) else None
     worker_list = _front_worker_list(payload)
+    legacy_reasoning_effort = normalize_reasoning_effort(payload.get("reasoningEffort"), "low")
+    worker_reasoning_effort = normalize_reasoning_effort(
+        payload.get("workerReasoningEffort"),
+        legacy_reasoning_effort,
+    )
+    summarizer_reasoning_effort = normalize_reasoning_effort(
+        payload.get("summarizerReasoningEffort"),
+        legacy_reasoning_effort,
+    )
     runtime_payload = {
-        "provider": provider,
-        "model": model,
-        "modelSource": model_source,
-        "summarizerProvider": summarizer_provider,
-        "summarizerModel": summarizer_model,
-        "summarizerModelSource": summarizer_model_source,
-        "directProvider": direct_provider,
-        "directModel": direct_model,
-        "directModelSource": direct_model_source,
+        "provider": worker["provider"],
+        "model": worker["model"],
+        "authRoute": worker["authRoute"],
+        "modelSource": worker["modelSource"],
+        "summarizerProvider": summarizer["provider"],
+        "summarizerModel": summarizer["model"],
+        "summarizerAuthRoute": summarizer["authRoute"],
+        "summarizerModelSource": summarizer["modelSource"],
+        "directProvider": direct["provider"],
+        "directModel": direct["model"],
+        "directAuthRoute": direct["authRoute"],
+        "directModelSource": direct["modelSource"],
     }
     return {
         "armId": f"front-eval-{uuid.uuid4().hex[:8]}",
@@ -356,19 +457,26 @@ def _build_front_eval_arm(payload: Dict[str, Any]) -> Dict[str, Any]:
             "enginePlan": compile_engine_graph(engine_graph, task={"workers": worker_list, "runtime": runtime_payload}, runtime_config=runtime_payload),
             "contextMode": str(payload.get("contextMode") or "weighted").strip() or "weighted",
             "directBaselineMode": "both",
-            "provider": provider,
-            "model": model,
-            "modelSource": model_source,
-            "directProvider": direct_provider,
-            "directModel": direct_model,
-            "directModelSource": direct_model_source,
+            "provider": worker["provider"],
+            "model": worker["model"],
+            "authRoute": worker["authRoute"],
+            "modelSource": worker["modelSource"],
+            "directProvider": direct["provider"],
+            "directModel": direct["model"],
+            "directAuthRoute": direct["authRoute"],
+            "directModelSource": direct["modelSource"],
             "ollamaBaseUrl": payload.get("ollamaBaseUrl"),
-            "summarizerProvider": summarizer_provider,
-            "summarizerModel": summarizer_model,
-            "summarizerModelSource": summarizer_model_source,
+            "summarizerProvider": summarizer["provider"],
+            "summarizerModel": summarizer["model"],
+            "summarizerAuthRoute": summarizer["authRoute"],
+            "summarizerModelSource": summarizer["modelSource"],
             "summarizerHarness": _front_summarizer_harness(payload),
             "directHarness": _front_direct_harness(payload),
-            "reasoningEffort": str(payload.get("reasoningEffort") or "low").strip() or "low",
+            "reasoningEffort": worker_reasoning_effort,
+            "workerReasoningEffort": worker_reasoning_effort,
+            "summarizerReasoningEffort": summarizer_reasoning_effort,
+            "codexNoTimeout": _parse_bool(payload.get("codexNoTimeout"), False),
+            "codexSubagentsEnabled": _parse_bool(payload.get("codexSubagentsEnabled"), False),
             "budget": _front_runtime_budget(payload),
             "research": _front_runtime_research(payload),
             "vetting": _front_runtime_vetting(payload),
@@ -410,7 +518,7 @@ def _build_front_live_run(paths: storage.Paths, run_id: str, task: Dict[str, Any
         },
         "live": {
             "objective": str(task.get("objective") or "").strip(),
-            "engineVersion": str(runtime.get("engineVersion") or "v1"),
+            "engineVersion": "v2",
             "engineGraph": runtime.get("engineGraph") if isinstance(runtime.get("engineGraph"), dict) else None,
             "enginePlan": runtime.get("enginePlan") if isinstance(runtime.get("enginePlan"), dict) else None,
             "provider": str(runtime.get("provider") or ""),
@@ -474,7 +582,14 @@ def sync_front_live_run(run_id: str, root: Optional[Path] = None) -> Optional[Di
         loop_job_id = str(loop_job.get("jobId") or "").strip()
 
     active_loop = (state.get("loop") if isinstance(state.get("loop"), dict) else {}) if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id else {}
-    loop_status = str((active_loop.get("status") if isinstance(active_loop, dict) else None) or (loop_job or {}).get("status") or run.get("status") or "queued")
+    active_loop_status = str(active_loop.get("status") or "").strip().lower() if isinstance(active_loop, dict) else ""
+    loop_job_status = str((loop_job or {}).get("status") or "").strip().lower()
+    if active_loop_status in {"queued", "running"}:
+        loop_status = active_loop_status
+    elif loop_job_status:
+        loop_status = loop_job_status
+    else:
+        loop_status = active_loop_status or str(run.get("status") or "queued")
     created_at = str(run.get("createdAt") or storage.utc_now())
     state_usage = storage.normalize_usage_state((state.get("usage") if isinstance(active_task, dict) and str(active_task.get("taskId") or "") == task_id else {}) or {})
     job_usage = storage.normalize_usage_state((((loop_job or {}).get("usage")) if isinstance((loop_job or {}).get("usage"), dict) else {}) or {})
@@ -501,7 +616,7 @@ def sync_front_live_run(run_id: str, root: Optional[Path] = None) -> Optional[Di
         live = {
             **live,
             "objective": str(task.get("objective") or live.get("objective") or "").strip(),
-            "engineVersion": str(runtime.get("engineVersion") or live.get("engineVersion") or "v1"),
+            "engineVersion": "v2",
             "engineGraph": runtime.get("engineGraph") if isinstance(runtime.get("engineGraph"), dict) else live.get("engineGraph"),
             "enginePlan": runtime.get("enginePlan") if isinstance(runtime.get("enginePlan"), dict) else live.get("enginePlan"),
             "provider": str(runtime.get("provider") or live.get("provider") or ""),
@@ -568,14 +683,20 @@ def _base_run_payload(
     canvas: str,
     judge_runtime: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    normalized_judge_provider = normalize_provider_id(
+        judge_provider,
+        contract_default_provider_id(judge=True),
+    )
     return {
         "runId": run_id,
         "suiteId": str(suite.get("suiteId") or "").strip(),
         "armIds": arm_ids,
         "replicates": 1,
         "loopSweep": [1],
-        "judgeProvider": normalize_provider_id(judge_provider, "openai"),
-        "judgeModel": str(judge_model or default_judge_model_for_provider(judge_provider)).strip() or default_judge_model_for_provider(judge_provider),
+        "judgeProvider": normalized_judge_provider,
+        "judgeModel": str(
+            judge_model or default_judge_model_for_provider(normalized_judge_provider)
+        ).strip() or default_judge_model_for_provider(normalized_judge_provider),
         "judgeRuntime": dict(judge_runtime or {}),
         "status": "queued",
         "createdAt": storage.utc_now(),
@@ -594,15 +715,16 @@ def start_front_eval_run(payload: Dict[str, Any], root: Optional[Path] = None) -
     case_id = str(payload.get("caseId") or "").strip()
     suite = _subset_suite_case(_load_suite(paths, suite_id), case_id)
     arm = validate_arm_manifest(_build_front_eval_arm(payload), paths.root / "front-eval")
+    judge = _front_lane_selection(payload, "judge", judge=True)
     run_id = _new_run_id("eval")
     run = _base_run_payload(
         run_id,
         suite,
         [arm["armId"]],
-        str(payload.get("judgeProvider") or "openai"),
-        str(payload.get("judgeModel") or default_judge_model_for_provider(str(payload.get("judgeProvider") or "openai"))),
+        judge["provider"],
+        judge["model"],
         "eval",
-        _front_judge_runtime(payload),
+        _front_judge_runtime(payload, judge),
     )
     run["loopSweep"] = [max(1, int(arm["runtime"]["preferredLoop"]["rounds"]))]
     run["inlineSuite"] = suite
@@ -664,15 +786,16 @@ def start_front_judge_run(payload: Dict[str, Any], root: Optional[Path] = None) 
     suites = [_load_suite(paths, suite_id) for suite_id in suite_ids]
     arms = [_load_arm(paths, arm_id) for arm_id in arm_ids]
     suite = validate_suite_manifest(_combine_suites(suites), paths.root / "front-judge")
+    judge = _front_lane_selection(payload, "judge", judge=True)
     run_id = _new_run_id("judge")
     run = _base_run_payload(
         run_id,
         suite,
         [arm["armId"] for arm in arms],
-        str(payload.get("judgeProvider") or "openai"),
-        str(payload.get("judgeModel") or default_judge_model_for_provider(str(payload.get("judgeProvider") or "openai"))),
+        judge["provider"],
+        judge["model"],
         "judge",
-        _front_judge_runtime(payload),
+        _front_judge_runtime(payload, judge),
     )
     run["replicates"] = _parse_int(payload.get("replicates"), 1, 1)
     run["loopSweep"] = [

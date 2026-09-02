@@ -7,14 +7,16 @@ from urllib.parse import parse_qsl
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
     from fastapi.staticfiles import StaticFiles
+    from starlette.concurrency import run_in_threadpool
 except ModuleNotFoundError as exc:  # pragma: no cover - helpful runtime error
     raise RuntimeError("Install backend/requirements.txt before running the Python control-plane scaffold.") from exc
 
 from runtime.engine import RuntimeErrorWithCode
+from runtime.provider_torso import model_catalog_manifest
 
-from . import codex_lanes, config, control, dispatch, evals, infrastructure, jobs, judge_learning, knowledgebase, memory_graph, repo_graph, sessions, settings, storage
+from . import agent_fabric, codex_lanes, config, control, dispatch, document_ingest, evals, infrastructure, jobs, judge_learning, knowledgebase, memory_graph, perception, repo_graph, sessions, settings, storage, web_access
 
 
 async def request_payload(request: Request) -> dict[str, object]:
@@ -54,11 +56,15 @@ def repo_webview_html(root: Path) -> str:
 
 def create_app(root: Path | None = None) -> FastAPI:
     paths = storage.project_paths(root)
+    fabric = agent_fabric.AgentFabric(paths.root)
     app = FastAPI(
         title="ParaLLM Control Plane",
         version="0.1.0",
         description="Python-first control plane for the ParaLLM shell, reads/writes, jobs, dispatch, evals, and local self-hosted operation.",
     )
+    app.state.agent_fabric = fabric
+    app.router.add_event_handler("startup", fabric.start)
+    app.router.add_event_handler("shutdown", fabric.close)
     app.mount("/assets", StaticFiles(directory=str(paths.root / "assets")), name="assets")
 
     @app.get("/", response_class=HTMLResponse)
@@ -68,6 +74,10 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/index.html", response_class=HTMLResponse)
     def app_shell_index() -> HTMLResponse:
         return HTMLResponse(python_shell_html(paths.root))
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def app_favicon() -> FileResponse:
+        return FileResponse(paths.root / "favicon.ico", media_type="image/x-icon")
 
     @app.get("/index_old.html", response_class=HTMLResponse)
     def legacy_shell_index() -> HTMLResponse:
@@ -105,8 +115,221 @@ def create_app(root: Path | None = None) -> FastAPI:
             "artifactBackend": topology.artifact_backend,
             "secretBackend": topology.secret_backend,
             "runtimeExecutionBackend": topology.runtime_execution_backend,
+            "nativeCore": infra.get("backends", {}).get("nativeCore"),
             "infrastructureReady": bool(infra.get("ready")),
         }
+
+    def agent_http_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, KeyError):
+            return HTTPException(status_code=404, detail=str(exc).strip("'"))
+        if isinstance(exc, ValueError):
+            return HTTPException(status_code=400, detail=str(exc))
+        return HTTPException(status_code=500, detail=str(exc))
+
+    @app.get("/v1/agents")
+    def get_agents(projectId: str = "", q: str = "", limit: int = 100) -> JSONResponse:
+        try:
+            return JSONResponse(fabric.agents(project_id=projectId, query=q, limit=limit))
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/spawn")
+    async def post_agent_spawn(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = fabric.create_agent(
+                payload.get("name"),
+                payload.get("function") or payload.get("agentFunction"),
+                payload.get("instructions") or "",
+                start=True,
+            )
+            project_id = str(payload.get("projectId") or "").strip()
+            if project_id and project_id != agent_fabric.DEFAULT_PROJECT_ID:
+                fabric.assign(project_id, str(result["agentId"]), payload.get("role") or "contributor")
+            return JSONResponse(result, status_code=201)
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/stop")
+    async def post_agent_stop(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(fabric.stop_agent(payload.get("agentId")))
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/start")
+    async def post_agent_start(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(fabric.start_agent(payload.get("agentId")))
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.get("/v1/agents/projects")
+    def get_agent_projects(q: str = "", limit: int = 100) -> JSONResponse:
+        try:
+            return JSONResponse(fabric.projects(query=q, limit=limit))
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/projects")
+    async def post_agent_project(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(
+                fabric.create_project(payload.get("name"), payload.get("description") or ""),
+                status_code=201,
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/projects/assign")
+    async def post_agent_project_assign(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(
+                fabric.assign(
+                    payload.get("projectId"),
+                    payload.get("agentId"),
+                    payload.get("role") or "contributor",
+                )
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.get("/v1/agents/jobs")
+    def get_agent_jobs(projectId: str = "", q: str = "", limit: int = 100) -> JSONResponse:
+        try:
+            return JSONResponse(fabric.jobs(project_id=projectId, query=q, limit=limit))
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/jobs")
+    async def post_agent_job(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(
+                fabric.submit(
+                    payload.get("projectId") or agent_fabric.DEFAULT_PROJECT_ID,
+                    payload.get("targetAgentId") or payload.get("agentId"),
+                    payload.get("objective"),
+                    source_agent_id=payload.get("sourceAgentId") or agent_fabric.PRIMARY_AGENT_ID,
+                    session_id=payload.get("sessionId") or "",
+                    priority=payload.get("priority") or 50,
+                ),
+                status_code=201,
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.get("/v1/agents/goals")
+    def get_agent_goals(projectId: str, jobId: str = "", limit: int = 100) -> JSONResponse:
+        try:
+            return JSONResponse(fabric.goals(projectId, job_id=jobId, limit=limit))
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.get("/v1/agents/board")
+    def get_agent_board(
+        projectId: str,
+        agentId: str = agent_fabric.PRIMARY_AGENT_ID,
+        threadId: str = "",
+        unreadOnly: bool = False,
+        limit: int = 100,
+    ) -> JSONResponse:
+        try:
+            return JSONResponse(
+                fabric.board(
+                    projectId,
+                    agent_id=agentId,
+                    thread_id=threadId,
+                    unread_only=unreadOnly,
+                    limit=limit,
+                )
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/board")
+    async def post_agent_board(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(
+                fabric.post(
+                    payload.get("projectId"),
+                    payload.get("content"),
+                    source_agent_id=payload.get("sourceAgentId") or agent_fabric.PRIMARY_AGENT_ID,
+                    target_agent_id=payload.get("targetAgentId") or "",
+                    thread_id=payload.get("threadId") or "",
+                    job_id=payload.get("jobId") or "",
+                    goal_id=payload.get("goalId") or "",
+                    reply_to_message_id=payload.get("replyToMessageId") or "",
+                    kind=payload.get("kind") or "note",
+                    severity=payload.get("severity") or "info",
+                ),
+                status_code=201,
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/board/read")
+    async def post_agent_board_read(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(
+                fabric.mark_read(payload.get("projectId"), payload.get("agentId"), payload.get("sequence"))
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.get("/v1/agents/directives")
+    def get_agent_directives(
+        agentId: str,
+        jobId: str = "",
+        unreadOnly: bool = False,
+        limit: int = 100,
+    ) -> JSONResponse:
+        try:
+            return JSONResponse(
+                fabric.directives(agentId, job_id=jobId, unread_only=unreadOnly, limit=limit)
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.get("/v1/agents/context")
+    def get_agent_context(projectId: str, agentId: str, jobId: str = "") -> JSONResponse:
+        try:
+            return JSONResponse(fabric.context(projectId, agentId, job_id=jobId))
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/report")
+    async def post_agent_report(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            return JSONResponse(
+                fabric.report(
+                    payload.get("jobId") or payload.get("taskId"),
+                    payload.get("kind"),
+                    payload.get("summary"),
+                    blocker_severity=payload.get("blockerSeverity") or "none",
+                    required_resolution=payload.get("requiredResolution") or "",
+                )
+            )
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.post("/v1/agents/steward/check")
+    def post_agent_steward_check() -> JSONResponse:
+        try:
+            return JSONResponse(fabric.steward_once())
+        except Exception as exc:
+            raise agent_http_error(exc) from exc
+
+    @app.get("/v1/models")
+    def get_models(validationOnly: bool = False) -> JSONResponse:
+        return JSONResponse(model_catalog_manifest(validation_only=validationOnly))
 
     @app.get("/v1/system/topology")
     def get_topology() -> JSONResponse:
@@ -169,6 +392,102 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/v1/knowledgebase/status")
     def get_knowledgebase_status() -> JSONResponse:
         return JSONResponse(knowledgebase.status(paths.root))
+
+    @app.get("/v1/research/status")
+    def get_research_status() -> JSONResponse:
+        return JSONResponse(web_access.status(paths.root))
+
+    @app.get("/v1/research/artifacts")
+    def get_research_artifacts(limit: int = 100) -> JSONResponse:
+        return JSONResponse(web_access.list_artifacts(paths.root, limit=limit))
+
+    @app.post("/v1/research/search")
+    async def post_research_search(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        policy = web_access.policy_from_config(payload)
+
+        def run_search() -> dict[str, object]:
+            with web_access.LocalBrowser(paths.root, policy) as browser:
+                return browser.search(
+                    str(payload.get("query") or ""),
+                    max_results=int(payload.get("maxResults") or payload.get("max_results") or 8),
+                )
+
+        try:
+            result = await run_in_threadpool(run_search)
+        except web_access.WebAccessError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/research/open")
+    async def post_research_open(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        policy = web_access.policy_from_config(payload)
+
+        def run_open() -> dict[str, object]:
+            with web_access.LocalBrowser(paths.root, policy) as browser:
+                return browser.open_page(
+                    str(payload.get("url") or ""),
+                    max_chars=int(payload.get("maxChars") or payload.get("max_chars") or policy.max_page_chars),
+                )
+
+        try:
+            result = await run_in_threadpool(run_open)
+        except web_access.WebAccessError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/research/download")
+    async def post_research_download(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        policy = web_access.policy_from_config(payload)
+
+        def run_download() -> dict[str, object]:
+            with web_access.LocalBrowser(paths.root, policy) as browser:
+                return browser.download(
+                    str(payload.get("url") or ""),
+                    file_name=str(payload.get("fileName") or payload.get("file_name") or ""),
+                )
+
+        try:
+            result = await run_in_threadpool(run_download)
+        except web_access.WebAccessError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/research/ingest")
+    async def post_research_ingest(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = await run_in_threadpool(
+                document_ingest.ingest_artifact,
+                paths.root,
+                str(payload.get("artifactId") or payload.get("artifact_id") or ""),
+                max_chars=int(payload.get("maxChars") or payload.get("max_chars") or document_ingest.DEFAULT_MAX_CHARS),
+            )
+        except document_ingest.DocumentIngestError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(result)
+
+    @app.post("/v1/research/retain")
+    async def post_research_retain(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        raw_chunk_ids = payload.get("chunkIds") or payload.get("chunk_ids") or []
+        chunk_ids = raw_chunk_ids if isinstance(raw_chunk_ids, list) else [raw_chunk_ids]
+        try:
+            result = await run_in_threadpool(
+                web_access.retain_artifact_chunks,
+                paths.root,
+                artifact_id=str(payload.get("artifactId") or payload.get("artifact_id") or ""),
+                chunk_ids=[str(item) for item in chunk_ids],
+                bank_id=str(payload.get("bankId") or payload.get("bank_id") or ""),
+                rationale=str(payload.get("rationale") or ""),
+                tags=knowledgebase.parse_tags(payload.get("tags")),
+            )
+        except (web_access.WebAccessError, document_ingest.DocumentIngestError) as exc:
+            status_code = exc.status_code if isinstance(exc, web_access.WebAccessError) else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return JSONResponse(result)
 
     @app.post("/v1/knowledgebase/retain")
     async def post_knowledgebase_retain(request: Request) -> JSONResponse:
@@ -402,6 +721,27 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/v1/events")
     def get_events() -> PlainTextResponse:
         return PlainTextResponse(storage.tail_text_lines(paths.events, 100, "No events."), media_type="text/plain; charset=utf-8")
+
+    @app.get("/v1/perception/status")
+    def get_perception_status() -> JSONResponse:
+        return JSONResponse(perception.status(paths.root))
+
+    @app.get("/v1/perception/events")
+    def get_perception_events(request: Request, limit: int = 100) -> JSONResponse:
+        try:
+            perception.authorize_ingest(str(request.headers.get("authorization") or ""))
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(perception.list_events(paths.root, limit))
+
+    @app.post("/v1/perception/events")
+    async def post_perception_event(request: Request) -> JSONResponse:
+        payload = await request_payload(request)
+        try:
+            result = perception.ingest(paths.root, payload, str(request.headers.get("authorization") or ""))
+        except RuntimeErrorWithCode as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return JSONResponse(result, status_code=202)
 
     @app.get("/v1/steps")
     def get_steps() -> PlainTextResponse:

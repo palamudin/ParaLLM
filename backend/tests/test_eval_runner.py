@@ -647,6 +647,30 @@ class EvalRunnerTests(unittest.TestCase):
 
         self.assertEqual(settings["judgeReasoningEffort"], "low")
         self.assertEqual(settings["requestTimeoutSeconds"], 240)
+        self.assertTrue(settings["codexIgnoreUserConfig"])
+
+    def test_judge_provider_settings_can_disable_codex_timeout(self) -> None:
+        settings = eval_runner.judge_provider_settings(
+            {
+                "judgeRuntime": {
+                    "provider": "openai",
+                    "codexNoTimeout": True,
+                }
+            },
+            "openai",
+        )
+
+        self.assertTrue(settings["codexNoTimeout"])
+
+    def test_judge_provider_settings_controls_nested_subagents(self) -> None:
+        default_settings = eval_runner.judge_provider_settings({"judgeRuntime": {}}, "openai")
+        enabled_settings = eval_runner.judge_provider_settings(
+            {"judgeRuntime": {"codexSubagentsEnabled": True}},
+            "openai",
+        )
+
+        self.assertFalse(default_settings["codexSubagentsEnabled"])
+        self.assertTrue(enabled_settings["codexSubagentsEnabled"])
 
     def test_extract_public_answer_prefers_direct_baseline_for_single_mode(self) -> None:
         answer = eval_runner.extract_public_answer(
@@ -1411,6 +1435,16 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(scores["singleVoice"], 8)
         self.assertEqual(scores["overallQuality"], 8)
 
+    def test_extract_live_score_block_rejects_out_of_range_scores(self) -> None:
+        with self.assertRaises(eval_runner.RuntimeErrorWithCode) as captured:
+            eval_runner._extract_live_score_block(
+                {"scores": {field: 98 for field in eval_runner.QUALITY_SCORE_FIELDS}},
+                eval_runner.QUALITY_SCORE_FIELDS,
+                eval_runner.QUALITY_SCORE_ALIASES,
+            )
+
+        self.assertIn("outside the 0-10 contract", str(captured.exception))
+
     def test_build_vetting_matrix_judge_prompt_uses_plain_text_candidate_blocks(self) -> None:
         prompt = eval_runner.build_vetting_matrix_judge_prompt(
             {
@@ -1498,6 +1532,8 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertIn("missing binding requirement source", captured["instructions"])
         self.assertIn("owner harmed", captured["instructions"].lower())
         self.assertIn("nist csf 2.0", captured["instructions"].lower())
+        self.assertIn("higher is always better", captured["instructions"].lower())
+        self.assertIn("never percentages", captured["instructions"].lower())
         self.assertIn("job queue export", result["memoryCompliance"])
         self.assertEqual(result["ownerVerdict"], "pass")
         self.assertEqual(result["auditBreakdown"]["memoryGrounding"], 8)
@@ -1579,6 +1615,17 @@ class EvalRunnerTests(unittest.TestCase):
             audit_schema = schema["properties"]["auditBreakdown"]
             self.assertEqual(audit_schema["required"], eval_runner.JUDGE_AUDIT_SCORE_FIELDS)
             self.assertIn("memoryGrounding", audit_schema["properties"])
+            for score_schema in schema["properties"]["scores"]["properties"].values():
+                self.assertEqual(score_schema["minimum"], 1)
+                self.assertEqual(score_schema["maximum"], 10)
+            for score_schema in audit_schema["properties"].values():
+                self.assertEqual(score_schema["minimum"], 0)
+                self.assertEqual(score_schema["maximum"], 10)
+
+        comparison_schema = eval_runner.comparison_judge_schema()
+        for score_schema in comparison_schema["properties"]["scores"]["properties"].values():
+            self.assertEqual(score_schema["minimum"], 1)
+            self.assertEqual(score_schema["maximum"], 10)
 
     def test_aggregate_variant_summarizes_owner_audit_breakdowns(self) -> None:
         variant = {

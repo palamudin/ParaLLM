@@ -10,10 +10,10 @@ from typing import Any
 from unittest import mock
 
 from backend.app import storage
-from backend.app.secrets import write_auth_backend_mode_override
+from backend.app.secrets import read_anthropic_workspace_id, write_auth_backend_mode_override
 from runtime.engine import (
     LoopRuntime,
-    OpenAIResult,
+    ProviderResult,
     RuntimeErrorWithCode,
     coerce_confidence_value,
     flatten_output_payload_text,
@@ -43,11 +43,27 @@ class _FakeHTTPResponse:
 
 
 class RuntimeAuthTests(unittest.TestCase):
-    def test_provider_capability_profile_marks_minimax_deferred(self) -> None:
+    def test_loop_runtime_honors_deployment_data_and_auth_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as root_dir, tempfile.TemporaryDirectory() as data_dir:
+            root = Path(root_dir)
+            data = Path(data_dir)
+            auth_file = root / "isolated-auth.txt"
+            with mock.patch.dict(
+                "os.environ",
+                {"LOOP_DATA_ROOT": str(data), "LOOP_AUTH_FILE": str(auth_file)},
+                clear=False,
+            ):
+                runtime = LoopRuntime(root)
+
+            self.assertEqual(runtime.data_path, data.resolve())
+            self.assertEqual(runtime.state_path, data.resolve() / "state.json")
+            self.assertEqual(runtime.auth_path, auth_file.resolve())
+
+    def test_provider_capability_profile_marks_minimax_primary(self) -> None:
         profile = provider_capability_profile("minimax")
         self.assertEqual(profile["provider"], "minimax")
-        self.assertEqual(profile["status"], "deferred")
-        self.assertFalse(profile["primary"])
+        self.assertEqual(profile["status"], "primary")
+        self.assertTrue(profile["primary"])
 
     def test_provider_capability_profile_marks_deepseek_primary(self) -> None:
         profile = provider_capability_profile("deepseek")
@@ -55,33 +71,37 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(profile["status"], "primary")
         self.assertTrue(profile["primary"])
 
-    def test_invoke_provider_json_uses_codex_cli_for_codex_auth_openai_source(self) -> None:
+    def test_invoke_provider_json_uses_direct_chatgpt_transport_for_codex_auth_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime = LoopRuntime(tmpdir)
             codex_payload = {
                 "status": "completed",
-                "threadId": "codex-thread-123",
-                "responseText": '{"answer":"Codex-auth answer","stance":"Use Codex auth","confidenceNote":"high"}',
-                "usage": {
-                    "calls": 1,
-                    "inputTokens": 12,
-                    "cachedInputTokens": 2,
-                    "billableInputTokens": 10,
-                    "outputTokens": 7,
-                    "reasoningTokens": 0,
-                    "totalTokens": 19,
-                    "estimatedCostUsd": 0.0,
+                "responseId": "codex-response-123",
+                "outputText": '{"answer":"Codex-auth answer","stance":"Use Codex auth","confidenceNote":"high"}',
+                "authSource": "codex_current_user",
+                "httpStatus": 200,
+                "receivedBytes": 512,
+                "reasoningEffort": "low",
+                "response": {
+                    "id": "codex-response-123",
+                    "status": "completed",
+                    "model": "gpt-5.4-mini",
+                    "usage": {
+                        "input_tokens": 12,
+                        "output_tokens": 7,
+                        "total_tokens": 19,
+                        "input_tokens_details": {"cached_tokens": 2},
+                    },
                 },
-                "warnings": [],
             }
 
             seen_root_exists_at_call: list[bool] = []
 
-            def fake_run_codex(request):
-                seen_root_exists_at_call.append(request.root.exists())
+            def fake_run_codex(**kwargs):
+                seen_root_exists_at_call.append(kwargs["root"].exists())
                 return codex_payload
 
-            with mock.patch("backend.app.codex_lanes.run_codex_lane", side_effect=fake_run_codex) as run_codex:
+            with mock.patch("backend.app.codex_lanes.run_codex_chatgpt_response", side_effect=fake_run_codex) as run_codex:
                 result = runtime.invoke_provider_json(
                     provider="openai",
                     api_key="",
@@ -104,24 +124,26 @@ class RuntimeAuthTests(unittest.TestCase):
                 )
 
             self.assertEqual(result.provider, "openai")
-            self.assertEqual(result.response_id, "codex-thread-123")
+            self.assertEqual(result.response_id, "codex-response-123")
             self.assertEqual(result.parsed["answer"], "Codex-auth answer")
             self.assertEqual(result.response["usage"]["input_tokens"], 12)
             self.assertEqual(result.response["usage"]["input_tokens_details"]["cached_tokens"], 2)
-            self.assertEqual(run_codex.call_args.args[0].model, "gpt-5.4-mini")
+            self.assertEqual(run_codex.call_args.kwargs["model"], "gpt-5.4-mini")
+            self.assertEqual(result.auth_assignment["interface"], "chatgpt_responses")
+            self.assertEqual(result.provider_trace["transport"], "chatgpt_responses")
+            self.assertEqual(seen_root_exists_at_call, [True])
 
     def test_codex_auth_provider_call_uses_long_timeout_floor(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime = LoopRuntime(tmpdir)
             codex_payload = {
                 "status": "completed",
-                "threadId": "codex-thread-timeout",
-                "responseText": '{"answer":"ok"}',
-                "usage": {"calls": 1, "inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
-                "warnings": [],
+                "responseId": "codex-response-timeout",
+                "outputText": '{"answer":"ok"}',
+                "response": {"id": "codex-response-timeout", "status": "completed", "usage": {}},
             }
 
-            with mock.patch("backend.app.codex_lanes.run_codex_lane", return_value=codex_payload) as run_codex:
+            with mock.patch("backend.app.codex_lanes.run_codex_chatgpt_response", return_value=codex_payload) as run_codex:
                 runtime.invoke_codex_auth_json(
                     model="gpt-5.4-mini",
                     reasoning_effort="low",
@@ -137,7 +159,7 @@ class RuntimeAuthTests(unittest.TestCase):
                     request_timeout_seconds=180,
                 )
 
-            self.assertEqual(run_codex.call_args.args[0].timeout_seconds, 600)
+            self.assertEqual(run_codex.call_args.kwargs["timeout_seconds"], 600.0)
 
     def test_codex_auth_provider_call_creates_runtime_root_before_exec(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -145,19 +167,18 @@ class RuntimeAuthTests(unittest.TestCase):
             runtime = LoopRuntime(runtime_root)
             codex_payload = {
                 "status": "completed",
-                "threadId": "codex-thread-456",
-                "responseText": '{"answer":"ready","stance":"support","confidenceNote":"high"}',
-                "usage": {"calls": 1, "inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
-                "warnings": [],
+                "responseId": "codex-response-456",
+                "outputText": '{"answer":"ready","stance":"support","confidenceNote":"high"}',
+                "response": {"id": "codex-response-456", "status": "completed", "usage": {}},
             }
 
             seen_root_exists_at_call: list[bool] = []
 
-            def fake_run_codex(request):
-                seen_root_exists_at_call.append(request.root.exists())
+            def fake_run_codex(**kwargs):
+                seen_root_exists_at_call.append(kwargs["root"].exists())
                 return codex_payload
 
-            with mock.patch("backend.app.codex_lanes.run_codex_lane", side_effect=fake_run_codex) as run_codex:
+            with mock.patch("backend.app.codex_lanes.run_codex_chatgpt_response", side_effect=fake_run_codex) as run_codex:
                 runtime.invoke_provider_json(
                     provider="openai",
                     api_key="",
@@ -180,7 +201,110 @@ class RuntimeAuthTests(unittest.TestCase):
                 )
 
             self.assertEqual(seen_root_exists_at_call, [True])
-            self.assertTrue(run_codex.call_args.args[0].root.exists())
+            self.assertTrue(run_codex.call_args.kwargs["root"].exists())
+
+    def test_codex_auth_provider_call_records_ignored_user_config_without_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            codex_payload = {
+                "status": "completed",
+                "responseId": "codex-response-isolated",
+                "outputText": '{"answer":"ready"}',
+                "response": {"id": "codex-response-isolated", "status": "completed", "usage": {}},
+            }
+
+            with mock.patch("backend.app.codex_lanes.run_codex_chatgpt_response", return_value=codex_payload) as run_codex:
+                result = runtime.invoke_provider_json(
+                    provider="openai",
+                    api_key="",
+                    model="gpt-5.6-sol",
+                    reasoning_effort="medium",
+                    instructions="Return JSON.",
+                    input_text="Question?",
+                    schema_name="eval_quality_judge",
+                    schema={
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                        "additionalProperties": False,
+                    },
+                    provider_settings={
+                        "modelSource": "codex_auth",
+                        "codexIgnoreUserConfig": True,
+                    },
+                )
+
+            self.assertTrue(result.provider_trace["userConfigIgnored"])
+            self.assertEqual(run_codex.call_count, 1)
+
+    def test_codex_auth_provider_call_ignores_user_config_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            codex_payload = {
+                "status": "completed",
+                "responseId": "codex-response-default-isolated",
+                "outputText": '{"answer":"ready"}',
+                "response": {"id": "codex-response-default-isolated", "status": "completed", "usage": {}},
+            }
+
+            with mock.patch("backend.app.codex_lanes.run_codex_chatgpt_response", return_value=codex_payload) as run_codex:
+                result = runtime.invoke_provider_json(
+                    provider="openai",
+                    api_key="",
+                    model="gpt-5.6-luna",
+                    reasoning_effort="low",
+                    instructions="Return JSON.",
+                    input_text="Question?",
+                    schema_name="default_isolated_call",
+                    schema={
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                        "additionalProperties": False,
+                    },
+                    provider_settings={"modelSource": "codex_auth"},
+                )
+
+            self.assertTrue(result.provider_trace["userConfigIgnored"])
+            self.assertEqual(run_codex.call_count, 1)
+
+    def test_codex_auth_provider_call_can_disable_direct_transport_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            codex_payload = {
+                "status": "completed",
+                "responseId": "codex-response-unbounded",
+                "outputText": '{"answer":"ready"}',
+                "reasoningEffort": "medium",
+                "response": {"id": "codex-response-unbounded", "status": "completed", "usage": {}},
+            }
+
+            with mock.patch("backend.app.codex_lanes.run_codex_chatgpt_response", return_value=codex_payload) as run_codex:
+                runtime.invoke_provider_json(
+                    provider="openai",
+                    api_key="",
+                    model="gpt-5.6-sol",
+                    reasoning_effort="medium",
+                    instructions="Return JSON.",
+                    input_text="Question?",
+                    schema_name="eval_unbounded_judge",
+                    schema={
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                        "additionalProperties": False,
+                    },
+                    provider_settings={
+                        "modelSource": "codex_auth",
+                        "codexNoTimeout": True,
+                        "codexSubagentsEnabled": True,
+                    },
+                )
+
+            request = run_codex.call_args.kwargs
+            self.assertIsNone(request["timeout_seconds"])
+            self.assertEqual(request["reasoning_effort"], "medium")
+            self.assertTrue(request["subagents_enabled"])
 
     def test_codex_openai_catalog_models_survive_worker_normalization(self) -> None:
         workers = task_workers(
@@ -195,9 +319,30 @@ class RuntimeAuthTests(unittest.TestCase):
 
         self.assertEqual([worker["model"] for worker in workers], ["gpt-5.5", "gpt-5.5"])
 
-    def _stub_openai_result(self, parsed: dict, max_output_tokens: int = 400, output_text: str | None = None) -> OpenAIResult:
+    def test_codex_no_timeout_survives_task_and_direct_runtime_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            task = {
+                "runtime": {
+                    "provider": "openai",
+                    "model": "gpt-5.6-sol",
+                    "modelSource": "codex_auth",
+                    "directProvider": "openai",
+                    "directModel": "gpt-5.6-sol",
+                    "directModelSource": "codex_auth",
+                    "codexNoTimeout": True,
+                    "codexSubagentsEnabled": True,
+                }
+            }
+
+            self.assertTrue(runtime.get_task_runtime(task)["codexNoTimeout"])
+            self.assertTrue(runtime.get_direct_baseline_runtime(task)["codexNoTimeout"])
+            self.assertTrue(runtime.get_task_runtime(task)["codexSubagentsEnabled"])
+            self.assertTrue(runtime.get_direct_baseline_runtime(task)["codexSubagentsEnabled"])
+
+    def _stub_openai_result(self, parsed: dict, max_output_tokens: int = 400, output_text: str | None = None) -> ProviderResult:
         attempts = [int(max_output_tokens)] if int(max_output_tokens) > 0 else []
-        return OpenAIResult(
+        return ProviderResult(
             provider="openai",
             parsed=parsed,
             response={"status": "completed", "usage": {}},
@@ -227,7 +372,7 @@ class RuntimeAuthTests(unittest.TestCase):
                 actual = runtime.invoke_provider_json(
                     provider="openai",
                     api_key="sk-test-secret-1234",
-                    model="gpt-test",
+                    model="gpt-5-mini",
                     reasoning_effort="medium",
                     instructions="system prompt",
                     input_text="user prompt",
@@ -393,14 +538,21 @@ class RuntimeAuthTests(unittest.TestCase):
     def test_read_api_key_pool_reads_prefixed_shared_auth_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             auth_path = Path(tmpdir) / "Auth.txt"
-            auth_path.write_text("openai:sk-openai\nant:sk-anthropic\n", encoding="utf-8")
+            auth_path.write_text(
+                "openai:sk-openai\nant:sk-anthropic\nAntWrkspc:wrkspc_runtime_test\n",
+                encoding="utf-8",
+            )
             env = {
                 "LOOP_SECRET_BACKEND": "local_file",
+                "LOOP_ANTHROPIC_WORKSPACE_ID": "",
+                "ANTHROPIC_WORKSPACE_ID": "",
             }
             with mock.patch.dict("os.environ", env, clear=False):
                 keys = read_api_key_pool(auth_path, "anthropic")
+                workspace_id = read_anthropic_workspace_id(auth_path)
 
         self.assertEqual(keys, ["sk-anthropic"])
+        self.assertEqual(workspace_id, "wrkspc_runtime_test")
 
     def test_read_api_key_pool_dedupes_local_file_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -517,6 +669,36 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(runtime_view["ollamaTimeoutProfile"]["status"], "ready")
         self.assertEqual(runtime_view["requestTimeoutSeconds"], 275)
         self.assertEqual(summarizer_view["requestTimeoutSeconds"], 420)
+
+    def test_task_runtime_routes_reasoning_by_lane(self) -> None:
+        task = {
+            "runtime": {
+                "provider": "openai",
+                "model": "gpt-5.6-luna",
+                "workerReasoningEffort": "low",
+                "summarizerReasoningEffort": "high",
+            },
+            "summarizer": {
+                "provider": "openai",
+                "model": "gpt-5.6-luna",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            worker_view = runtime.get_task_runtime(task, budget_target="A")
+            commander_view = runtime.get_task_runtime(task, budget_target="commander")
+            review_view = runtime.get_task_runtime(task, budget_target="commander_review")
+            summarizer_view = runtime.get_task_runtime(task, budget_target="summarizer")
+            answer_now_view = runtime.get_task_runtime(task, budget_target="answer_now")
+            direct_view = runtime.get_direct_baseline_runtime(task)
+
+        self.assertEqual(worker_view["reasoningEffort"], "low")
+        self.assertEqual(direct_view["reasoningEffort"], "low")
+        self.assertEqual(commander_view["reasoningEffort"], "high")
+        self.assertEqual(review_view["reasoningEffort"], "high")
+        self.assertEqual(summarizer_view["reasoningEffort"], "high")
+        self.assertEqual(answer_now_view["reasoningEffort"], "high")
 
     def test_select_provider_instance_prefers_distinct_arbiter_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1031,14 +1213,27 @@ class RuntimeAuthTests(unittest.TestCase):
             "usage": {"input_tokens": 18, "output_tokens": 11},
         }
         seen_urls: list[str] = []
+        seen_headers: list[dict[str, str]] = []
 
         def fake_urlopen(request, timeout=1800):
             seen_urls.append(str(request.full_url))
+            seen_headers.append({str(key).lower(): str(value) for key, value in request.header_items()})
             return _FakeHTTPResponse(payload)
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "Auth.txt").write_text(
+                "ant:anthropic-test-key\nAntWrkspc:wrkspc_transport_test\n",
+                encoding="utf-8",
+            )
             runtime = LoopRuntime(tmpdir)
-            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen),
+                mock.patch.dict(
+                    "os.environ",
+                    {"LOOP_ANTHROPIC_WORKSPACE_ID": "", "ANTHROPIC_WORKSPACE_ID": ""},
+                    clear=False,
+                ),
+            ):
                 result = runtime.invoke_provider_json(
                     provider="anthropic",
                     api_key="anthropic-test-key",
@@ -1056,6 +1251,8 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(result.output_text, "```json\n" + json.dumps({"answer": "Claude wrapper reply"}) + "\n```")
         self.assertEqual(runtime.get_response_output_text(result.response), result.output_text)
         self.assertEqual(seen_urls, ["https://api.anthropic.com/v1/messages"])
+        self.assertEqual(seen_headers[0]["anthropic-workspace-id"], "wrkspc_transport_test")
+        self.assertTrue(result.provider_trace["workspaceScoped"])
 
     def test_invoke_provider_json_supports_minimax_openai_compat_wrapper_flattening(self) -> None:
         schema = {
@@ -1631,10 +1828,10 @@ Line two",
         self.assertEqual(runtime_config["contextMode"], "full")
         self.assertEqual(runtime_config["directBaselineMode"], "both")
         self.assertEqual(runtime_config["directProvider"], "anthropic")
-        self.assertEqual(runtime_config["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(runtime_config["directModel"], "claude-sonnet-4-6")
         self.assertEqual(direct_runtime["mode"], "both")
         self.assertEqual(direct_runtime["provider"], "anthropic")
-        self.assertEqual(direct_runtime["model"], "claude-sonnet-4-20250514")
+        self.assertEqual(direct_runtime["model"], "claude-sonnet-4-6")
         self.assertEqual(runtime_config["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
         self.assertEqual(runtime_config["targetTimeouts"]["commander"], 95)
         self.assertEqual(runtime_config["targetTimeouts"]["workerDefault"], 115)
@@ -1644,7 +1841,7 @@ Line two",
         self.assertEqual(task_projection["runtime"]["contextMode"], "full")
         self.assertEqual(task_projection["runtime"]["directBaselineMode"], "both")
         self.assertEqual(task_projection["runtime"]["directProvider"], "anthropic")
-        self.assertEqual(task_projection["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(task_projection["runtime"]["directModel"], "claude-sonnet-4-6")
         self.assertEqual(task_projection["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
 
     def test_runtime_uses_auth_root_for_provider_backend_resolution(self) -> None:

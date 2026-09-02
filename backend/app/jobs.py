@@ -17,12 +17,11 @@ from runtime.engine import (
     RuntimeErrorWithCode,
     coerce_bool,
     normalize_direct_baseline_mode,
-    normalize_engine_version,
     target_timeout_seconds,
     task_workers,
 )
 
-from . import control, faults, metadata, queueing, runtime_execution, storage
+from . import background, control, faults, metadata, queueing, runtime_execution, storage
 from .config import deployment_topology
 
 
@@ -95,28 +94,13 @@ def _loop_execution_blueprint(
             "postOptionsByTarget": {},
         }
 
-    fallback = {
-        "source": "v1-fallback",
-        "sequence": ["commander", "workers", "commander_review", "summarizer"],
-        "sidecarTargets": ["answer_now"],
-        "postTargets": [],
-        "targetOptionsByTarget": {},
-        "sidecarOptionsByTarget": {},
-        "postOptionsByTarget": {},
-    }
     runtime_config = (task or {}).get("runtime") if isinstance((task or {}).get("runtime"), dict) else {}
-    if normalize_engine_version(runtime_config.get("engineVersion"), "v1") != "v2":
-        return fallback
-
     engine_plan = runtime_config.get("enginePlan") if isinstance(runtime_config.get("enginePlan"), dict) else {}
     runner = engine_plan.get("runner") if isinstance(engine_plan.get("runner"), dict) else {}
     live_execution = runner.get("liveExecution") if isinstance(runner.get("liveExecution"), dict) else {}
     if not coerce_bool(live_execution.get("supported"), False):
-        return {
-            **fallback,
-            "source": "v2-fallback",
-            "fallbackReason": str(live_execution.get("reason") or ""),
-        }
+        reason = str(live_execution.get("reason") or "The compiled V2 graph is not executable.").strip()
+        raise RuntimeErrorWithCode(f"V2 execution plan rejected: {reason}", 409)
 
     work_items = runner.get("workItems") if isinstance(runner.get("workItems"), list) else []
     sequence: List[str] = []
@@ -151,10 +135,7 @@ def _loop_execution_blueprint(
             post_options_by_target[target] = dict(options)
 
     if not sequence:
-        return {
-            **fallback,
-            "source": "v2-empty-main-path",
-        }
+        raise RuntimeErrorWithCode("V2 execution plan rejected: the main path is empty.", 409)
     return {
         "source": "v2-plan",
         "sequence": sequence,
@@ -801,10 +782,20 @@ def _subprocess_kwargs(env_overrides: Optional[Dict[str, str]] = None) -> Dict[s
     return kwargs
 
 
-def launch_loop_job_runner(job: Dict[str, Any], root: Optional[Path] = None) -> None:
+def launch_loop_job_runner(job: Dict[str, Any], root: Optional[Path] = None) -> Optional[str]:
     repo_root = Path(root).resolve() if root else Path(__file__).resolve().parents[2]
     auth_path = control.auth_file_path(repo_root)
     topology = deployment_topology(repo_root)
+    if topology.queue_backend == "in_process":
+        return background.submit(
+            "loop",
+            str(job.get("jobId") or "loop-job"),
+            repo_root,
+            execute_loop_job,
+            str(job.get("jobId") or ""),
+            root=repo_root,
+            auth_path=auth_path,
+        )
     env_overrides: Dict[str, str] = {
         "LOOP_ROOT": str(repo_root),
         "LOOP_DEPLOYMENT_PROFILE": topology.profile,
@@ -847,6 +838,7 @@ def launch_loop_job_runner(job: Dict[str, Any], root: Optional[Path] = None) -> 
         f"--auth-path={auth_path}",
     ]
     subprocess.Popen(command, **_subprocess_kwargs(env_overrides))  # noqa: S603,S607
+    return None
 
 
 def _usage_snapshot(runtime: LoopRuntime) -> Dict[str, Any]:

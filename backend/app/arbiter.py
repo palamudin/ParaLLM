@@ -4,7 +4,24 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from runtime.engine import LoopRuntime, RuntimeErrorWithCode, normalize_front_answer, summarizer_config, utc_now
+from runtime.engine import (
+    LoopRuntime,
+    RuntimeErrorWithCode,
+    default_judge_model_for_provider,
+    normalize_front_answer,
+    normalize_model_id,
+    normalize_provider_id,
+    summarizer_config,
+    utc_now,
+)
+from runtime.provider_torso import (
+    default_provider_id,
+    model_source_for_auth_route,
+    model_supports_auth_route,
+    normalize_auth_route,
+    provider_default_auth_route,
+    provider_supports_auth_route,
+)
 from runtime.eval_runner import (
     answer_similarity_metrics,
     build_answer_telemetry,
@@ -56,12 +73,25 @@ def _build_case(task: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _judge_provider() -> str:
-    return "openai"
-
-
-def _judge_model() -> str:
-    return "gpt-5.4"
+def judge_runtime_profile(task: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    runtime = task.get("runtime") if isinstance(task, dict) and isinstance(task.get("runtime"), dict) else {}
+    provider = normalize_provider_id(runtime.get("judgeProvider"), default_provider_id(judge=True))
+    auth_route = normalize_auth_route(
+        runtime.get("judgeAuthRoute", runtime.get("judgeModelSource", provider_default_auth_route(provider, judge=True)))
+    )
+    if not provider_supports_auth_route(provider, auth_route):
+        auth_route = provider_default_auth_route(provider, judge=True)
+    fallback_model = default_judge_model_for_provider(provider, auth_route)
+    model = normalize_model_id(runtime.get("judgeModel"), fallback_model, provider)
+    if not model_supports_auth_route(provider, model, auth_route):
+        model = fallback_model
+    return {
+        "provider": provider,
+        "model": model,
+        "authRoute": auth_route,
+        "modelSource": model_source_for_auth_route(auth_route),
+        "reasoningEffort": str(runtime.get("judgeReasoningEffort") or runtime.get("reasoningEffort") or "high"),
+    }
 
 
 def run_current_task_arbiter(runtime: LoopRuntime, task_id: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -93,8 +123,9 @@ def run_current_task_arbiter(runtime: LoopRuntime, task_id: Optional[str] = None
     if not baseline_answer:
         raise RuntimeErrorWithCode("Arbiter needs a completed single-thread baseline answer.", 409)
 
-    judge_provider = _judge_provider()
-    judge_model = _judge_model()
+    judge_profile = judge_runtime_profile(task)
+    judge_provider = judge_profile["provider"]
+    judge_model = judge_profile["model"]
     round_number = max(1, int(summary.get("round") or 1))
     auth_assignments = runtime.provider_auth_assignments(judge_provider, "arbiter", task, round_number=round_number, salt="arbiter")
     auth_assignment = auth_assignments[0] if auth_assignments else None
@@ -114,11 +145,11 @@ def run_current_task_arbiter(runtime: LoopRuntime, task_id: Optional[str] = None
         provider=str(direct_baseline.get("provider") or ((task.get("runtime") or {}) if isinstance(task.get("runtime"), dict) else {}).get("directProvider") or ""),
         model=str(direct_baseline.get("model") or ((task.get("runtime") or {}) if isinstance(task.get("runtime"), dict) else {}).get("directModel") or ""),
     )
-    quality = run_quality_judge(runtime, judge_provider, api_key, judge_model, case, ARBITER_RUBRIC, pressurized_answer, {})
-    answer_health = run_answer_health_judge(runtime, judge_provider, api_key, judge_model, case, pressurized_answer, pressurized_telemetry, {})
-    control = run_control_judge(runtime, judge_provider, api_key, judge_model, case, summary, {})
-    baseline_quality = run_quality_judge(runtime, judge_provider, api_key, judge_model, case, ARBITER_RUBRIC, baseline_answer, {})
-    baseline_answer_health = run_answer_health_judge(runtime, judge_provider, api_key, judge_model, case, baseline_answer, baseline_telemetry, {})
+    quality = run_quality_judge(runtime, judge_provider, api_key, judge_model, case, ARBITER_RUBRIC, pressurized_answer, judge_profile)
+    answer_health = run_answer_health_judge(runtime, judge_provider, api_key, judge_model, case, pressurized_answer, pressurized_telemetry, judge_profile)
+    control = run_control_judge(runtime, judge_provider, api_key, judge_model, case, summary, judge_profile)
+    baseline_quality = run_quality_judge(runtime, judge_provider, api_key, judge_model, case, ARBITER_RUBRIC, baseline_answer, judge_profile)
+    baseline_answer_health = run_answer_health_judge(runtime, judge_provider, api_key, judge_model, case, baseline_answer, baseline_telemetry, judge_profile)
     similarity = answer_similarity_metrics(pressurized_answer, baseline_answer)
     comparison = run_comparison_judge(
         runtime,
@@ -134,7 +165,7 @@ def run_current_task_arbiter(runtime: LoopRuntime, task_id: Optional[str] = None
         baseline_quality,
         baseline_answer_health,
         similarity,
-        {},
+        judge_profile,
     )
 
     arbiter_payload = {
@@ -145,6 +176,7 @@ def run_current_task_arbiter(runtime: LoopRuntime, task_id: Optional[str] = None
         "judge": {
             "provider": judge_provider,
             "model": judge_model,
+            "authRoute": judge_profile["authRoute"],
             "auth": auth_meta,
             "live": bool(api_key),
         },

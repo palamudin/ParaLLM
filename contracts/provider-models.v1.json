@@ -1,0 +1,291 @@
+{
+  "schemaVersion": "parallm.provider-models.v1",
+  "defaultProvider": "openai",
+  "defaultJudgeProvider": "openai",
+  "authRoutes": [
+    "api_key",
+    "subscription",
+    "codex_current_user"
+  ],
+  "providers": {
+    "openai": {
+      "label": "OpenAI",
+      "shortLabel": "OpenAI",
+      "displayOrder": 20,
+      "status": "primary",
+      "defaultAuthRoute": "codex_current_user",
+      "defaultJudgeAuthRoute": "api_key",
+      "defaultModel": "gpt-5-mini",
+      "defaultJudgeModel": "gpt-5.4",
+      "defaultModelByAuthRoute": {
+        "api_key": "gpt-5-mini",
+        "subscription": "gpt-5.6-sol",
+        "codex_current_user": "gpt-5.6-sol"
+      },
+      "qualityProfiles": {
+        "low": {"workerModel": "gpt-5-mini", "summarizerModel": "gpt-5-mini"},
+        "mid": {"workerModel": "gpt-5-mini", "summarizerModel": "gpt-5.4-mini"},
+        "high": {"workerModel": "gpt-5.4-mini", "summarizerModel": "gpt-5.4"},
+        "ultra": {"workerModel": "gpt-5.4", "summarizerModel": "gpt-5.4"}
+      },
+      "defaultApiKeyEnvironment": "OPENAI_API_KEY",
+      "defaultApiKeyFileEnvironment": "OPENAI_API_KEY_FILE",
+      "transportByAuthRoute": {
+        "api_key": "openai_responses",
+        "subscription": "codex_responses",
+        "codex_current_user": "codex_responses"
+      },
+      "endpointByAuthRoute": {
+        "api_key": "https://api.openai.com/v1/responses",
+        "subscription": "https://chatgpt.com/backend-api/codex/responses",
+        "codex_current_user": "https://chatgpt.com/backend-api/codex/responses"
+      },
+      "capabilities": {
+        "allows_custom_models": false,
+        "prefers_compact_context": false,
+        "supports_server_input_autocompress": true,
+        "supports_reasoning_effort": true,
+        "supports_web_search": true,
+        "reasoning_wire_format": "direct",
+        "structured_output_mode": "json_schema",
+        "accepted_include_values": [
+          "reasoning.encrypted_content"
+        ]
+      },
+      "aliases": {
+        "gpt-5.1": "gpt-5.1-chat-latest"
+      },
+      "models": [
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "authRoutes": ["subscription", "codex_current_user"], "liveValidation": true, "pricing": {"inputPer1M": 4.0, "cachedInputPer1M": 0.4, "outputPer1M": 20.0}},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "authRoutes": ["subscription", "codex_current_user"], "liveValidation": true, "pricing": {"inputPer1M": 2.0, "cachedInputPer1M": 0.2, "outputPer1M": 12.0}},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "authRoutes": ["subscription", "codex_current_user"], "liveValidation": true, "pricing": {"inputPer1M": 0.2, "cachedInputPer1M": 0.02, "outputPer1M": 1.2}},
+        {"id": "gpt-5.5", "label": "GPT-5.5", "authRoutes": ["subscription", "codex_current_user"], "liveValidation": true, "pricing": {"inputPer1M": 5.0, "cachedInputPer1M": 0.5, "outputPer1M": 30.0}},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "authRoutes": ["api_key", "subscription", "codex_current_user"], "liveValidation": true, "pricing": {"inputPer1M": 2.5, "cachedInputPer1M": 0.25, "outputPer1M": 15.0}},
+        {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini", "authRoutes": ["api_key", "subscription", "codex_current_user"], "liveValidation": true, "pricing": {"inputPer1M": 0.75, "cachedInputPer1M": 0.075, "outputPer1M": 4.5}, "capabilityOverrides": {"prefers_compact_context": true}},
+        {"id": "gpt-5.4-nano", "label": "GPT-5.4 Nano", "authRoutes": ["api_key"], "liveValidation": true, "pricing": {"inputPer1M": 0.2, "cachedInputPer1M": 0.02, "outputPer1M": 1.25}, "capabilityOverrides": {"prefers_compact_context": true}},
+        {"id": "gpt-5.4-pro", "label": "GPT-5.4 Pro", "authRoutes": ["api_key"], "liveValidation": true, "pricing": {"inputPer1M": 0.0, "cachedInputPer1M": 0.0, "outputPer1M": 0.0}, "capabilityOverrides": {"minimum_reasoning_effort": "medium", "supports_structured_output": false, "structured_output_mode": "prompted_json"}},
+        {"id": "gpt-5.3-codex", "label": "GPT-5.3 Codex", "authRoutes": ["api_key"], "liveValidation": true, "pricing": {"inputPer1M": 1.75, "cachedInputPer1M": 0.175, "outputPer1M": 14.0}},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark", "authRoutes": ["subscription", "codex_current_user"], "liveValidation": true, "pricing": {"inputPer1M": 1.75, "cachedInputPer1M": 0.175, "outputPer1M": 14.0}},
+        {"id": "gpt-5.2", "label": "GPT-5.2", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 1.75, "cachedInputPer1M": 0.175, "outputPer1M": 14.0}},
+        {"id": "gpt-5.1-chat-latest", "label": "GPT-5.1 Chat", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 1.25, "cachedInputPer1M": 0.125, "outputPer1M": 10.0}},
+        {"id": "gpt-5", "label": "GPT-5", "authRoutes": ["api_key"], "liveValidation": true, "pricing": {"inputPer1M": 1.25, "cachedInputPer1M": 0.125, "outputPer1M": 10.0}},
+        {"id": "gpt-5-mini", "label": "GPT-5 Mini", "authRoutes": ["api_key"], "liveValidation": true, "pricing": {"inputPer1M": 0.25, "cachedInputPer1M": 0.025, "outputPer1M": 2.0}, "capabilityOverrides": {"prefers_compact_context": true}},
+        {"id": "gpt-5-nano", "label": "GPT-5 Nano", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 0.05, "cachedInputPer1M": 0.005, "outputPer1M": 0.4}, "capabilityOverrides": {"prefers_compact_context": true}},
+        {"id": "gpt-4.1", "label": "GPT-4.1", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 2.0, "cachedInputPer1M": 0.5, "outputPer1M": 8.0}, "capabilityOverrides": {"supports_reasoning_effort": false}},
+        {"id": "gpt-4.1-mini", "label": "GPT-4.1 Mini", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 0.4, "cachedInputPer1M": 0.1, "outputPer1M": 1.6}, "capabilityOverrides": {"supports_reasoning_effort": false, "prefers_compact_context": true}},
+        {"id": "gpt-4.1-nano", "label": "GPT-4.1 Nano", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 0.1, "cachedInputPer1M": 0.025, "outputPer1M": 0.4}, "capabilityOverrides": {"supports_reasoning_effort": false, "prefers_compact_context": true}},
+        {"id": "gpt-4o", "label": "GPT-4o", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 2.5, "cachedInputPer1M": 1.25, "outputPer1M": 10.0}, "capabilityOverrides": {"supports_reasoning_effort": false}},
+        {"id": "gpt-4o-mini", "label": "GPT-4o Mini", "authRoutes": ["api_key"], "liveValidation": false, "pricing": {"inputPer1M": 0.15, "cachedInputPer1M": 0.075, "outputPer1M": 0.6}, "capabilityOverrides": {"supports_reasoning_effort": false, "prefers_compact_context": true}}
+      ]
+    },
+    "anthropic": {
+      "label": "Anthropic",
+      "shortLabel": "ANT",
+      "displayOrder": 30,
+      "status": "primary",
+      "defaultAuthRoute": "api_key",
+      "defaultJudgeAuthRoute": "api_key",
+      "defaultModel": "claude-sonnet-5",
+      "defaultJudgeModel": "claude-opus-5",
+      "qualityProfiles": {
+        "low": {"workerModel": "claude-haiku-4-5-20251001", "summarizerModel": "claude-haiku-4-5-20251001"},
+        "mid": {"workerModel": "claude-haiku-4-5-20251001", "summarizerModel": "claude-sonnet-4-6"},
+        "high": {"workerModel": "claude-sonnet-4-6", "summarizerModel": "claude-opus-4-7"},
+        "ultra": {"workerModel": "claude-sonnet-5", "summarizerModel": "claude-opus-5"}
+      },
+      "defaultApiKeyEnvironment": "ANTHROPIC_API_KEY",
+      "defaultApiKeyFileEnvironment": "ANTHROPIC_API_KEY_FILE",
+      "transportByAuthRoute": {"api_key": "anthropic_messages", "subscription": "anthropic_messages"},
+      "endpointByAuthRoute": {"api_key": "https://api.anthropic.com/v1/messages", "subscription": "https://api.anthropic.com/v1/messages"},
+      "endpointEnvironmentByAuthRoute": {"api_key": "LOOP_ANTHROPIC_BASE_URL"},
+      "capabilities": {"allows_custom_models": true, "supports_web_search": true, "structured_output_mode": "json_schema"},
+      "aliases": {"claude-sonnet-4-20250514": "claude-sonnet-4-6"},
+      "models": [
+        {"id": "claude-fable-5", "label": "Claude Fable 5", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-sonnet-5", "label": "Claude Sonnet 5", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-opus-5", "label": "Claude Opus 5", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-opus-4-7", "label": "Claude Opus 4.7", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-opus-4-6", "label": "Claude Opus 4.6", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-opus-4-5-20251101", "label": "Claude Opus 4.5", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5", "authRoutes": ["api_key", "subscription"], "liveValidation": true},
+        {"id": "claude-sonnet-4-5-20250929", "label": "Claude Sonnet 4.5", "authRoutes": ["api_key", "subscription"], "liveValidation": true}
+      ]
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "shortLabel": "DeepSeek",
+      "displayOrder": 10,
+      "status": "primary",
+      "defaultAuthRoute": "api_key",
+      "defaultJudgeAuthRoute": "api_key",
+      "defaultModel": "deepseek-v4-flash",
+      "defaultJudgeModel": "deepseek-v4-pro",
+      "qualityProfiles": {
+        "low": {"workerModel": "deepseek-v4-flash", "summarizerModel": "deepseek-v4-flash"},
+        "mid": {"workerModel": "deepseek-v4-flash", "summarizerModel": "deepseek-v4-pro"},
+        "high": {"workerModel": "deepseek-v4-pro", "summarizerModel": "deepseek-v4-pro"},
+        "ultra": {"workerModel": "deepseek-v4-pro", "summarizerModel": "deepseek-v4-pro"}
+      },
+      "defaultApiKeyEnvironment": "DEEPSEEK_API_KEY",
+      "defaultApiKeyFileEnvironment": "DEEPSEEK_API_KEY_FILE",
+      "transportByAuthRoute": {"api_key": "openai_compatible_chat"},
+      "endpointByAuthRoute": {"api_key": "https://api.deepseek.com/chat/completions"},
+      "endpointEnvironmentByAuthRoute": {"api_key": "LOOP_DEEPSEEK_OPENAI_BASE_URL"},
+      "transportSelector": {
+        "setting": "deepseekTransport",
+        "environment": "LOOP_DEEPSEEK_TRANSPORT",
+        "routes": {
+          "anthropic": {
+            "transport": "anthropic_messages",
+            "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+            "endpointEnvironment": "LOOP_DEEPSEEK_ANTHROPIC_BASE_URL"
+          }
+        }
+      },
+      "capabilities": {"allows_custom_models": true, "prefers_compact_context": true, "supports_reasoning_effort": true, "reasoning_wire_format": "direct", "structured_output_mode": "json_object"},
+      "aliases": {"deepseek-chat": "deepseek-v4-flash", "deepseek-reasoner": "deepseek-v4-pro"},
+      "models": [
+        {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "deepseek-v4-flash-vision-exp", "label": "DeepSeek V4 Flash Vision (Experimental)", "authRoutes": ["api_key"], "liveValidation": true}
+      ]
+    },
+    "xai": {
+      "label": "xAI",
+      "shortLabel": "XAI",
+      "displayOrder": 40,
+      "status": "primary",
+      "defaultAuthRoute": "api_key",
+      "defaultJudgeAuthRoute": "api_key",
+      "defaultModel": "grok-4.6",
+      "defaultJudgeModel": "grok-4.6",
+      "qualityProfiles": {
+        "low": {"workerModel": "grok-4.3", "summarizerModel": "grok-4.3"},
+        "mid": {"workerModel": "grok-4.3", "summarizerModel": "grok-4.5"},
+        "high": {"workerModel": "grok-4.5", "summarizerModel": "grok-4.6"},
+        "ultra": {"workerModel": "grok-4.6", "summarizerModel": "grok-4.20-0309-reasoning"}
+      },
+      "defaultApiKeyEnvironment": "XAI_API_KEY",
+      "defaultApiKeyFileEnvironment": "XAI_API_KEY_FILE",
+      "transportByAuthRoute": {"api_key": "xai_responses"},
+      "endpointByAuthRoute": {"api_key": "https://api.x.ai/v1/responses"},
+      "endpointEnvironmentByAuthRoute": {"api_key": "LOOP_XAI_BASE_URL"},
+      "capabilities": {"allows_custom_models": true, "supports_web_search": true, "reasoning_wire_format": "direct", "structured_output_mode": "json_schema", "supports_instructions_on_continuation": false, "accepted_include_values": ["no_inline_citations"]},
+      "aliases": {"grok-4.20-reasoning": "grok-4.20-0309-reasoning", "grok-4.20": "grok-4.20-0309-non-reasoning", "grok-4.20-multi-agent": "grok-4.20-multi-agent-0309", "grok-4-1-fast-reasoning": "grok-4.3"},
+      "models": [
+        {"id": "grok-4.20-0309-reasoning", "label": "Grok 4.20 Reasoning", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "grok-4.20-0309-non-reasoning", "label": "Grok 4.20 Non-Reasoning", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "grok-4.20-multi-agent-0309", "label": "Grok 4.20 Multi-Agent", "authRoutes": ["api_key"], "liveValidation": true, "capabilityOverrides": {"supports_reasoning_effort": true, "supports_client_tools": false}},
+        {"id": "grok-4.6", "label": "Grok 4.6", "authRoutes": ["api_key"], "liveValidation": true, "capabilityOverrides": {"supports_reasoning_effort": true}},
+        {"id": "grok-4.5", "label": "Grok 4.5", "authRoutes": ["api_key"], "liveValidation": true, "capabilityOverrides": {"supports_reasoning_effort": true, "supported_reasoning_efforts": ["none", "low", "medium", "high"]}},
+        {"id": "grok-4.3", "label": "Grok 4.3", "authRoutes": ["api_key"], "liveValidation": true, "capabilityOverrides": {"supports_reasoning_effort": true}},
+        {"id": "grok-build-0.1", "label": "Grok Build 0.1", "authRoutes": ["api_key"], "liveValidation": true}
+      ]
+    },
+    "minimax": {
+      "label": "MiniMax",
+      "shortLabel": "MINI",
+      "displayOrder": 50,
+      "status": "primary",
+      "defaultAuthRoute": "api_key",
+      "defaultJudgeAuthRoute": "api_key",
+      "defaultModel": "MiniMax-M3",
+      "defaultJudgeModel": "MiniMax-M3",
+      "qualityProfiles": {
+        "low": {"workerModel": "MiniMax-M2.1-highspeed", "summarizerModel": "MiniMax-M2.1-highspeed"},
+        "mid": {"workerModel": "MiniMax-M2.1-highspeed", "summarizerModel": "MiniMax-M2.5"},
+        "high": {"workerModel": "MiniMax-M2.5", "summarizerModel": "MiniMax-M2.7"},
+        "ultra": {"workerModel": "MiniMax-M2.7", "summarizerModel": "MiniMax-M3"}
+      },
+      "defaultApiKeyEnvironment": "MINIMAX_API_KEY",
+      "defaultApiKeyFileEnvironment": "MINIMAX_API_KEY_FILE",
+      "transportByAuthRoute": {"api_key": "openai_compatible_chat"},
+      "endpointByAuthRoute": {"api_key": "https://api.minimax.io/v1/chat/completions"},
+      "endpointEnvironmentByAuthRoute": {"api_key": "LOOP_MINIMAX_OPENAI_BASE_URL"},
+      "transportSelector": {
+        "setting": "minimaxTransport",
+        "environment": "LOOP_MINIMAX_TRANSPORT",
+        "routes": {
+          "anthropic": {
+            "transport": "anthropic_messages",
+            "endpoint": "https://api.minimax.io/anthropic/v1/messages",
+            "endpointEnvironment": "LOOP_MINIMAX_ANTHROPIC_BASE_URL"
+          }
+        }
+      },
+      "capabilities": {"allows_custom_models": true, "prefers_compact_context": true, "strip_leading_think_blocks": true},
+      "models": [
+        {"id": "MiniMax-M3", "label": "MiniMax M3", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "MiniMax-M2.7", "label": "MiniMax M2.7", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "MiniMax-M2.7-highspeed", "label": "MiniMax M2.7 Highspeed", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "MiniMax-M2.5", "label": "MiniMax M2.5", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "MiniMax-M2.5-highspeed", "label": "MiniMax M2.5 Highspeed", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "MiniMax-M2.1", "label": "MiniMax M2.1", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "MiniMax-M2.1-highspeed", "label": "MiniMax M2.1 Highspeed", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "MiniMax-M2", "label": "MiniMax M2", "authRoutes": ["api_key"], "liveValidation": true}
+      ]
+    },
+    "kimi": {
+      "label": "Kimi",
+      "shortLabel": "KIMI",
+      "displayOrder": 60,
+      "status": "primary",
+      "defaultAuthRoute": "api_key",
+      "defaultJudgeAuthRoute": "api_key",
+      "defaultModel": "k3",
+      "defaultJudgeModel": "k3",
+      "qualityProfiles": {
+        "low": {"workerModel": "kimi-for-coding-highspeed", "summarizerModel": "kimi-for-coding-highspeed"},
+        "mid": {"workerModel": "kimi-for-coding-highspeed", "summarizerModel": "kimi-for-coding"},
+        "high": {"workerModel": "kimi-for-coding", "summarizerModel": "k3"},
+        "ultra": {"workerModel": "k3", "summarizerModel": "k3-256k"}
+      },
+      "defaultApiKeyEnvironment": "KIMI_API_KEY",
+      "defaultApiKeyFileEnvironment": "KIMI_API_KEY_FILE",
+      "transportByAuthRoute": {"api_key": "openai_compatible_chat"},
+      "endpointByAuthRoute": {"api_key": "https://api.kimi.com/coding/v1/chat/completions"},
+      "endpointEnvironmentByAuthRoute": {"api_key": "LOOP_KIMI_OPENAI_BASE_URL"},
+      "capabilities": {"allows_custom_models": true, "prefers_compact_context": true, "supports_reasoning_effort": true, "supported_reasoning_efforts": ["low", "medium", "high", "xhigh"], "minimum_reasoning_effort": "low", "reasoning_wire_format": "kimi"},
+      "models": [
+        {"id": "k3", "label": "Kimi K3", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "k3-256k", "label": "Kimi K3 256K", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "kimi-for-coding", "label": "Kimi for Coding", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "kimi-for-coding-highspeed", "label": "Kimi for Coding Highspeed", "authRoutes": ["api_key"], "liveValidation": true}
+      ]
+    },
+    "ollama": {
+      "label": "Ollama",
+      "shortLabel": "OLLAMA",
+      "displayOrder": 70,
+      "status": "primary",
+      "credentialRequired": false,
+      "defaultAuthRoute": "api_key",
+      "defaultJudgeAuthRoute": "api_key",
+      "defaultModel": "parallm-qwen3.8-27b:latest",
+      "defaultJudgeModel": "parallm-qwen3.8-27b:latest",
+      "defaultModelEnvironment": "LOOP_OLLAMA_DEFAULT_MODEL",
+      "defaultJudgeModelEnvironment": "LOOP_OLLAMA_DEFAULT_JUDGE_MODEL",
+      "qualityProfiles": {
+        "low": {"workerModel": "parallm-qwen3.8-27b:latest", "summarizerModel": "parallm-qwen3.8-27b:latest"},
+        "mid": {"workerModel": "parallm-qwen3.8-27b:latest", "summarizerModel": "parallm-qwen3.8-27b:latest"},
+        "high": {"workerModel": "parallm-qwen3.8-27b:latest", "summarizerModel": "parallm-qwen3.8-27b:latest"},
+        "ultra": {"workerModel": "parallm-qwen3.8-27b:latest", "summarizerModel": "parallm-qwen3.8-27b:latest"}
+      },
+      "transportByAuthRoute": {"api_key": "ollama_json"},
+      "endpointByAuthRoute": {"api_key": "http://127.0.0.1:11434"},
+      "endpointEnvironmentByAuthRoute": {"api_key": "LOOP_OLLAMA_BASE_URL"},
+      "endpointSettingByAuthRoute": {"api_key": "ollamaBaseUrl"},
+      "capabilities": {"allows_custom_models": true},
+      "models": [
+        {"id": "parallm-qwen3.8-27b:latest", "label": "Qwen 3.8 27B (Para Tools)", "shortLabel": "QWEN 27B TOOLS", "authRoutes": ["api_key"], "liveValidation": true},
+        {"id": "Qwen3.8-27B:latest", "label": "Qwen 3.8 27B (Imported, No Tools)", "shortLabel": "QWEN 27B RAW", "authRoutes": ["api_key"], "liveValidation": true, "capabilityOverrides": {"supports_client_tools": false}},
+        {"id": "qwen3", "label": "Qwen3", "authRoutes": ["api_key"], "liveValidation": false},
+        {"id": "qwen3-coder", "label": "Qwen3 Coder", "authRoutes": ["api_key"], "liveValidation": false},
+        {"id": "gemma3", "label": "Gemma 3", "authRoutes": ["api_key"], "liveValidation": false},
+        {"id": "llama3.2", "label": "Llama 3.2", "authRoutes": ["api_key"], "liveValidation": false}
+      ]
+    }
+  }
+}

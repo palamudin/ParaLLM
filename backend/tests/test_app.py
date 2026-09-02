@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -45,15 +46,25 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("/replacement-shell.html", paths)
         self.assertIn("/webviewindex.html", paths)
         self.assertIn("/health", paths)
+        self.assertIn("/v1/models", paths)
         self.assertIn("/v1/system/topology", paths)
         self.assertIn("/v1/system/infrastructure", paths)
         self.assertIn("/v1/repo/graph", paths)
         self.assertIn("/v1/knowledgebase/graph", paths)
         self.assertIn("/v1/knowledgebase/status", paths)
+        self.assertIn("/v1/research/status", paths)
+        self.assertIn("/v1/research/artifacts", paths)
+        self.assertIn("/v1/research/search", paths)
+        self.assertIn("/v1/research/open", paths)
+        self.assertIn("/v1/research/download", paths)
+        self.assertIn("/v1/research/ingest", paths)
+        self.assertIn("/v1/research/retain", paths)
         self.assertIn("/v1/knowledgebase/retain", paths)
         self.assertIn("/v1/knowledgebase/recall", paths)
         self.assertIn("/v1/knowledgebase/reflect", paths)
         self.assertIn("/v1/knowledgebase/learn/evals", paths)
+        self.assertIn("/v1/perception/status", paths)
+        self.assertIn("/v1/perception/events", paths)
         self.assertIn("/v1/memory/graph", paths)
         self.assertIn("/v1/memory/status", paths)
         self.assertIn("/v1/memory/retain", paths)
@@ -99,6 +110,27 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("/v1/rounds", paths)
         self.assertIn("/v1/targets/run", paths)
 
+    def test_model_catalog_route_uses_canonical_provider_contract(self) -> None:
+        client = TestClient(create_app(self.root))
+
+        response = client.get("/v1/models", params={"validationOnly": "true"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["schemaVersion"], "parallm.provider-model-catalog.v1")
+        self.assertEqual(payload["sourceSchemaVersion"], "parallm.provider-models.v1")
+        self.assertIn("openai", payload["providers"])
+        self.assertTrue(payload["models"])
+        self.assertTrue(all(model["liveValidation"] for model in payload["models"]))
+        self.assertTrue(
+            any(
+                model["provider"] == "openai"
+                and model["id"] == "gpt-5.6-luna"
+                and "codex_current_user" in model["authRoutes"]
+                for model in payload["models"]
+            )
+        )
+
     def test_root_serves_replacement_shell_defaults(self) -> None:
         client = TestClient(create_app())
         response = client.get("/")
@@ -121,7 +153,7 @@ class AppRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="previewHomeCollapsedPills"', response.text)
-        for panel in ("contract", "lanes", "trace", "supporting", "math2code"):
+        for panel in ("contract", "lanes", "agents", "trace", "supporting", "math2code"):
             self.assertIn(f'data-home-panel="{panel}"', response.text)
             self.assertIn(f'data-home-collapse-toggle="{panel}"', response.text)
         self.assertIn('data-home-panel="chat"', response.text)
@@ -161,6 +193,26 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("clearTimeout(runtimeState.saveTimer);", js)
         self.assertIn("resizeObjectiveTextarea();", js)
         self.assertNotIn('>Send</button>', response.text)
+
+    def test_home_agent_panel_exposes_spawn_tasks_and_project_board(self) -> None:
+        client = TestClient(create_app())
+        response = client.get("/")
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+        css = (root / "assets" / "replacement-shell.css").read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="previewAgentProjectSelect"', response.text)
+        self.assertIn('id="previewAgentSpawnForm"', response.text)
+        self.assertIn('id="previewAgentTaskForm"', response.text)
+        self.assertIn('id="previewAgentRoster"', response.text)
+        self.assertIn('id="previewAgentJobs"', response.text)
+        self.assertIn('id="previewAgentBoard"', response.text)
+        self.assertIn('agentSpawn: "/v1/agents/spawn"', js)
+        self.assertIn('agentJobs: "/v1/agents/jobs"', js)
+        self.assertIn("function refreshAgentWorkspace", js)
+        self.assertIn(".igs-agent-surface", css)
+        self.assertIn("--rs-sidebar-content-gap: 32px", css)
 
     def test_chat_canvas_does_not_echo_draft_objective_above_response_area(self) -> None:
         client = TestClient(create_app())
@@ -260,14 +312,18 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('class="igs-control-bay"', response.text)
         self.assertIn('igs-control-pack-routing', response.text)
-        self.assertIn('igs-control-pack-models', response.text)
+        self.assertIn('class="igs-provider-config-row"', response.text)
         self.assertIn('igs-control-pack-execution', response.text)
         self.assertIn('class="igs-control-tile', response.text)
         self.assertIn('igs-control-tile-provider', response.text)
         self.assertIn('data-contract-control-tile="Providers"', response.text)
         self.assertIn('class="igs-provider-role-segment"', response.text)
-        self.assertIn('class="igs-segment-btn igs-provider-actuator', response.text)
-        self.assertIn('<span class="actuator-title">ANT</span>', response.text)
+        self.assertLess(response.text.index('class="igs-provider-role-segment"'), response.text.index('id="previewWorkerModel"'))
+        self.assertLess(response.text.index('id="previewWorkerModel"'), response.text.index('id="previewSummarizerModel"'))
+        self.assertLess(response.text.index('id="previewSummarizerModel"'), response.text.index('class="igs-segment igs-segment-wrap igs-provider-segment"'))
+        self.assertIn('class="igs-segment igs-segment-wrap igs-provider-segment"', response.text)
+        self.assertIn('button.className = "igs-segment-btn igs-provider-actuator";', js)
+        self.assertIn('title.className = "actuator-title";', js)
         self.assertNotIn('igs-control-glyph', response.text)
         self.assertNotIn('igs-control-led', response.text)
         self.assertIn('data-contract-control-tile="Mode"', response.text)
@@ -283,8 +339,13 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn('data-composer-tool-action="context"', response.text)
         self.assertIn('id="previewSummaryReasoning"', response.text)
         self.assertIn("reasoningEffort: control.reasoningEffort", js)
-        self.assertIn('elements.reasoningEffort.value = String(draft.reasoningEffort || "low");', js)
+        self.assertIn("workerReasoningEffort: control.workerReasoningEffort", js)
+        self.assertIn("summarizerReasoningEffort: control.summarizerReasoningEffort", js)
+        self.assertIn("runtimeState.reasoningEfforts = {", js)
+        self.assertIn('wrapper?.querySelector(".igs-pill-select-meta")', js)
+        self.assertIn("syncAllLaneReasoningOptions", js)
         self.assertIn("summaryReasoning", js)
+        self.assertIn(".igs-pill-select-meta", css)
         self.assertIn('[data-state-tone="xhigh"]', css)
 
     def test_run_contract_uses_toggles_for_modes_and_boolean_controls(self) -> None:
@@ -297,6 +358,9 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn('data-cycle-press-levels="none,half,full"', response.text)
         self.assertIn('data-select-cycle="previewDirectBaselineMode"', response.text)
         self.assertIn('data-cycle-values="off,single,both"', response.text)
+        self.assertIn('id="previewCodexSubagentsEnabled"', response.text)
+        self.assertIn('data-select-cycle="previewCodexSubagentsEnabled"', response.text)
+        self.assertIn('id="previewSummarySubagents"', response.text)
         self.assertIn('data-press-level="none"', response.text)
         self.assertIn('data-composer-tool-action="context"', response.text)
         self.assertIn('data-composer-tool-action="web-search"', response.text)
@@ -408,26 +472,57 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("openCodexAuthHelp", js)
         self.assertIn("sendPrompt", js)
 
-    def test_openai_worker_and_summarizer_model_lists_include_codex_line(self) -> None:
+    def test_shell_hydrates_worker_and_summarizer_models_from_canonical_catalog(self) -> None:
         root = Path(__file__).resolve().parents[2]
         js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+        response = TestClient(create_app()).get("/v1/models")
 
-        for model in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2"):
-            self.assertIn(f'model: "{model}"', js)
-        self.assertIn('value: "openai:gpt-5.4"', js)
-        self.assertIn('value: "codex:gpt-5.4"', js)
-        self.assertIn('source: "openai_api"', js)
-        self.assertIn('source: "codex_auth"', js)
-        self.assertIn('sourceLabel: "API key"', js)
-        self.assertIn('sourceLabel: "Codex"', js)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        openai_models = {
+            (item["id"], auth_route)
+            for item in payload["models"]
+            if item["provider"] == "openai"
+            for auth_route in item["authRoutes"]
+        }
+        for model, auth_route in (
+            ("gpt-5.6-sol", "codex_current_user"),
+            ("gpt-5.6-terra", "codex_current_user"),
+            ("gpt-5.6-luna", "codex_current_user"),
+            ("gpt-5.5", "codex_current_user"),
+            ("gpt-5.4", "api_key"),
+            ("gpt-5.4", "codex_current_user"),
+            ("gpt-5.4-mini", "api_key"),
+            ("gpt-5.4-mini", "codex_current_user"),
+            ("gpt-5.3-codex", "api_key"),
+            ("gpt-5.3-codex-spark", "codex_current_user"),
+            ("gpt-5.2", "api_key"),
+        ):
+            self.assertIn((model, auth_route), openai_models)
+        for model in (
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+            "gpt-5.2",
+        ):
+            self.assertNotIn(f'model: "{model}"', js)
+        self.assertIn('models: "/v1/models"', js)
+        self.assertIn("loadProviderModelCatalog", js)
+        self.assertIn("applyProviderModelCatalog", js)
+        self.assertIn("catalogModelOption", js)
         self.assertIn("parseModelSelection", js)
         self.assertIn("selectedModelId", js)
         self.assertIn("selectedModelSource", js)
         self.assertIn("modelSource: selectedModelSource(elements.workerModel)", js)
         self.assertIn("summarizerModelSource: selectedModelSource(elements.summarizerModel)", js)
-        self.assertIn("mergeCodexCatalogIntoOpenAIModels", js)
-        self.assertIn("isVisibleCodexCatalogModel", js)
-        self.assertIn("refreshOpenAIModelSelects", js)
+        self.assertNotIn("OPENAI_BASE_MODELS", js)
+        self.assertNotIn("OPENAI_CODEX_FALLBACK_MODELS", js)
+        self.assertNotIn("mergeCodexCatalogIntoOpenAIModels", js)
 
     def test_debug_view_exposes_old_shell_operations(self) -> None:
         client = TestClient(create_app())
@@ -534,6 +629,47 @@ class AppRouteTests(unittest.TestCase):
         self.assertTrue(payload["fallback"]["available"])
         self.assertTrue(any(adapter["id"] == "runtime_fallback" for adapter in payload["adapters"]))
 
+    def test_research_status_reports_owned_browser_and_artifact_store(self) -> None:
+        client = TestClient(create_app(self.root))
+
+        response = client.get("/v1/research/status")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["schemaVersion"], "parallm-web-access/v1")
+        self.assertEqual(payload["browserChannel"], "msedge")
+        self.assertIn("playwrightAvailable", payload)
+        self.assertIn("browserPresent", payload)
+        self.assertIn("data/research", payload["artifactStore"])
+
+    def test_research_browser_runs_outside_the_async_request_loop(self) -> None:
+        thread_check = {"outsideLoop": False}
+
+        class ThreadCheckingBrowser:
+            def __init__(self, root: Path, policy: object) -> None:
+                del root, policy
+
+            def __enter__(self) -> "ThreadCheckingBrowser":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                del exc_type, exc, traceback
+
+            def search(self, query: str, *, max_results: int) -> dict[str, object]:
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    thread_check["outsideLoop"] = True
+                return {"query": query, "results": [], "maxResults": max_results}
+
+        client = TestClient(create_app(self.root))
+        with mock.patch("backend.app.main.web_access.LocalBrowser", ThreadCheckingBrowser):
+            response = client.post("/v1/research/search", data={"query": "thread boundary", "maxResults": "2"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(thread_check["outsideLoop"])
+        self.assertEqual(response.json()["query"], "thread boundary")
+
     def test_knowledgebase_retain_recall_and_reflect_are_local_and_ai_readable(self) -> None:
         (self.root / "index.html").write_text("<html></html>", encoding="utf-8")
         (self.root / "replacement-shell.html").write_text("<html></html>", encoding="utf-8")
@@ -584,11 +720,11 @@ class AppRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["profile"], "local-single-node")
-        self.assertEqual(payload["queueBackend"], "local_subprocess")
+        self.assertEqual(payload["queueBackend"], "in_process")
         self.assertEqual(payload["metadataBackend"], "json_files")
         self.assertEqual(payload["artifactBackend"], "filesystem")
         self.assertEqual(payload["secretBackend"], "env")
-        self.assertEqual(payload["runtimeExecutionBackend"], "embedded_engine_subprocess")
+        self.assertEqual(payload["runtimeExecutionBackend"], "embedded_engine")
 
     def test_infrastructure_endpoint_reports_local_defaults_ready(self) -> None:
         client = TestClient(create_app())
@@ -598,9 +734,11 @@ class AppRouteTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["profile"], "local-single-node")
         self.assertIn("backends", payload)
-        self.assertEqual(payload["backends"]["queue"]["backend"], "local_subprocess")
+        self.assertEqual(payload["backends"]["queue"]["backend"], "in_process")
         self.assertEqual(payload["backends"]["metadata"]["backend"], "json_files")
         self.assertEqual(payload["backends"]["artifacts"]["backend"], "filesystem")
+        self.assertIn(payload["backends"]["nativeCore"]["effectiveMode"], {"python", "dual"})
+        self.assertTrue(payload["backends"]["nativeCore"]["ready"])
 
     def test_eval_runs_endpoint_returns_gone_message(self) -> None:
         client = TestClient(create_app())

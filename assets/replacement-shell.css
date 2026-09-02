@@ -67,7 +67,10 @@ html[data-bs-theme="light"] {
 
 html,
 body {
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 html,
@@ -131,7 +134,10 @@ html.igs-scrollbar-viewport-hot body::-webkit-scrollbar-thumb,
 }
 
 body.igs-shell-body {
+  height: 100dvh;
+  min-height: 0;
   margin: 0;
+  overflow: hidden;
   color: var(--rs-text);
   background: var(--rs-body);
   font-family: "Segoe UI", Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -146,13 +152,16 @@ input {
 
 .igs-shell-app {
   position: relative;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   padding: 16px;
   --rs-shell-gap: 16px;
   --rs-shell-radius: 8px;
   --rs-card-radius: 8px;
   --rs-sidebar-width-full: 280px;
   --rs-sidebar-width-collapsed: 96px;
+  --rs-sidebar-content-gap: 32px;
 }
 
 .igs-sidebar,
@@ -406,7 +415,7 @@ input {
 }
 
 .igs-shell-app.is-sidebar-collapsed .igs-main {
-  margin-left: 112px;
+  margin-left: calc(var(--rs-sidebar-width-collapsed) + var(--rs-sidebar-content-gap));
 }
 
 .igs-shell-app.is-sidebar-collapsed .igs-sidebar-topbar {
@@ -472,12 +481,13 @@ input {
 .igs-main {
   position: relative;
   min-width: 0;
-  min-height: calc(100vh - 32px);
-  min-width: 0;
+  height: calc(100dvh - 32px);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin-left: 296px;
+  margin-left: calc(var(--rs-sidebar-width-full) + var(--rs-sidebar-content-gap));
+  overflow: hidden;
 }
 
 .igs-status-strip {
@@ -488,6 +498,7 @@ input {
   --igs-header-unit-gap: 5px;
   --igs-header-inner-height: calc(var(--igs-header-unit-height) - 2px - (var(--igs-header-unit-pad-y) * 2));
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
@@ -686,13 +697,69 @@ input {
     0 0 24px color-mix(in srgb, var(--control-accent) 28%, transparent);
 }
 
+/* Header controls share the status strip's flat instrument treatment. */
+.igs-header-cycle {
+  border-color: var(--rs-border);
+  background: transparent;
+  color: var(--rs-text);
+  box-shadow: none;
+  transform: none;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.igs-header-cycle::before {
+  display: none;
+}
+
+.igs-header-cycle .igs-state-text {
+  color: var(--rs-text);
+  text-shadow: none;
+}
+
+.igs-header-cycle::after {
+  border-color: color-mix(in srgb, var(--control-accent) 36%, var(--rs-border));
+  background: transparent;
+  color: color-mix(in srgb, var(--control-accent) 76%, var(--rs-text));
+  box-shadow: none;
+}
+
+.igs-header-cycle:hover,
+.igs-header-cycle:focus-visible {
+  border-color: color-mix(in srgb, var(--control-accent) 48%, var(--rs-border));
+  background: color-mix(in srgb, var(--control-accent) 6%, transparent);
+  box-shadow: none;
+}
+
+.igs-header-cycle:active,
+.igs-header-cycle.is-active {
+  transform: none;
+  border-color: color-mix(in srgb, var(--control-accent) 58%, var(--rs-border));
+  background: color-mix(in srgb, var(--control-accent) 8%, transparent);
+  box-shadow: none;
+}
+
 .igs-view-stack {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .igs-view {
   display: grid;
+  height: 100%;
+  min-height: 0;
   gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 0 4px 16px 0;
+}
+
+.igs-view[data-view-panel="home"] {
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  padding: 0;
 }
 
 .igs-view-repo {
@@ -755,8 +822,28 @@ input {
 
 .igs-home-workspace {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 18px;
-  min-height: calc(100vh - 148px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.igs-home-workspace > .igs-home-drawer {
+  grid-row: 1;
+}
+
+.igs-home-workspace > .igs-chat-canvas {
+  grid-row: 2;
+}
+
+.igs-home-workspace.is-drawer-empty {
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+}
+
+.igs-home-workspace.is-drawer-empty > .igs-chat-canvas {
+  grid-row: 1;
 }
 
 .igs-home-drawer {
@@ -766,6 +853,7 @@ input {
   grid-template-columns: minmax(800px, 1.2fr) minmax(280px, 0.8fr) minmax(300px, 460px);
   grid-template-areas:
     "contract supporting sidecar"
+    "agents agents sidecar"
     "math2code math2code sidecar";
   gap: 16px;
   align-items: start;
@@ -947,6 +1035,389 @@ input {
 
 .igs-home-supporting {
   grid-area: supporting;
+}
+
+.igs-agent-surface {
+  grid-area: agents;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--rs-surface-strong) 94%, var(--rs-accent) 6%);
+}
+
+.igs-agent-surface.igs-workbench-pane {
+  resize: none;
+  overflow: visible;
+}
+
+.igs-agent-commandbar {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) auto minmax(170px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rs-border);
+}
+
+.igs-agent-project-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  color: var(--rs-muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.igs-agent-project-control select,
+.igs-agent-command-form input,
+.igs-agent-command-form select,
+.igs-agent-command-form textarea,
+.igs-agent-board-form input,
+.igs-agent-board-form select,
+.igs-agent-project-create input {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid var(--rs-border);
+  border-radius: 4px;
+  padding: 6px 9px;
+  color: var(--rs-text);
+  background: color-mix(in srgb, var(--rs-bg) 54%, var(--rs-surface-muted));
+  box-shadow: none;
+}
+
+.igs-agent-command-form textarea {
+  min-height: 48px;
+  max-height: 96px;
+  resize: vertical;
+}
+
+.igs-agent-statline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.igs-agent-statline span,
+.igs-agent-fixed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 4px 7px;
+  border: 1px solid var(--rs-border);
+  border-radius: 999px;
+  color: var(--rs-muted);
+  background: color-mix(in srgb, var(--rs-surface-muted) 80%, transparent);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.igs-agent-statline b {
+  color: var(--rs-text);
+}
+
+.igs-agent-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--rs-muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.igs-agent-status.is-error {
+  color: #fca5a5;
+}
+
+.igs-agent-primary,
+.igs-agent-secondary,
+.igs-agent-project-create summary {
+  min-height: 34px;
+  border: 1px solid var(--rs-border-strong);
+  border-radius: 4px;
+  padding: 6px 10px;
+  color: var(--rs-text);
+  background: color-mix(in srgb, var(--rs-accent-soft) 54%, var(--rs-surface-muted));
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.igs-agent-secondary {
+  border-color: var(--rs-border);
+  background: color-mix(in srgb, var(--rs-surface-muted) 88%, transparent);
+}
+
+.igs-agent-primary:hover,
+.igs-agent-secondary:hover,
+.igs-agent-project-create summary:hover {
+  border-color: var(--rs-accent);
+  background: color-mix(in srgb, var(--rs-accent-soft) 76%, var(--rs-surface-muted));
+}
+
+.igs-agent-primary:active,
+.igs-agent-secondary:active {
+  transform: translateY(1px);
+}
+
+.igs-agent-primary:disabled,
+.igs-agent-secondary:disabled,
+.igs-agent-command-form :disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.igs-agent-project-create {
+  position: relative;
+  z-index: 12;
+}
+
+.igs-agent-project-create summary {
+  list-style: none;
+}
+
+.igs-agent-project-create summary::-webkit-details-marker {
+  display: none;
+}
+
+.igs-agent-project-create form {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: min(320px, calc(100vw - 40px));
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--rs-border-strong);
+  border-radius: 4px;
+  background: var(--rs-surface-strong);
+  box-shadow: 0 18px 44px rgba(2, 8, 23, 0.34);
+}
+
+.igs-agent-project-create form label,
+.igs-agent-command-form label,
+.igs-agent-board-form label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.igs-agent-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px solid var(--rs-border);
+}
+
+.igs-agent-command-form {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.6fr) minmax(150px, 1fr) minmax(210px, 1.4fr) auto;
+  gap: 6px;
+  align-items: end;
+  min-width: 0;
+  padding: 10px 10px 10px 0;
+}
+
+.igs-agent-command-form + .igs-agent-command-form {
+  padding-right: 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--rs-border);
+}
+
+.igs-agent-command-form strong {
+  grid-column: 1 / -1;
+  color: var(--rs-text);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.igs-agent-ops-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.igs-agent-pane {
+  min-width: 0;
+  padding: 10px 10px 0 0;
+}
+
+.igs-agent-pane + .igs-agent-pane {
+  padding-right: 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--rs-border);
+}
+
+.igs-agent-pane-head,
+.igs-agent-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.igs-agent-pane-head {
+  min-height: 28px;
+  margin-bottom: 6px;
+}
+
+.igs-agent-pane-head h5 {
+  margin: 0;
+  color: var(--rs-text);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.igs-agent-pane-head > span {
+  color: var(--rs-muted);
+  font-size: 0.66rem;
+}
+
+.igs-agent-list,
+.igs-agent-board {
+  max-height: 300px;
+  display: grid;
+  gap: 6px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.igs-agent-row,
+.igs-agent-job-row,
+.igs-agent-message {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--rs-border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--rs-surface-muted) 72%, transparent);
+}
+
+.igs-agent-row-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--rs-text);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.igs-agent-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid var(--rs-border);
+  border-radius: 999px;
+  color: var(--rs-muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.igs-agent-state.is-running,
+.igs-agent-state.is-idle,
+.igs-agent-state.is-supervisor,
+.igs-agent-state.is-completed {
+  border-color: color-mix(in srgb, var(--rs-success) 44%, var(--rs-border));
+  color: var(--rs-success);
+}
+
+.igs-agent-state.is-blocked,
+.igs-agent-state.is-failed,
+.igs-agent-state.is-error,
+.igs-agent-state.is-draining {
+  border-color: color-mix(in srgb, #ef4444 44%, var(--rs-border));
+  color: #f87171;
+}
+
+.igs-agent-row p,
+.igs-agent-job-row p,
+.igs-agent-message p {
+  margin: 6px 0;
+  color: var(--rs-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.igs-agent-row-meta,
+.igs-agent-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.igs-agent-row-meta span {
+  color: var(--rs-muted);
+  font-size: 0.62rem;
+}
+
+.igs-agent-row-meta b {
+  color: var(--rs-text);
+  font-weight: 700;
+}
+
+.igs-agent-row-actions {
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+.igs-agent-row-actions .igs-agent-secondary {
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 0.66rem;
+}
+
+.igs-agent-job-row details {
+  margin-top: 6px;
+  color: var(--rs-muted);
+  font-size: 0.68rem;
+}
+
+.igs-agent-job-row pre {
+  max-height: 120px;
+  margin: 5px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.igs-agent-message > span,
+.igs-agent-message time {
+  color: var(--rs-muted);
+  font-size: 0.62rem;
+}
+
+.igs-agent-message.is-showstopper,
+.igs-agent-message.is-recoverable {
+  border-color: color-mix(in srgb, #ef4444 38%, var(--rs-border));
+}
+
+.igs-agent-board-form {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(160px, 1fr) auto;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.igs-agent-empty {
+  padding: 14px 8px;
+  color: var(--rs-muted);
+  font-size: 0.75rem;
+  text-align: center;
 }
 
 .igs-math2code {
@@ -1676,6 +2147,11 @@ button.igs-control-tile {
 .igs-pill-select-option:focus-visible,
 .igs-pill-select-option.is-active {
   background: var(--rs-accent-soft);
+}
+
+.igs-pill-select-option:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .igs-segment {
@@ -3061,6 +3537,27 @@ html[data-bs-theme="light"] .igs-home-contract .igs-control-tile-provider:focus-
   align-self: start;
 }
 
+.igs-model-actuator .igs-pill-select-trigger {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.igs-pill-select-meta {
+  color: color-mix(in srgb, var(--rs-accent) 72%, var(--rs-text-muted));
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.igs-pill-select-meta[hidden] {
+  display: none;
+}
+
 .igs-home-workspace.is-contract-drawer-only .igs-control-grid {
   align-items: center;
 }
@@ -3111,6 +3608,55 @@ html[data-bs-theme="light"] .igs-home-contract .igs-control-tile-provider:focus-
 
 .igs-home-workspace.is-contract-drawer-only .igs-model-actuator .igs-pill-select-value {
   font-size: 0.58rem;
+}
+
+/* The compact contract drawer is sized by its provider bank. */
+.igs-home-workspace.is-contract-drawer-only .igs-home-drawer,
+.igs-home-workspace.is-contract-drawer-only .igs-home-contract,
+.igs-home-workspace.is-contract-drawer-only .igs-control-grid,
+.igs-home-workspace.is-contract-drawer-only .igs-control-pack-routing {
+  width: max-content;
+  max-width: 100%;
+}
+
+.igs-home-workspace.is-contract-drawer-only .igs-home-contract {
+  min-height: 0;
+}
+
+.igs-home-workspace.is-contract-drawer-only .igs-provider-selector-tile {
+  width: max-content;
+  max-width: 100%;
+  min-height: 0;
+  align-self: stretch;
+}
+
+.igs-provider-config-row {
+  position: relative;
+  z-index: 12;
+  display: grid;
+  grid-template-columns: max-content repeat(3, minmax(154px, 1fr));
+  align-items: stretch;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+}
+
+.igs-home-workspace.is-contract-drawer-only .igs-provider-config-row .igs-provider-role-segment {
+  align-self: stretch;
+}
+
+.igs-home-workspace.is-contract-drawer-only .igs-provider-config-row .igs-model-actuator {
+  width: auto;
+  min-width: 184px;
+  max-width: none;
+  align-self: stretch;
+}
+
+.igs-home-workspace.is-contract-drawer-only .igs-provider-segment {
+  width: min(100%, var(--provider-segment-width, 100%));
+  max-width: 100%;
+  align-self: stretch;
+  place-self: auto;
 }
 
 .igs-selector-actuator .actuator-spark {
@@ -3299,18 +3845,23 @@ html[data-bs-theme="light"] .igs-home-contract .igs-control-tile-provider:focus-
 
 .igs-chat-canvas {
   display: grid;
-  align-content: start;
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
-  min-height: calc(100vh - 180px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   padding: 24px 0 188px;
 }
 
 .igs-chat-canvas .igs-run-thread {
   width: min(100%, 1040px);
+  height: 100%;
   margin-inline: auto;
-  min-height: calc(100vh - 340px);
+  min-height: 0;
   max-height: none;
-  overflow: visible;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 0 18px;
 }
 
@@ -3345,11 +3896,11 @@ html[data-bs-theme="light"] .igs-home-contract .igs-control-tile-provider:focus-
 
 .igs-chat-composer {
   position: fixed;
-  left: calc(32px + var(--rs-sidebar-width-full));
+  left: calc(16px + var(--rs-sidebar-width-full) + var(--rs-sidebar-content-gap));
   right: 16px;
   bottom: 18px;
   z-index: 26;
-  width: min(980px, calc(100vw - var(--rs-sidebar-width-full) - 72px));
+  width: min(980px, calc(100vw - var(--rs-sidebar-width-full) - var(--rs-sidebar-content-gap) - 56px));
   margin-inline: auto;
   padding: 0;
   border: 0;
@@ -3359,8 +3910,8 @@ html[data-bs-theme="light"] .igs-home-contract .igs-control-tile-provider:focus-
 }
 
 .igs-shell-app.is-sidebar-collapsed .igs-chat-composer {
-  left: calc(32px + var(--rs-sidebar-width-collapsed));
-  width: min(980px, calc(100vw - var(--rs-sidebar-width-collapsed) - 72px));
+  left: calc(16px + var(--rs-sidebar-width-collapsed) + var(--rs-sidebar-content-gap));
+  width: min(980px, calc(100vw - var(--rs-sidebar-width-collapsed) - var(--rs-sidebar-content-gap) - 56px));
 }
 
 .igs-chat-composer .igs-composer-label {
@@ -4144,7 +4695,12 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
   flex: 1 1 260px;
 }
 
-.igs-auth-key-field input {
+.igs-auth-workspace-field {
+  flex: 1 1 230px;
+}
+
+.igs-auth-key-field input,
+.igs-auth-workspace-field input {
   min-height: 36px;
   border: 1px solid var(--rs-border);
   border-radius: 10px;
@@ -4894,6 +5450,7 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
     grid-template-columns: minmax(360px, 540px) minmax(0, 1fr);
     grid-template-areas:
       "contract supporting"
+      "agents agents"
       "math2code math2code"
       "sidecar sidecar";
   }
@@ -4905,17 +5462,61 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
 }
 
 @media (max-width: 1220px) {
+  .igs-provider-config-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .igs-provider-config-row .igs-provider-role-segment {
+    grid-column: 1 / -1;
+  }
+
+  .igs-home-workspace.is-contract-drawer-only .igs-home-contract,
+  .igs-home-workspace.is-contract-drawer-only .igs-control-grid,
+  .igs-home-workspace.is-contract-drawer-only .igs-control-pack-routing,
+  .igs-home-workspace.is-contract-drawer-only .igs-provider-selector-tile {
+    width: 100%;
+  }
+
+  .igs-home-workspace.is-contract-drawer-only .igs-provider-config-row .igs-model-actuator {
+    min-width: 0;
+  }
+
+  .igs-home-workspace.is-contract-drawer-only .igs-provider-segment {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
   .igs-home-drawer {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "contract"
       "supporting"
+      "agents"
       "math2code"
       "sidecar";
   }
 
   .igs-home-sidecar {
     grid-template-columns: 1fr;
+  }
+
+  .igs-agent-commandbar,
+  .igs-agent-action-grid,
+  .igs-agent-ops-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .igs-agent-command-form,
+  .igs-agent-command-form + .igs-agent-command-form,
+  .igs-agent-pane,
+  .igs-agent-pane + .igs-agent-pane {
+    padding: 10px 0;
+    border-left: 0;
+  }
+
+  .igs-agent-command-form + .igs-agent-command-form,
+  .igs-agent-pane + .igs-agent-pane {
+    border-top: 1px solid var(--rs-border);
   }
 
   .igs-control-bay-readout {
@@ -4940,54 +5541,71 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
 }
 
 @media (max-width: 980px) {
+  .igs-shell-app {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 12px;
+  }
+
   .igs-sidebar {
     position: static;
     width: auto;
     bottom: auto;
-    gap: 16px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    overflow: hidden;
   }
 
   .igs-main,
   .igs-shell-app.is-sidebar-collapsed .igs-main {
+    height: 100%;
     margin-left: 0;
-    min-height: calc(100vh - 24px);
+    min-height: 0;
   }
 
   .igs-sidebar-topbar,
   .igs-shell-app.is-sidebar-collapsed .igs-sidebar-topbar {
-    padding: 12px 18px;
+    min-height: 0;
+    padding: 0;
+    border-bottom: 0;
   }
 
   .igs-sidebar-toggle {
-    position: static;
-    right: auto;
-    top: auto;
-    margin-left: auto;
-    transform: none;
-  }
-
-  .igs-sidebar-toggle:hover {
-    transform: translateY(-1px);
+    display: none;
   }
 
   .igs-shell-app.is-sidebar-collapsed .igs-sidebar {
     width: auto;
   }
 
+  .igs-brand,
   .igs-shell-app.is-sidebar-collapsed .igs-brand {
-    grid-template-columns: 46px minmax(0, 1fr);
-    justify-content: stretch;
+    width: auto;
+    grid-template-columns: 38px;
+    justify-content: start;
   }
 
+  .igs-brand-mark {
+    width: 38px;
+    height: 38px;
+  }
+
+  .igs-brand-copy,
   .igs-shell-app.is-sidebar-collapsed .igs-brand-copy,
-  .igs-shell-app.is-sidebar-collapsed .igs-sidebar-meta,
-  .igs-shell-app.is-sidebar-collapsed .igs-section-label {
-    display: initial;
+  .igs-sidebar-meta,
+  .igs-section-label {
+    display: none;
   }
 
+  .igs-sidebar-section-head,
   .igs-shell-app.is-sidebar-collapsed .igs-sidebar-section-head {
-    justify-content: space-between;
-    padding-inline: 14px;
+    grid-column: 3;
+    grid-row: 1;
+    justify-content: end;
+    padding: 0;
   }
 
   .igs-shell-app.is-sidebar-collapsed .igs-theme-toggle {
@@ -4995,7 +5613,23 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
   }
 
   .igs-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 0;
+  }
+
+  .igs-nav-btn,
+  .igs-shell-app.is-sidebar-collapsed .igs-nav-btn {
+    width: auto;
+    min-height: 36px;
+    flex: 1 1 72px;
+    justify-content: center;
+    padding: 7px 8px;
+    text-align: center;
+    font-size: 0.82rem;
   }
 
   .igs-control-grid,
@@ -5094,7 +5728,216 @@ html[data-bs-theme="light"] .igs-send-button.is-answer-now {
     grid-template-columns: 1fr;
   }
 
+  .igs-provider-config-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .igs-provider-config-row .igs-provider-role-segment {
+    grid-column: 1 / -1;
+  }
+
+  .igs-home-workspace.is-contract-drawer-only .igs-provider-config-row .igs-model-actuator {
+    min-width: 0;
+  }
+
+  .igs-home-workspace.is-contract-drawer-only .igs-provider-segment {
+    flex-wrap: wrap;
+  }
+
   .igs-fractal-host.repo-review-root .fm-kb-drawer-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Home controls use one stable, independently scrolling tool canvas. */
+.igs-home-workspace,
+.igs-home-workspace.is-contract-drawer-only {
+  position: relative;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  margin-top: 0;
+  overflow: hidden;
+}
+
+.igs-home-workspace > .igs-chat-canvas,
+.igs-home-workspace.is-drawer-empty > .igs-chat-canvas {
+  grid-row: 1;
+}
+
+.igs-home-workspace .igs-home-drawer,
+.igs-home-workspace.is-contract-drawer-only .igs-home-drawer {
+  position: absolute;
+  top: -8px;
+  right: auto;
+  bottom: 160px;
+  left: 50%;
+  z-index: 78;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 42px minmax(0, 1fr);
+  grid-template-areas: none;
+  align-items: stretch;
+  justify-self: auto;
+  width: min(1180px, calc(100% - 28px));
+  min-width: 0;
+  min-height: 260px;
+  max-width: none;
+  max-height: 720px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--rs-border-strong) 74%, var(--rs-border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--rs-surface-strong) 96%, var(--rs-bg) 4%);
+  box-shadow: 0 24px 64px rgba(2, 8, 23, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px);
+  transform: translateX(-50%);
+  animation: igs-home-tool-canvas-in 160ms ease-out;
+}
+
+.igs-home-workspace .igs-home-drawer[hidden] {
+  display: none !important;
+}
+
+.igs-home-drawer-chrome {
+  position: relative;
+  z-index: 3;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 7px 0 14px;
+  border-bottom: 1px solid var(--rs-border);
+  background: color-mix(in srgb, var(--rs-surface-muted) 88%, transparent);
+}
+
+.igs-home-drawer-chrome strong {
+  overflow: hidden;
+  color: var(--rs-text);
+  font-size: 0.84rem;
+  font-weight: 760;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.igs-home-drawer-close {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rs-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.igs-home-drawer-close:hover,
+.igs-home-drawer-close:focus-visible {
+  border-color: var(--rs-border-strong);
+  background: var(--rs-accent-soft);
+  color: var(--rs-text);
+  outline: 0;
+}
+
+.igs-home-drawer-scroll {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 14px;
+}
+
+.igs-home-drawer-scroll > .igs-home-sidecar {
+  display: contents;
+}
+
+.igs-home-drawer-scroll > .igs-home-sidecar[hidden],
+.igs-home-drawer-scroll [data-home-panel][hidden] {
+  display: none !important;
+}
+
+.igs-home-drawer-scroll > [data-home-panel],
+.igs-home-drawer-scroll > .igs-home-sidecar > [data-home-panel],
+.igs-home-workspace.is-contract-drawer-only .igs-home-drawer-scroll > .igs-home-contract {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  margin: 0;
+  padding: 14px;
+  justify-self: stretch;
+  resize: none;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  transform: none !important;
+}
+
+.igs-home-drawer .igs-workbench-pane,
+.igs-home-drawer .igs-agent-surface.igs-workbench-pane {
+  resize: none;
+  overflow: visible;
+  transform: none !important;
+  will-change: auto;
+}
+
+.igs-home-workspace.is-drawer-open > .igs-chat-canvas {
+  opacity: 0.72;
+  transition: opacity 140ms ease;
+}
+
+@keyframes igs-home-tool-canvas-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (max-width: 980px) {
+  .igs-provider-config-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .igs-provider-config-row .igs-provider-role-segment,
+  .igs-provider-config-row > :last-child {
+    grid-column: 1 / -1;
+  }
+
+  .igs-home-workspace .igs-home-drawer,
+  .igs-home-workspace.is-contract-drawer-only .igs-home-drawer {
+    top: -4px;
+    bottom: 148px;
+    width: calc(100% - 12px);
+    min-height: 220px;
+    max-height: none;
+  }
+
+  .igs-home-drawer-scroll {
+    padding: 10px;
+  }
+
+  .igs-home-drawer-scroll > [data-home-panel],
+  .igs-home-drawer-scroll > .igs-home-sidecar > [data-home-panel] {
+    padding: 10px;
   }
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.app import knowledgebase
 from runtime.engine import LoopRuntime
@@ -20,6 +21,40 @@ class RuntimeKnowledgebaseTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmpdir.cleanup()
+
+    def test_persistent_record_cache_reuses_unchanged_bank_and_invalidates_after_write(self) -> None:
+        knowledgebase.retain(
+            self.root,
+            {
+                "bankId": "cache-probe",
+                "items": [{"title": "First fact", "content": "The first durable memory fact."}],
+            },
+        )
+
+        with mock.patch.object(
+            knowledgebase,
+            "read_jsonl_records",
+            wraps=knowledgebase.read_jsonl_records,
+        ) as reader:
+            first, first_warnings = knowledgebase.load_persistent_records(self.root, bank_id="cache-probe")
+            second, second_warnings = knowledgebase.load_persistent_records(self.root, bank_id="cache-probe")
+
+            self.assertEqual(reader.call_count, 1)
+            self.assertEqual(first, second)
+            self.assertEqual(first_warnings, second_warnings)
+
+            knowledgebase.retain(
+                self.root,
+                {
+                    "bankId": "cache-probe",
+                    "items": [{"title": "Second fact", "content": "The second durable memory fact."}],
+                },
+            )
+            calls_after_write = reader.call_count
+            refreshed, _warnings = knowledgebase.load_persistent_records(self.root, bank_id="cache-probe")
+
+            self.assertEqual(reader.call_count, calls_after_write + 1)
+            self.assertEqual(len(refreshed), 2)
 
     def test_lane_recall_uses_private_route_tags_when_available(self) -> None:
         knowledgebase.retain(

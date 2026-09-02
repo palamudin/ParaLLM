@@ -34,6 +34,19 @@ class DispatchTests(unittest.TestCase):
             task_state_path.parent.mkdir(parents=True, exist_ok=True)
             task_state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
+    def test_dispatch_runner_uses_in_process_pool_by_default(self) -> None:
+        with (
+            mock.patch("backend.app.dispatch.background.submit", return_value="dispatch-native") as submit,
+            mock.patch("backend.app.dispatch.subprocess.Popen") as popen,
+        ):
+            task_id = dispatch.launch_dispatch_job_runner({"jobId": "dispatch-in-process"}, self.root)
+
+        self.assertEqual(task_id, "dispatch-native")
+        popen.assert_not_called()
+        self.assertEqual(submit.call_args.args[0], "dispatch")
+        self.assertEqual(submit.call_args.args[1], "dispatch-in-process")
+        self.assertIs(submit.call_args.args[3], dispatch.execute_target_job_process)
+
     def test_run_round_queues_dependency_batch_and_launches_commander(self) -> None:
         with mock.patch("backend.app.dispatch.launch_dispatch_job_runner") as launcher:
             result = dispatch.run_round({}, self.root)
@@ -44,11 +57,12 @@ class DispatchTests(unittest.TestCase):
 
         paths = storage.project_paths(self.root)
         jobs = storage.read_jobs(paths)
-        self.assertEqual(len(jobs), 5)
+        self.assertEqual(len(jobs), 6)
 
         commander = next(job for job in jobs if job["target"] == "commander")
         workers = [job for job in jobs if str(job["target"]).isalpha() and len(str(job["target"])) == 1]
         commander_review = next(job for job in jobs if job["target"] == "commander_review")
+        answer_now = next(job for job in jobs if job["target"] == "answer_now")
         summarizer = next(job for job in jobs if job["target"] == "summarizer")
 
         self.assertEqual(len(workers), 2)
@@ -58,8 +72,9 @@ class DispatchTests(unittest.TestCase):
         worker_job_ids_by_target = {str(job["target"]): str(job["jobId"]) for job in workers}
         self.assertEqual(
             sorted(commander_review["dependencyJobIds"]),
-            sorted(worker_job_ids_by_target.values()),
+            sorted([commander["jobId"], *worker_job_ids_by_target.values()]),
         )
+        self.assertEqual(answer_now["dependencyJobIds"], [commander_review["jobId"]])
         self.assertEqual(summarizer["dependencyJobIds"], [commander_review["jobId"]])
         self.assertEqual(
             result["jobIds"],
@@ -68,11 +83,12 @@ class DispatchTests(unittest.TestCase):
                 worker_job_ids_by_target["A"],
                 worker_job_ids_by_target["B"],
                 commander_review["jobId"],
+                answer_now["jobId"],
                 summarizer["jobId"],
             ],
         )
 
-    def test_run_round_v1_uses_session_target_timeouts(self) -> None:
+    def test_run_round_v2_uses_session_target_timeouts(self) -> None:
         state = self._read_state()
         task = state["activeTask"]
         task["runtime"]["timeoutMode"] = "user"

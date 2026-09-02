@@ -46,6 +46,7 @@ from runtime.engine import (
     normalize_provider_id,
     normalize_provider_routing_config,
     normalize_provider_instance_catalog,
+    normalize_reasoning_effort,
     normalize_research_config,
     normalize_target_timeout_config,
     normalize_vetting_config,
@@ -62,8 +63,10 @@ from . import control, jobs, storage
 from .secrets import (
     auth_backend_mode_for_provider,
     auth_key_provider_label,
+    normalize_anthropic_workspace_id,
     normalize_auth_backend_mode,
     write_auth_backend_mode_override,
+    write_anthropic_workspace_id,
     write_local_auth_keys,
 )
 
@@ -106,9 +109,24 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
     replace_index = payload.get("replaceIndex")
     remove_index = payload.get("removeIndex")
     api_keys = control.normalize_auth_key_pool(payload.get("apiKeys", payload.get("apiKey", "")))
+    workspace_requested = "workspaceId" in payload
+    raw_workspace_id = str(payload.get("workspaceId") or "").strip()
+    workspace_id = normalize_anthropic_workspace_id(raw_workspace_id)
+    if workspace_requested and provider != "anthropic" and raw_workspace_id:
+        raise RuntimeErrorWithCode("Workspace scope is only supported for Anthropic API credentials.", 400)
+    if workspace_requested and raw_workspace_id and not workspace_id:
+        raise RuntimeErrorWithCode(
+            "Anthropic workspace ID must start with wrkspc_ and contain only letters, numbers, underscores, or hyphens.",
+            400,
+        )
+
+    def save_workspace_scope() -> None:
+        if workspace_requested and provider == "anthropic":
+            write_anthropic_workspace_id(control.local_auth_file_path(runtime.root), workspace_id)
 
     if clear:
         write_auth_key_pool([], runtime.root, provider)
+        save_workspace_scope()
         runtime.append_step("auth", f"Cleared the local {provider_label} API key pool file.", {"provider": provider})
         return {"ok": True, "message": f"Stored {provider_label} API key pool cleared.", **control.auth_pool_status(runtime.root)}
 
@@ -116,6 +134,7 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
         pool = control.read_auth_key_pool(runtime.root, provider)
         pool.append(append_key)
         write_auth_key_pool(pool, runtime.root, provider)
+        save_workspace_scope()
         runtime.append_step(
             "auth",
             f"Appended one {provider_label} API key into the local key pool.",
@@ -134,6 +153,7 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
             raise RuntimeErrorWithCode("Key slot is out of range.", 400)
         pool[index] = api_key
         write_auth_key_pool(pool, runtime.root, provider)
+        save_workspace_scope()
         runtime.append_step(
             "auth",
             f"Replaced one {provider_label} API key in the local key pool.",
@@ -152,6 +172,7 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
             raise RuntimeErrorWithCode("Key slot is out of range.", 400)
         del pool[index]
         write_auth_key_pool(pool, runtime.root, provider)
+        save_workspace_scope()
         runtime.append_step(
             "auth",
             f"Removed one {provider_label} API key from the local key pool.",
@@ -163,10 +184,24 @@ def set_auth_keys(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[
             **control.auth_pool_status(runtime.root),
         }
 
+    if not api_keys and workspace_requested and provider == "anthropic":
+        save_workspace_scope()
+        runtime.append_step(
+            "auth",
+            "Updated Anthropic workspace scope metadata.",
+            {"provider": provider, "workspaceConfigured": bool(workspace_id)},
+        )
+        return {
+            "ok": True,
+            "message": "Anthropic workspace scope updated." if workspace_id else "Anthropic workspace scope cleared.",
+            **control.auth_pool_status(runtime.root),
+        }
+
     if not api_keys:
         raise RuntimeErrorWithCode("At least one API key is required.", 400)
 
     write_auth_key_pool(api_keys, runtime.root, provider)
+    save_workspace_scope()
     runtime.append_step(
         "auth",
         f"Updated the local {provider_label} API key pool file.",
@@ -248,9 +283,16 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     current_dynamic_spinup = normalize_dynamic_spinup_config(runtime_config.get("dynamicSpinup") if isinstance(runtime_config.get("dynamicSpinup"), dict) else {})
     current_vetting = normalize_vetting_config(runtime_config.get("vetting") if isinstance(runtime_config.get("vetting"), dict) else {})
     current_loop = control.normalize_loop_preferences(active_task.get("preferredLoop") if isinstance(active_task.get("preferredLoop"), dict) else {})
-    current_reasoning_effort = str(runtime_config.get("reasoningEffort") or "low").strip()
-    if current_reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
-        current_reasoning_effort = "low"
+    current_reasoning_effort = normalize_reasoning_effort(runtime_config.get("reasoningEffort"), "low")
+    current_worker_reasoning_effort = normalize_reasoning_effort(
+        runtime_config.get("workerReasoningEffort"),
+        current_reasoning_effort,
+    )
+    current_summarizer_reasoning_effort = normalize_reasoning_effort(
+        runtime_config.get("summarizerReasoningEffort"),
+        current_reasoning_effort,
+    )
+    current_codex_subagents_enabled = coerce_bool(runtime_config.get("codexSubagentsEnabled"), False)
 
     current_provider = normalize_provider_id(str(runtime_config.get("provider") or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
     current_model_source = control.normalize_model_source(
@@ -399,9 +441,19 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
     target_timeouts = normalize_target_timeout_config(
         target_timeouts_input if isinstance(target_timeouts_input, dict) else current_target_timeouts
     )
-    reasoning_effort = str(payload.get("reasoningEffort", current_reasoning_effort)).strip()
-    if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
-        reasoning_effort = current_reasoning_effort
+    reasoning_effort = normalize_reasoning_effort(payload.get("reasoningEffort"), current_reasoning_effort)
+    worker_reasoning_effort = normalize_reasoning_effort(
+        payload.get("workerReasoningEffort"),
+        reasoning_effort if "reasoningEffort" in payload else current_worker_reasoning_effort,
+    )
+    summarizer_reasoning_effort = normalize_reasoning_effort(
+        payload.get("summarizerReasoningEffort"),
+        reasoning_effort if "reasoningEffort" in payload else current_summarizer_reasoning_effort,
+    )
+    codex_subagents_enabled = coerce_bool(
+        payload.get("codexSubagentsEnabled"),
+        current_codex_subagents_enabled,
+    )
 
     budget = normalize_budget_config(
         {
@@ -487,7 +539,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         task_runtime["timeoutMode"] = timeout_mode
         task_runtime["ollamaTimeoutProfile"] = ollama_timeout_profile
         task_runtime["targetTimeouts"] = target_timeouts
-        task_runtime["reasoningEffort"] = reasoning_effort
+        task_runtime["reasoningEffort"] = worker_reasoning_effort
+        task_runtime["workerReasoningEffort"] = worker_reasoning_effort
+        task_runtime["summarizerReasoningEffort"] = summarizer_reasoning_effort
+        task_runtime["codexSubagentsEnabled"] = codex_subagents_enabled
         task_runtime["budget"] = budget
         task_runtime["research"] = research
         task_runtime["localFiles"] = local_files
@@ -531,7 +586,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
                 "timeoutMode": timeout_mode,
                 "ollamaTimeoutProfile": ollama_timeout_profile,
                 "targetTimeouts": target_timeouts,
-                "reasoningEffort": reasoning_effort,
+                "reasoningEffort": worker_reasoning_effort,
+                "workerReasoningEffort": worker_reasoning_effort,
+                "summarizerReasoningEffort": summarizer_reasoning_effort,
+                "codexSubagentsEnabled": codex_subagents_enabled,
                 "maxTotalTokens": budget["maxTotalTokens"],
                 "maxCostUsd": budget["maxCostUsd"],
                 "maxOutputTokens": budget["maxOutputTokens"],
@@ -584,7 +642,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
             "timeoutMode": timeout_mode,
             "ollamaTimeoutProfile": ollama_timeout_profile,
             "targetTimeouts": target_timeouts,
-            "reasoningEffort": reasoning_effort,
+            "reasoningEffort": worker_reasoning_effort,
+            "workerReasoningEffort": worker_reasoning_effort,
+            "summarizerReasoningEffort": summarizer_reasoning_effort,
+            "codexSubagentsEnabled": codex_subagents_enabled,
             "budget": budget,
             "research": research,
             "localFiles": local_files,
@@ -620,7 +681,10 @@ def apply_runtime_settings(payload: Dict[str, Any], root: Optional[Path] = None)
         "timeoutMode": timeout_mode,
         "ollamaTimeoutProfile": ollama_timeout_profile,
         "targetTimeouts": target_timeouts,
-        "reasoningEffort": reasoning_effort,
+        "reasoningEffort": worker_reasoning_effort,
+        "workerReasoningEffort": worker_reasoning_effort,
+        "summarizerReasoningEffort": summarizer_reasoning_effort,
+        "codexSubagentsEnabled": codex_subagents_enabled,
         "budget": budget,
         "research": research,
         "localFiles": local_files,

@@ -6,6 +6,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from runtime import native_core
+
 try:
     import psycopg  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - optional dependency in some runtimes
@@ -87,7 +89,14 @@ def _json_metadata_status(topology: DeploymentTopology) -> Dict[str, Any]:
     }
 
 
-def _local_queue_status() -> Dict[str, Any]:
+def _local_queue_status(backend: str) -> Dict[str, Any]:
+    if backend == "in_process":
+        return {
+            "backend": "in_process",
+            "configured": True,
+            "ready": True,
+            "detail": "Using bounded in-process Python worker pools; no local worker process launch is required.",
+        }
     return {
         "backend": "local_subprocess",
         "configured": True,
@@ -162,7 +171,7 @@ def queue_status(topology: DeploymentTopology) -> Dict[str, Any]:
             "detail": detail,
             "redisUrl": topology.redis_url,
         }
-    return _local_queue_status()
+    return _local_queue_status(topology.queue_backend)
 
 
 def metadata_status(topology: DeploymentTopology) -> Dict[str, Any]:
@@ -242,7 +251,11 @@ def runtime_execution_status(topology: DeploymentTopology) -> Dict[str, Any]:
         "backend": topology.runtime_execution_backend,
         "configured": True,
         "ready": True,
-        "detail": "Using embedded engine subprocess execution.",
+        "detail": (
+            "Using direct in-process runtime execution."
+            if topology.runtime_execution_backend == "embedded_engine"
+            else "Using the legacy embedded-engine compatibility path."
+        ),
     }
 
 
@@ -253,6 +266,7 @@ def infrastructure_status(root: Optional[Path] = None) -> Dict[str, Any]:
     artifacts = artifact_status(topology)
     secrets = secret_status(topology)
     runtime_execution = runtime_execution_status(topology)
+    core = native_core.status()
     return {
         "profile": topology.profile,
         "backends": {
@@ -261,10 +275,11 @@ def infrastructure_status(root: Optional[Path] = None) -> Dict[str, Any]:
             "artifacts": artifacts,
             "secrets": secrets,
             "runtimeExecution": runtime_execution,
+            "nativeCore": core,
         },
         "ready": all(
             bool(section.get("ready"))
-            for section in (queue, metadata, artifacts, secrets, runtime_execution)
+            for section in (queue, metadata, artifacts, secrets, runtime_execution, core)
         ),
     }
 

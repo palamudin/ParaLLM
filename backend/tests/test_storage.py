@@ -51,6 +51,39 @@ class StorageReadModelTests(unittest.TestCase):
         self.assertEqual(payload["dispatch"]["activeJobs"], [])
         self.assertIsNone(payload["dispatch"]["providerTrace"])
 
+    def test_read_state_payload_migrates_legacy_engine_metadata_to_v2(self) -> None:
+        self.write_json(
+            self.paths.state,
+            {
+                "activeTask": {
+                    "taskId": "t-legacy-engine",
+                    "objective": "Retire V1 without discarding the historical task.",
+                    "runtime": {
+                        "engineVersion": "v1",
+                        "engineGraph": {"version": "v1", "nodes": {}, "edges": []},
+                        "enginePlan": {
+                            "version": "v2",
+                            "runner": {
+                                "liveExecution": {
+                                    "supported": True,
+                                    "mode": "v1-compatible",
+                                }
+                            },
+                        },
+                    },
+                }
+            },
+        )
+
+        payload = storage.read_state_payload(self.paths)
+
+        runtime = payload["activeTask"]["runtime"]
+        self.assertEqual(runtime["engineVersion"], "v2")
+        self.assertEqual(runtime["engineGraph"]["version"], "v2")
+        self.assertEqual(runtime["enginePlan"]["version"], "v2")
+        self.assertEqual(runtime["enginePlan"]["runner"]["liveExecution"]["mode"], "v2-plan")
+        self.assertEqual(self.read_json(self.paths.state)["activeTask"]["runtime"]["engineVersion"], "v1")
+
     def test_read_state_payload_surfaces_dispatch_provider_trace(self) -> None:
         now = datetime.now(timezone.utc)
         self.write_json(

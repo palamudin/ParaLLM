@@ -11,6 +11,7 @@ class SupplyChainError(RuntimeError):
     pass
 
 
+PIP_AUDIT_TIMEOUT_SECONDS = 180
 REMOTE_ACTION_RE = re.compile(r"uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([^\s#]+)")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REMOTE_SCRIPT_RE = re.compile(r"<script[^>]+src=[\"']https?://", re.I)
@@ -65,12 +66,18 @@ def run_pip_audit(root: Path) -> None:
     pip_audit_bin = shutil.which("pip-audit")
     if not pip_audit_bin:
         raise SupplyChainError("pip-audit is not installed. Install requirements-dev.txt first.")
-    result = subprocess.run(
-        [pip_audit_bin, "-r", str(root / "requirements-ci.txt")],
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [pip_audit_bin, "-r", str(root / "requirements-ci.txt")],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=PIP_AUDIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SupplyChainError(
+            f"pip-audit exceeded its {PIP_AUDIT_TIMEOUT_SECONDS}s dependency-audit deadline."
+        ) from exc
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
     if stdout:

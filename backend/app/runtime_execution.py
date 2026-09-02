@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from runtime.engine import LoopRuntime, RuntimeErrorWithCode
+from runtime.timing import timed_span
 
 from . import arbiter
 from .config import deployment_topology
@@ -14,6 +15,21 @@ from .config import deployment_topology
 
 def run_target(runtime: LoopRuntime, target: str, task_id: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     execution_options = dict(options or {})
+    with timed_span(
+        runtime.root,
+        "pipeline",
+        f"target.{str(target or 'unknown').strip().lower()}",
+        {
+            "taskId": str(task_id or "").strip(),
+            "target": str(target or "").strip(),
+            "dispatchJobId": str(execution_options.get("dispatchJobId") or "").strip() or None,
+            "round": execution_options.get("round"),
+        },
+    ):
+        return _run_target(runtime, target, task_id, execution_options)
+
+
+def _run_target(runtime: LoopRuntime, target: str, task_id: str, execution_options: Dict[str, Any]) -> Dict[str, Any]:
     if str(target or "").strip().lower() == "arbiter":
         return arbiter.run_current_task_arbiter(runtime, task_id, execution_options)
     topology = deployment_topology(runtime.root)

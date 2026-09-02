@@ -21,7 +21,8 @@ from runtime.engine import (
     task_workers,
 )
 
-from . import arbiter, control, faults, jobs, queueing, runtime_execution, storage
+from . import arbiter, background, control, faults, jobs, queueing, runtime_execution, storage
+from .config import deployment_topology
 
 
 def utc_now() -> str:
@@ -250,8 +251,8 @@ def dispatch_target_runtime_profile(runtime: LoopRuntime, task: Dict[str, Any], 
         }
 
     if normalized_target == "arbiter":
-        provider = "openai"
-        return {"provider": provider, "model": "gpt-5.4"}
+        profile = arbiter.judge_runtime_profile(task)
+        return {"provider": profile["provider"], "model": profile["model"]}
 
     if normalized_target == "commander":
         config = commander_config(task)
@@ -486,9 +487,19 @@ def _subprocess_kwargs() -> Dict[str, Any]:
     return kwargs
 
 
-def launch_dispatch_job_runner(job: Dict[str, Any], root: Optional[Path] = None) -> None:
+def launch_dispatch_job_runner(job: Dict[str, Any], root: Optional[Path] = None) -> Optional[str]:
     repo_root = Path(root).resolve() if root else Path(__file__).resolve().parents[2]
     auth_path = control.auth_file_path(repo_root)
+    if deployment_topology(repo_root).queue_backend == "in_process":
+        return background.submit(
+            "dispatch",
+            str(job.get("jobId") or "dispatch-job"),
+            repo_root,
+            execute_target_job_process,
+            str(job.get("jobId") or ""),
+            root=repo_root,
+            auth_path=auth_path,
+        )
     command = [
         sys.executable,
         "-m",
@@ -498,6 +509,7 @@ def launch_dispatch_job_runner(job: Dict[str, Any], root: Optional[Path] = None)
         f"--auth-path={auth_path}",
     ]
     subprocess.Popen(command, **_subprocess_kwargs())  # noqa: S603,S607
+    return None
 
 
 def create_target_job(runtime: LoopRuntime, task: Dict[str, Any], target: str, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -566,82 +578,6 @@ def _round_dispatch_timeout_seconds(overrides: Dict[str, Any]) -> int:
     return max(0, value)
 
 
-def _create_round_dispatch_jobs_v1(
-    runtime: LoopRuntime,
-    task: Dict[str, Any],
-    *,
-    round_number: int,
-    timeout_seconds: int,
-    batch_id: str,
-) -> Dict[str, Any]:
-    round_workers = task_workers(task, round_number)
-    commander_job = create_target_job(
-        runtime,
-        task,
-        "commander",
-        {
-            "batchId": batch_id,
-            "timeoutSeconds": timeout_seconds,
-            "workerCount": len(round_workers),
-            "lastMessage": "Queued commander dispatch.",
-            "metadata": {"trigger": "round"},
-        },
-    )
-    worker_jobs: List[Dict[str, Any]] = []
-    for worker in round_workers:
-        worker_jobs.append(
-            create_target_job(
-                runtime,
-                task,
-                str(worker["id"]),
-                {
-                    "batchId": batch_id,
-                    "dependencyJobIds": [commander_job["jobId"]],
-                    "timeoutSeconds": timeout_seconds,
-                    "workerCount": len(round_workers),
-                    "lastMessage": "Waiting for commander.",
-                    "metadata": {"trigger": "round"},
-                },
-            )
-        )
-    commander_review_job = create_target_job(
-        runtime,
-        task,
-        "commander_review",
-        {
-            "batchId": batch_id,
-            "dependencyJobIds": [str(job["jobId"]) for job in worker_jobs],
-            "timeoutSeconds": timeout_seconds,
-            "workerCount": len(round_workers),
-            "lastMessage": "Waiting for workers." if worker_jobs else "Waiting for commander.",
-            "metadata": {"trigger": "round"},
-        },
-    )
-    summarizer_job = create_target_job(
-        runtime,
-        task,
-        "summarizer",
-        {
-            "batchId": batch_id,
-            "dependencyJobIds": [commander_review_job["jobId"]],
-            "timeoutSeconds": timeout_seconds,
-            "workerCount": len(round_workers),
-            "lastMessage": "Waiting for commander review.",
-            "metadata": {"trigger": "round"},
-        },
-    )
-    return {
-        "batchId": batch_id,
-        "commander": commander_job,
-        "workers": worker_jobs,
-        "commanderReview": commander_review_job,
-        "summarizer": summarizer_job,
-        "sidecars": [],
-        "jobs": [commander_job, *worker_jobs, commander_review_job, summarizer_job],
-        "planSource": "v1-fallback",
-    }
-
-
 def _create_round_dispatch_jobs_from_plan(
     runtime: LoopRuntime,
     task: Dict[str, Any],
@@ -680,6 +616,7 @@ def _create_round_dispatch_jobs_from_plan(
             continue
         dependency_job_ids = _dependency_job_ids(item)
         schedule_class = str(item.get("scheduleClass") or "")
+        timeout_control_mode = str(item.get("timeoutControlMode") or "session").strip().lower()
         item_timeout_seconds = max(
             30,
             int((item.get("timeoutSeconds") or 0) or timeout_seconds or runtime.get_request_timeout_seconds(task, target) or 1800),
@@ -693,14 +630,18 @@ def _create_round_dispatch_jobs_from_plan(
         if target == "workers":
             current_worker_jobs: List[Dict[str, Any]] = []
             for worker in round_workers:
+                worker_target = str(worker["id"])
+                worker_timeout_seconds = item_timeout_seconds
+                if timeout_control_mode != "override" and timeout_seconds <= 0:
+                    worker_timeout_seconds = max(30, int(runtime.get_request_timeout_seconds(task, worker_target) or 1800))
                 job = create_target_job(
                     runtime,
                     task,
-                    str(worker["id"]),
+                    worker_target,
                     {
                         "batchId": batch_id,
                         "dependencyJobIds": dependency_job_ids,
-                        "timeoutSeconds": item_timeout_seconds,
+                        "timeoutSeconds": worker_timeout_seconds,
                         "workerCount": len(round_workers),
                         "lastMessage": "Waiting for commander." if dependency_job_ids else "Queued worker dispatch.",
                         "metadata": metadata,
@@ -770,32 +711,19 @@ def create_round_dispatch_jobs(runtime: LoopRuntime, task: Dict[str, Any], overr
     batch_id = "batch-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(8).hex()[:6]
     timeout_seconds = _round_dispatch_timeout_seconds(overrides)
     task_runtime = runtime.get_task_runtime(task)
-    if str(task_runtime.get("engineVersion") or "v1").strip().lower() != "v2":
-        return _create_round_dispatch_jobs_v1(
-            runtime,
-            task,
-            round_number=round_number,
-            timeout_seconds=timeout_seconds,
-            batch_id=batch_id,
-        )
     engine_plan = task_runtime.get("enginePlan") if isinstance(task_runtime.get("enginePlan"), dict) else {}
     runner = engine_plan.get("runner") if isinstance(engine_plan.get("runner"), dict) else {}
     live_execution = runner.get("liveExecution") if isinstance(runner.get("liveExecution"), dict) else {}
-    if bool(live_execution.get("supported")):
-        return _create_round_dispatch_jobs_from_plan(
-            runtime,
-            task,
-            round_number=round_number,
-            timeout_seconds=timeout_seconds,
-            batch_id=batch_id,
-            engine_plan=engine_plan,
-        )
-    return _create_round_dispatch_jobs_v1(
+    if not bool(live_execution.get("supported")):
+        reason = str(live_execution.get("reason") or "The compiled V2 graph is not executable.").strip()
+        raise RuntimeErrorWithCode(f"V2 execution plan rejected: {reason}", 409)
+    return _create_round_dispatch_jobs_from_plan(
         runtime,
         task,
         round_number=round_number,
         timeout_seconds=timeout_seconds,
         batch_id=batch_id,
+        engine_plan=engine_plan,
     )
 
 

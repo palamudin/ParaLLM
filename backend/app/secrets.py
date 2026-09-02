@@ -2,48 +2,41 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+from runtime.provider_torso import default_provider_id, provider_definitions
+
 from .config import deployment_topology
 
 
-AUTH_KEY_PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
-    "openai": {
-        "label": "OpenAI",
-        "envVars": ["LOOP_OPENAI_API_KEYS", "OPENAI_API_KEYS"],
-        "dockerSecretName": "openai_api_keys",
-        "localFileName": "Auth.txt",
-    },
-    "deepseek": {
-        "label": "DeepSeek",
-        "envVars": ["LOOP_DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEYS"],
-        "dockerSecretName": "deepseek_api_keys",
-        "localFileName": "Auth.deepseek.txt",
-    },
-    "anthropic": {
-        "label": "Anthropic",
-        "envVars": ["LOOP_ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEYS"],
-        "dockerSecretName": "anthropic_api_keys",
-        "localFileName": "Auth.anthropic.txt",
-    },
-    "xai": {
-        "label": "xAI",
-        "envVars": ["LOOP_XAI_API_KEYS", "XAI_API_KEYS"],
-        "dockerSecretName": "xai_api_keys",
-        "localFileName": "Auth.xai.txt",
-    },
-    "minimax": {
-        "label": "MiniMax",
-        "envVars": ["LOOP_MINIMAX_API_KEYS", "MINIMAX_API_KEYS"],
-        "dockerSecretName": "minimax_api_keys",
-        "localFileName": "Auth.minimax.txt",
-    },
-}
+def _auth_key_provider_catalog() -> dict[str, dict[str, Any]]:
+    catalog: dict[str, dict[str, Any]] = {}
+    default_provider = default_provider_id()
+    for provider, definition in provider_definitions().items():
+        default_environment = str(definition.get("defaultApiKeyEnvironment") or "").strip()
+        if not default_environment:
+            continue
+        environment_prefix = default_environment.removesuffix("_API_KEY")
+        catalog[provider] = {
+            "label": str(definition.get("label") or provider),
+            "envVars": [f"LOOP_{environment_prefix}_API_KEYS", f"{environment_prefix}_API_KEYS"],
+            "dockerSecretName": f"{provider}_api_keys",
+            "localFileName": "Auth.txt" if provider == default_provider else f"Auth.{provider}.txt",
+        }
+    return catalog
+
+
+AUTH_KEY_PROVIDER_CATALOG: dict[str, dict[str, Any]] = _auth_key_provider_catalog()
 AUTH_KEY_PROVIDER_ORDER = list(AUTH_KEY_PROVIDER_CATALOG.keys())
-DEFAULT_AUTH_KEY_PROVIDER = "openai"
+DEFAULT_AUTH_KEY_PROVIDER = default_provider_id()
+if DEFAULT_AUTH_KEY_PROVIDER not in AUTH_KEY_PROVIDER_CATALOG:
+    raise RuntimeError(
+        f"Default provider {DEFAULT_AUTH_KEY_PROVIDER!r} has no API-key provider declaration."
+    )
 SAFE_SECRET_BACKENDS = {"env", "docker_secret", "external"}
 AUTH_BACKEND_MODES = {"local", "env", "db"}
 AUTH_LOCAL_FILE_PREFIXES: dict[str, str] = {
@@ -52,6 +45,7 @@ AUTH_LOCAL_FILE_PREFIXES: dict[str, str] = {
     "anthropic": "ant",
     "xai": "xai",
     "minimax": "min",
+    "kimi": "kimi",
 }
 AUTH_LOCAL_FILE_PREFIX_ALIASES: dict[str, str] = {
     "openai": "openai",
@@ -67,6 +61,18 @@ AUTH_LOCAL_FILE_PREFIX_ALIASES: dict[str, str] = {
     "minimax": "minimax",
     "min": "minimax",
     "mini": "minimax",
+    "kimi": "kimi",
+    "moonshot": "kimi",
+}
+ANTHROPIC_WORKSPACE_ENV_VARS = (
+    "LOOP_ANTHROPIC_WORKSPACE_ID",
+    "ANTHROPIC_WORKSPACE_ID",
+)
+ANTHROPIC_WORKSPACE_PREFIX = "AntWrkspc"
+ANTHROPIC_WORKSPACE_PREFIX_ALIASES = {
+    "antwrkspc",
+    "anthropicworkspace",
+    "anthropicworkspaceid",
 }
 
 
@@ -251,6 +257,20 @@ def _normalize_local_auth_prefix(prefix: Any) -> Optional[str]:
     return None
 
 
+def normalize_anthropic_workspace_id(value: Any) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if re.fullmatch(r"wrkspc_[A-Za-z0-9_-]+", candidate) is None:
+        return ""
+    return candidate
+
+
+def _is_anthropic_workspace_prefix(prefix: Any) -> bool:
+    candidate = re.sub(r"[^a-z0-9]", "", str(prefix or "").strip().lower())
+    return candidate in ANTHROPIC_WORKSPACE_PREFIX_ALIASES
+
+
 def auth_key_file_path(base_path: Path, provider: Any) -> Path:
     normalized = normalize_auth_key_provider(provider)
     if normalized == DEFAULT_AUTH_KEY_PROVIDER:
@@ -280,6 +300,14 @@ def _parse_local_auth_line(raw_line: str) -> dict[str, Any]:
         return {"kind": "comment", "raw": raw}
     prefix, separator, remainder = stripped.partition(":")
     if separator:
+        if _is_anthropic_workspace_prefix(prefix):
+            return {
+                "kind": "provider_metadata",
+                "provider": "anthropic",
+                "field": "workspace_id",
+                "value": remainder.strip(),
+                "raw": raw,
+            }
         provider = _normalize_local_auth_prefix(prefix)
         if provider:
             return {
@@ -328,6 +356,53 @@ def read_local_auth_file_groups(base_path: Path) -> dict[str, list[str]]:
 def read_local_auth_keys(base_path: Path, provider: Any = DEFAULT_AUTH_KEY_PROVIDER) -> list[str]:
     normalized = normalize_auth_key_provider(provider)
     return list(read_local_auth_file_groups(base_path).get(normalized, []))
+
+
+def read_anthropic_workspace_id(base_path: Path) -> str:
+    for env_name in ANTHROPIC_WORKSPACE_ENV_VARS:
+        workspace_id = normalize_anthropic_workspace_id(os.getenv(env_name))
+        if workspace_id:
+            return workspace_id
+
+    shared_path = Path(base_path).resolve()
+    if not shared_path.is_file():
+        return ""
+    for raw_line in shared_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parsed = _parse_local_auth_line(raw_line)
+        if parsed.get("kind") != "provider_metadata" or parsed.get("field") != "workspace_id":
+            continue
+        workspace_id = normalize_anthropic_workspace_id(parsed.get("value"))
+        if workspace_id:
+            return workspace_id
+    return ""
+
+
+def write_anthropic_workspace_id(base_path: Path, workspace_id: Any) -> str:
+    raw_workspace_id = str(workspace_id or "").strip()
+    normalized = normalize_anthropic_workspace_id(raw_workspace_id)
+    if raw_workspace_id and not normalized:
+        raise ValueError(
+            "Anthropic workspace ID must start with wrkspc_ and contain only letters, numbers, underscores, or hyphens."
+        )
+
+    shared_path = Path(base_path).resolve()
+    existing_lines = shared_path.read_text(encoding="utf-8", errors="replace").splitlines() if shared_path.is_file() else []
+    kept_lines = [
+        raw_line.rstrip("\r\n")
+        for raw_line in existing_lines
+        if not (
+            (parsed := _parse_local_auth_line(raw_line)).get("kind") == "provider_metadata"
+            and parsed.get("field") == "workspace_id"
+        )
+    ]
+    if normalized:
+        kept_lines.append(f"{ANTHROPIC_WORKSPACE_PREFIX}:{normalized}")
+    payload = "\n".join(kept_lines)
+    if payload:
+        payload += "\n"
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    shared_path.write_text(payload, encoding="utf-8")
+    return normalized
 
 
 def write_local_auth_keys(base_path: Path, provider: Any, keys: Any) -> None:

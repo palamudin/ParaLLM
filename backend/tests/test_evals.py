@@ -7,6 +7,7 @@ from unittest import mock
 
 from backend.app import evals, jobs, storage
 from runtime.engine import RuntimeErrorWithCode
+from runtime.provider_torso import provider_default_model
 
 
 class EvalTests(unittest.TestCase):
@@ -93,6 +94,18 @@ class EvalTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_eval_runner_uses_in_process_pool_by_default(self) -> None:
+        with (
+            mock.patch("backend.app.evals.background.submit", return_value="eval-native") as submit,
+            mock.patch("backend.app.evals.subprocess.Popen") as popen,
+        ):
+            task_id = evals.launch_eval_runner("eval-in-process", self.root)
+
+        self.assertEqual(task_id, "eval-native")
+        popen.assert_not_called()
+        self.assertEqual(submit.call_args.args[0], "eval")
+        self.assertEqual(submit.call_args.args[1], "eval-in-process")
+
     def test_start_eval_run_redirects_to_front_eval_mode(self) -> None:
         with self.assertRaises(RuntimeErrorWithCode) as ctx:
             evals.start_eval_run({"suiteId": "suite-a", "armIds": ["arm-a"]}, self.root)
@@ -114,6 +127,10 @@ class EvalTests(unittest.TestCase):
             "directModel": "gpt-5-mini",
             "contextMode": "full",
             "reasoningEffort": "medium",
+            "workerReasoningEffort": "low",
+            "summarizerReasoningEffort": "high",
+            "codexNoTimeout": True,
+            "codexSubagentsEnabled": True,
             "loopRounds": 1,
             "maxCostUsd": 4,
             "workers": [
@@ -126,6 +143,15 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(result["run"]["canvas"], "eval")
         self.assertEqual(result["run"]["suiteId"], "suite-a--case-a")
         self.assertEqual(result["run"]["replicates"], 1)
+        stored_run = storage.read_eval_run(storage.project_paths(self.root), str(result["runId"]))
+        arm = next(iter(stored_run["inlineArms"].values()))
+        self.assertTrue(arm["runtime"]["codexNoTimeout"])
+        self.assertTrue(stored_run["judgeRuntime"]["codexNoTimeout"])
+        self.assertTrue(arm["runtime"]["codexSubagentsEnabled"])
+        self.assertTrue(stored_run["judgeRuntime"]["codexSubagentsEnabled"])
+        self.assertEqual(arm["runtime"]["reasoningEffort"], "low")
+        self.assertEqual(arm["runtime"]["workerReasoningEffort"], "low")
+        self.assertEqual(arm["runtime"]["summarizerReasoningEffort"], "high")
         self.assertTrue((self.root / "data" / "evals" / "runs" / result["runId"] / "run.json").is_file())
         launch_runner.assert_called_once()
 
@@ -146,7 +172,7 @@ class EvalTests(unittest.TestCase):
 
         self.assertEqual(result["run"]["canvas"], "judge")
         self.assertEqual(result["run"]["judgeProvider"], "ollama")
-        self.assertEqual(result["run"]["judgeModel"], "gpt-5.4")
+        self.assertEqual(result["run"]["judgeModel"], provider_default_model("ollama", judge=True))
         self.assertEqual(result["run"]["judgeRuntime"]["requestTimeoutSeconds"], 333)
         self.assertEqual(result["run"]["judgeRuntime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertTrue(result["run"]["judgeLearning"]["enabled"])
@@ -239,6 +265,45 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(synced["status"], "completed")
         self.assertEqual(int((synced.get("summary") or {}).get("totalTokens") or 0), 4321)
         self.assertAlmostEqual(float((synced.get("summary") or {}).get("estimatedCostUsd") or 0.0), 0.123, places=6)
+
+    def test_sync_front_live_run_keeps_terminal_job_error_when_task_loop_resets(self) -> None:
+        payload = {
+            "objective": "Expose a failed live lane run.",
+            "provider": "openai",
+            "model": "gpt-5.6-luna",
+            "modelSource": "codex_auth",
+            "summarizerProvider": "openai",
+            "summarizerModel": "gpt-5.6-luna",
+            "summarizerModelSource": "codex_auth",
+            "codexNoTimeout": True,
+            "loopRounds": 1,
+        }
+        with mock.patch("backend.app.jobs.launch_loop_job_runner"):
+            result = evals.start_front_live_run(payload, self.root)
+
+        runtime = jobs._runtime(self.root)
+        loop_job_id = str(result["jobId"])
+        with runtime.with_lock():
+            state = runtime.read_state_unlocked()
+            state["loop"] = storage.default_loop_state()
+            runtime.write_state_unlocked(state)
+            job = runtime.read_job_unlocked(loop_job_id)
+            runtime.write_job_unlocked(
+                storage.default_job(
+                    {
+                        **(job or {}),
+                        "jobId": loop_job_id,
+                        "taskId": str(result["taskId"]),
+                        "status": "error",
+                        "finishedAt": storage.utc_now(),
+                        "lastMessage": "Provider boundary failed.",
+                    }
+                )
+            )
+
+        synced = evals.sync_front_live_run(str(result["runId"]), self.root)
+        self.assertEqual(synced["status"], "error")
+        self.assertEqual(synced["summary"]["errorCount"], 1)
 
     def test_sync_front_live_run_prefers_task_scoped_state(self) -> None:
         payload = {

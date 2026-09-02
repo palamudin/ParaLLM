@@ -22,23 +22,23 @@
       query: "",
       repoRoot: ".",
       graphMode: "overview",
+      projection: "flat",
       minDegree: 0,
       maxVisible: 850,
       showOrphans: false,
       showLabels: true,
-      paused: false,
       scale: 1,
       panX: 0,
       panY: 0,
-      draggingNode: null,
       panning: false,
       lastPointer: { x: 0, y: 0 },
-      layoutEnergy: 0,
       needsDraw: true,
-      frame: 0,
-      fpsLastTime: performance.now(),
-      fpsFrames: 0,
-      fps: 0,
+      frameRequest: 0,
+      threeView: null,
+      threeViewLoading: null,
+      architectureByModule: new Map(),
+      flatLayers: [],
+      layoutDiagnostics: {},
       started: false,
       panels: {
         lens: false,
@@ -63,8 +63,8 @@
       copyAiBtn: document.getElementById("copyAiBtn"),
       exportBtn: document.getElementById("exportBtn"),
       fitBtn: document.getElementById("fitBtn"),
-      pauseBtn: document.getElementById("pauseBtn"),
       canvas: document.getElementById("graphCanvas"),
+      threeViewport: document.getElementById("repo3dViewport"),
       stage: document.getElementById("stage"),
       emptyState: document.getElementById("emptyState"),
       hotspotList: document.getElementById("hotspotList"),
@@ -74,11 +74,16 @@
       mFunctions: document.getElementById("mFunctions"),
       mEdges: document.getElementById("mEdges"),
       mVisible: document.getElementById("mVisible"),
+      mModules: document.getElementById("mModules"),
+      mDependencies: document.getElementById("mDependencies"),
+      architectureHealth: document.getElementById("architectureHealth"),
       visibleNodeCount: document.getElementById("visibleNodeCount"),
       visibleEdgeCount: document.getElementById("visibleEdgeCount"),
+      visibleModuleCount: document.getElementById("visibleModuleCount"),
+      projectionValue: document.getElementById("projectionValue"),
       zoomValue: document.getElementById("zoomValue"),
-      fpsValue: document.getElementById("fpsValue"),
-      panelToggles: Array.from(document.querySelectorAll("[data-repo-toggle]"))
+      panelToggles: Array.from(document.querySelectorAll("[data-repo-toggle]")),
+      projectionButtons: Array.from(document.querySelectorAll("[data-repo-projection]"))
     };
 
     if (!els.canvas || !els.stage) {
@@ -108,10 +113,8 @@
       if (els.copyAiBtn) els.copyAiBtn.addEventListener("click", copyAiPacket);
       if (els.exportBtn) els.exportBtn.addEventListener("click", exportJson);
       els.fitBtn.addEventListener("click", fitGraph);
-      els.pauseBtn.addEventListener("click", () => {
-        state.paused = !state.paused;
-        els.pauseBtn.textContent = state.paused ? "Resume" : "Pause";
-        requestDraw();
+      els.projectionButtons.forEach((button) => {
+        button.addEventListener("click", () => setProjection(button.getAttribute("data-repo-projection") || "flat"));
       });
       els.panelToggles.forEach((button) => {
         button.addEventListener("click", () => {
@@ -147,7 +150,8 @@
       });
       els.labelsInput.addEventListener("change", () => {
         state.showLabels = els.labelsInput.checked;
-        draw();
+        syncThreeView();
+        requestDraw();
       });
       els.canvas.addEventListener("wheel", onWheel, { passive: false });
       els.canvas.addEventListener("pointerdown", onPointerDown);
@@ -166,6 +170,15 @@
           fitGraph();
         }
         requestDraw();
+      });
+      const themeObserver = new MutationObserver(() => {
+        state.threeView?.applyTheme();
+        syncThreeView();
+        requestDraw();
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-bs-theme"]
       });
       if (typeof ResizeObserver !== "undefined") {
         const observer = new ResizeObserver(() => {
@@ -190,7 +203,6 @@
       resizeCanvas();
       fetchRepoRoots();
       fetchGraph();
-      requestAnimationFrame(loop);
       return true;
     }
 
@@ -221,6 +233,88 @@
       return rect.width > 40 && rect.height > 40;
     }
 
+    async function setProjection(requested) {
+      const projection = ["flat", "isometric", "spatial"].includes(requested) ? requested : "flat";
+      if (state.projection === projection && (projection === "flat" || state.threeView)) {
+        return;
+      }
+      state.projection = projection;
+      if (state.nodes.length) rebuildVisibleGraph(false);
+      els.projectionValue.textContent = projection;
+      els.projectionButtons.forEach(button => {
+        const active = button.getAttribute("data-repo-projection") === projection;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+      const flat = projection === "flat";
+      els.canvas.hidden = !flat;
+      if (els.threeViewport) els.threeViewport.hidden = flat;
+      els.stage.classList.toggle("is-3d-view", !flat);
+      if (flat) {
+        resizeCanvas();
+        requestDraw();
+        fitGraph();
+        return;
+      }
+      setStatus(`Loading ${projection} architecture projection...`);
+      try {
+        await ensureThreeView();
+        syncThreeView();
+        state.threeView?.fit();
+        setStatus(`${projection === "isometric" ? "Isometric" : "Spatial"} architecture projection ready. Positions are deterministic; only the camera moves.`);
+      } catch (error) {
+        setStatus(`3D renderer unavailable: ${error.message || error}`);
+        state.projection = "flat";
+        els.canvas.hidden = false;
+        if (els.threeViewport) els.threeViewport.hidden = true;
+        els.stage.classList.remove("is-3d-view");
+        els.projectionValue.textContent = "flat";
+        els.projectionButtons.forEach(button => {
+          const active = button.getAttribute("data-repo-projection") === "flat";
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+        resizeCanvas();
+        fitGraph();
+      }
+    }
+
+    async function ensureThreeView() {
+      if (state.threeView) return state.threeView;
+      if (state.threeViewLoading) return state.threeViewLoading;
+      if (!els.threeViewport) throw new Error("3D viewport is missing.");
+      state.threeViewLoading = import("/assets/repo-review-3d.js?v=20260829-001")
+        .then(module => {
+          state.threeView = new module.RepoSpatialRenderer(els.threeViewport, {
+            onSelect: id => selectNode(id, false),
+            onHover: id => {
+              state.hoveredId = id || "";
+            },
+            onZoom: value => {
+              els.zoomValue.textContent = `${Math.round(value * 100)}%`;
+            }
+          });
+          return state.threeView;
+        })
+        .finally(() => {
+          state.threeViewLoading = null;
+        });
+      return state.threeViewLoading;
+    }
+
+    function syncThreeView() {
+      if (!state.threeView || state.projection === "flat") return;
+      state.threeView.setData({
+        nodes: state.visibleNodes,
+        edges: state.visibleEdges,
+        projection: state.projection,
+        detailMode: state.graphMode,
+        selectedId: state.selectedId,
+        hoveredId: state.hoveredId,
+        showLabels: state.showLabels
+      });
+    }
+
     async function fetchGraph() {
       setStatus("Scanning repo root through /v1/repo/graph...");
       els.emptyState.hidden = false;
@@ -248,10 +342,14 @@
       state.nodeById = new Map();
       state.files = graph.files || [];
       state.functions = graph.nodes || [];
+      state.architectureByModule = new Map(
+        ((graph.architecture || {}).modules || []).map(item => [item.module, item])
+      );
       const built = buildOversightGraph(graph);
       state.nodes = built.nodes;
       state.edges = built.edges;
       renderMetrics();
+      renderArchitectureHealth();
       renderAiPacket();
       renderHotspots();
       rebuildVisibleGraph(true);
@@ -283,7 +381,9 @@
       }
 
       for (const stat of moduleStats.values()) {
+        const architecture = state.architectureByModule.get(stat.module) || {};
         addGraphNode(nodes, {
+          ...architecture,
           id: `module:${stat.module}`,
           name: stat.module,
           label: stat.module,
@@ -297,8 +397,7 @@
           fileCount: stat.files,
           inboundInternalEdges: stat.inbound,
           outboundInternalEdges: stat.outbound,
-          r: 18,
-          fixed: true
+          r: 18
         });
       }
 
@@ -354,17 +453,27 @@
         });
       }
 
+      for (const edge of ((graph.architecture || {}).dependencies || [])) {
+        edges.push({
+          ...edge,
+          relation: "module-call",
+          weight: Number(edge.weight || 1)
+        });
+      }
+
       nodes.forEach((node, index) => {
         node.index = index;
         node.x = 0;
         node.y = 0;
-        node.vx = 0;
-        node.vy = 0;
         node.color = colorForModule(node.module || node.file || "");
         node.cluster = node.module || ".";
         node.visible = false;
-        node.pinned = false;
         node.layoutReady = false;
+        node.layout = {
+          flat: { x: 0, y: 0, z: 0 },
+          isometric: { x: 0, y: 0, z: 0 },
+          spatial: { x: 0, y: 0, z: 0 }
+        };
         state.nodeById.set(node.id, node);
       });
 
@@ -416,6 +525,12 @@
           if (Number(node.degree || 0) < state.minDegree && !matched && !neighbor) return false;
           return matched || neighbor || !query;
         }
+        if (state.projection === "flat") {
+          return node.nodeKind === "module" || matched || neighbor;
+        }
+        if (state.projection === "isometric") {
+          return structural || matched || neighbor;
+        }
         if (structural) {
           return matched || neighbor || !query || Number(node.degree || 0) >= state.minDegree;
         }
@@ -435,16 +550,14 @@
       state.visibleNodes = visible;
       state.visibleEdges = state.edges.filter(edge => visibleIds.has(edge.sourceId) && visibleIds.has(edge.targetId));
       for (const node of state.nodes) node.visible = visibleIds.has(node.id);
-      const seededCount = resetPositions ? seedLayout() : seedMissingVisibleNodes();
-      if (seededCount > 0) {
-        state.layoutEnergy = Math.max(state.layoutEnergy, state.graphMode === "overview" ? 0.022 : 0.18);
-      } else if (resetPositions) {
-        state.layoutEnergy = Math.max(state.layoutEnergy, state.graphMode === "overview" ? 0.045 : 0.72);
-      }
+      assignDeterministicLayout();
       renderMetrics();
+      renderArchitectureHealth();
+      renderAiPacket();
       renderSelectedPanel();
       renderHotspots();
       els.emptyState.hidden = state.visibleNodes.length > 0;
+      syncThreeView();
       requestDraw();
     }
 
@@ -503,269 +616,431 @@
       }
     }
 
-    function seedLayout() {
-      const moduleNodes = state.visibleNodes.filter(node => node.nodeKind === "module");
-      const fileNodes = state.visibleNodes.filter(node => node.nodeKind === "file");
-      if (moduleNodes.length || fileNodes.length) {
-        return seedOversightLayout(moduleNodes, fileNodes);
+    function assignDeterministicLayout() {
+      const moduleNodes = state.nodes
+        .filter(node => node.nodeKind === "module")
+        .sort((a, b) => Number(a.layer || 0) - Number(b.layer || 0)
+          || Number(a.order || 0) - Number(b.order || 0)
+          || String(a.module).localeCompare(String(b.module)));
+      const modulesByLayer = new Map();
+      for (const moduleNode of moduleNodes) {
+        const layer = Number(moduleNode.layer || 0);
+        if (!modulesByLayer.has(layer)) modulesByLayer.set(layer, []);
+        modulesByLayer.get(layer).push(moduleNode);
       }
-      const modules = [...new Set(state.visibleNodes.map(node => node.cluster))].sort();
-      const centers = new Map();
-      const outer = Math.max(180, Math.sqrt(state.visibleNodes.length) * 54);
-      modules.forEach((module, index) => {
-        const angle = (Math.PI * 2 * index) / Math.max(1, modules.length);
-        centers.set(module, { x: Math.cos(angle) * outer, y: Math.sin(angle) * outer });
+      const layers = [...modulesByLayer.keys()].sort((a, b) => a - b);
+      const maxLayer = layers.length ? Math.max(...layers) : 0;
+      let flatLayerCursor = 0;
+      const modulePlans = [];
+
+      for (const layer of layers) {
+        const modules = modulesByLayer.get(layer) || [];
+        const blocks = modules.map(moduleNode => {
+          const files = state.nodes
+            .filter(node => node.nodeKind === "file" && node.parentModuleId === moduleNode.id)
+            .sort((a, b) => String(a.file).localeCompare(String(b.file)));
+          const columns = files.length > 16 ? 3 : files.length > 1 ? 2 : 1;
+          const rows = Math.max(1, Math.ceil(files.length / columns));
+          return {
+            moduleNode,
+            files,
+            columns,
+            height: Math.max(104, 58 + rows * 34)
+          };
+        });
+        const flatColumns = Math.min(6, Math.max(1, Math.ceil(Math.sqrt(blocks.length * 0.8))));
+        const flatRows = Math.max(1, Math.ceil(blocks.length / flatColumns));
+        const flatCellWidth = 420;
+        const flatCellHeight = Math.max(178, ...blocks.map(block => block.height + 70));
+        const isoColumns = Math.min(6, Math.max(1, Math.ceil(Math.sqrt(blocks.length * 0.9))));
+        const isoRows = Math.max(1, Math.ceil(blocks.length / isoColumns));
+        blocks.forEach((block, blockIndex) => {
+          const { moduleNode, files, columns, height } = block;
+          const flatColumn = blockIndex % flatColumns;
+          const flatRow = Math.floor(blockIndex / flatColumns);
+          const flatCellCenterY = (flatRow - (flatRows - 1) / 2) * flatCellHeight;
+          const flatX = flatLayerCursor + flatColumn * flatCellWidth;
+          const flatY = flatCellCenterY - height / 2 + 20;
+          const isoColumn = blockIndex % isoColumns;
+          const isoRow = Math.floor(blockIndex / isoColumns);
+          const localX = (isoColumn - (isoColumns - 1) / 2);
+          const localZ = (isoRow - (isoRows - 1) / 2);
+          const inbound = Number(moduleNode.inboundCalls || 0);
+          const outbound = Number(moduleNode.outboundCalls || 0);
+          const flowElevation = clamp(Math.log1p(inbound) - Math.log1p(outbound), -3, 3) * 10
+            + Math.log1p(inbound + outbound) * 8;
+          setNodeLayout(moduleNode, "flat", flatX, flatY, 0);
+          setNodeLayout(moduleNode, "isometric", (layer - maxLayer / 2) * 68 + localX * 18, 0, localZ * 24);
+          setNodeLayout(moduleNode, "spatial", (layer - maxLayer / 2) * 96 + localX * 28, flowElevation, localZ * 34);
+          modulePlans.push({ moduleNode, files, columns });
+        });
+        flatLayerCursor += Math.max(0, flatColumns - 1) * flatCellWidth + 620;
+      }
+
+      const collisionSpaces = createCollisionSpaces();
+      for (const moduleNode of moduleNodes) {
+        if (!moduleNode.visible) continue;
+        placeCollisionFree(moduleNode, "flat", collisionSpaces.flat);
+        placeCollisionFree(moduleNode, "isometric", collisionSpaces.isometric);
+        placeCollisionFree(moduleNode, "spatial", collisionSpaces.spatial);
+      }
+
+      for (const plan of modulePlans) {
+        placeModuleFiles(plan.moduleNode, plan.files, plan.columns);
+      }
+      const fileNodes = state.nodes
+        .filter(node => node.nodeKind === "file")
+        .sort((a, b) => String(a.module).localeCompare(String(b.module)) || String(a.file).localeCompare(String(b.file)));
+      for (const fileNode of fileNodes) {
+        if (!fileNode.visible) continue;
+        placeCollisionFree(fileNode, "flat", collisionSpaces.flat);
+        placeCollisionFree(fileNode, "isometric", collisionSpaces.isometric);
+        placeCollisionFree(fileNode, "spatial", collisionSpaces.spatial);
+      }
+
+      const functionsByFile = new Map();
+      for (const node of state.nodes) {
+        if (node.nodeKind !== "function") continue;
+        if (!functionsByFile.has(node.parentFileId)) functionsByFile.set(node.parentFileId, []);
+        functionsByFile.get(node.parentFileId).push(node);
+      }
+      for (const functions of functionsByFile.values()) {
+        functions.sort((a, b) => Number(a.line || 0) - Number(b.line || 0) || String(a.name).localeCompare(String(b.name)));
+        const grid = functionGridFor(functions);
+        functions.forEach((node, index) => {
+          placeFileFunction(node, index, grid);
+          if (!node.visible) return;
+          placeCollisionFree(node, "flat", collisionSpaces.flat);
+          placeCollisionFree(node, "isometric", collisionSpaces.isometric);
+          placeCollisionFree(node, "spatial", collisionSpaces.spatial);
+        });
+      }
+
+      for (const node of state.nodes) {
+        node.x = node.layout.flat.x;
+        node.y = node.layout.flat.y;
+        node.layoutReady = true;
+      }
+      state.layoutDiagnostics = buildLayoutDiagnostics(collisionSpaces);
+      publishLayoutDiagnostics();
+      buildFlatLayerBands(moduleNodes);
+    }
+
+    function placeModuleFiles(moduleNode, files, columns) {
+      const flatColumnGap = Math.max(252, ...files.map(node => structuralNodeWidth(node) + 22));
+      const flatStartX = moduleNode.layout.flat.x - ((columns - 1) * flatColumnGap) / 2;
+      const flatStartY = moduleNode.layout.flat.y + 42;
+      const moduleIsoSize = isometricNodeDimensions(moduleNode);
+      files.forEach((node, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        setNodeLayout(node, "flat", flatStartX + column * flatColumnGap, flatStartY + row * 34, 0);
+
+        const isoColumns = Math.min(4, Math.max(1, files.length));
+        const isoColumn = index % isoColumns;
+        const isoRow = Math.floor(index / isoColumns);
+        setNodeLayout(
+          node,
+          "isometric",
+          moduleNode.layout.isometric.x + (isoColumn - (isoColumns - 1) / 2) * 3.2,
+          moduleNode.layout.isometric.y + moduleIsoSize.height + 0.85,
+          moduleNode.layout.isometric.z + 3.2 + isoRow * 2.4
+        );
+
+        const angle = index * 2.399963 + stableUnit(node.id, 1) * 0.8;
+        const radius = 7 + Math.sqrt(index + 1) * 2.6;
+        setNodeLayout(
+          node,
+          "spatial",
+          moduleNode.layout.spatial.x + Math.cos(angle) * radius,
+          moduleNode.layout.spatial.y + (stableUnit(node.id, 2) - 0.5) * 7,
+          moduleNode.layout.spatial.z + Math.sin(angle) * radius
+        );
       });
-      const counts = new Map();
+    }
+
+    function buildFlatLayerBands(moduleNodes) {
+      const layerByModule = new Map(moduleNodes.map(node => [node.module, Number(node.layer || 0)]));
+      const bands = new Map();
       for (const node of state.visibleNodes) {
-        const count = counts.get(node.cluster) || 0;
-        counts.set(node.cluster, count + 1);
-        const center = centers.get(node.cluster) || { x: 0, y: 0 };
-        const angle = count * 2.399963;
-        const radius = 18 + Math.sqrt(count + 1) * 18;
-        node.x = center.x + Math.cos(angle) * radius;
-        node.y = center.y + Math.sin(angle) * radius;
-        node.vx = 0;
-        node.vy = 0;
-        node.layoutReady = true;
+        const layer = layerByModule.get(node.module);
+        if (!Number.isFinite(layer)) continue;
+        const bounds = nodeBounds(node);
+        const band = bands.get(layer) || {
+          layer,
+          moduleIds: new Set(),
+          minX: Infinity,
+          minY: Infinity,
+          maxX: -Infinity,
+          maxY: -Infinity
+        };
+        band.moduleIds.add(node.module);
+        band.minX = Math.min(band.minX, bounds.minX);
+        band.minY = Math.min(band.minY, bounds.minY);
+        band.maxX = Math.max(band.maxX, bounds.maxX);
+        band.maxY = Math.max(band.maxY, bounds.maxY);
+        bands.set(layer, band);
       }
-      return state.visibleNodes.length;
+      state.flatLayers = [...bands.values()]
+        .sort((a, b) => a.layer - b.layer)
+        .map(band => ({
+          ...band,
+          moduleCount: band.moduleIds.size,
+          minX: band.minX - 34,
+          minY: band.minY - 56,
+          maxX: band.maxX + 34,
+          maxY: band.maxY + 34
+        }));
     }
 
-    function seedOversightLayout(moduleNodes, fileNodes) {
-      let seeded = 0;
-      const centers = new Map();
-      const orderedModules = moduleNodes.length
-        ? moduleNodes
-        : [...new Set(state.visibleNodes.map(node => node.cluster))].sort().map(module => ({ id: `module:${module}`, module }));
-      const outer = Math.max(120, Math.min(300, 88 + orderedModules.length * 18));
-      orderedModules.forEach((node, index) => {
-        const angle = (Math.PI * 2 * index) / Math.max(1, orderedModules.length);
-        const center = { x: Math.cos(angle) * outer, y: Math.sin(angle) * outer };
-        centers.set(node.module || node.name || ".", center);
-        if (node.nodeKind === "module") {
-          node.x = center.x;
-          node.y = center.y;
-          node.vx = 0;
-          node.vy = 0;
-          node.layoutReady = true;
-          seeded += 1;
+    function placeFileFunction(node, index, grid) {
+      const parent = state.nodeById.get(node.parentFileId);
+      const moduleNode = state.nodeById.get(node.parentModuleId);
+      const anchor = parent || moduleNode;
+      if (!anchor) return;
+      const column = index % grid.columns;
+      const row = Math.floor(index / grid.columns);
+      setNodeLayout(
+        node,
+        "flat",
+        anchor.layout.flat.x + structuralNodeWidth(anchor) / 2 + grid.radius + 18 + column * grid.spacing,
+        anchor.layout.flat.y + (row - (grid.rows - 1) / 2) * grid.spacing,
+        0
+      );
+      setNodeLayout(
+        node,
+        "isometric",
+        anchor.layout.isometric.x + ((index % 4) - 1.5) * 0.58,
+        3 + Math.floor(index / 4) * 0.34,
+        anchor.layout.isometric.z + (Math.floor(index / 4) - 0.5) * 0.62
+      );
+      const theta = stableUnit(node.id, 3) * Math.PI * 2;
+      const phi = Math.acos(2 * stableUnit(node.id, 4) - 1);
+      const radius = 1.8 + Math.sqrt(index + 1) * 0.42;
+      setNodeLayout(
+        node,
+        "spatial",
+        anchor.layout.spatial.x + Math.sin(phi) * Math.cos(theta) * radius,
+        anchor.layout.spatial.y + Math.cos(phi) * radius,
+        anchor.layout.spatial.z + Math.sin(phi) * Math.sin(theta) * radius
+      );
+    }
+
+    function functionGridFor(nodes) {
+      const count = Math.max(1, nodes.length);
+      const radius = Math.max(6, ...nodes.map(node => Number(node.r || 6) + 4));
+      const columns = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(count * 1.65))));
+      return {
+        columns,
+        rows: Math.max(1, Math.ceil(count / columns)),
+        radius,
+        spacing: radius * 2 + 8
+      };
+    }
+
+    function createCollisionSpaces() {
+      return {
+        flat: [],
+        isometric: [],
+        spatial: []
+      };
+    }
+
+    function placeCollisionFree(node, projection, space) {
+      const desired = node.layout[projection];
+      const position = { x: desired.x, y: desired.y, z: desired.z || 0 };
+      const own = collisionFootprint(node, projection, position);
+      let displaced = false;
+      for (let attempt = 0; attempt <= space.length + 2; attempt++) {
+        const footprint = collisionFootprint(node, projection, position);
+        const conflict = space.find(item => collisionItemsOverlap(projection, footprint, item));
+        if (!conflict) {
+          setNodeLayout(node, projection, position.x, position.y, position.z);
+          space.push({
+            ...footprint,
+            nodeId: node.id,
+            nodeKind: node.nodeKind,
+            displaced
+          });
+          return;
         }
-      });
-
-      const fileCounts = new Map();
-      for (const node of fileNodes) {
-        const count = fileCounts.get(node.module) || 0;
-        fileCounts.set(node.module, count + 1);
-        const center = centers.get(node.module) || { x: 0, y: 0 };
-        const angle = count * 2.399963;
-        const radius = 44 + Math.sqrt(count + 1) * 15;
-        node.x = center.x + Math.cos(angle) * radius;
-        node.y = center.y + Math.sin(angle) * radius;
-        node.vx = 0;
-        node.vy = 0;
-        node.layoutReady = true;
-        seeded += 1;
-      }
-
-      const functionCounts = new Map();
-      for (const node of state.visibleNodes.filter(item => item.nodeKind === "function")) {
-        const parent = state.nodeById.get(node.parentFileId);
-        const count = functionCounts.get(node.parentFileId) || 0;
-        functionCounts.set(node.parentFileId, count + 1);
-        const center = parent || centers.get(node.module) || { x: 0, y: 0 };
-        const angle = count * 2.399963;
-        const radius = 20 + Math.sqrt(count + 1) * 9;
-        node.x = center.x + Math.cos(angle) * radius;
-        node.y = center.y + Math.sin(angle) * radius;
-        node.vx = 0;
-        node.vy = 0;
-        node.layoutReady = true;
-        seeded += 1;
-      }
-      return seeded;
-    }
-
-    function seedMissingVisibleNodes() {
-      let seeded = 0;
-      const selected = state.selectedId ? state.nodeById.get(state.selectedId) : null;
-      const counts = new Map();
-      for (const node of state.visibleNodes) {
-        if (nodeHasLayout(node)) {
-          continue;
+        displaced = true;
+        if (projection === "flat") {
+          const halfHeight = (own.maxY - own.minY) / 2;
+          position.y = conflict.maxY + halfHeight + 8;
+        } else if (projection === "isometric") {
+          const halfDepth = (own.maxZ - own.minZ) / 2;
+          position.z = conflict.maxZ + halfDepth + 1.2;
+        } else {
+          position.y = conflict.y + conflict.radius + own.radius + 0.55;
         }
-        placeNewVisibleNode(node, counts, selected);
-        node.layoutReady = true;
-        node.vx = 0;
-        node.vy = 0;
-        seeded += 1;
       }
-      return seeded;
+      throw new Error(`Unable to place ${node.id} without a ${projection} collision.`);
     }
 
-    function placeNewVisibleNode(node, counts, selected) {
-      const parent = state.nodeById.get(node.parentFileId || node.parentModuleId);
-      const anchor = nodeHasLayout(parent) ? parent : nodeHasLayout(selected) ? selected : clusterCenter(node.cluster);
-      const key = node.parentFileId || node.parentModuleId || node.cluster || ".";
-      const count = counts.get(key) || 0;
-      counts.set(key, count + 1);
-      const angle = (count + 1) * 2.399963 + (node.index % 7) * 0.07;
-      const radius = node.nodeKind === "module"
-        ? 46
-        : node.nodeKind === "file"
-          ? 36 + Math.sqrt(count + 1) * 9
-          : 18 + Math.sqrt(count + 1) * 7;
-      node.x = anchor.x + Math.cos(angle) * radius;
-      node.y = anchor.y + Math.sin(angle) * radius;
+    function collisionFootprint(node, projection, position) {
+      if (projection === "flat") {
+        const structural = node.nodeKind === "module" || node.nodeKind === "file";
+        const width = structural ? structuralNodeWidth(node) + 14 : (Number(node.r || 6) + 6) * 2;
+        const height = structural ? (node.nodeKind === "module" ? 48 : 39) : (Number(node.r || 6) + 6) * 2;
+        return {
+          x: position.x,
+          y: position.y,
+          z: 0,
+          minX: position.x - width / 2,
+          minY: position.y - height / 2,
+          maxX: position.x + width / 2,
+          maxY: position.y + height / 2
+        };
+      }
+      if (projection === "isometric") {
+        const size = isometricNodeDimensions(node);
+        const width = Math.max(size.width, node.nodeKind === "module" ? 16 : 3.2) + 0.7;
+        const height = size.height + 0.7;
+        const depth = size.depth + 0.7;
+        const centerY = position.y + size.height / 2;
+        return {
+          x: position.x,
+          y: centerY,
+          z: position.z,
+          minX: position.x - width / 2,
+          minY: centerY - height / 2,
+          minZ: position.z - depth / 2,
+          maxX: position.x + width / 2,
+          maxY: centerY + height / 2,
+          maxZ: position.z + depth / 2
+        };
+      }
+      const radius = spatialCollisionRadius(node) + 0.35;
+      return {
+        x: position.x,
+        y: position.y,
+        z: position.z,
+        radius
+      };
+    }
+
+    function collisionItemsOverlap(projection, left, right) {
+      if (projection === "flat") {
+        return left.minX < right.maxX && left.maxX > right.minX
+          && left.minY < right.maxY && left.maxY > right.minY;
+      }
+      if (projection === "isometric") {
+        return left.minX < right.maxX && left.maxX > right.minX
+          && left.minY < right.maxY && left.maxY > right.minY
+          && left.minZ < right.maxZ && left.maxZ > right.minZ;
+      }
+      return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z) < left.radius + right.radius;
+    }
+
+    function isometricNodeDimensions(node) {
+      if (node.nodeKind === "module") {
+        return {
+          width: 5.2 + Math.min(6, Math.sqrt(Number(node.fileCount || 0) + 1) * 1.1),
+          height: 1.2 + Math.min(3.2, Math.log1p(Number(node.functionCount || 0)) * 0.48),
+          depth: 4.2 + Math.min(5, Math.sqrt(Number(node.fileCount || 0) + 1) * 0.9)
+        };
+      }
+      if (node.nodeKind === "file") {
+        return {
+          width: 2.5,
+          height: 0.55 + Math.min(1.8, Math.log1p(Number(node.functionCount || 0)) * 0.3),
+          depth: 1.45
+        };
+      }
+      const radius = 0.18 + Math.min(0.36, Math.sqrt(Number(node.degree || 0) + 1) * 0.045);
+      return { width: radius * 2, height: radius * 2, depth: radius * 2 };
+    }
+
+    function spatialCollisionRadius(node) {
+      if (node.nodeKind === "module") {
+        return 1.8 + Math.min(2.2, Math.log1p(Number(node.functionCount || 0)) * 0.34);
+      }
+      if (node.nodeKind === "file") {
+        const scale = 0.62 + Math.min(0.9, Math.log1p(Number(node.functionCount || 0)) * 0.15);
+        return scale * Math.sqrt(3);
+      }
+      return 0.16 + Math.min(0.34, Math.sqrt(Number(node.degree || 0) + 1) * 0.04);
+    }
+
+    function buildLayoutDiagnostics(spaces) {
+      const projections = {};
+      for (const [projection, items] of Object.entries(spaces)) {
+        let overlapPairs = 0;
+        const coincident = new Map();
+        for (let index = 0; index < items.length; index++) {
+          const item = items[index];
+          const key = `${item.x.toFixed(4)}:${item.y.toFixed(4)}:${item.z.toFixed(4)}`;
+          coincident.set(key, (coincident.get(key) || 0) + 1);
+          for (let otherIndex = index + 1; otherIndex < items.length; otherIndex++) {
+            if (collisionItemsOverlap(projection, item, items[otherIndex])) overlapPairs += 1;
+          }
+        }
+        projections[projection] = {
+          nodesChecked: items.length,
+          overlapPairs,
+          coincidentPositions: [...coincident.values()].filter(count => count > 1).reduce((total, count) => total + count, 0),
+          displacedNodes: items.filter(item => item.displaced).length
+        };
+      }
+      const edgePairs = new Map();
+      for (const edge of state.edges) {
+        const key = `${edge.sourceId}\u0000${edge.targetId}`;
+        edgePairs.set(key, (edgePairs.get(key) || 0) + 1);
+      }
+      return {
+        schemaVersion: "repo-layout-diagnostics/v1",
+        ...projections,
+        bundledEdgePairs: [...edgePairs.values()].filter(count => count > 1).length
+      };
+    }
+
+    function publishLayoutDiagnostics() {
+      const diagnostics = JSON.parse(JSON.stringify(state.layoutDiagnostics));
+      if (els.root) {
+        els.root.dataset.flatOverlapPairs = String(diagnostics.flat?.overlapPairs || 0);
+        els.root.dataset.isometricOverlapPairs = String(diagnostics.isometric?.overlapPairs || 0);
+        els.root.dataset.spatialOverlapPairs = String(diagnostics.spatial?.overlapPairs || 0);
+      }
+      window.ParaLLMRepoMap = {
+        schemaVersion: "parallm-repo-map/v1",
+        layout: diagnostics
+      };
+    }
+
+    function setNodeLayout(node, projection, x, y, z) {
+      node.layout[projection] = { x, y, z };
+    }
+
+    function stableUnit(value, salt) {
+      let hash = 2166136261 ^ Number(salt || 0);
+      const text = String(value || "");
+      for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0) / 4294967295;
     }
 
     function nodeHasLayout(node) {
       return Boolean(node && node.layoutReady && Number.isFinite(node.x) && Number.isFinite(node.y));
     }
 
-    function loop(now) {
-      let rendered = false;
-      if (!state.paused && state.visibleNodes.length && shouldRunSimulation()) {
-        simulate();
-        state.layoutEnergy *= state.graphMode === "overview" ? 0.992 : 0.986;
-        state.needsDraw = true;
-      }
-      if (state.needsDraw) {
-        draw();
-        state.needsDraw = false;
-        rendered = true;
-      }
-      updateFps(now, rendered);
-      requestAnimationFrame(loop);
-    }
-
-    function shouldRunSimulation() {
-      const threshold = state.graphMode === "overview" ? 0.0008 : 0.006;
-      return state.layoutEnergy > threshold || maxNodeVelocity() > 0.012;
-    }
-
-    function maxNodeVelocity() {
-      let maxVelocity = 0;
-      for (const node of state.visibleNodes) {
-        maxVelocity = Math.max(maxVelocity, Math.abs(node.vx || 0), Math.abs(node.vy || 0));
-        if (maxVelocity > 0.012) {
-          return maxVelocity;
-        }
-      }
-      return maxVelocity;
-    }
-
-    function simulate() {
-      const nodes = state.visibleNodes;
-      const edges = state.visibleEdges;
-      const forceScale = physicsForceScale();
-      const cellSize = 84;
-      const grid = new Map();
-      for (const node of nodes) {
-        const key = gridKey(node.x, node.y, cellSize);
-        if (!grid.has(key)) grid.set(key, []);
-        grid.get(key).push(node);
-      }
-
-      for (const node of nodes) {
-        const cx = Math.floor(node.x / cellSize);
-        const cy = Math.floor(node.y / cellSize);
-        for (let gx = cx - 1; gx <= cx + 1; gx++) {
-          for (let gy = cy - 1; gy <= cy + 1; gy++) {
-            const bucket = grid.get(`${gx}:${gy}`);
-            if (!bucket) continue;
-            for (const other of bucket) {
-              if (other.index <= node.index) continue;
-              let dx = node.x - other.x;
-              let dy = node.y - other.y;
-              let dist2 = dx * dx + dy * dy;
-              if (dist2 < 0.01) {
-                const angle = ((node.index + 1) * 1.618 + (other.index + 1) * 0.618) % (Math.PI * 2);
-                dx = Math.cos(angle) * 0.18;
-                dy = Math.sin(angle) * 0.18;
-                dist2 = dx * dx + dy * dy;
-              }
-              if (dist2 > 12000) continue;
-              const forceBase = state.graphMode === "overview"
-                ? (node.nodeKind === "function" && other.nodeKind === "function" ? 38 : 92)
-                : (node.nodeKind === "function" && other.nodeKind === "function" ? 820 : 1380);
-              const force = (forceBase / Math.max(120, dist2)) * forceScale;
-              const fx = dx * force;
-              const fy = dy * force;
-              if (!node.pinned && !node.fixed) { node.vx += fx; node.vy += fy; }
-              if (!other.pinned && !other.fixed) { other.vx -= fx; other.vy -= fy; }
-            }
-          }
-        }
-      }
-
-      const edgeLimit = simulationEdgeLimit(edges.length, nodes.length);
-      for (let index = 0; index < edgeLimit; index++) {
-        const edge = edges[index];
-        const a = edge.source;
-        const b = edge.target;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.max(1, Math.hypot(dx, dy));
-        const desired = edge.relation === "contains"
-          ? 132
-          : edge.relation === "defines"
-            ? 48
-            : 78 + Math.min(70, (a.r + b.r) * 2.1);
-        const baseStrength = edge.relation === "contains"
-          ? 0.0045
-          : edge.relation === "defines"
-            ? 0.0026
-            : 0.0022 + Math.min(edge.weight, 6) * 0.00038;
-        const strength = baseStrength * forceScale;
-        const force = (dist - desired) * strength;
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        if (!a.pinned && !a.fixed) { a.vx += fx; a.vy += fy; }
-        if (!b.pinned && !b.fixed) { b.vx -= fx; b.vy -= fy; }
-      }
-
-      for (const node of nodes) {
-        if (node.pinned || node.fixed) continue;
-        const center = clusterCenter(node.cluster);
-        const parent = state.nodeById.get(node.parentFileId || node.parentModuleId);
-        if (parent?.visible) {
-          const attraction = (node.nodeKind === "function" ? 0.00042 : 0.00028) * forceScale;
-          node.vx += (parent.x - node.x) * attraction;
-          node.vy += (parent.y - node.y) * attraction;
-        } else {
-          node.vx += (center.x - node.x) * 0.00018 * forceScale;
-          node.vy += (center.y - node.y) * 0.00018 * forceScale;
-        }
-        node.vx += -node.x * 0.00007 * forceScale;
-        node.vy += -node.y * 0.00007 * forceScale;
-        node.vx *= state.graphMode === "overview" ? 0.58 : 0.72;
-        node.vy *= state.graphMode === "overview" ? 0.58 : 0.72;
-        const travel = state.graphMode === "overview" ? 0.85 : 2.4;
-        node.x += clamp(node.vx, -travel, travel);
-        node.y += clamp(node.vy, -travel, travel);
-      }
-    }
-
-    function physicsForceScale() {
-      if (state.graphMode === "overview") {
-        return clamp(state.layoutEnergy * 2.4, 0.0015, 0.13);
-      }
-      return clamp(state.layoutEnergy * 0.85, 0.06, 0.72);
-    }
-
     function draw() {
+      if (state.projection !== "flat") return;
       const canvas = els.canvas;
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = "#030c0f";
+      const lightTheme = document.documentElement.getAttribute("data-bs-theme") === "light";
+      ctx.fillStyle = lightTheme ? "#e8f0f7" : "#030c0f";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.save();
       ctx.scale(renderPixelRatio, renderPixelRatio);
       drawGrid(w, h);
       ctx.translate(w / 2 + state.panX, h / 2 + state.panY);
       ctx.scale(state.scale, state.scale);
+      drawLayerBands(lightTheme);
       const selected = state.selectedId ? state.nodeById.get(state.selectedId) : null;
       const hover = state.hoveredId ? state.nodeById.get(state.hoveredId) : null;
       const highlight = relatedIds(selected);
@@ -775,6 +1050,26 @@
       els.zoomValue.textContent = `${Math.round(state.scale * 100)}%`;
     }
 
+    function drawLayerBands(lightTheme) {
+      if (state.graphMode !== "overview") return;
+      ctx.save();
+      for (const band of state.flatLayers) {
+        const width = Math.max(1, band.maxX - band.minX);
+        const height = Math.max(1, band.maxY - band.minY);
+        roundRect(ctx, band.minX, band.minY, width, height, 4);
+        ctx.fillStyle = lightTheme ? "rgba(25, 93, 137, 0.035)" : "rgba(80, 151, 199, 0.025)";
+        ctx.fill();
+        ctx.strokeStyle = lightTheme ? "rgba(25, 93, 137, 0.16)" : "rgba(128, 232, 218, 0.1)";
+        ctx.lineWidth = 1 / state.scale;
+        ctx.stroke();
+        ctx.font = `700 ${11 / state.scale}px ${getComputedStyle(document.documentElement).getPropertyValue("--mono")}`;
+        ctx.fillStyle = lightTheme ? "rgba(18, 71, 105, 0.72)" : "rgba(138, 180, 255, 0.68)";
+        ctx.textBaseline = "top";
+        ctx.fillText(`LAYER ${band.layer}  |  ${band.moduleCount} MODULES`, band.minX + 12 / state.scale, band.minY + 10 / state.scale);
+      }
+      ctx.restore();
+    }
+
     function drawGrid(w, h) {
       const grid = 36 * state.scale;
       if (state.visibleNodes.length > 650) return;
@@ -782,7 +1077,9 @@
       const ox = (w / 2 + state.panX) % grid;
       const oy = (h / 2 + state.panY) % grid;
       ctx.save();
-      ctx.strokeStyle = "rgba(128,232,218,0.035)";
+      ctx.strokeStyle = document.documentElement.getAttribute("data-bs-theme") === "light"
+        ? "rgba(24, 92, 132, 0.09)"
+        : "rgba(128,232,218,0.035)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       for (let x = ox; x < w; x += grid) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
@@ -794,40 +1091,246 @@
     function drawEdges(selected, hover, highlight) {
       const edges = state.visibleEdges;
       const selectedMode = Boolean(selected);
-      const drawLimit = selectedMode ? edges.length : edgeDrawLimit(edges.length, state.visibleNodes.length, state.fps);
+      const drawLimit = selectedMode ? edges.length : edgeDrawLimit(edges.length, state.visibleNodes.length);
+      const renderEdges = edges.slice(0, drawLimit).filter(edge => !selectedMode || edge.sourceId === selected.id || edge.targetId === selected.id);
+      const routes = buildFlatEdgeRoutes(renderEdges);
       ctx.save();
       ctx.lineCap = "round";
-      for (let index = 0; index < drawLimit; index++) {
-        const edge = edges[index];
+      ctx.lineJoin = "round";
+      for (const edge of renderEdges) {
         const active = selected && (edge.sourceId === selected.id || edge.targetId === selected.id);
         const hot = hover && (edge.sourceId === hover.id || edge.targetId === hover.id);
-        if (selectedMode && !active) continue;
-        const alpha = active ? 0.78 : hot ? 0.48 : edge.relation === "contains" ? 0.22 : edge.relation === "defines" ? 0.09 : 0.14;
+        const alpha = active ? 0.78 : hot ? 0.48 : edge.relation === "module-call" ? 0.42 : edge.relation === "contains" ? 0.2 : edge.relation === "defines" ? 0.08 : 0.14;
         const stroke = edge.relation === "contains"
           ? `rgba(138,180,255,${alpha})`
+          : edge.relation === "module-call"
+            ? `rgba(255,224,130,${alpha})`
           : edge.relation === "defines"
             ? `rgba(128,232,218,${alpha})`
             : edge.ambiguous || edge.relation === "ambiguous"
               ? `rgba(255,224,130,${alpha})`
               : `rgba(128,232,218,${alpha})`;
         ctx.strokeStyle = stroke;
-        ctx.lineWidth = (active ? 2.4 : edge.relation === "defines" ? 0.65 : Math.min(2.2, 0.7 + Math.log2(edge.weight + 1) * 0.25)) / state.scale;
+        ctx.lineWidth = (active ? 2.4 : edge.relation === "module-call" ? Math.min(2.6, 1.15 + Math.log2(edge.weight + 1) * 0.24) : edge.relation === "defines" ? 0.65 : Math.min(2.2, 0.7 + Math.log2(edge.weight + 1) * 0.25)) / state.scale;
+        const route = routes.get(edge);
+        if (!route) continue;
         ctx.beginPath();
-        ctx.moveTo(edge.source.x, edge.source.y);
-        const mx = (edge.source.x + edge.target.x) / 2;
-        const my = (edge.source.y + edge.target.y) / 2;
-        const dx = edge.target.x - edge.source.x;
-        const dy = edge.target.y - edge.source.y;
-        const len = Math.max(1, Math.hypot(dx, dy));
-        const curve = Math.min(28, len * 0.06);
-        ctx.quadraticCurveTo(mx - (dy / len) * curve, my + (dx / len) * curve, edge.target.x, edge.target.y);
+        ctx.moveTo(route.start.x, route.start.y);
+        if (route.points) {
+          for (const point of route.points) ctx.lineTo(point.x, point.y);
+        } else {
+          ctx.bezierCurveTo(route.controlA.x, route.controlA.y, route.controlB.x, route.controlB.y, route.end.x, route.end.y);
+        }
         ctx.stroke();
+        if (edge.relation === "module-call" || active) {
+          drawArrowHeadAt(route.arrowFrom, route.end, stroke, active ? 7 : 5);
+        }
       }
       ctx.restore();
     }
 
+    function buildFlatEdgeRoutes(edges) {
+      const sourceOffsets = assignEdgePortOffsets(edges, "source");
+      const targetOffsets = assignEdgePortOffsets(edges, "target");
+      const tracks = assignModuleTracks(edges);
+      const duplicateLanes = assignDuplicateEdgeLanes(edges);
+      const routes = new Map();
+      for (const edge of edges) {
+        const start = edgeAnchor(edge.source, edge.target, sourceOffsets.get(edge) || 0);
+        const end = edgeAnchor(edge.target, edge.source, targetOffsets.get(edge) || 0);
+        const track = tracks.get(edge);
+        if (track && Number.isFinite(track.x)) {
+          const direction = Math.sign(end.x - start.x) || 1;
+          const neck = Math.min(22, Math.max(10, Math.abs(end.x - start.x) * 0.08));
+          const points = [
+            { x: start.x + direction * neck, y: start.y },
+            { x: start.x + direction * neck, y: track.sourceChannel },
+            { x: track.x, y: track.sourceChannel },
+            { x: track.x, y: track.targetChannel },
+            { x: end.x - direction * neck, y: track.targetChannel },
+            { x: end.x - direction * neck, y: end.y },
+            end
+          ];
+          routes.set(edge, { start, end, points, arrowFrom: points[points.length - 2] });
+          continue;
+        }
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        const lane = duplicateLanes.get(edge) || 0;
+        const offsetX = (-dy / length) * lane;
+        const offsetY = (dx / length) * lane;
+        const controlA = { x: start.x + dx * 0.35 + offsetX, y: start.y + dy * 0.12 + offsetY };
+        const controlB = { x: end.x - dx * 0.35 + offsetX, y: end.y - dy * 0.12 + offsetY };
+        routes.set(edge, { start, end, controlA, controlB, arrowFrom: controlB });
+      }
+      return routes;
+    }
+
+    function assignEdgePortOffsets(edges, endpoint) {
+      const groups = new Map();
+      for (const edge of edges) {
+        const node = endpoint === "source" ? edge.source : edge.target;
+        const other = endpoint === "source" ? edge.target : edge.source;
+        if (!groups.has(node.id)) groups.set(node.id, []);
+        groups.get(node.id).push({ edge, other });
+      }
+      const offsets = new Map();
+      for (const entries of groups.values()) {
+        entries.sort((a, b) => a.other.y - b.other.y || a.other.x - b.other.x || String(a.edge.id).localeCompare(String(b.edge.id)));
+        const node = endpoint === "source" ? entries[0].edge.source : entries[0].edge.target;
+        const span = node.nodeKind === "module" ? 25 : node.nodeKind === "file" ? 17 : Math.max(8, Number(node.r || 5) * 1.5);
+        entries.forEach((entry, index) => {
+          const ratio = entries.length === 1 ? 0 : index / (entries.length - 1) - 0.5;
+          offsets.set(entry.edge, ratio * span);
+        });
+      }
+      return offsets;
+    }
+
+    function assignModuleTracks(edges) {
+      const groups = new Map();
+      for (const edge of edges) {
+        if (edge.relation !== "module-call") continue;
+        const direction = Math.sign(edge.target.x - edge.source.x);
+        if (!direction) continue;
+        const key = `${Number(edge.source.layer || 0)}:${Number(edge.target.layer || 0)}:${direction}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(edge);
+      }
+      const tracks = new Map();
+      const bands = [...state.flatLayers].sort((a, b) => a.minX - b.minX);
+      const bandByLayer = new Map(bands.map(band => [Number(band.layer), band]));
+      for (const group of groups.values()) {
+        group.sort((a, b) => a.source.y - b.source.y || a.target.y - b.target.y || String(a.id).localeCompare(String(b.id)));
+        const direction = Math.sign(group[0].target.x - group[0].source.x) || 1;
+        const sourceLayer = Number(group[0].source.layer || 0);
+        const targetLayer = Number(group[0].target.layer || 0);
+        const sourceBand = bandByLayer.get(sourceLayer);
+        const targetBand = bandByLayer.get(targetLayer);
+        const nextBand = direction > 0
+          ? bands.find(band => sourceBand && band.minX > sourceBand.maxX)
+          : [...bands].reverse().find(band => sourceBand && band.maxX < sourceBand.minX);
+        const startBoundary = sourceBand
+          ? (direction > 0 ? sourceBand.maxX : sourceBand.minX)
+          : (direction > 0
+            ? Math.max(...group.map(edge => edge.source.x + structuralNodeWidth(edge.source) / 2))
+            : Math.min(...group.map(edge => edge.source.x - structuralNodeWidth(edge.source) / 2)));
+        const laneBoundary = nextBand || targetBand;
+        const endBoundary = laneBoundary
+          ? (direction > 0 ? laneBoundary.minX : laneBoundary.maxX)
+          : (direction > 0
+            ? Math.min(...group.map(edge => edge.target.x - structuralNodeWidth(edge.target) / 2))
+            : Math.max(...group.map(edge => edge.target.x + structuralNodeWidth(edge.target) / 2)));
+        const gap = endBoundary - startBoundary;
+        if (Math.sign(gap) !== direction || Math.abs(gap) < 36) continue;
+        group.forEach((edge, index) => {
+          const x = startBoundary + gap * ((index + 1) / (group.length + 1));
+          tracks.set(edge, {
+            x,
+            sourceChannel: findClearHorizontalChannel(edge.source, edge.target, edge.source.x, x, index),
+            targetChannel: findClearHorizontalChannel(edge.target, edge.source, x, edge.target.x, index + group.length)
+          });
+        });
+      }
+      return tracks;
+    }
+
+    function findClearHorizontalChannel(node, other, fromX, toX, slot) {
+      const height = node.nodeKind === "module" ? 34 : node.nodeKind === "file" ? 25 : (Number(node.r || 5) + 4) * 2;
+      const preferredSign = stableUnit(`${node.id}:${other.id}`, 17) >= 0.5 ? 1 : -1;
+      const minX = Math.min(fromX, toX);
+      const maxX = Math.max(fromX, toX);
+      for (let ring = 0; ring < 120; ring++) {
+        const sign = ring % 2 === 0 ? preferredSign : -preferredSign;
+        const distance = height / 2 + 12 + (Math.floor(ring / 2) + slot) * 7;
+        const candidate = node.y + sign * distance;
+        if (horizontalChannelClear(candidate, minX, maxX, node.id, other.id)) return candidate;
+      }
+      const visibleBounds = state.visibleNodes
+        .filter(candidate => candidate.nodeKind === "module" || candidate.nodeKind === "file")
+        .map(nodeBounds);
+      return Math.max(...visibleBounds.map(bounds => bounds.maxY), node.y) + 24 + slot * 7;
+    }
+
+    function horizontalChannelClear(y, minX, maxX, sourceId, targetId) {
+      for (const candidate of state.visibleNodes) {
+        if (candidate.id === sourceId || candidate.id === targetId) continue;
+        if (candidate.nodeKind !== "module" && candidate.nodeKind !== "file") continue;
+        const bounds = nodeBounds(candidate);
+        const crossesX = bounds.maxX + 7 >= minX && bounds.minX - 7 <= maxX;
+        const crossesY = y >= bounds.minY - 7 && y <= bounds.maxY + 7;
+        if (crossesX && crossesY) return false;
+      }
+      return true;
+    }
+
+    function assignDuplicateEdgeLanes(edges) {
+      const groups = new Map();
+      for (const edge of edges) {
+        const key = `${edge.sourceId}\u0000${edge.targetId}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(edge);
+      }
+      const lanes = new Map();
+      for (const group of groups.values()) {
+        group.sort((a, b) => String(a.relation).localeCompare(String(b.relation)) || String(a.id).localeCompare(String(b.id)));
+        group.forEach((edge, index) => lanes.set(edge, (index - (group.length - 1) / 2) * 12));
+      }
+      return lanes;
+    }
+
+    function edgeAnchor(node, other, offset) {
+      const dx = other.x - node.x;
+      const dy = other.y - node.y;
+      if (node.nodeKind === "module" || node.nodeKind === "file") {
+        const width = structuralNodeWidth(node);
+        const height = node.nodeKind === "module" ? 34 : 25;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          return {
+            x: node.x + (Math.sign(dx) || 1) * width / 2,
+            y: node.y + clamp(offset, -height * 0.42, height * 0.42)
+          };
+        }
+        return {
+          x: node.x + clamp(offset, -width * 0.42, width * 0.42),
+          y: node.y + (Math.sign(dy) || 1) * height / 2
+        };
+      }
+      const length = Math.max(1, Math.hypot(dx, dy));
+      const unitX = dx / length;
+      const unitY = dy / length;
+      const radius = Number(node.r || 5) + 2;
+      return {
+        x: node.x + unitX * radius - unitY * offset,
+        y: node.y + unitY * radius + unitX * offset
+      };
+    }
+
+    function drawArrowHeadAt(source, target, color, size) {
+      const angle = Math.atan2(target.y - source.y, target.x - source.x);
+      const x = target.x;
+      const y = target.y;
+      const scaledSize = size / state.scale;
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(
+        x - Math.cos(angle - Math.PI / 6) * scaledSize,
+        y - Math.sin(angle - Math.PI / 6) * scaledSize
+      );
+      ctx.lineTo(
+        x - Math.cos(angle + Math.PI / 6) * scaledSize,
+        y - Math.sin(angle + Math.PI / 6) * scaledSize
+      );
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
     function drawNodes(selected, hover, highlight) {
-      const labelsAllowed = state.showLabels && state.visibleNodes.length < 900 && (state.fps === 0 || state.fps >= 22);
+      const labelsAllowed = state.showLabels && state.visibleNodes.length < 900;
       ctx.save();
       for (const node of state.visibleNodes) {
         const isSelected = selected && selected.id === node.id;
@@ -866,7 +1369,7 @@
       const alpha = flags.dim ? 0.38 : 1;
       ctx.save();
       ctx.globalAlpha = alpha;
-      roundRect(ctx, x - 4 / state.scale, y - 4 / state.scale, width + 8 / state.scale, height + 8 / state.scale, node.nodeKind === "module" ? 8 : 6);
+      roundRect(ctx, x - 4 / state.scale, y - 4 / state.scale, width + 8 / state.scale, height + 8 / state.scale, 4);
       ctx.fillStyle = flags.selected
         ? "rgba(138,180,255,0.18)"
         : flags.hover
@@ -876,7 +1379,7 @@
       const gradient = ctx.createLinearGradient(x, y, x, y + height);
       gradient.addColorStop(0, node.nodeKind === "module" ? "rgba(30,69,95,0.92)" : "rgba(17,39,54,0.92)");
       gradient.addColorStop(1, node.nodeKind === "module" ? "rgba(8,21,35,0.96)" : "rgba(6,16,26,0.96)");
-      roundRect(ctx, x, y, width, height, node.nodeKind === "module" ? 7 : 5);
+      roundRect(ctx, x, y, width, height, 4);
       ctx.fillStyle = gradient;
       ctx.fill();
       ctx.strokeStyle = flags.selected ? "#ffffff" : flags.hover ? "rgba(236,255,251,0.82)" : "rgba(128,232,218,0.28)";
@@ -913,12 +1416,51 @@
 
     function renderMetrics() {
       const stats = (state.graph && state.graph.stats) || {};
+      const architecture = ((state.graph || {}).architecture || {}).summary || {};
       els.mFiles.textContent = fmt(stats.filesScanned || 0);
       els.mFunctions.textContent = fmt(stats.functionsFound || 0);
       els.mEdges.textContent = fmt(stats.internalEdges || 0);
       els.mVisible.textContent = fmt(state.visibleNodes.length || 0);
+      if (els.mModules) els.mModules.textContent = fmt(architecture.moduleCount || 0);
+      if (els.mDependencies) els.mDependencies.textContent = fmt(architecture.dependencyCount || 0);
       els.visibleNodeCount.textContent = fmt(state.visibleNodes.length || 0);
       els.visibleEdgeCount.textContent = fmt(state.visibleEdges.length || 0);
+      if (els.visibleModuleCount) {
+        els.visibleModuleCount.textContent = fmt(state.visibleNodes.filter(node => node.nodeKind === "module").length);
+      }
+    }
+
+    function renderArchitectureHealth() {
+      if (!els.architectureHealth) return;
+      const architecture = (state.graph || {}).architecture || {};
+      const summary = architecture.summary || {};
+      const scanSignals = summary.scanSignals || [];
+      const modules = architecture.modules || [];
+      const moduleSignalCount = modules.reduce((total, item) => total + (item.signals || []).length, 0);
+      const scanClear = Number(summary.parseErrorCount || 0) === 0
+        && !scanSignals.some(signal => signal.kind === "readErrors" || signal.kind === "maxFilesHit");
+      const statusClass = scanClear ? "is-observed" : "is-attention";
+      const statusText = scanClear ? "scan complete" : "coverage attention";
+      els.architectureHealth.innerHTML = `
+        <div class="repo-health-status ${statusClass}">
+          <strong>${escapeHtml(statusText)}</strong>
+          <span>${fmt(summary.layerCount || 0)} dependency layers</span>
+        </div>
+        <div class="repo-health-grid">
+          <div><strong>${fmt(summary.cyclicModuleCount || 0)}</strong><span>modules in cycles</span></div>
+          <div><strong>${fmt(summary.hotspotCount || 0)}</strong><span>high-degree functions</span></div>
+          <div><strong>${fmt(summary.isolatedFunctionCount || 0)}</strong><span>isolated functions</span></div>
+          <div><strong>${fmt(moduleSignalCount)}</strong><span>module review signals</span></div>
+          <div><strong>${fmt((state.layoutDiagnostics.flat || {}).overlapPairs || 0)}</strong><span>flat layout overlaps</span></div>
+          <div><strong>${fmt(((state.layoutDiagnostics.isometric || {}).overlapPairs || 0) + ((state.layoutDiagnostics.spatial || {}).overlapPairs || 0))}</strong><span>3D layout overlaps</span></div>
+        </div>
+        <div class="repo-health-signals">
+          ${scanSignals.length
+            ? scanSignals.map(signal => `<span class="repo-health-signal" data-severity="${escapeHtml(signal.severity || "review")}">${escapeHtml(signal.kind)} ${fmt(signal.count || 0)}</span>`).join("")
+            : '<span class="repo-health-signal" data-severity="observed">No scanner errors observed</span>'}
+        </div>
+        <p class="repo-health-caveat">Signals identify review surfaces. They do not prove a defect, dead code, or runtime reachability.</p>
+      `;
     }
 
     function renderAiPacket() {
@@ -927,6 +1469,8 @@
         generatedAt: state.graph?.generatedAt,
         root: state.graph?.root,
         stats: state.graph?.stats,
+        architecture: state.graph?.architecture,
+        layout: state.layoutDiagnostics,
         aiReadout: state.graph?.aiReadout
       };
       els.aiPacket.textContent = JSON.stringify(packet, null, 2);
@@ -998,9 +1542,20 @@
           <span class="badge">${node.fileCount || 0} files</span>
         </div>
         <div class="kv"><div class="k">Functions</div><div class="v">${fmt(node.functionCount || 0)}</div></div>
+        <div class="kv"><div class="k">Layer</div><div class="v">${fmt(node.layer || 0)}</div></div>
+        <div class="kv"><div class="k">Flow</div><div class="v">${fmt(node.inboundDependencies || 0)} in / ${fmt(node.outboundDependencies || 0)} out</div></div>
+        <div class="kv"><div class="k">Cycle</div><div class="v">${node.cyclic ? "Detected module cycle" : "No cross-module cycle detected"}</div></div>
         <div class="kv"><div class="k">Internal edges</div><div class="v">${fmt((node.inboundInternalEdges || 0) + (node.outboundInternalEdges || 0))}</div></div>
         <div class="kv"><div class="k">Role</div><div class="v">Module boundary / file cluster</div></div>
       `;
+      if ((node.signals || []).length) {
+        const signals = document.createElement("div");
+        signals.className = "repo-health-signals section";
+        signals.innerHTML = (node.signals || [])
+          .map(signal => `<span class="repo-health-signal" data-severity="${escapeHtml(signal.severity || "review")}">${escapeHtml(signal.kind)} ${fmt(signal.count || 0)}</span>`)
+          .join("");
+        els.selectedPanel.appendChild(signals);
+      }
       els.selectedPanel.appendChild(sectionList("Files In Module", files));
     }
 
@@ -1068,10 +1623,12 @@
       state.selectedId = id || "";
       rebuildVisibleGraph(false);
       const node = state.nodeById.get(state.selectedId);
-      if (center && nodeHasLayout(node)) {
+      if (center && state.projection === "flat" && nodeHasLayout(node)) {
         state.panX = -node.x * state.scale;
         state.panY = -node.y * state.scale;
         state.scale = Math.max(state.scale, 0.72);
+      } else if (center && node && state.threeView) {
+        state.threeView.focus(node.id);
       }
       renderSelectedPanel();
       renderHotspots();
@@ -1082,6 +1639,7 @@
         applyPanelVisibility(false);
         updateDrawerSizing();
       }
+      syncThreeView();
       requestDraw();
     }
 
@@ -1105,13 +1663,11 @@
       const sy = event.clientY - rect.top;
       const node = findNodeAt(sx, sy);
       state.lastPointer = { x: event.clientX, y: event.clientY };
-      els.canvas.classList.add("dragging");
       if (node) {
-        state.draggingNode = node;
-        node.pinned = true;
         selectNode(node.id, false);
       } else {
         state.panning = true;
+        els.canvas.classList.add("dragging");
       }
       requestDraw();
     }
@@ -1123,16 +1679,6 @@
       const rect = els.canvas.getBoundingClientRect();
       const sx = event.clientX - rect.left;
       const sy = event.clientY - rect.top;
-      if (state.draggingNode) {
-        const pos = screenToWorld(sx, sy);
-        state.draggingNode.x = pos.x;
-        state.draggingNode.y = pos.y;
-        state.draggingNode.vx = 0;
-        state.draggingNode.vy = 0;
-        state.layoutEnergy = Math.max(state.layoutEnergy, state.graphMode === "overview" ? 0.04 : 0.16);
-        requestDraw();
-        return;
-      }
       if (state.panning) {
         state.panX += dx;
         state.panY += dy;
@@ -1148,10 +1694,6 @@
     }
 
     function onPointerUp() {
-      if (state.draggingNode) {
-        state.draggingNode.pinned = false;
-        state.draggingNode = null;
-      }
       state.panning = false;
       els.canvas.classList.remove("dragging");
       requestDraw();
@@ -1193,6 +1735,10 @@
     }
 
     function fitGraph() {
+      if (state.projection !== "flat") {
+        state.threeView?.fit();
+        return;
+      }
       const nodes = state.visibleNodes;
       if (!nodes.length) return;
       let minX = Infinity;
@@ -1219,6 +1765,7 @@
       const rect = els.canvas.getBoundingClientRect();
       els.canvas.width = Math.max(1, Math.floor(rect.width * renderPixelRatio));
       els.canvas.height = Math.max(1, Math.floor(rect.height * renderPixelRatio));
+      state.threeView?.resize();
       requestDraw();
     }
 
@@ -1243,18 +1790,6 @@
       }
     }
 
-    function updateFps(now, rendered) {
-      if (rendered) {
-        state.fpsFrames += 1;
-      }
-      if (now - state.fpsLastTime >= 500) {
-        state.fps = Math.round((state.fpsFrames * 1000) / Math.max(1, now - state.fpsLastTime));
-        state.fpsFrames = 0;
-        state.fpsLastTime = now;
-        els.fpsValue.textContent = String(state.fps);
-      }
-    }
-
     function relatedIds(node) {
       const ids = new Set();
       if (!node) return ids;
@@ -1262,20 +1797,19 @@
       return ids;
     }
 
-    function clusterCenter(module) {
-      const modules = [...new Set(state.visibleNodes.map(node => node.cluster))].sort();
-      const index = Math.max(0, modules.indexOf(module));
-      const angle = (Math.PI * 2 * index) / Math.max(1, modules.length);
-      const radius = Math.max(120, Math.sqrt(state.visibleNodes.length) * 45);
-      return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
-    }
-
-    function gridKey(x, y, size) {
-      return `${Math.floor(x / size)}:${Math.floor(y / size)}`;
-    }
-
     function requestDraw() {
       state.needsDraw = true;
+      if (state.projection !== "flat") {
+        state.threeView?.render();
+        return;
+      }
+      if (state.frameRequest) return;
+      state.frameRequest = requestAnimationFrame(() => {
+        state.frameRequest = 0;
+        if (!state.needsDraw || state.projection !== "flat") return;
+        draw();
+        state.needsDraw = false;
+      });
     }
 
     function installWorkbenchWindows() {
@@ -1348,6 +1882,16 @@
         toggleStageCollapsed();
       });
       els.stage.appendChild(bar);
+      const syncStageChromeHeight = () => {
+        const height = Math.ceil(bar.getBoundingClientRect().height);
+        els.stage.style.setProperty("--stage-chrome-height", `${height}px`);
+        resizeCanvas();
+      };
+      if (typeof ResizeObserver !== "undefined") {
+        const barObserver = new ResizeObserver(syncStageChromeHeight);
+        barObserver.observe(bar);
+      }
+      syncStageChromeHeight();
       updateWorkbenchBounds();
     }
 
@@ -1569,17 +2113,10 @@
       requestDraw();
     }
 
-    function edgeDrawLimit(edgeCount, nodeCount, fps) {
-      if (fps && fps < 22) return Math.min(edgeCount, 1800);
+    function edgeDrawLimit(edgeCount, nodeCount) {
       if (nodeCount > 700) return Math.min(edgeCount, 2400);
       if (nodeCount > 500) return Math.min(edgeCount, 3200);
       return Math.min(edgeCount, 5200);
-    }
-
-    function simulationEdgeLimit(edgeCount, nodeCount) {
-      if (nodeCount > 700) return Math.min(edgeCount, 2600);
-      if (nodeCount > 500) return Math.min(edgeCount, 4200);
-      return Math.min(edgeCount, 7000);
     }
 
     function colorForModule(module) {

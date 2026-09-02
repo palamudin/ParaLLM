@@ -34,6 +34,7 @@ from runtime.engine import (
     default_target_timeout_config,
     default_vetting_config,
     default_provider_routing_config,
+    infer_provider_from_model_id,
     normalize_allowed_domains,
     normalize_budget_config,
     normalize_context_mode,
@@ -53,6 +54,7 @@ from runtime.engine import (
     normalize_ollama_timeout_profile,
     normalize_provider_id,
     normalize_provider_routing_config,
+    normalize_reasoning_effort,
     normalize_research_config,
     normalize_string_list,
     normalize_timeout_mode,
@@ -61,6 +63,14 @@ from runtime.engine import (
     provider_capability_profile,
     task_workers,
     worker_catalog,
+)
+from runtime.provider_torso import (
+    AUTH_ROUTE_CODEX_CURRENT_USER,
+    model_supports_auth_route,
+    model_source_for_auth_route,
+    normalize_auth_route,
+    provider_default_auth_route,
+    provider_supports_auth_route,
 )
 
 from .config import deployment_topology
@@ -77,6 +87,7 @@ from .secrets import (
     normalize_auth_key_pool,
     normalize_auth_key_provider,
     preferred_safe_secret_backend,
+    read_anthropic_workspace_id,
     read_local_auth_keys,
     resolve_provider_secret_backend,
     write_auth_backend_mode_override,
@@ -108,26 +119,53 @@ def normalize_model_source(value: Any, default: str = OPENAI_API_MODEL_SOURCE) -
     return default if default in {OPENAI_API_MODEL_SOURCE, OPENAI_CODEX_MODEL_SOURCE} else OPENAI_API_MODEL_SOURCE
 
 
+def normalize_auth_selection(
+    auth_route: Any,
+    model_source: Any,
+    default_source: str,
+    provider: Any = DEFAULT_PROVIDER_ID,
+) -> tuple[str, str]:
+    candidate = auth_route if str(auth_route or "").strip() else model_source
+    if not str(candidate or "").strip():
+        candidate = default_source
+    normalized_route = normalize_auth_route(candidate)
+    normalized_provider = normalize_provider_id(str(provider or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
+    if not provider_supports_auth_route(normalized_provider, normalized_route):
+        normalized_route = provider_default_auth_route(normalized_provider)
+    return normalized_route, model_source_for_auth_route(normalized_route)
+
+
 def default_model_source_for_provider(provider: Any) -> str:
     normalized_provider = normalize_provider_id(str(provider or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
-    return OPENAI_CODEX_MODEL_SOURCE if normalized_provider == "openai" else OPENAI_API_MODEL_SOURCE
+    return model_source_for_auth_route(provider_default_auth_route(normalized_provider))
 
 
 def default_model_for_source(provider: Any, source: Any) -> str:
     normalized_provider = normalize_provider_id(str(provider or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
-    normalized_source = normalize_model_source(source, default_model_source_for_provider(normalized_provider))
-    if normalized_provider == "openai" and normalized_source == OPENAI_CODEX_MODEL_SOURCE:
-        return "gpt-5.4-mini"
-    return default_model_for_provider(normalized_provider)
+    auth_route = normalize_auth_route(source)
+    if not provider_supports_auth_route(normalized_provider, auth_route):
+        auth_route = provider_default_auth_route(normalized_provider)
+    return default_model_for_provider(normalized_provider, auth_route)
 
 
 def normalize_sourced_model_id(model: Any, fallback: str, provider: str, source: Any) -> str:
     normalized_provider = normalize_provider_id(provider, DEFAULT_PROVIDER_ID)
-    normalized_source = normalize_model_source(source)
+    auth_route = normalize_auth_route(source)
+    if not provider_supports_auth_route(normalized_provider, auth_route):
+        auth_route = provider_default_auth_route(normalized_provider)
     candidate = str(model or "").strip()
-    if normalized_provider == "openai" and normalized_source == OPENAI_CODEX_MODEL_SOURCE:
-        return candidate or str(fallback or default_model_for_provider(normalized_provider)).strip()
-    return normalize_model_id(candidate, fallback, normalized_provider)
+    inferred_provider = infer_provider_from_model_id(candidate)
+    if inferred_provider and inferred_provider != normalized_provider:
+        candidate = ""
+    route_fallback = str(fallback or default_model_for_provider(normalized_provider, auth_route)).strip()
+    normalized_model = normalize_model_id(candidate, route_fallback, normalized_provider)
+    if not model_supports_auth_route(normalized_provider, normalized_model, auth_route):
+        normalized_model = normalize_model_id(
+            default_model_for_provider(normalized_provider, auth_route),
+            route_fallback,
+            normalized_provider,
+        )
+    return normalized_model
 
 
 def utc_now() -> str:
@@ -151,8 +189,10 @@ def normalize_loop_preferences(config: Optional[Dict[str, Any]] = None) -> Dict[
 
 def default_draft_state() -> Dict[str, Any]:
     budget = default_budget_config()
-    model = "gpt-5.4-mini"
     provider = DEFAULT_PROVIDER_ID
+    auth_route = provider_default_auth_route(provider)
+    model_source = model_source_for_auth_route(auth_route)
+    model = default_model_for_provider(provider, auth_route)
     loop = default_loop_preferences()
     local_files = default_local_file_tool_config()
     github_tools = default_github_tool_config()
@@ -165,10 +205,12 @@ def default_draft_state() -> Dict[str, Any]:
         "executionMode": "live",
         "provider": provider,
         "model": model,
-        "modelSource": OPENAI_CODEX_MODEL_SOURCE,
+        "authRoute": auth_route,
+        "modelSource": model_source,
         "summarizerProvider": provider,
         "summarizerModel": model,
-        "summarizerModelSource": OPENAI_CODEX_MODEL_SOURCE,
+        "summarizerAuthRoute": auth_route,
+        "summarizerModelSource": model_source,
         "frontMode": default_front_mode(),
         "engineVersion": default_engine_version(),
         "engineGraph": default_engine_graph(),
@@ -177,11 +219,17 @@ def default_draft_state() -> Dict[str, Any]:
         "directBaselineMode": default_direct_baseline_mode(),
         "directProvider": provider,
         "directModel": model,
-        "directModelSource": OPENAI_CODEX_MODEL_SOURCE,
+        "directAuthRoute": auth_route,
+        "directModelSource": model_source,
         "ollamaBaseUrl": default_ollama_base_url(),
         "timeoutMode": default_timeout_mode(),
         "ollamaTimeoutProfile": default_ollama_timeout_profile(),
         "reasoningEffort": "low",
+        "workerReasoningEffort": "low",
+        "summarizerReasoningEffort": "low",
+        "codexIgnoreUserConfig": True,
+        "codexNoTimeout": False,
+        "codexSubagentsEnabled": False,
         "targetTimeouts": default_target_timeout_config(),
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
@@ -250,15 +298,26 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             ),
         }
     )
-    reasoning_effort = str(current.get("reasoningEffort", default["reasoningEffort"])).strip()
-    if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
-        reasoning_effort = str(default["reasoningEffort"])
+    reasoning_effort = normalize_reasoning_effort(current.get("reasoningEffort"), default["reasoningEffort"])
+    worker_reasoning_effort = normalize_reasoning_effort(
+        current.get("workerReasoningEffort"),
+        reasoning_effort,
+    )
+    summarizer_reasoning_effort = normalize_reasoning_effort(
+        current.get("summarizerReasoningEffort"),
+        reasoning_effort,
+    )
     execution_mode = "live"
     provider = normalize_provider_id(str(current.get("provider", default["provider"])), str(default["provider"]))
-    model_source = normalize_model_source(current.get("modelSource", default["modelSource"]), default["modelSource"])
+    auth_route, model_source = normalize_auth_selection(
+        current.get("authRoute"),
+        current.get("modelSource"),
+        str(default["modelSource"]),
+        provider,
+    )
     model = normalize_sourced_model_id(
         current.get("model", default["model"]),
-        default_model_for_provider(provider),
+        default_model_for_source(provider, model_source),
         provider,
         model_source,
     )
@@ -266,13 +325,15 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         str(current.get("summarizerProvider", current.get("provider", default["summarizerProvider"]))),
         provider,
     )
-    summarizer_model_source = normalize_model_source(
-        current.get("summarizerModelSource", default["summarizerModelSource"]),
-        default["summarizerModelSource"],
+    summarizer_auth_route, summarizer_model_source = normalize_auth_selection(
+        current.get("summarizerAuthRoute"),
+        current.get("summarizerModelSource"),
+        str(default["summarizerModelSource"]),
+        summarizer_provider,
     )
     summarizer_model = normalize_sourced_model_id(
         current.get("summarizerModel", default["summarizerModel"]),
-        default_model_for_provider(summarizer_provider),
+        default_model_for_source(summarizer_provider, summarizer_model_source),
         summarizer_provider,
         summarizer_model_source,
     )
@@ -286,13 +347,15 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         str(current.get("directProvider", provider)),
         provider,
     )
-    direct_model_source = normalize_model_source(
-        current.get("directModelSource", default["directModelSource"]),
-        default["directModelSource"],
+    direct_auth_route, direct_model_source = normalize_auth_selection(
+        current.get("directAuthRoute"),
+        current.get("directModelSource"),
+        str(default["directModelSource"]),
+        direct_provider,
     )
     direct_model = normalize_sourced_model_id(
-        current.get("directModel", default_model_for_provider(direct_provider)),
-        default_model_for_provider(direct_provider),
+        current.get("directModel", default_model_for_source(direct_provider, direct_model_source)),
+        default_model_for_source(direct_provider, direct_model_source),
         direct_provider,
         direct_model_source,
     )
@@ -318,9 +381,11 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "executionMode": execution_mode,
         "provider": provider,
         "model": model,
+        "authRoute": auth_route,
         "modelSource": model_source,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": summarizer_model,
+        "summarizerAuthRoute": summarizer_auth_route,
         "summarizerModelSource": summarizer_model_source,
         "frontMode": front_mode,
         "engineVersion": engine_version,
@@ -330,11 +395,26 @@ def normalize_draft_state(draft: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "directBaselineMode": direct_baseline_mode,
         "directProvider": direct_provider,
         "directModel": direct_model,
+        "directAuthRoute": direct_auth_route,
         "directModelSource": direct_model_source,
         "ollamaBaseUrl": ollama_base_url,
         "timeoutMode": timeout_mode,
         "ollamaTimeoutProfile": ollama_timeout_profile,
-        "reasoningEffort": reasoning_effort,
+        "reasoningEffort": worker_reasoning_effort,
+        "workerReasoningEffort": worker_reasoning_effort,
+        "summarizerReasoningEffort": summarizer_reasoning_effort,
+        "codexIgnoreUserConfig": coerce_bool(
+            current.get("codexIgnoreUserConfig", default["codexIgnoreUserConfig"]),
+            bool(default["codexIgnoreUserConfig"]),
+        ),
+        "codexNoTimeout": coerce_bool(
+            current.get("codexNoTimeout", default["codexNoTimeout"]),
+            bool(default["codexNoTimeout"]),
+        ),
+        "codexSubagentsEnabled": coerce_bool(
+            current.get("codexSubagentsEnabled", default["codexSubagentsEnabled"]),
+            bool(default["codexSubagentsEnabled"]),
+        ),
         "targetTimeouts": target_timeouts,
         "maxTotalTokens": budget["maxTotalTokens"],
         "maxCostUsd": budget["maxCostUsd"],
@@ -388,16 +468,28 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
     vetting = normalize_vetting_config(runtime.get("vetting") if isinstance(runtime.get("vetting"), dict) else {})
     knowledgebase = normalize_knowledgebase_config(runtime.get("knowledgebase") if isinstance(runtime.get("knowledgebase"), dict) else {"enabled": False})
     provider = normalize_provider_id(str(runtime.get("provider", default["provider"])), str(default["provider"]))
-    model_source = normalize_model_source(runtime.get("modelSource", default["modelSource"]), default["modelSource"])
-    model = normalize_sourced_model_id(runtime.get("model", default["model"]), default_model_for_provider(provider), provider, model_source)
+    auth_route, model_source = normalize_auth_selection(
+        runtime.get("authRoute"),
+        runtime.get("modelSource"),
+        str(default["modelSource"]),
+        provider,
+    )
+    model = normalize_sourced_model_id(runtime.get("model", default["model"]), default_model_for_source(provider, model_source), provider, model_source)
     summarizer = task.get("summarizer") if isinstance(task.get("summarizer"), dict) else {}
     summarizer_provider = normalize_provider_id(str(summarizer.get("provider", provider)), provider)
-    summarizer_model_source = normalize_model_source(
-        summarizer.get("modelSource", default["summarizerModelSource"]),
-        default["summarizerModelSource"],
+    summarizer_auth_route, summarizer_model_source = normalize_auth_selection(
+        summarizer.get("authRoute"),
+        summarizer.get("modelSource"),
+        str(default["summarizerModelSource"]),
+        summarizer_provider,
     )
     direct_provider = normalize_provider_id(runtime.get("directProvider"), provider)
-    direct_model_source = normalize_model_source(runtime.get("directModelSource", default["directModelSource"]), default["directModelSource"])
+    direct_auth_route, direct_model_source = normalize_auth_selection(
+        runtime.get("directAuthRoute"),
+        runtime.get("directModelSource"),
+        str(default["directModelSource"]),
+        direct_provider,
+    )
     loop_prefs = normalize_loop_preferences(task.get("preferredLoop") if isinstance(task.get("preferredLoop"), dict) else {})
 
     draft = {
@@ -407,14 +499,16 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         "executionMode": "live",
         "provider": provider,
         "model": model,
+        "authRoute": auth_route,
         "modelSource": model_source,
         "summarizerProvider": summarizer_provider,
         "summarizerModel": normalize_sourced_model_id(
             summarizer.get("model", default["summarizerModel"]),
-            default_model_for_provider(summarizer_provider),
+            default_model_for_source(summarizer_provider, summarizer_model_source),
             summarizer_provider,
             summarizer_model_source,
         ),
+        "summarizerAuthRoute": summarizer_auth_route,
         "summarizerModelSource": summarizer_model_source,
         "frontMode": normalize_front_mode(runtime.get("frontMode", default["frontMode"]), default["frontMode"]),
         "engineVersion": normalize_engine_version(runtime.get("engineVersion", default["engineVersion"]), default["engineVersion"]),
@@ -425,17 +519,41 @@ def build_draft_from_task(task: Optional[Dict[str, Any]], overrides: Optional[Di
         "directProvider": direct_provider,
         "directModel": normalize_sourced_model_id(
             runtime.get("directModel"),
-            default_model_for_provider(direct_provider),
+            default_model_for_source(direct_provider, direct_model_source),
             direct_provider,
             direct_model_source,
         ),
+        "directAuthRoute": direct_auth_route,
         "directModelSource": direct_model_source,
         "ollamaBaseUrl": normalize_ollama_base_url(runtime.get("ollamaBaseUrl", default["ollamaBaseUrl"])),
         "timeoutMode": normalize_timeout_mode(runtime.get("timeoutMode", default["timeoutMode"]), default["timeoutMode"]),
         "ollamaTimeoutProfile": normalize_ollama_timeout_profile(
             runtime.get("ollamaTimeoutProfile", default["ollamaTimeoutProfile"])
         ),
-        "reasoningEffort": str(runtime.get("reasoningEffort", default["reasoningEffort"])).strip(),
+        "reasoningEffort": normalize_reasoning_effort(
+            runtime.get("workerReasoningEffort", runtime.get("reasoningEffort")),
+            default["reasoningEffort"],
+        ),
+        "workerReasoningEffort": normalize_reasoning_effort(
+            runtime.get("workerReasoningEffort", runtime.get("reasoningEffort")),
+            default["workerReasoningEffort"],
+        ),
+        "summarizerReasoningEffort": normalize_reasoning_effort(
+            runtime.get("summarizerReasoningEffort", runtime.get("reasoningEffort")),
+            default["summarizerReasoningEffort"],
+        ),
+        "codexIgnoreUserConfig": coerce_bool(
+            runtime.get("codexIgnoreUserConfig", default["codexIgnoreUserConfig"]),
+            bool(default["codexIgnoreUserConfig"]),
+        ),
+        "codexNoTimeout": coerce_bool(
+            runtime.get("codexNoTimeout", default["codexNoTimeout"]),
+            bool(default["codexNoTimeout"]),
+        ),
+        "codexSubagentsEnabled": coerce_bool(
+            runtime.get("codexSubagentsEnabled", default["codexSubagentsEnabled"]),
+            bool(default["codexSubagentsEnabled"]),
+        ),
         "targetTimeouts": normalize_target_timeout_config(
             runtime.get("targetTimeouts") if isinstance(runtime.get("targetTimeouts"), dict) else default["targetTimeouts"]
         ),
@@ -485,15 +603,15 @@ def local_auth_file_path(root: Optional[Path] = None) -> Path:
     return topology.auth_file
 
 
-def provider_auth_file_path(root: Optional[Path] = None, provider: Any = "openai") -> Path:
+def provider_auth_file_path(root: Optional[Path] = None, provider: Any = None) -> Path:
     return auth_key_file_path(local_auth_file_path(root), provider)
 
 
-def read_auth_key_pool(root: Optional[Path] = None, provider: Any = "openai") -> list[str]:
+def read_auth_key_pool(root: Optional[Path] = None, provider: Any = None) -> list[str]:
     return auth_key_pool_state(root, provider)["keys"]
 
 
-def auth_key_pool_state(root: Optional[Path] = None, provider: Any = "openai") -> Dict[str, Any]:
+def auth_key_pool_state(root: Optional[Path] = None, provider: Any = None) -> Dict[str, Any]:
     normalized_provider = normalize_auth_key_provider(provider)
     label = auth_key_provider_label(normalized_provider)
     topology = deployment_topology(root)
@@ -707,6 +825,7 @@ def secret_backend_status_note(topology=None) -> str:
 
 def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
     topology = deployment_topology(root)
+    anthropic_workspace_id = read_anthropic_workspace_id(local_auth_file_path(root))
     provider_groups: Dict[str, Any] = {}
     total_keys = 0
     has_any_key = False
@@ -738,6 +857,7 @@ def auth_pool_status(root: Optional[Path] = None) -> Dict[str, Any]:
             "localFilePrefix": str(pool_state.get("localFilePrefix") or auth_local_file_prefix(provider_id)),
             "localFileFormat": str(pool_state.get("localFileFormat") or f"{auth_local_file_prefix(provider_id)}:<api_key>"),
             "localFileGuidance": str(pool_state.get("localFileGuidance") or ""),
+            "workspaceConfigured": provider_id == "anthropic" and bool(anthropic_workspace_id),
             "strictLiveFailure": bool(pool_state.get("managed")) and len(keys) == 0,
         }
         total_keys += len(keys)
@@ -808,21 +928,30 @@ def _auth_consumer(
     model: Any,
     model_source: Any = OPENAI_API_MODEL_SOURCE,
     label: str = "",
+    auth_route: Any = None,
 ) -> Dict[str, str]:
     normalized_provider = normalize_provider_id(str(provider or DEFAULT_PROVIDER_ID), DEFAULT_PROVIDER_ID)
-    normalized_source = normalize_model_source(model_source, OPENAI_API_MODEL_SOURCE)
+    normalized_route, normalized_source = normalize_auth_selection(
+        auth_route,
+        model_source,
+        OPENAI_API_MODEL_SOURCE,
+        normalized_provider,
+    )
     return {
         "role": role,
         "label": label or role.replace("_", " ").title(),
         "provider": normalized_provider,
-        "model": str(model or default_model_for_provider(normalized_provider)).strip(),
+        "model": str(model or default_model_for_source(normalized_provider, normalized_source)).strip(),
+        "authRoute": normalized_route,
         "modelSource": normalized_source,
     }
 
 
 def _auth_domain_for_consumer(consumer: Dict[str, str]) -> str:
     provider = normalize_provider_id(consumer.get("provider"), DEFAULT_PROVIDER_ID)
-    if provider == "openai" and normalize_model_source(consumer.get("modelSource")) == OPENAI_CODEX_MODEL_SOURCE:
+    if normalize_auth_route(
+        consumer.get("authRoute", consumer.get("modelSource"))
+    ) == AUTH_ROUTE_CODEX_CURRENT_USER:
         return "codex_chatgpt"
     if provider == "ollama":
         return "ollama_local"
@@ -917,6 +1046,7 @@ def _auth_requirement_for_domain(
         "writable": bool(group.get("writable")),
         "selectedMode": str(group.get("selectedMode") or auth_backend_mode_for_provider(root, provider_id)),
         "selectedModeLabel": str(group.get("selectedModeLabel") or auth_backend_mode_label(auth_backend_mode_for_provider(root, provider_id))),
+        "workspaceConfigured": bool(group.get("workspaceConfigured")),
         "consumers": consumers,
     }
 
@@ -925,12 +1055,22 @@ def auth_requirements_status(payload: Dict[str, Any], root: Optional[Path] = Non
     current = payload if isinstance(payload, dict) else {}
     provider = normalize_provider_id(str(current.get("provider", DEFAULT_PROVIDER_ID)), DEFAULT_PROVIDER_ID)
     model_source_default = default_model_source_for_provider(provider)
-    model_source = normalize_model_source(current.get("modelSource", model_source_default), model_source_default)
+    auth_route, model_source = normalize_auth_selection(
+        current.get("authRoute"),
+        current.get("modelSource"),
+        model_source_default,
+        provider,
+    )
     model_default = default_model_for_source(provider, model_source)
     model = normalize_sourced_model_id(current.get("model", model_default), model_default, provider, model_source)
     summarizer_provider = normalize_provider_id(str(current.get("summarizerProvider", provider)), provider)
     summarizer_model_source_default = model_source if summarizer_provider == provider else default_model_source_for_provider(summarizer_provider)
-    summarizer_model_source = normalize_model_source(current.get("summarizerModelSource", summarizer_model_source_default), summarizer_model_source_default)
+    summarizer_auth_route, summarizer_model_source = normalize_auth_selection(
+        current.get("summarizerAuthRoute"),
+        current.get("summarizerModelSource"),
+        summarizer_model_source_default,
+        summarizer_provider,
+    )
     summarizer_model_default = default_model_for_source(summarizer_provider, summarizer_model_source)
     summarizer_model = normalize_sourced_model_id(
         current.get("summarizerModel", summarizer_model_default),
@@ -940,7 +1080,12 @@ def auth_requirements_status(payload: Dict[str, Any], root: Optional[Path] = Non
     )
     direct_mode = normalize_direct_baseline_mode(current.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     direct_provider = normalize_provider_id(str(current.get("directProvider", provider)), provider)
-    direct_model_source = normalize_model_source(current.get("directModelSource", model_source), model_source)
+    direct_auth_route, direct_model_source = normalize_auth_selection(
+        current.get("directAuthRoute"),
+        current.get("directModelSource"),
+        model_source,
+        direct_provider,
+    )
     direct_model_default = default_model_for_source(direct_provider, direct_model_source)
     direct_model = normalize_sourced_model_id(
         current.get("directModel", direct_model_default),
@@ -951,11 +1096,11 @@ def auth_requirements_status(payload: Dict[str, Any], root: Optional[Path] = Non
     ollama_base_url = normalize_ollama_base_url(current.get("ollamaBaseUrl", default_ollama_base_url()))
 
     consumers = [
-        _auth_consumer("worker", provider, model, model_source, "Worker default model"),
-        _auth_consumer("summarizer", summarizer_provider, summarizer_model, summarizer_model_source, "Summarizer model"),
+        _auth_consumer("worker", provider, model, model_source, "Worker default model", auth_route),
+        _auth_consumer("summarizer", summarizer_provider, summarizer_model, summarizer_model_source, "Summarizer model", summarizer_auth_route),
     ]
     if direct_mode != "off":
-        consumers.append(_auth_consumer("direct_baseline", direct_provider, direct_model, direct_model_source, "Direct baseline"))
+        consumers.append(_auth_consumer("direct_baseline", direct_provider, direct_model, direct_model_source, "Direct baseline", direct_auth_route))
     for consumer in consumers:
         if consumer["provider"] == "ollama":
             consumer["ollamaBaseUrl"] = ollama_base_url
@@ -1074,9 +1219,14 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "executionMode": payload.get("executionMode", existing_draft["executionMode"]),
             "provider": payload.get("provider", existing_draft["provider"]),
             "model": payload.get("model", existing_draft["model"]),
+            "authRoute": payload.get("authRoute", "" if "modelSource" in payload else existing_draft["authRoute"]),
             "modelSource": payload.get("modelSource", existing_draft["modelSource"]),
             "summarizerProvider": payload.get("summarizerProvider", existing_draft["summarizerProvider"]),
             "summarizerModel": payload.get("summarizerModel", existing_draft["summarizerModel"]),
+            "summarizerAuthRoute": payload.get(
+                "summarizerAuthRoute",
+                "" if "summarizerModelSource" in payload else existing_draft["summarizerAuthRoute"],
+            ),
             "summarizerModelSource": payload.get("summarizerModelSource", existing_draft["summarizerModelSource"]),
             "frontMode": payload.get("frontMode", existing_draft["frontMode"]),
             "engineVersion": payload.get("engineVersion", existing_draft["engineVersion"]),
@@ -1086,11 +1236,32 @@ def save_draft(payload: Dict[str, Any], root: Optional[Path] = None) -> Dict[str
             "directBaselineMode": payload.get("directBaselineMode", existing_draft["directBaselineMode"]),
             "directProvider": payload.get("directProvider", existing_draft["directProvider"]),
             "directModel": payload.get("directModel", existing_draft["directModel"]),
+            "directAuthRoute": payload.get(
+                "directAuthRoute",
+                "" if "directModelSource" in payload else existing_draft["directAuthRoute"],
+            ),
             "directModelSource": payload.get("directModelSource", existing_draft["directModelSource"]),
             "ollamaBaseUrl": payload.get("ollamaBaseUrl", existing_draft["ollamaBaseUrl"]),
             "timeoutMode": payload.get("timeoutMode", existing_draft["timeoutMode"]),
             "ollamaTimeoutProfile": ollama_timeout_profile if isinstance(ollama_timeout_profile, dict) else existing_draft["ollamaTimeoutProfile"],
             "reasoningEffort": payload.get("reasoningEffort", existing_draft["reasoningEffort"]),
+            "workerReasoningEffort": payload.get(
+                "workerReasoningEffort",
+                payload.get("reasoningEffort", existing_draft["workerReasoningEffort"]),
+            ),
+            "summarizerReasoningEffort": payload.get(
+                "summarizerReasoningEffort",
+                payload.get("reasoningEffort", existing_draft["summarizerReasoningEffort"]),
+            ),
+            "codexIgnoreUserConfig": payload.get(
+                "codexIgnoreUserConfig",
+                existing_draft["codexIgnoreUserConfig"],
+            ),
+            "codexNoTimeout": payload.get("codexNoTimeout", existing_draft["codexNoTimeout"]),
+            "codexSubagentsEnabled": payload.get(
+                "codexSubagentsEnabled",
+                existing_draft["codexSubagentsEnabled"],
+            ),
             "targetTimeouts": target_timeouts if isinstance(target_timeouts, dict) else existing_draft["targetTimeouts"],
             "maxCostUsd": payload.get("maxCostUsd", existing_draft["maxCostUsd"]),
             "maxTotalTokens": payload.get("maxTotalTokens", existing_draft["maxTotalTokens"]),
@@ -1150,14 +1321,21 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     execution_mode = "live"
     provider = normalize_provider_id(str(payload.get("provider", DEFAULT_PROVIDER_ID)), DEFAULT_PROVIDER_ID)
     model_source_default = default_model_source_for_provider(provider)
-    model_source = normalize_model_source(payload.get("modelSource", model_source_default), model_source_default)
+    auth_route, model_source = normalize_auth_selection(
+        payload.get("authRoute"),
+        payload.get("modelSource"),
+        model_source_default,
+        provider,
+    )
     model_default = default_model_for_source(provider, model_source)
     model = normalize_sourced_model_id(payload.get("model", model_default), model_default, provider, model_source)
     summarizer_provider = normalize_provider_id(str(payload.get("summarizerProvider", provider)), provider)
     summarizer_model_source_default = model_source if summarizer_provider == provider else default_model_source_for_provider(summarizer_provider)
-    summarizer_model_source = normalize_model_source(
-        payload.get("summarizerModelSource", summarizer_model_source_default),
+    summarizer_auth_route, summarizer_model_source = normalize_auth_selection(
+        payload.get("summarizerAuthRoute"),
+        payload.get("summarizerModelSource"),
         summarizer_model_source_default,
+        summarizer_provider,
     )
     summarizer_model_default = default_model_for_source(summarizer_provider, summarizer_model_source)
     summarizer_model = normalize_sourced_model_id(
@@ -1171,7 +1349,12 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     context_mode = normalize_context_mode(payload.get("contextMode", default_context_mode()), default_context_mode())
     direct_baseline_mode = normalize_direct_baseline_mode(payload.get("directBaselineMode", default_direct_baseline_mode()), default_direct_baseline_mode())
     direct_provider = normalize_provider_id(str(payload.get("directProvider", provider)), provider)
-    direct_model_source = normalize_model_source(payload.get("directModelSource", model_source), model_source)
+    direct_auth_route, direct_model_source = normalize_auth_selection(
+        payload.get("directAuthRoute"),
+        payload.get("directModelSource"),
+        model_source,
+        direct_provider,
+    )
     direct_model_default = default_model_for_source(direct_provider, direct_model_source)
     direct_model = normalize_sourced_model_id(
         payload.get("directModel", direct_model_default),
@@ -1187,9 +1370,18 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
     ollama_timeout_profile = normalize_ollama_timeout_profile(
         _parse_json_like(payload.get("ollamaTimeoutProfile"), default_ollama_timeout_profile())
     )
-    reasoning_effort = str(payload.get("reasoningEffort", "low")).strip()
-    if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
-        reasoning_effort = "low"
+    reasoning_effort = normalize_reasoning_effort(payload.get("reasoningEffort"), "low")
+    worker_reasoning_effort = normalize_reasoning_effort(
+        payload.get("workerReasoningEffort"),
+        reasoning_effort,
+    )
+    summarizer_reasoning_effort = normalize_reasoning_effort(
+        payload.get("summarizerReasoningEffort"),
+        reasoning_effort,
+    )
+    codex_ignore_user_config = coerce_bool(payload.get("codexIgnoreUserConfig"), True)
+    codex_subagents_enabled = coerce_bool(payload.get("codexSubagentsEnabled"), False)
+    codex_no_timeout = coerce_bool(payload.get("codexNoTimeout"), False)
 
     budget = normalize_budget_config(
         {
@@ -1261,6 +1453,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "executionMode": execution_mode,
             "provider": provider,
             "model": model,
+            "authRoute": auth_route,
             "modelSource": model_source,
             "frontMode": front_mode,
             "engineVersion": engine_version,
@@ -1270,6 +1463,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "directBaselineMode": direct_baseline_mode,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "directAuthRoute": direct_auth_route,
             "directModelSource": direct_model_source,
             "directHarness": normalize_harness_config(
                 direct_harness_input if isinstance(direct_harness_input, dict) else {},
@@ -1279,7 +1473,12 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "ollamaBaseUrl": ollama_base_url,
             "timeoutMode": timeout_mode,
             "ollamaTimeoutProfile": ollama_timeout_profile,
-            "reasoningEffort": reasoning_effort,
+            "reasoningEffort": worker_reasoning_effort,
+            "workerReasoningEffort": worker_reasoning_effort,
+            "summarizerReasoningEffort": summarizer_reasoning_effort,
+            "codexIgnoreUserConfig": codex_ignore_user_config,
+            "codexNoTimeout": codex_no_timeout,
+            "codexSubagentsEnabled": codex_subagents_enabled,
             "targetTimeouts": target_timeouts,
             "budget": budget,
             "research": research,
@@ -1299,6 +1498,7 @@ def create_task(payload: Dict[str, Any], root: Optional[Path] = None, *, activat
             "label": "Summarizer",
             "provider": summarizer_provider,
             "model": summarizer_model,
+            "authRoute": summarizer_auth_route,
             "modelSource": summarizer_model_source,
             "harness": normalize_harness_config(
                 summarizer_harness_input if isinstance(summarizer_harness_input, dict) else {},

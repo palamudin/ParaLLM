@@ -7,11 +7,11 @@ from typing import Optional
 
 
 DEPLOYMENT_PROFILES = {"local-single-node", "hosted-single-node", "hosted-distributed"}
-QUEUE_BACKENDS = {"local_subprocess", "redis"}
+QUEUE_BACKENDS = {"in_process", "local_subprocess", "redis"}
 METADATA_BACKENDS = {"json_files", "postgres"}
 ARTIFACT_BACKENDS = {"filesystem", "object_storage"}
 SECRET_BACKENDS = {"local_file", "env", "docker_secret", "external"}
-RUNTIME_EXECUTION_BACKENDS = {"embedded_engine_subprocess", "runtime_service"}
+RUNTIME_EXECUTION_BACKENDS = {"embedded_engine", "embedded_engine_subprocess", "runtime_service"}
 
 
 def _clean_choice(value: str, allowed: set[str], default: str) -> str:
@@ -112,9 +112,9 @@ def deployment_topology(root: Optional[Path] = None) -> DeploymentTopology:
         "local-single-node",
     )
     queue_backend = _clean_choice(
-        str(os.getenv("LOOP_QUEUE_BACKEND") or "local_subprocess"),
+        str(os.getenv("LOOP_QUEUE_BACKEND") or "in_process"),
         QUEUE_BACKENDS,
-        "local_subprocess",
+        "in_process",
     )
     metadata_backend = _clean_choice(
         str(os.getenv("LOOP_METADATA_BACKEND") or "json_files"),
@@ -137,9 +137,9 @@ def deployment_topology(root: Optional[Path] = None) -> DeploymentTopology:
     if secret_backend == "docker_secret" and secret_file is None:
         secret_file = Path("/run/secrets/openai_api_keys")
     runtime_execution_backend = _clean_choice(
-        str(os.getenv("LOOP_RUNTIME_EXECUTION_BACKEND") or "embedded_engine_subprocess"),
+        str(os.getenv("LOOP_RUNTIME_EXECUTION_BACKEND") or "embedded_engine"),
         RUNTIME_EXECUTION_BACKENDS,
-        "embedded_engine_subprocess",
+        "embedded_engine",
     )
 
     host = str(os.getenv("LOOP_HOST") or "127.0.0.1").strip() or "127.0.0.1"

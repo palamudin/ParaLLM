@@ -10,6 +10,11 @@ from unittest import mock
 from backend.app import control, storage
 from backend.app.secrets import write_auth_backend_mode_override
 from runtime.engine import RuntimeErrorWithCode
+from runtime.provider_torso import (
+    default_provider_id,
+    provider_default_auth_route,
+    provider_default_model,
+)
 
 
 class ControlPlaneTests(unittest.TestCase):
@@ -176,6 +181,30 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual({item["domain"] for item in status["requirements"]}, {"codex_chatgpt"})
         self.assertEqual(status["missing"][0]["action"], "sign_in_codex")
 
+    def test_auth_requirements_accepts_local_qwen_without_vendor_credentials(self) -> None:
+        payload = {
+            "provider": "ollama",
+            "model": "Qwen3.8-27B:latest",
+            "summarizerProvider": "ollama",
+            "summarizerModel": "Qwen3.8-27B:latest",
+            "ollamaBaseUrl": "http://127.0.0.1:11434",
+        }
+
+        with mock.patch.dict("os.environ", {"LOOP_SECRET_BACKEND": "local_file"}, clear=False):
+            status = control.auth_requirements_status(payload, self.root)
+
+        self.assertTrue(status["ready"])
+        self.assertEqual(status["missing"], [])
+        self.assertEqual(len(status["requirements"]), 1)
+        requirement = status["requirements"][0]
+        self.assertEqual(requirement["domain"], "ollama_local")
+        self.assertEqual(requirement["kind"], "local_instance")
+        self.assertEqual(requirement["source"], "http://127.0.0.1:11434")
+        self.assertEqual(
+            {consumer["model"] for consumer in requirement["consumers"]},
+            {"Qwen3.8-27B:latest"},
+        )
+
     def test_auth_file_path_honors_docker_secret_backend(self) -> None:
         secret_path = self.root / "secrets" / "openai_api_keys"
         previous_backend = os.environ.get("LOOP_SECRET_BACKEND")
@@ -206,14 +235,19 @@ class ControlPlaneTests(unittest.TestCase):
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
                 "frontMode": "eval",
-                "engineVersion": "v2",
+                "engineVersion": "v1",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
                 "directModel": "claude-sonnet-4-20250514",
                 "directHarness": '{"concision":"none","instruction":"Give the fullest factual baseline you can support."}',
+                "codexIgnoreUserConfig": "0",
+                "codexNoTimeout": "1",
+                "codexSubagentsEnabled": "1",
                 "ollamaBaseUrl": "http://192.168.0.26:11434",
                 "targetTimeouts": '{"commander":95,"workerDefault":110,"workers":{"A":75},"commanderReview":205,"summarizer":215}',
+                "workerReasoningEffort": "medium",
+                "summarizerReasoningEffort": "xhigh",
                 "researchEnabled": "1",
                 "localFilesEnabled": "1",
                 "localFileRoots": ".,runtime, api",
@@ -240,15 +274,21 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["contextMode"], "full")
         self.assertEqual(draft["directBaselineMode"], "both")
         self.assertEqual(draft["directProvider"], "anthropic")
-        self.assertEqual(draft["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(draft["directModel"], "claude-sonnet-4-6")
         self.assertEqual(draft["directHarness"]["concision"], "none")
         self.assertEqual(draft["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
+        self.assertFalse(draft["codexIgnoreUserConfig"])
+        self.assertTrue(draft["codexNoTimeout"])
+        self.assertTrue(draft["codexSubagentsEnabled"])
         self.assertEqual(draft["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(draft["targetTimeouts"]["commander"], 95)
         self.assertEqual(draft["targetTimeouts"]["workerDefault"], 110)
         self.assertEqual(draft["targetTimeouts"]["workers"]["A"], 75)
         self.assertEqual(draft["targetTimeouts"]["commanderReview"], 205)
-        self.assertFalse(draft["researchEnabled"])
+        self.assertEqual(draft["reasoningEffort"], "medium")
+        self.assertEqual(draft["workerReasoningEffort"], "medium")
+        self.assertEqual(draft["summarizerReasoningEffort"], "xhigh")
+        self.assertTrue(draft["researchEnabled"])
         self.assertTrue(draft["localFilesEnabled"])
         self.assertTrue(draft["githubToolsEnabled"])
         self.assertEqual(draft["localFileRoots"], [".", "runtime", "api"])
@@ -278,12 +318,26 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["provider"], "openai")
         self.assertEqual(draft["model"], "gpt-5.5")
         self.assertEqual(draft["modelSource"], "codex_auth")
+        self.assertEqual(draft["authRoute"], "codex_current_user")
         self.assertEqual(draft["summarizerModel"], "gpt-5.4")
         self.assertEqual(draft["summarizerModelSource"], "openai_api")
+        self.assertEqual(draft["summarizerAuthRoute"], "api_key")
 
     def test_default_draft_budget_is_cost_only(self) -> None:
         draft = control.default_draft_state()
 
+        provider = default_provider_id()
+        auth_route = provider_default_auth_route(provider)
+        model = provider_default_model(provider, auth_route=auth_route)
+        self.assertEqual(draft["provider"], provider)
+        self.assertEqual(draft["authRoute"], auth_route)
+        self.assertEqual(draft["model"], model)
+        self.assertEqual(draft["summarizerProvider"], provider)
+        self.assertEqual(draft["summarizerAuthRoute"], auth_route)
+        self.assertEqual(draft["summarizerModel"], model)
+        self.assertEqual(draft["directProvider"], provider)
+        self.assertEqual(draft["directAuthRoute"], auth_route)
+        self.assertEqual(draft["directModel"], model)
         self.assertEqual(draft["maxTotalTokens"], 0)
         self.assertEqual(draft["maxOutputTokens"], 0)
         self.assertEqual(draft["modelSource"], "codex_auth")
@@ -294,6 +348,55 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["budgetTargets"]["summarizer"]["maxTotalTokens"], 0)
         self.assertFalse(draft["knowledgebaseEnabled"])
         self.assertFalse(draft["knowledgebase"]["enabled"])
+        self.assertTrue(draft["codexIgnoreUserConfig"])
+        self.assertFalse(draft["codexNoTimeout"])
+        self.assertFalse(draft["codexSubagentsEnabled"])
+
+    def test_create_task_controls_codex_subagents_explicitly(self) -> None:
+        control.create_task({"objective": "Use only Para-owned lanes."}, self.root)
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertFalse(state["activeTask"]["runtime"]["codexSubagentsEnabled"])
+
+        control.create_task(
+            {"objective": "Permit nested provider delegation.", "codexSubagentsEnabled": "1"},
+            self.root,
+        )
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        self.assertTrue(state["activeTask"]["runtime"]["codexSubagentsEnabled"])
+        self.assertTrue(state["draft"]["codexSubagentsEnabled"])
+
+    def test_create_task_preserves_lane_specific_reasoning(self) -> None:
+        control.create_task(
+            {
+                "objective": "Use distinct reasoning levels by lane.",
+                "workerReasoningEffort": "low",
+                "summarizerReasoningEffort": "high",
+            },
+            self.root,
+        )
+
+        state = storage.read_state_payload(storage.project_paths(self.root))
+        runtime = state["activeTask"]["runtime"]
+        self.assertEqual(runtime["reasoningEffort"], "low")
+        self.assertEqual(runtime["workerReasoningEffort"], "low")
+        self.assertEqual(runtime["summarizerReasoningEffort"], "high")
+
+    def test_create_task_preserves_explicit_unbounded_codex_calls(self) -> None:
+        control.create_task(
+            {"objective": "Let a slow Codex model finish.", "codexNoTimeout": "1"},
+            self.root,
+        )
+        state = storage.read_state_payload(storage.project_paths(self.root))
+
+        self.assertTrue(state["activeTask"]["runtime"]["codexNoTimeout"])
+        self.assertTrue(state["draft"]["codexNoTimeout"])
+
+    def test_create_task_isolates_codex_provider_from_user_config_by_default(self) -> None:
+        control.create_task({"objective": "Use reproducible Codex provider settings."}, self.root)
+        state = storage.read_state_payload(storage.project_paths(self.root))
+
+        self.assertTrue(state["activeTask"]["runtime"]["codexIgnoreUserConfig"])
+        self.assertTrue(state["draft"]["codexIgnoreUserConfig"])
 
     def test_create_task_defaults_openai_arms_to_codex_auth(self) -> None:
         control.create_task({"objective": "Codex is the default OpenAI-family arm."}, self.root)
@@ -372,7 +475,8 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
-        self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-6")
+        self.assertEqual(state["activeTask"]["runtime"]["directAuthRoute"], "api_key")
         self.assertEqual(state["activeTask"]["runtime"]["directHarness"]["concision"], "expansive")
         self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434/api")
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["commander"], 105)

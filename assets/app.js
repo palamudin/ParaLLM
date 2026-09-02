@@ -1,165 +1,14 @@
-const MODEL_CATALOG = {
-  "gpt-5.4": { label: "GPT-5.4" },
-  "gpt-5.4-mini": { label: "GPT-5.4 mini" },
-  "gpt-5.4-nano": { label: "GPT-5.4 nano" },
-  "gpt-5.2": { label: "GPT-5.2" },
-  "gpt-5.1": { label: "GPT-5.1" },
-  "gpt-5": { label: "GPT-5" },
-  "gpt-5-mini": { label: "GPT-5 mini" },
-  "gpt-5-nano": { label: "GPT-5 nano" },
-  "gpt-4.1": { label: "GPT-4.1" },
-  "gpt-4.1-mini": { label: "GPT-4.1 mini" },
-  "gpt-4.1-nano": { label: "GPT-4.1 nano" },
-  "gpt-4o": { label: "GPT-4o" },
-  "gpt-4o-mini": { label: "GPT-4o mini" }
-};
-
-const ANTHROPIC_MODEL_CATALOG = {
-  "claude-opus-4-7": { label: "Claude Opus 4.7" },
-  "claude-sonnet-4-6": { label: "Claude Sonnet 4.6" },
-  "claude-opus-4-6": { label: "Claude Opus 4.6" },
-  "claude-opus-4-5-20251101": { label: "Claude Opus 4.5" },
-  "claude-haiku-4-5-20251001": { label: "Claude Haiku 4.5" },
-  "claude-sonnet-4-5-20250929": { label: "Claude Sonnet 4.5" },
-  "claude-opus-4-1-20250805": { label: "Claude Opus 4.1" },
-};
-
-const XAI_MODEL_CATALOG = {
-  "grok-4.20-reasoning": { label: "Grok 4.20 Reasoning" },
-  "grok-4-1-fast-reasoning": { label: "Grok 4.1 Fast Reasoning" },
-  "grok-4.20-multi-agent": { label: "Grok 4.20 Multi-Agent" },
-  "grok-4.20": { label: "Grok 4.20" }
-};
-
-const DEEPSEEK_MODEL_CATALOG = {
-  "deepseek-v4-pro": { label: "DeepSeek V4 Pro" },
-  "deepseek-v4-flash": { label: "DeepSeek V4 Flash" },
-  "deepseek-chat": { label: "DeepSeek Chat (Legacy)" },
-  "deepseek-reasoner": { label: "DeepSeek Reasoner (Legacy)" }
-};
-
-const MINIMAX_MODEL_CATALOG = {
-  "MiniMax-M2.7": { label: "MiniMax M2.7" },
-  "MiniMax-M2.7-highspeed": { label: "MiniMax M2.7 Highspeed" },
-  "MiniMax-M2.5": { label: "MiniMax M2.5" },
-  "MiniMax-M2.5-highspeed": { label: "MiniMax M2.5 Highspeed" },
-  "MiniMax-M2.1": { label: "MiniMax M2.1" },
-  "MiniMax-M2.1-highspeed": { label: "MiniMax M2.1 Highspeed" },
-  "MiniMax-M2": { label: "MiniMax M2" }
-};
-
-const PROVIDER_CATALOG = {
-  openai: { label: "OpenAI", status: "primary" },
-  deepseek: { label: "DeepSeek", status: "primary" },
-  anthropic: { label: "Anthropic", status: "primary" },
-  xai: { label: "xAI", status: "primary" },
-  minimax: { label: "MiniMax", status: "deferred" },
-  ollama: { label: "Ollama", status: "deferred_local" }
-};
-const ALL_PROVIDER_ORDER = Object.keys(PROVIDER_CATALOG);
-const PRIMARY_PROVIDER_ORDER = ALL_PROVIDER_ORDER.filter(function (providerId) {
-  return String(PROVIDER_CATALOG[providerId]?.status || "primary").trim().toLowerCase() === "primary";
-});
-const PROVIDER_CAPABILITY_CATALOG = {
-  openai: {
-    toolLoop: true,
-    webSearch: true,
-    localFiles: true,
-    githubTools: true,
-    costTracking: true,
-    notes: [
-      "Responses API path with built-in web search and audited tool loop.",
-      "Estimated spend tracking is available."
-    ]
-  },
-  deepseek: {
-    toolLoop: true,
-    webSearch: false,
-    localFiles: true,
-    githubTools: true,
-    costTracking: false,
-    notes: [
-      "OpenAI-compatible chat-completions path is the default in this runtime.",
-      "Anthropic-compatible transport remains available as a fallback.",
-      "Built-in live web search is not wired here yet."
-    ]
-  },
-  anthropic: {
-    toolLoop: true,
-    webSearch: true,
-    localFiles: true,
-    githubTools: true,
-    costTracking: false,
-    notes: [
-      "Messages API path with tool_use/tool_result turns.",
-      "Server web search plus client tool loops are enabled."
-    ]
-  },
-  xai: {
-    toolLoop: true,
-    webSearch: true,
-    localFiles: true,
-    githubTools: true,
-    costTracking: false,
-    notes: [
-      "xAI Responses path with Grok-compatible function tools.",
-      "Built-in web search is enabled in this runtime."
-    ]
-  },
-  minimax: {
-    toolLoop: true,
-    webSearch: false,
-    localFiles: true,
-    githubTools: true,
-    costTracking: false,
-    notes: [
-      "MiniMax is intentionally deferred from the primary hosted provider set until its review path is boring and repeatable.",
-      "OpenAI-compatible chat-completions is the active transport, with Anthropic-compatible fallback available only for targeted debugging.",
-      "Built-in live web search is not wired here yet."
-    ]
-  },
-  ollama: {
-    toolLoop: true,
-    webSearch: false,
-    localFiles: true,
-    githubTools: true,
-    costTracking: false,
-    notes: [
-      "Native local structured generation with client-side function tools.",
-      "Live web search is still disabled for Ollama in this runtime."
-    ]
-  }
-};
-const OLLAMA_MODEL_CATALOG = {
-  qwen3: { label: "Qwen3" },
-  "qwen3-coder": { label: "Qwen3 Coder" },
-  gemma3: { label: "Gemma 3" },
-  "llama3.2": { label: "Llama 3.2" }
-};
-const PROVIDER_MODEL_CATALOG = {
-  openai: MODEL_CATALOG,
-  deepseek: DEEPSEEK_MODEL_CATALOG,
-  anthropic: ANTHROPIC_MODEL_CATALOG,
-  xai: XAI_MODEL_CATALOG,
-  minimax: MINIMAX_MODEL_CATALOG,
-  ollama: OLLAMA_MODEL_CATALOG
-};
-const PROVIDER_DEFAULT_MODELS = {
-  openai: "gpt-5-mini",
-  deepseek: "deepseek-v4-flash",
-  anthropic: "claude-sonnet-4-6",
-  xai: "grok-4.20-reasoning",
-  minimax: "MiniMax-M2.7",
-  ollama: "qwen3"
-};
-const PROVIDER_DEFAULT_JUDGE_MODELS = {
-  openai: "gpt-5.4",
-  deepseek: "deepseek-v4-pro",
-  anthropic: "claude-opus-4-7",
-  xai: "grok-4.20-reasoning",
-  minimax: "MiniMax-M2.7",
-  ollama: "qwen3"
-};
+const MODEL_CATALOG = {};
+const PROVIDER_CATALOG = {};
+const PROVIDER_CAPABILITY_CATALOG = {};
+const PROVIDER_MODEL_CATALOG = {};
+const PROVIDER_DEFAULT_MODELS = {};
+const PROVIDER_DEFAULT_JUDGE_MODELS = {};
+const PROVIDER_QUALITY_PROFILES = {};
+let ALL_PROVIDER_ORDER = [];
+let PRIMARY_PROVIDER_ORDER = [];
+let DEFAULT_PROVIDER_ID = "";
+let DEFAULT_JUDGE_PROVIDER_ID = "";
 
 const DEFAULT_TARGET_TIMEOUTS = {
   directBaseline: 150,
@@ -473,7 +322,7 @@ const ENGINE_V2_TIMEOUT_CONTROL_MODES = [
   { value: "session", label: "Session" },
   { value: "override", label: "Override" }
 ];
-const MODEL_ORDER = Object.keys(MODEL_CATALOG);
+let MODEL_ORDER = [];
 const WORKER_SLOT_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WORKER_TYPE_CATALOG = {
   proponent: { label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced" },
@@ -531,8 +380,6 @@ const QUALITY_PROFILE_CATALOG = {
     label: "Low",
     eyebrow: "Lean spend",
     description: "Keeps every lane on a cheap capable model for everyday work without burning budget.",
-    workerModel: "gpt-5-mini",
-    summarizerModel: "gpt-5-mini",
     reasoningEffort: "low",
     maxCostUsd: DEFAULT_RUNTIME_BUDGET.maxCostUsd,
     maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
@@ -543,8 +390,6 @@ const QUALITY_PROFILE_CATALOG = {
     label: "Mid",
     eyebrow: "Best bang",
     description: "Lets cheap worker lanes explore while a stronger summarizer shapes the final answer.",
-    workerModel: "gpt-5-mini",
-    summarizerModel: "gpt-5.4-mini",
     reasoningEffort: "medium",
     maxCostUsd: 12,
     maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
@@ -555,8 +400,6 @@ const QUALITY_PROFILE_CATALOG = {
     label: "High",
     eyebrow: "Sharper debate",
     description: "Upgrades the adversarial lanes and the final judge for harder prompts and denser steering.",
-    workerModel: "gpt-5.4-mini",
-    summarizerModel: "gpt-5.4",
     reasoningEffort: "high",
     maxCostUsd: 30,
     maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
@@ -567,8 +410,6 @@ const QUALITY_PROFILE_CATALOG = {
     label: "Ultra",
     eyebrow: "Long haul",
     description: "Keeps the spend wall while letting long pressure runs breathe with a very high token ceiling.",
-    workerModel: "gpt-5.4",
-    summarizerModel: "gpt-5.4",
     reasoningEffort: "xhigh",
     maxCostUsd: 75,
     maxOutputTokens: DEFAULT_RUNTIME_BUDGET.maxOutputTokens,
@@ -645,14 +486,14 @@ let selectedScoresParaAnswerId = localStorage.getItem("loopSelectedScoresParaAns
 let frontEvalSelection = safeJsonParse(localStorage.getItem("loopFrontEvalSelection") || "{}", {
   suiteId: "msp-rmm-midnight-malware-push",
   caseId: "rmm-midnight-malware-push",
-  judgeProvider: "openai",
-  judgeModel: "gpt-5.4"
+  judgeProvider: "",
+  judgeModel: ""
 });
 let frontJudgeSelection = safeJsonParse(localStorage.getItem("loopFrontJudgeSelection") || "{}", {
   suiteIds: ["msp-rmm-midnight-malware-push"],
   armIds: ["compare-mini-full", "compare-54-full-miniworkers", "compare-54-full-triple", "direct-gpt54"],
-  judgeProvider: "openai",
-  judgeModel: "gpt-5.4",
+  judgeProvider: "",
+  judgeModel: "",
   replicates: 1,
   loopSweep: "1"
 });
@@ -679,6 +520,7 @@ let exportPreviewKey = "";
 let operatorNoticeAcceptedThisSession = false;
 const API = {
   artifact: "/v1/artifact",
+  models: "/v1/models",
   draft: "/v1/draft",
   authStatus: "/v1/auth/status",
   authKeys: "/v1/auth/keys",
@@ -728,6 +570,99 @@ function apiRoute(path) {
   const base = apiBase();
   if (!base) return String(path || "");
   return base.replace(/\/+$/, "") + "/" + String(path || "").replace(/^\/+/, "");
+}
+
+function clearCatalogObject(target) {
+  Object.keys(target || {}).forEach(function (key) {
+    delete target[key];
+  });
+}
+
+function applyProviderModelCatalog(payload) {
+  const providers = payload?.providers && typeof payload.providers === "object" ? payload.providers : {};
+  const models = Array.isArray(payload?.models) ? payload.models : [];
+  if (!Object.keys(providers).length || !models.length) {
+    throw new Error("Canonical provider/model catalog is empty.");
+  }
+
+  clearCatalogObject(MODEL_CATALOG);
+  clearCatalogObject(PROVIDER_CATALOG);
+  clearCatalogObject(PROVIDER_CAPABILITY_CATALOG);
+  clearCatalogObject(PROVIDER_MODEL_CATALOG);
+  clearCatalogObject(PROVIDER_DEFAULT_MODELS);
+  clearCatalogObject(PROVIDER_DEFAULT_JUDGE_MODELS);
+  clearCatalogObject(PROVIDER_QUALITY_PROFILES);
+
+  const orderedProviders = Object.keys(providers).sort(function (left, right) {
+    const orderDelta = Number(providers[left]?.displayOrder || 0) - Number(providers[right]?.displayOrder || 0);
+    return orderDelta || left.localeCompare(right);
+  });
+  DEFAULT_PROVIDER_ID = providers[payload?.defaultProvider]
+    ? String(payload.defaultProvider)
+    : String(orderedProviders[0] || "");
+  DEFAULT_JUDGE_PROVIDER_ID = providers[payload?.defaultJudgeProvider]
+    ? String(payload.defaultJudgeProvider)
+    : DEFAULT_PROVIDER_ID;
+
+  orderedProviders.forEach(function (providerId) {
+    const provider = providers[providerId] || {};
+    const capabilities = provider.capabilities || {};
+    const supportsClientTools = capabilities.supports_client_tools !== false;
+    const transports = Object.values(provider.transportByAuthRoute || {}).filter(Boolean);
+    PROVIDER_CATALOG[providerId] = {
+      label: String(provider.label || providerId),
+      shortLabel: String(provider.shortLabel || provider.label || providerId),
+      status: String(provider.status || "primary"),
+      displayOrder: Number(provider.displayOrder || 0)
+    };
+    PROVIDER_CAPABILITY_CATALOG[providerId] = {
+      toolLoop: supportsClientTools,
+      webSearch: capabilities.supports_web_search === true,
+      localFiles: supportsClientTools,
+      githubTools: supportsClientTools,
+      costTracking: false,
+      allowsCustomModels: capabilities.allows_custom_models === true,
+      notes: [
+        "Runtime transport: " + (transports.length ? transports.join(" / ") : "not declared") + ".",
+        "Capabilities and model options are projected from the canonical provider contract."
+      ]
+    };
+    PROVIDER_MODEL_CATALOG[providerId] = providerId === DEFAULT_PROVIDER_ID ? MODEL_CATALOG : {};
+    PROVIDER_DEFAULT_MODELS[providerId] = String(provider.defaultModel || "");
+    PROVIDER_DEFAULT_JUDGE_MODELS[providerId] = String(provider.defaultJudgeModel || provider.defaultModel || "");
+    PROVIDER_QUALITY_PROFILES[providerId] = provider.qualityProfiles || {};
+  });
+
+  models.forEach(function (model) {
+    const providerId = String(model?.provider || "").trim().toLowerCase();
+    const modelId = String(model?.id || "").trim();
+    if (!providerId || !modelId || !PROVIDER_MODEL_CATALOG[providerId]) return;
+    PROVIDER_MODEL_CATALOG[providerId][modelId] = {
+      label: String(model.label || modelId),
+      shortLabel: String(model.shortLabel || model.label || modelId),
+      authRoutes: Array.isArray(model.authRoutes) ? model.authRoutes.slice() : [],
+      capabilities: model.capabilities || {},
+      pricing: model.pricing || {}
+    };
+    if (Object.values(model.pricing || {}).some(function (value) { return Number(value || 0) > 0; })) {
+      PROVIDER_CAPABILITY_CATALOG[providerId].costTracking = true;
+    }
+  });
+
+  ALL_PROVIDER_ORDER = orderedProviders;
+  PRIMARY_PROVIDER_ORDER = orderedProviders.filter(function (providerId) {
+    return String(PROVIDER_CATALOG[providerId]?.status || "primary").trim().toLowerCase() === "primary";
+  });
+  MODEL_ORDER = Object.keys(MODEL_CATALOG);
+  latestAuthStatus.providerOrder = ALL_PROVIDER_ORDER.slice();
+  latestProviderInstanceStatus = defaultProviderInstanceStatus();
+}
+
+function loadProviderModelCatalog() {
+  return $.getJSON(apiRoute(API.models)).then(function (payload) {
+    applyProviderModelCatalog(payload);
+    return payload;
+  });
 }
 
 function apiModeDisplay() {
@@ -1050,7 +985,7 @@ function workerEditableSignature(worker) {
 
 function summarizerEditableSignature(summarizer) {
   return JSON.stringify({
-    provider: String(summarizer?.provider || "openai"),
+    provider: String(summarizer?.provider || defaultProviderId()),
     model: String(summarizer?.model || ""),
     harness: normalizeHarnessConfig(summarizer?.harness, "none")
   });
@@ -1266,22 +1201,24 @@ function lineAnchorId(ref) {
 }
 
 function defaultDraftState() {
+  const provider = DEFAULT_PROVIDER_ID || PRIMARY_PROVIDER_ORDER[0] || ALL_PROVIDER_ORDER[0] || "";
+  const model = defaultModelForProvider(provider);
   return {
     objective: "",
     constraints: [],
     sessionContext: "",
     executionMode: "live",
     frontMode: "full",
-    engineVersion: "v1",
+    engineVersion: "v2",
     engineGraph: defaultEngineGraph(),
     contextMode: "weighted",
     directBaselineMode: "off",
-    provider: "openai",
-    model: "gpt-5-mini",
-    summarizerProvider: "openai",
-    summarizerModel: "gpt-5-mini",
-    directProvider: "openai",
-    directModel: "gpt-5-mini",
+    provider: provider,
+    model: model,
+    summarizerProvider: provider,
+    summarizerModel: model,
+    directProvider: provider,
+    directModel: model,
     ollamaBaseUrl: "http://127.0.0.1:11434",
     providerRouting: defaultProviderRoutingConfig(),
     timeoutMode: defaultTimeoutMode(),
@@ -1305,8 +1242,8 @@ function defaultDraftState() {
     loopRounds: 3,
     loopDelayMs: 1000,
     workers: [
-      { id: "A", type: "proponent", label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced", model: "gpt-5-mini", harness: { concision: "tight", instruction: "" } },
-      { id: "B", type: "sceptic", label: "Sceptic", role: "adversarial", focus: "failure modes, downside, hidden coupling, consequences, externalities", temperature: "cool", model: "gpt-5-mini", harness: { concision: "tight", instruction: "" } }
+      { id: "A", type: "proponent", label: "Proponent", role: "utility", focus: "benefits, feasibility, leverage, momentum, practical execution", temperature: "balanced", model: model, harness: { concision: "tight", instruction: "" } },
+      { id: "B", type: "sceptic", label: "Sceptic", role: "adversarial", focus: "failure modes, downside, hidden coupling, consequences, externalities", temperature: "cool", model: model, harness: { concision: "tight", instruction: "" } }
     ],
     updatedAt: ""
   };
@@ -1327,12 +1264,11 @@ function normalizeContextMode(value) {
 }
 
 function normalizeEngineVersion(value) {
-  const raw = String(value || "").trim().toLowerCase();
-  return raw === "v2" ? "v2" : "v1";
+  return "v2";
 }
 
 function engineVersionLabel(value) {
-  return normalizeEngineVersion(value) === "v2" ? "V2 modular" : "V1 proven";
+  return "V2 production";
 }
 
 function defaultEngineGraph() {
@@ -1985,7 +1921,13 @@ function harnessConcisionLabel(config, fallback = "tight") {
 
 function normalizeProviderId(provider) {
   const candidate = String(provider || "").trim().toLowerCase();
-  return PROVIDER_CATALOG[candidate] ? candidate : "openai";
+  return PROVIDER_CATALOG[candidate]
+    ? candidate
+    : defaultProviderId();
+}
+
+function defaultProviderId() {
+  return DEFAULT_PROVIDER_ID || PRIMARY_PROVIDER_ORDER[0] || ALL_PROVIDER_ORDER[0] || "";
 }
 
 function providerStatus(provider) {
@@ -1994,17 +1936,21 @@ function providerStatus(provider) {
 }
 
 function providerSupportsCustomModel(provider) {
-  return normalizeProviderId(provider) !== "openai";
+  return providerCapabilities(provider).allowsCustomModels === true;
 }
 
 function defaultModelForProvider(provider) {
   const normalized = normalizeProviderId(provider);
-  return PROVIDER_DEFAULT_MODELS[normalized] || PROVIDER_DEFAULT_MODELS.openai;
+  return PROVIDER_DEFAULT_MODELS[normalized] || PROVIDER_DEFAULT_MODELS[DEFAULT_PROVIDER_ID] || Object.values(PROVIDER_DEFAULT_MODELS)[0] || "";
 }
 
 function defaultJudgeModelForProvider(provider) {
   const normalized = normalizeProviderId(provider);
   return PROVIDER_DEFAULT_JUDGE_MODELS[normalized] || defaultModelForProvider(normalized);
+}
+
+function defaultJudgeProviderId() {
+  return DEFAULT_JUDGE_PROVIDER_ID || defaultProviderId();
 }
 
 function providerModelCatalog(provider) {
@@ -2066,51 +2012,12 @@ function normalizeSelectedJudgeModelForProvider(modelId, provider) {
 
 function qualityProfileModelConfig(profileId, provider) {
   const normalizedProvider = normalizeProviderId(provider);
-  const defaults = {
-    low: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) },
-    mid: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) },
-    high: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) },
-    ultra: { workerModel: defaultModelForProvider(normalizedProvider), summarizerModel: defaultModelForProvider(normalizedProvider) }
+  const fallbackModel = defaultModelForProvider(normalizedProvider);
+  const configured = PROVIDER_QUALITY_PROFILES[normalizedProvider]?.[profileId] || {};
+  return {
+    workerModel: String(configured.workerModel || fallbackModel),
+    summarizerModel: String(configured.summarizerModel || configured.workerModel || fallbackModel)
   };
-  const providerModels = {
-    openai: {
-      low: { workerModel: "gpt-5-mini", summarizerModel: "gpt-5-mini" },
-      mid: { workerModel: "gpt-5-mini", summarizerModel: "gpt-5.4-mini" },
-      high: { workerModel: "gpt-5.4-mini", summarizerModel: "gpt-5.4" },
-      ultra: { workerModel: "gpt-5.4", summarizerModel: "gpt-5.4" }
-    },
-    deepseek: {
-      low: { workerModel: "deepseek-v4-flash", summarizerModel: "deepseek-v4-flash" },
-      mid: { workerModel: "deepseek-v4-flash", summarizerModel: "deepseek-v4-pro" },
-      high: { workerModel: "deepseek-v4-pro", summarizerModel: "deepseek-v4-pro" },
-      ultra: { workerModel: "deepseek-v4-pro", summarizerModel: "deepseek-v4-pro" }
-    },
-    anthropic: {
-      low: { workerModel: "claude-3-5-haiku-latest", summarizerModel: "claude-3-5-haiku-latest" },
-      mid: { workerModel: "claude-3-5-haiku-latest", summarizerModel: "claude-sonnet-4-20250514" },
-      high: { workerModel: "claude-sonnet-4-20250514", summarizerModel: "claude-opus-4-20250514" },
-      ultra: { workerModel: "claude-sonnet-4-20250514", summarizerModel: "claude-opus-4-1-20250805" }
-    },
-    xai: {
-      low: { workerModel: "grok-4-1-fast-reasoning", summarizerModel: "grok-4-1-fast-reasoning" },
-      mid: { workerModel: "grok-4-1-fast-reasoning", summarizerModel: "grok-4.20-reasoning" },
-      high: { workerModel: "grok-4.20-reasoning", summarizerModel: "grok-4.20-reasoning" },
-      ultra: { workerModel: "grok-4.20-reasoning", summarizerModel: "grok-4.20-multi-agent" }
-    },
-    minimax: {
-      low: { workerModel: "MiniMax-M2.1-highspeed", summarizerModel: "MiniMax-M2.1-highspeed" },
-      mid: { workerModel: "MiniMax-M2.1-highspeed", summarizerModel: "MiniMax-M2.5" },
-      high: { workerModel: "MiniMax-M2.5", summarizerModel: "MiniMax-M2.7" },
-      ultra: { workerModel: "MiniMax-M2.7", summarizerModel: "MiniMax-M2.7" }
-    },
-    ollama: {
-      low: { workerModel: "qwen3", summarizerModel: "qwen3" },
-      mid: { workerModel: "qwen3", summarizerModel: "qwen3-coder" },
-      high: { workerModel: "qwen3-coder", summarizerModel: "qwen3-coder" },
-      ultra: { workerModel: "qwen3-coder", summarizerModel: "qwen3-coder" }
-    }
-  };
-  return (providerModels[normalizedProvider] && providerModels[normalizedProvider][profileId]) || defaults[profileId] || defaults.low;
 }
 
 function providerOptionOrder(selectedValue) {
@@ -2407,7 +2314,7 @@ function renderArtifactMeta(data) {
   const activeSkills = Array.isArray(summary.skills) ? summary.skills.filter(Boolean) : [];
   const contractWarnings = Array.isArray(summary.contractWarnings) ? summary.contractWarnings.filter(Boolean) : [];
   const providerTraceLines = providerTraceSummaryLines(summary.providerTrace);
-  const provider = summary.provider || "openai";
+  const provider = summary.provider || defaultProviderId();
   const capabilitySummary = providerCapabilitySummary(summary.providerCapabilities);
   const bits = [
     data?.name || "artifact",
@@ -2662,7 +2569,7 @@ function renderEvalAnswerCard(entry, tone) {
   const metaBits = [
     normalized.stance ? "Stance " + normalized.stance : "",
     normalized.provider ? providerLabel(normalized.provider) : "",
-    normalized.model ? modelLabel(normalized.model, normalized.provider || "openai") : "",
+    normalized.model ? modelLabel(normalized.model, normalized.provider || defaultProviderId()) : "",
     normalized.mode ? "Mode " + normalized.mode : "",
     normalized.usage?.totalTokens ? "Tokens " + formatInteger(normalized.usage.totalTokens) : "",
     normalized.usage?.estimatedCostUsd != null ? "Spend " + formatUsd(normalized.usage.estimatedCostUsd || 0) : ""
@@ -2704,7 +2611,7 @@ function evalAnswerMetaBits(entry) {
   return [
     entry.stance ? "Stance " + entry.stance : "",
     entry.provider ? providerLabel(entry.provider) : "",
-    entry.model ? modelLabel(entry.model, entry.provider || "openai") : "",
+    entry.model ? modelLabel(entry.model, entry.provider || defaultProviderId()) : "",
     entry.mode ? "Mode " + entry.mode : "",
     entry.usage?.totalTokens ? "Tokens " + formatInteger(entry.usage.totalTokens) : "",
     entry.usage?.estimatedCostUsd != null ? "Spend " + formatUsd(entry.usage.estimatedCostUsd || 0) : ""
@@ -2789,7 +2696,7 @@ function renderEvalArtifactTrail(replicate) {
         artifact?.kind ? String(artifact.kind).replace(/_/g, " ") : "",
         summary?.round ? "round " + Number(summary.round || 0) : "",
         summary?.step ? "step " + Number(summary.step || 0) : "",
-        summary?.model ? modelLabel(summary.model, summary.provider || "openai") : "",
+        summary?.model ? modelLabel(summary.model, summary.provider || defaultProviderId()) : "",
         artifact?.name ? String(artifact.name) : ""
       ].filter(Boolean);
       return parts.join(" | ");
@@ -3174,6 +3081,8 @@ function refreshProviderModelSelects() {
 function buildCommanderFormSource(task, draft) {
   if (draft && typeof draft === "object") {
     const safeDraft = Object.assign({}, defaultDraftState(), draft || {});
+    const draftProvider = normalizeProviderId(safeDraft.provider);
+    const draftDefaultModel = defaultModelForProvider(draftProvider);
     return {
       sourceKey: [
         "draft",
@@ -3183,16 +3092,16 @@ function buildCommanderFormSource(task, draft) {
         JSON.stringify(safeDraft.constraints || []),
         safeDraft.executionMode || "live",
         safeDraft.frontMode || "full",
-        safeDraft.engineVersion || "v1",
+        safeDraft.engineVersion || "v2",
         JSON.stringify(normalizeEngineGraph(safeDraft.engineGraph || defaultEngineGraph())),
         safeDraft.contextMode || "weighted",
         safeDraft.directBaselineMode || "off",
-        safeDraft.provider || "openai",
-        safeDraft.model || "gpt-5-mini",
-        safeDraft.summarizerProvider || safeDraft.provider || "openai",
-        safeDraft.summarizerModel || "gpt-5-mini",
-        safeDraft.directProvider || safeDraft.provider || "openai",
-        safeDraft.directModel || safeDraft.model || "gpt-5-mini",
+        safeDraft.provider || defaultProviderId(),
+        safeDraft.model || draftDefaultModel,
+        safeDraft.summarizerProvider || safeDraft.provider || defaultProviderId(),
+        safeDraft.summarizerModel || defaultModelForProvider(safeDraft.summarizerProvider || draftProvider),
+        safeDraft.directProvider || safeDraft.provider || defaultProviderId(),
+        safeDraft.directModel || safeDraft.model || defaultModelForProvider(safeDraft.directProvider || draftProvider),
         safeDraft.ollamaBaseUrl || "http://127.0.0.1:11434",
         JSON.stringify(normalizeProviderRoutingConfig(safeDraft.providerRouting || defaultProviderRoutingConfig())),
         normalizeTimeoutMode(safeDraft.timeoutMode || defaultTimeoutMode()),
@@ -3222,6 +3131,8 @@ function buildCommanderFormSource(task, draft) {
   }
 
   if (task) {
+    const taskProvider = normalizeProviderId(task.runtime?.provider);
+    const taskDefaultModel = defaultModelForProvider(taskProvider);
     return {
       sourceKey: [
         "task",
@@ -3231,16 +3142,16 @@ function buildCommanderFormSource(task, draft) {
         JSON.stringify(task.constraints || []),
         task.runtime?.executionMode || "live",
         task.runtime?.frontMode || "full",
-        task.runtime?.engineVersion || "v1",
+        task.runtime?.engineVersion || "v2",
         JSON.stringify(normalizeEngineGraph(task.runtime?.engineGraph || defaultEngineGraph())),
         task.runtime?.contextMode || "weighted",
         task.runtime?.directBaselineMode || "off",
-        task.runtime?.provider || "openai",
-        task.runtime?.model || "gpt-5-mini",
-        task.summarizer?.provider || task.runtime?.provider || "openai",
-        task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
-        task.runtime?.directProvider || task.runtime?.provider || "openai",
-        task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
+        task.runtime?.provider || defaultProviderId(),
+        task.runtime?.model || taskDefaultModel,
+        task.summarizer?.provider || task.runtime?.provider || defaultProviderId(),
+        task.summarizer?.model || task.runtime?.model || defaultModelForProvider(task.summarizer?.provider || taskProvider),
+        task.runtime?.directProvider || task.runtime?.provider || defaultProviderId(),
+        task.runtime?.directModel || task.runtime?.model || defaultModelForProvider(task.runtime?.directProvider || taskProvider),
         task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
         JSON.stringify(normalizeProviderRoutingConfig(task.runtime?.providerRouting || defaultProviderRoutingConfig())),
         normalizeTimeoutMode(task.runtime?.timeoutMode || defaultTimeoutMode()),
@@ -3271,16 +3182,16 @@ function buildCommanderFormSource(task, draft) {
         sessionContext: task.sessionContext || "",
         executionMode: task.runtime?.executionMode || "live",
         frontMode: task.runtime?.frontMode || "full",
-        engineVersion: task.runtime?.engineVersion || "v1",
+        engineVersion: task.runtime?.engineVersion || "v2",
         engineGraph: normalizeEngineGraph(task.runtime?.engineGraph || defaultEngineGraph()),
         contextMode: task.runtime?.contextMode || "weighted",
         directBaselineMode: task.runtime?.directBaselineMode || "off",
-        provider: task.runtime?.provider || "openai",
-        model: task.runtime?.model || "gpt-5-mini",
-        summarizerProvider: task.summarizer?.provider || task.runtime?.provider || "openai",
-        summarizerModel: task.summarizer?.model || task.runtime?.model || "gpt-5-mini",
-        directProvider: task.runtime?.directProvider || task.runtime?.provider || "openai",
-        directModel: task.runtime?.directModel || task.runtime?.model || "gpt-5-mini",
+        provider: task.runtime?.provider || defaultProviderId(),
+        model: task.runtime?.model || taskDefaultModel,
+        summarizerProvider: task.summarizer?.provider || task.runtime?.provider || defaultProviderId(),
+        summarizerModel: task.summarizer?.model || task.runtime?.model || defaultModelForProvider(task.summarizer?.provider || taskProvider),
+        directProvider: task.runtime?.directProvider || task.runtime?.provider || defaultProviderId(),
+        directModel: task.runtime?.directModel || task.runtime?.model || defaultModelForProvider(task.runtime?.directProvider || taskProvider),
         ollamaBaseUrl: task.runtime?.ollamaBaseUrl || "http://127.0.0.1:11434",
         providerRouting: normalizeProviderRoutingConfig(task.runtime?.providerRouting || defaultProviderRoutingConfig()),
         timeoutMode: normalizeTimeoutMode(task.runtime?.timeoutMode || defaultTimeoutMode()),
@@ -3321,9 +3232,9 @@ function renderComposerContextPreview(sessionContext, constraints) {
 
 function applyCommanderForm(values) {
   const safe = Object.assign({}, defaultDraftState(), values || {});
-  const workerProvider = normalizeProviderId(safe.provider || "openai");
-  const summarizerProvider = normalizeProviderId(safe.summarizerProvider || safe.provider || "openai");
-  const directProvider = normalizeProviderId(safe.directProvider || safe.provider || "openai");
+  const workerProvider = normalizeProviderId(safe.provider || defaultProviderId());
+  const summarizerProvider = normalizeProviderId(safe.summarizerProvider || safe.provider || defaultProviderId());
+  const directProvider = normalizeProviderId(safe.directProvider || safe.provider || defaultProviderId());
   const workerModel = normalizeSelectedModelForProvider(safe.model, workerProvider);
   const summarizerModel = normalizeSelectedModelForProvider(safe.summarizerModel || safe.model, summarizerProvider);
   const directModel = normalizeSelectedModelForProvider(safe.directModel || safe.model, directProvider);
@@ -3446,11 +3357,11 @@ function activeWorkerSource(task, draft) {
 }
 
 function runtimeProviderSource(task, draft) {
-  return normalizeProviderId(draft?.provider || task?.runtime?.provider || "openai");
+  return normalizeProviderId(draft?.provider || task?.runtime?.provider || defaultProviderId());
 }
 
 function summarizerProviderSource(task, draft) {
-  return normalizeProviderId(draft?.summarizerProvider || task?.summarizer?.provider || task?.runtime?.provider || draft?.provider || "openai");
+  return normalizeProviderId(draft?.summarizerProvider || task?.summarizer?.provider || task?.runtime?.provider || draft?.provider || defaultProviderId());
 }
 
 function stagedWorkerSource(draft, task) {
@@ -3502,13 +3413,13 @@ function buildDraftSavePayload(options = {}) {
   const summarizerConfig = options.summarizerConfig && typeof options.summarizerConfig === "object"
     ? options.summarizerConfig
     : {
-        provider: String(payload.summarizerProvider || fallbackSummarizer.provider || payload.provider || "openai"),
+        provider: String(payload.summarizerProvider || fallbackSummarizer.provider || payload.provider || defaultProviderId()),
         model: String(payload.summarizerModel || payload.model || fallbackSummarizer.model || ""),
         harness: payload.summarizerHarness || visibleSummarizer?.harness || fallbackSummarizer.harness
       };
   payload.constraints = JSON.stringify(payload.constraints);
   payload.workers = JSON.stringify(roster.length ? roster : stagedWorkerSource(latestState?.draft || null, latestState?.activeTask || null));
-  payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || "openai");
+  payload.summarizerProvider = String(summarizerConfig?.provider || payload.summarizerProvider || payload.provider || defaultProviderId());
   payload.summarizerModel = String(summarizerConfig?.model || payload.summarizerModel || payload.model || "");
   payload.directHarness = JSON.stringify(normalizeHarnessConfig(payload.directHarness, "none"));
   payload.summarizerHarness = JSON.stringify(normalizeHarnessConfig(summarizerConfig?.harness, "none"));
@@ -3527,12 +3438,12 @@ function buildFrontCanvasRuntimePayload() {
     engineVersion: normalizeEngineVersion(base.engineVersion || selectedEngineVersion(latestState?.activeTask || null, latestState?.draft || null)),
     engineGraph: selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null),
     contextMode: normalizeContextMode(base.contextMode),
-    provider: String(base.provider || "openai"),
+    provider: String(base.provider || defaultProviderId()),
     model: String(base.model || ""),
-    summarizerProvider: String(summarizerConfig?.provider || base.summarizerProvider || base.provider || "openai"),
+    summarizerProvider: String(summarizerConfig?.provider || base.summarizerProvider || base.provider || defaultProviderId()),
     summarizerModel: String(summarizerConfig?.model || base.summarizerModel || base.model || ""),
     summarizerHarness: normalizeHarnessConfig(summarizerConfig?.harness || base.summarizerHarness, "none"),
-    directProvider: String(base.directProvider || base.provider || "openai"),
+    directProvider: String(base.directProvider || base.provider || defaultProviderId()),
     directModel: String(base.directModel || base.model || ""),
     directHarness: normalizeHarnessConfig(base.directHarness, "none"),
     ollamaBaseUrl: normalizeOllamaBaseUrl(base.ollamaBaseUrl),
@@ -3592,11 +3503,11 @@ function buildQualityProfileSnapshot() {
     engineGraphSignature: JSON.stringify(selectedEngineGraph(latestState?.activeTask || null, latestState?.draft || null)),
     contextMode: normalizeContextMode(payload.contextMode),
     directBaselineMode: normalizeDirectBaselineMode(payload.directBaselineMode),
-    provider: String(payload.provider || "openai"),
+    provider: String(payload.provider || defaultProviderId()),
     model: String(payload.model || ""),
-    summarizerProvider: String(summarizerSource?.provider || payload.summarizerProvider || payload.provider || "openai"),
+    summarizerProvider: String(summarizerSource?.provider || payload.summarizerProvider || payload.provider || defaultProviderId()),
     summarizerModel: String(summarizerSource?.model || payload.summarizerModel || payload.model || ""),
-    directProvider: String(payload.directProvider || payload.provider || "openai"),
+    directProvider: String(payload.directProvider || payload.provider || defaultProviderId()),
     directModel: String(payload.directModel || payload.model || ""),
     ollamaBaseUrl: normalizeOllamaBaseUrl(payload.ollamaBaseUrl),
     reasoningEffort: String(payload.reasoningEffort || ""),
@@ -3642,18 +3553,20 @@ function detectQualityProfileId(snapshot = null) {
 function buildTaskQualityProfileSnapshot(task) {
   if (!task) return null;
   const budget = task?.runtime?.budget || {};
+  const provider = normalizeProviderId(task?.runtime?.provider);
+  const model = String(task?.runtime?.model || defaultModelForProvider(provider));
   return {
     frontMode: normalizeFrontMode(task?.runtime?.frontMode),
     engineVersion: normalizeEngineVersion(task?.runtime?.engineVersion),
     engineGraphSignature: JSON.stringify(normalizeEngineGraph(task?.runtime?.engineGraph || defaultEngineGraph())),
     contextMode: normalizeContextMode(task?.runtime?.contextMode),
     directBaselineMode: normalizeDirectBaselineMode(task?.runtime?.directBaselineMode),
-    provider: String(task?.runtime?.provider || "openai"),
-    model: String(task?.runtime?.model || "gpt-5-mini"),
-    summarizerProvider: String(task?.summarizer?.provider || task?.runtime?.provider || "openai"),
-    summarizerModel: String(task?.summarizer?.model || task?.runtime?.model || "gpt-5-mini"),
-    directProvider: String(task?.runtime?.directProvider || task?.runtime?.provider || "openai"),
-    directModel: String(task?.runtime?.directModel || task?.runtime?.model || "gpt-5-mini"),
+    provider: provider,
+    model: model,
+    summarizerProvider: String(task?.summarizer?.provider || task?.runtime?.provider || defaultProviderId()),
+    summarizerModel: String(task?.summarizer?.model || model || defaultModelForProvider(task?.summarizer?.provider || provider)),
+    directProvider: String(task?.runtime?.directProvider || task?.runtime?.provider || defaultProviderId()),
+    directModel: String(task?.runtime?.directModel || model || defaultModelForProvider(task?.runtime?.directProvider || provider)),
     ollamaBaseUrl: normalizeOllamaBaseUrl(task?.runtime?.ollamaBaseUrl),
     reasoningEffort: String(task?.runtime?.reasoningEffort || "low"),
     maxCostUsd: Number(budget.maxCostUsd ?? 0),
@@ -3662,7 +3575,7 @@ function buildTaskQualityProfileSnapshot(task) {
     loopRounds: Number(task?.preferredLoop?.rounds ?? 0),
     loopDelayMs: Number(task?.preferredLoop?.delayMs ?? 0),
     workerModels: (task?.workers || []).map(function (worker) {
-      return String(worker?.model || task?.runtime?.model || "gpt-5-mini");
+      return String(worker?.model || model);
     })
   };
 }
@@ -3729,8 +3642,8 @@ function renderQualityProfileCards() {
   if (!$root.length || !$status.length) return;
 
   const snapshot = buildQualityProfileSnapshot();
-  const workerProvider = normalizeProviderId(snapshot.provider || "openai");
-  const summarizerProvider = normalizeProviderId(snapshot.summarizerProvider || snapshot.provider || "openai");
+  const workerProvider = normalizeProviderId(snapshot.provider || defaultProviderId());
+  const summarizerProvider = normalizeProviderId(snapshot.summarizerProvider || snapshot.provider || defaultProviderId());
   const activeProfileId = detectQualityProfileId(snapshot);
   const distinctWorkerModels = Array.from(new Set((snapshot.workerModels || []).filter(Boolean)));
   const workerModelSummary = distinctWorkerModels.length === 1
@@ -4364,7 +4277,7 @@ function renderSchedulerEvents(task, state) {
     <div class="scheduler-event-stack">
       <article class="scheduler-event-card">
         <div class="scheduler-event-head">
-          <div class="scheduler-event-title">${escapeHtml(normalizeEngineVersion(runtime.engineVersion) === "v2" ? "V2 scheduler view" : "V1 fallback scheduler view")}</div>
+          <div class="scheduler-event-title">V2 scheduler view</div>
           ${renderSchedulerEventBadge(liveExecution?.supported ? "completed" : "queued")}
         </div>
         <div class="scheduler-event-meta">${escapeHtml(liveExecution?.supported ? "Compiled V2 work items are driving the compatible subset of the live scheduler." : ("Execution fallback: " + String(liveExecution?.reason || "This graph still falls back to the proven V1 path.")))}</div>
@@ -5226,16 +5139,16 @@ function closeInlineHelpPopovers($except = $()) {
 function updateAuthButtons() {
   const inputsLocked = latestLoopActive || activeDispatchCount(latestState) > 0;
   $(".add-auth-field").each(function () {
-    const provider = String($(this).data("provider") || "openai");
+    const provider = String($(this).data("provider") || defaultProviderId());
     $(this).prop("disabled", inputsLocked || !authProviderGroup(provider).writable);
   });
   $(".clear-auth").each(function () {
-    const provider = String($(this).data("provider") || "openai");
+    const provider = String($(this).data("provider") || defaultProviderId());
     const group = authProviderGroup(provider);
     $(this).prop("disabled", inputsLocked || !group.writable || !group.hasKey);
   });
   $(".auth-key-input, .auth-key-remove, .auth-mode-toggle").each(function () {
-    const provider = String($(this).data("provider") || $(this).closest(".auth-key-row").data("provider") || "openai");
+    const provider = String($(this).data("provider") || $(this).closest(".auth-key-row").data("provider") || defaultProviderId());
     const group = authProviderGroup(provider);
     const keyControl = $(this).hasClass("auth-key-input") || $(this).hasClass("auth-key-remove");
     $(this).prop("disabled", inputsLocked || (keyControl && !group.writable));
@@ -5268,7 +5181,7 @@ function authModeLabel(mode) {
 }
 
 function authLocalFilePrefix(group) {
-  return String(group?.localFilePrefix || normalizeProviderId(group?.provider || "openai"));
+  return String(group?.localFilePrefix || normalizeProviderId(group?.provider || defaultProviderId()));
 }
 
 function authLocalFileFormat(group) {
@@ -5300,7 +5213,7 @@ function authModeSwitchSuccessText(group, mode, effectiveGroup) {
 }
 
 function authProviderGroup(provider) {
-  const normalized = String(provider || "openai").trim().toLowerCase();
+  const normalized = String(provider || defaultProviderId()).trim().toLowerCase();
   const group = latestAuthStatus.providerGroups?.[normalized];
   if (group && typeof group === "object") return group;
   return {
@@ -5324,7 +5237,7 @@ function authProviderGroup(provider) {
 }
 
 function ensureAuthDynamicRows(provider) {
-  const normalized = String(provider || "openai").trim().toLowerCase();
+  const normalized = String(provider || defaultProviderId()).trim().toLowerCase();
   if (!authProviderGroup(normalized).writable) return;
   if (!authDynamicRowsByProvider[normalized]) authDynamicRowsByProvider[normalized] = [];
   const group = authProviderGroup(normalized);
@@ -5334,7 +5247,7 @@ function ensureAuthDynamicRows(provider) {
 
 function resetAuthDynamicRows(provider = null) {
   if (provider) {
-    const normalized = String(provider || "openai").trim().toLowerCase();
+    const normalized = String(provider || defaultProviderId()).trim().toLowerCase();
     authDynamicRowsByProvider[normalized] = [];
     ensureAuthDynamicRows(normalized);
     return;
@@ -5346,20 +5259,20 @@ function resetAuthDynamicRows(provider = null) {
 }
 
 function authDynamicRows(provider) {
-  const normalized = String(provider || "openai").trim().toLowerCase();
+  const normalized = String(provider || defaultProviderId()).trim().toLowerCase();
   ensureAuthDynamicRows(normalized);
   return authDynamicRowsByProvider[normalized] || [];
 }
 
 function updateAuthDynamicRow(provider, rowId, value) {
-  const normalized = String(provider || "openai").trim().toLowerCase();
+  const normalized = String(provider || defaultProviderId()).trim().toLowerCase();
   authDynamicRowsByProvider[normalized] = authDynamicRows(normalized).map(function (row) {
     return row.id === rowId ? Object.assign({}, row, { value: value }) : row;
   });
 }
 
 function removeAuthDynamicRow(provider, rowId) {
-  const normalized = String(provider || "openai").trim().toLowerCase();
+  const normalized = String(provider || defaultProviderId()).trim().toLowerCase();
   authDynamicRowsByProvider[normalized] = authDynamicRows(normalized).filter(function (row) {
     return row.id !== rowId;
   });
@@ -5411,9 +5324,9 @@ function buildAuthAssignments(group) {
   const keyCount = Math.max(0, Number(group?.keyCount || masks.length || 0));
   if (!keyCount || !masks.length) return [];
   const rotationOffset = authPreviewRotationOffset(keyCount);
-  const providerId = normalizeProviderId(group?.provider || "openai");
+  const providerId = normalizeProviderId(group?.provider || defaultProviderId());
   const positions = authPositionPlan().filter(function (position) {
-    return normalizeProviderId(position.provider || "openai") === providerId;
+    return normalizeProviderId(position.provider || defaultProviderId()) === providerId;
   });
   return positions.map(function (position, index) {
     const keyIndex = (index + rotationOffset) % keyCount;
@@ -5675,7 +5588,7 @@ function handleAuthMutationSuccess(resp, successText, options = {}) {
 function persistAuthSlot(slotIndex, apiKey, provider) {
   const trimmed = String(apiKey || "").trim();
   if (!trimmed || latestLoopActive) return;
-  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  const normalizedProvider = String(provider || defaultProviderId()).trim().toLowerCase();
   const timerKey = normalizedProvider + ":stored-" + String(slotIndex);
   const meta = authSaveMeta(timerKey);
   if (meta.inFlight || meta.lastSubmitted === trimmed) return;
@@ -5700,7 +5613,7 @@ function persistAuthSlot(slotIndex, apiKey, provider) {
 function appendAuthKey(rowId, apiKey, provider) {
   const trimmed = String(apiKey || "").trim();
   if (!trimmed || latestLoopActive) return;
-  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  const normalizedProvider = String(provider || defaultProviderId()).trim().toLowerCase();
   const timerKey = normalizedProvider + ":" + rowId;
   const meta = authSaveMeta(timerKey);
   if (meta.inFlight || meta.lastSubmitted === trimmed) return;
@@ -5725,7 +5638,7 @@ function appendAuthKey(rowId, apiKey, provider) {
 }
 
 function removeAuthSlot(slotIndex, provider) {
-  const normalizedProvider = String(provider || "openai").trim().toLowerCase();
+  const normalizedProvider = String(provider || defaultProviderId()).trim().toLowerCase();
   $.post(apiRoute(API.authKeys), { provider: normalizedProvider, removeIndex: slotIndex })
     .done(function (resp) {
       handleAuthMutationSuccess(resp, authProviderGroup(normalizedProvider).label + " API key removed", {
@@ -5742,7 +5655,7 @@ function removeAuthSlot(slotIndex, provider) {
 function scheduleAuthRowSave($input, immediate = false) {
   if (!$input || !$input.length) return;
   const $row = $input.closest(".auth-key-row");
-  const provider = String($row.data("provider") || "openai").trim().toLowerCase();
+  const provider = String($row.data("provider") || defaultProviderId()).trim().toLowerCase();
   const mode = String($row.data("authMode") || "");
   const rowId = String($row.data("rowId") || "");
   const slotIndex = Number($row.data("slotIndex"));
@@ -6107,7 +6020,7 @@ function renderEvalArmList(arms) {
   $root.html((arms || []).map(function (arm) {
     const armId = String(arm?.armId || "");
     const checked = effectiveSelected.includes(armId) ? " checked" : "";
-    const workerProvider = arm?.provider || "openai";
+    const workerProvider = arm?.provider || defaultProviderId();
     const summarizerProvider = arm?.summarizerProvider || workerProvider;
     const directProvider = arm?.directProvider || workerProvider;
     const summary = arm?.type === "steered"
@@ -6115,16 +6028,16 @@ function renderEvalArmList(arms) {
           (arm?.type || "arm"),
           directBaselineModeLabel(arm?.directBaselineMode || "off"),
           contextModeLabel(arm?.contextMode || "weighted"),
-          providerLabel(workerProvider) + " " + modelLabel(arm?.model || "gpt-5-mini", workerProvider),
-          providerLabel(summarizerProvider) + " " + modelLabel(arm?.summarizerModel || arm?.model || "gpt-5-mini", summarizerProvider) + " summarizer",
+          providerLabel(workerProvider) + " " + modelLabel(arm?.model || defaultModelForProvider(workerProvider), workerProvider),
+          providerLabel(summarizerProvider) + " " + modelLabel(arm?.summarizerModel || arm?.model || defaultModelForProvider(summarizerProvider), summarizerProvider) + " summarizer",
           normalizeDirectBaselineMode(arm?.directBaselineMode || "off") !== "off"
-            ? (providerLabel(directProvider) + " " + modelLabel(arm?.directModel || arm?.model || "gpt-5-mini", directProvider) + " baseline")
+            ? (providerLabel(directProvider) + " " + modelLabel(arm?.directModel || arm?.model || defaultModelForProvider(directProvider), directProvider) + " baseline")
             : "",
           (arm?.reasoningEffort || "low") + " reasoning"
         ].filter(Boolean).join(" | ")
       : [
           (arm?.type || "arm"),
-          providerLabel(workerProvider) + " " + modelLabel(arm?.model || "gpt-5-mini", workerProvider),
+          providerLabel(workerProvider) + " " + modelLabel(arm?.model || defaultModelForProvider(workerProvider), workerProvider),
           "single answer",
           (arm?.reasoningEffort || "low") + " reasoning"
         ].join(" | ");
@@ -6234,7 +6147,7 @@ function renderFrontCanvasCatalogs() {
   frontEvalSelection.caseId = effectiveCaseId;
   $("#frontEvalSuiteSelect").html(buildEvalSuiteOptions(suites, effectiveSuiteId)).val(effectiveSuiteId);
   $("#frontEvalCaseSelect").html(buildEvalCaseOptions(suites, effectiveSuiteId, effectiveCaseId)).val(effectiveCaseId);
-  frontEvalSelection.judgeProvider = normalizeProviderId(frontEvalSelection.judgeProvider || "openai");
+  frontEvalSelection.judgeProvider = normalizeProviderId(frontEvalSelection.judgeProvider || defaultJudgeProviderId());
   populateStaticProviderSelect("#frontEvalJudgeProvider", frontEvalSelection.judgeProvider);
   populateStaticModelSelect(
     "#frontEvalJudgeModel",
@@ -6258,7 +6171,7 @@ function renderFrontCanvasCatalogs() {
   });
   frontJudgeSelection.suiteIds = suiteIds.length ? suiteIds : judgeSuites.slice(0, 1).map(function (suite) { return String(suite.suiteId || ""); });
   frontJudgeSelection.armIds = armIds.length ? armIds : suggestDefaultEvalArmIds(judgeArms);
-  frontJudgeSelection.judgeProvider = normalizeProviderId(frontJudgeSelection.judgeProvider || "openai");
+  frontJudgeSelection.judgeProvider = normalizeProviderId(frontJudgeSelection.judgeProvider || defaultJudgeProviderId());
   populateStaticProviderSelect("#frontJudgeProvider", frontJudgeSelection.judgeProvider);
   populateStaticModelSelect(
     "#frontJudgeModel",
@@ -6290,7 +6203,7 @@ function renderFrontCanvasCatalogs() {
         item?.type || "arm",
         contextModeLabel(item?.contextMode || "weighted"),
         directBaselineModeLabel(item?.directBaselineMode || "off"),
-        providerLabel(item?.provider || "openai") + " " + modelLabel(item?.model || "gpt-5-mini", item?.provider || "openai")
+        providerLabel(item?.provider || DEFAULT_PROVIDER_ID) + " " + modelLabel(item?.model || defaultModelForProvider(item?.provider || DEFAULT_PROVIDER_ID), item?.provider || DEFAULT_PROVIDER_ID)
       ].filter(Boolean).join(" | ");
     }
   );
@@ -6538,7 +6451,7 @@ function renderEvalRunDetail(run) {
     <div class="eval-summary-grid">
       <article class="history-card">
         <div class="history-title">${escapeHtml(run?.suite?.title || run?.suiteId || "Eval suite")}</div>
-        <div class="history-meta">${escapeHtml((run?.status || "unknown") + " | judge " + modelLabel(run?.judgeModel || "n/a", run?.judgeProvider || "openai"))}</div>
+        <div class="history-meta">${escapeHtml((run?.status || "unknown") + " | judge " + modelLabel(run?.judgeModel || "n/a", run?.judgeProvider || defaultJudgeProviderId()))}</div>
       </article>
       <article class="history-card">
         <div class="history-title">Quality</div>
@@ -6629,12 +6542,12 @@ function renderEvalRunDetail(run) {
             <div class="round-history-title">${escapeHtml((variant.type || "variant") + " | " + directBaselineModeLabel(answerPath) + " | " + contextMode + " | loops " + Number(variant.loopRounds || 0))}</div>
           </div>
           <div class="round-history-meta">${escapeHtml(
-            providerLabel(variant.provider || "openai") + " " + modelLabel(variant.model || "gpt-5-mini", variant.provider || "openai") +
+            providerLabel(variant.provider || DEFAULT_PROVIDER_ID) + " " + modelLabel(variant.model || defaultModelForProvider(variant.provider || DEFAULT_PROVIDER_ID), variant.provider || DEFAULT_PROVIDER_ID) +
             (variant.type === "steered"
               ? (
-                " | " + providerLabel(variant.summarizerProvider || variant.provider || "openai") + " " + modelLabel(variant.summarizerModel || variant.model || "gpt-5-mini", variant.summarizerProvider || variant.provider || "openai") + " summarizer" +
+                " | " + providerLabel(variant.summarizerProvider || variant.provider || DEFAULT_PROVIDER_ID) + " " + modelLabel(variant.summarizerModel || variant.model || defaultModelForProvider(variant.summarizerProvider || variant.provider || DEFAULT_PROVIDER_ID), variant.summarizerProvider || variant.provider || DEFAULT_PROVIDER_ID) + " summarizer" +
                 (answerPath !== "off"
-                  ? (" | " + providerLabel(variant.directProvider || variant.provider || "openai") + " " + modelLabel(variant.directModel || variant.model || "gpt-5-mini", variant.directProvider || variant.provider || "openai") + " baseline")
+                  ? (" | " + providerLabel(variant.directProvider || variant.provider || DEFAULT_PROVIDER_ID) + " " + modelLabel(variant.directModel || variant.model || defaultModelForProvider(variant.directProvider || variant.provider || DEFAULT_PROVIDER_ID), variant.directProvider || variant.provider || DEFAULT_PROVIDER_ID) + " baseline")
                   : "")
               )
               : "")
@@ -6860,7 +6773,7 @@ function renderWorkerControls(task, loop, stateWorkers) {
 
     const $row = $("<div>").addClass("inlineform");
     $row.append(
-      $("<select>").addClass("position-model").attr("data-position", worker.id).html(buildModelOptions(worker.model, task?.runtime?.provider || "openai")),
+      $("<select>").addClass("position-model").attr("data-position", worker.id).html(buildModelOptions(worker.model, task?.runtime?.provider || defaultProviderId())),
       $("<button>").addClass("save-model").attr("data-position", worker.id).prop("disabled", isActive).text("Save Model"),
       $("<button>").addClass("run-target").attr("data-target", worker.id).prop("disabled", isActive).text("Run " + worker.id)
     );
@@ -6868,8 +6781,8 @@ function renderWorkerControls(task, loop, stateWorkers) {
     $controls.append($card);
   });
 
-  const summarizerModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
-  const summarizerProvider = task.summarizer?.provider || task.runtime?.provider || "openai";
+  const summarizerProvider = task.summarizer?.provider || task.runtime?.provider || DEFAULT_PROVIDER_ID;
+  const summarizerModel = task.summarizer?.model || task.runtime?.model || defaultModelForProvider(summarizerProvider);
   const vettingEnabled = !!task.runtime?.vetting?.enabled;
   const $summaryCard = $("<div>").addClass("workercontrol");
   $summaryCard.append($("<div>").addClass("workercontrol-title").text("Summarizer"));
@@ -7193,7 +7106,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   const currentCommanderReviewRound = commanderReviewRound(task);
   const commanderReviewReady = commanderReviewReadyForCommanderRound(task, stateWorkers || {});
   const summaryReady = summarizerReadyForCommanderRound(task, stateWorkers || {});
-  const commanderModel = task.summarizer?.model || task.runtime?.model || "gpt-5-mini";
+  const commanderProvider = task.summarizer?.provider || task.runtime?.provider || DEFAULT_PROVIDER_ID;
+  const commanderModel = task.summarizer?.model || task.runtime?.model || defaultModelForProvider(commanderProvider);
   const partialAnswerActive = hasActiveDispatchTarget(latestState, "answer_now");
   const directBaselineEnabled = normalizeDirectBaselineMode(task?.runtime?.directBaselineMode || "off") !== "off";
 
@@ -7217,8 +7131,8 @@ function renderDebugTargetControls(task, loop, stateWorkers) {
   }
 
   if (directBaselineEnabled) {
-    const directProvider = task?.runtime?.directProvider || task?.runtime?.provider || "openai";
-    const directModel = task?.runtime?.directModel || task?.runtime?.model || "gpt-5-mini";
+    const directProvider = task?.runtime?.directProvider || task?.runtime?.provider || DEFAULT_PROVIDER_ID;
+    const directModel = task?.runtime?.directModel || task?.runtime?.model || defaultModelForProvider(directProvider);
     const $directCard = $("<div>").addClass("workercontrol");
     $directCard.append($("<div>").addClass("workercontrol-title").text("Single-thread baseline"));
     $directCard.append(
@@ -7439,7 +7353,7 @@ function renderFooterCheckpoints(task) {
     appendCompactHoverPopup($item, [
       directBaseline.answer?.stance ? "Stance: " + truncateText(directBaseline.answer.stance, 220) : "",
       directBaseline.answer?.confidenceNote ? "Confidence: " + truncateText(directBaseline.answer.confidenceNote, 220) : "",
-      "Provider: " + providerLabel(directBaseline.provider || "openai") + " | Model: " + modelLabel(directBaseline.model || "n/a", directBaseline.provider || "openai")
+      "Provider: " + providerLabel(directBaseline.provider || defaultProviderId()) + " | Model: " + modelLabel(directBaseline.model || "n/a", directBaseline.provider || defaultProviderId())
     ]);
     $list.append($item);
   }
@@ -7509,7 +7423,7 @@ function buildSummarizerControlCard(summarizer, isActive, status) {
   $summaryMain.append($("<div>").addClass("workercontrol-title").text("Main thread"));
   $summaryMain.append(
     $("<div>").addClass("workercontrol-meta").text(
-      "Lead voice | " + harnessConcisionLabel(harness, "none") + " | " + modelLabel(summarizer?.model || "gpt-5-mini", summarizer?.provider)
+      "Lead voice | " + harnessConcisionLabel(harness, "none") + " | " + modelLabel(summarizer?.model || defaultModelForProvider(summarizer?.provider || DEFAULT_PROVIDER_ID), summarizer?.provider || DEFAULT_PROVIDER_ID)
     )
   );
   $summary.append($summaryMain);
@@ -8141,7 +8055,7 @@ function renderSummaryOpinion(summary, directBaseline) {
             directAnswer.answer || "",
             directAnswer.stance ? "Stance: " + directAnswer.stance : "",
             directAnswer.confidenceNote ? "Confidence: " + directAnswer.confidenceNote : "",
-            "Mode: " + String(directBaseline.mode || "n/a") + " | Provider: " + providerLabel(directBaseline.provider || "openai") + " | Model: " + modelLabel(directBaseline.model || "n/a", directBaseline.provider || "openai")
+            "Mode: " + String(directBaseline.mode || "n/a") + " | Provider: " + providerLabel(directBaseline.provider || defaultProviderId()) + " | Model: " + modelLabel(directBaseline.model || "n/a", directBaseline.provider || defaultProviderId())
           ].filter(Boolean).join("\n\n")
         )
       : "",
@@ -8411,7 +8325,7 @@ function renderFrontEvalArbiterSummary(task, arbiter, comparison, similarity) {
   const judgeBits = [
     arbiter?.comparison?.verdict ? String(arbiter.comparison.verdict || "") : "",
     arbiter?.comparison?.decisionRelation ? "Relation " + String(arbiter.comparison.decisionRelation || "") : "",
-    arbiter?.judge?.model ? modelLabel(arbiter.judge.model, arbiter.judge.provider || "openai") : "",
+    arbiter?.judge?.model ? modelLabel(arbiter.judge.model, arbiter.judge.provider || defaultJudgeProviderId()) : "",
     arbiter?.judge?.live ? "Live judge" : "Fallback judge"
   ].filter(Boolean);
   const sections = [
@@ -9728,14 +9642,16 @@ function postJson(url, payload, successText, options = {}) {
     });
 }
 
-$(function () {
+function initializeLegacyShell() {
+  const initialProvider = DEFAULT_PROVIDER_ID || PRIMARY_PROVIDER_ORDER[0] || ALL_PROVIDER_ORDER[0] || "";
+  const initialModel = defaultModelForProvider(initialProvider);
   recentComposerAttachments = loadRecentComposerAttachments();
-  populateStaticProviderSelect("#provider", "openai");
-  populateStaticProviderSelect("#summarizerProvider", "openai");
-  populateStaticProviderSelect("#directProvider", "openai");
-  populateStaticModelSelect("#model", "gpt-5-mini", "openai");
-  populateStaticModelSelect("#summarizerModel", "gpt-5-mini", "openai");
-  populateStaticModelSelect("#directModel", "gpt-5-mini", "openai");
+  populateStaticProviderSelect("#provider", initialProvider);
+  populateStaticProviderSelect("#summarizerProvider", initialProvider);
+  populateStaticProviderSelect("#directProvider", initialProvider);
+  populateStaticModelSelect("#model", initialModel, initialProvider);
+  populateStaticModelSelect("#summarizerModel", initialModel, initialProvider);
+  populateStaticModelSelect("#directModel", initialModel, initialProvider);
   $("#researchEnabled").val("0");
   $("#researchExternalWebAccess").val("1");
   $("#localFilesEnabled").val("0");
@@ -9755,17 +9671,17 @@ $(function () {
   renderApiModeStatus();
   renderDispatchActivity();
   syncOperatorNoticeVisibility();
-  populateStaticProviderSelect("#frontEvalJudgeProvider", normalizeProviderId(frontEvalSelection.judgeProvider || "openai"));
-  populateStaticProviderSelect("#frontJudgeProvider", normalizeProviderId(frontJudgeSelection.judgeProvider || "openai"));
+  populateStaticProviderSelect("#frontEvalJudgeProvider", normalizeProviderId(frontEvalSelection.judgeProvider || defaultJudgeProviderId()));
+  populateStaticProviderSelect("#frontJudgeProvider", normalizeProviderId(frontJudgeSelection.judgeProvider || defaultJudgeProviderId()));
   populateStaticModelSelect(
     "#frontEvalJudgeModel",
-    normalizeSelectedJudgeModelForProvider(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(normalizeProviderId(frontEvalSelection.judgeProvider || "openai")), normalizeProviderId(frontEvalSelection.judgeProvider || "openai")),
-    normalizeProviderId(frontEvalSelection.judgeProvider || "openai")
+    normalizeSelectedJudgeModelForProvider(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(normalizeProviderId(frontEvalSelection.judgeProvider || defaultJudgeProviderId())), normalizeProviderId(frontEvalSelection.judgeProvider || defaultJudgeProviderId())),
+    normalizeProviderId(frontEvalSelection.judgeProvider || defaultJudgeProviderId())
   );
   populateStaticModelSelect(
     "#frontJudgeModel",
-    normalizeSelectedJudgeModelForProvider(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")), normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")),
-    normalizeProviderId(frontJudgeSelection.judgeProvider || "openai")
+    normalizeSelectedJudgeModelForProvider(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(normalizeProviderId(frontJudgeSelection.judgeProvider || defaultJudgeProviderId())), normalizeProviderId(frontJudgeSelection.judgeProvider || defaultJudgeProviderId())),
+    normalizeProviderId(frontJudgeSelection.judgeProvider || defaultJudgeProviderId())
   );
   refreshProviderInstances();
   refreshScoresRuns(selectedScoresRunId);
@@ -9986,7 +9902,7 @@ $(function () {
   });
 
   $("#frontEvalJudgeProvider").on("change", function () {
-    frontEvalSelection.judgeProvider = normalizeProviderId($(this).val() || "openai");
+    frontEvalSelection.judgeProvider = normalizeProviderId($(this).val() || defaultJudgeProviderId());
     frontEvalSelection.judgeModel = defaultJudgeModelForProvider(frontEvalSelection.judgeProvider);
     populateStaticModelSelect("#frontEvalJudgeModel", frontEvalSelection.judgeModel, frontEvalSelection.judgeProvider);
     $("#frontEvalJudgeModel").val(frontEvalSelection.judgeModel);
@@ -9994,12 +9910,12 @@ $(function () {
   });
 
   $("#frontEvalJudgeModel").on("change", function () {
-    frontEvalSelection.judgeModel = normalizeSelectedJudgeModelForProvider($(this).val(), frontEvalSelection.judgeProvider || "openai");
+    frontEvalSelection.judgeModel = normalizeSelectedJudgeModelForProvider($(this).val(), frontEvalSelection.judgeProvider || defaultJudgeProviderId());
     persistFrontEvalSelection();
   });
 
   $("#frontJudgeProvider").on("change", function () {
-    frontJudgeSelection.judgeProvider = normalizeProviderId($(this).val() || "openai");
+    frontJudgeSelection.judgeProvider = normalizeProviderId($(this).val() || defaultJudgeProviderId());
     frontJudgeSelection.judgeModel = defaultJudgeModelForProvider(frontJudgeSelection.judgeProvider);
     populateStaticModelSelect("#frontJudgeModel", frontJudgeSelection.judgeModel, frontJudgeSelection.judgeProvider);
     $("#frontJudgeModel").val(frontJudgeSelection.judgeModel);
@@ -10007,7 +9923,7 @@ $(function () {
   });
 
   $("#frontJudgeModel").on("change", function () {
-    frontJudgeSelection.judgeModel = normalizeSelectedJudgeModelForProvider($(this).val(), frontJudgeSelection.judgeProvider || "openai");
+    frontJudgeSelection.judgeModel = normalizeSelectedJudgeModelForProvider($(this).val(), frontJudgeSelection.judgeProvider || defaultJudgeProviderId());
     persistFrontJudgeSelection();
   });
 
@@ -10055,8 +9971,8 @@ $(function () {
     const payload = Object.assign({}, buildFrontCanvasRuntimePayload(), {
       suiteId: String(frontEvalSelection.suiteId || ""),
       caseId: String(frontEvalSelection.caseId || ""),
-      judgeProvider: String(frontEvalSelection.judgeProvider || "openai"),
-      judgeModel: String(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(frontEvalSelection.judgeProvider || "openai"))
+      judgeProvider: String(frontEvalSelection.judgeProvider || defaultJudgeProviderId()),
+      judgeModel: String(frontEvalSelection.judgeModel || defaultJudgeModelForProvider(frontEvalSelection.judgeProvider || defaultJudgeProviderId()))
     });
     postJson(API.frontEvalRuns, payload, "Front eval queued", {
       manualDispatch: "Front eval",
@@ -10073,8 +9989,8 @@ $(function () {
     const payload = Object.assign({}, buildFrontCanvasRuntimePayload(), {
       suiteIds: frontJudgeSelection.suiteIds || [],
       armIds: frontJudgeSelection.armIds || [],
-      judgeProvider: String(frontJudgeSelection.judgeProvider || "openai"),
-      judgeModel: String(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(frontJudgeSelection.judgeProvider || "openai")),
+      judgeProvider: String(frontJudgeSelection.judgeProvider || defaultJudgeProviderId()),
+      judgeModel: String(frontJudgeSelection.judgeModel || defaultJudgeModelForProvider(frontJudgeSelection.judgeProvider || defaultJudgeProviderId())),
       replicates: Math.max(1, parseInt(frontJudgeSelection.replicates, 10) || 1),
       loopSweep: splitCommaList(frontJudgeSelection.loopSweep || "1")
     });
@@ -10648,13 +10564,13 @@ $(function () {
   });
 
   $(document).on("click", ".add-auth-field", function () {
-    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
+    const provider = String($(this).data("provider") || defaultProviderId()).trim().toLowerCase();
     authDynamicRows(provider).push({ id: nextAuthRowId(), value: "" });
     renderAuthProviderCards(true);
   });
 
   $(document).on("click", ".auth-mode-toggle", function () {
-    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
+    const provider = String($(this).data("provider") || defaultProviderId()).trim().toLowerCase();
     const mode = String($(this).data("authMode") || "env").trim().toLowerCase();
     const group = authProviderGroup(provider);
     if (mode === String(group.selectedMode || "")) return;
@@ -10676,7 +10592,7 @@ $(function () {
   });
 
   $(document).on("click", ".clear-auth", function () {
-    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
+    const provider = String($(this).data("provider") || defaultProviderId()).trim().toLowerCase();
     const label = authProviderGroup(provider).label || provider;
     if (!confirm("Clear the stored transitional local " + label + " API key pool?")) return;
 
@@ -10703,7 +10619,7 @@ $(function () {
   });
 
   $(document).on("click", ".auth-key-remove", function () {
-    const provider = String($(this).data("provider") || "openai").trim().toLowerCase();
+    const provider = String($(this).data("provider") || defaultProviderId()).trim().toLowerCase();
     const mode = String($(this).data("removeMode") || "");
     if (mode === "stored") {
       const slotIndex = Number($(this).data("slotIndex"));
@@ -10858,4 +10774,12 @@ $(function () {
     loadArtifactPane("Right", artifactSelections.right);
   });
 
+}
+
+$(function () {
+  loadProviderModelCatalog()
+    .done(initializeLegacyShell)
+    .fail(function (xhr) {
+      showMessage("Provider catalog failed to load: " + extractErrorMessage(xhr), true);
+    });
 });

@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parallm.io/contracts/perception-event.v1.schema.json",
+  "title": "PERCSI Perception Event",
+  "description": "Observation-only event envelope for an embodied PERCSI edge. It cannot grant execution authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "observedAt",
+    "source",
+    "scope",
+    "observation",
+    "quality",
+    "relation",
+    "constraints"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "percsi.perception-event.v1"
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sequence": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "monotonicNanos": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deviceId", "channel", "component", "authority"],
+      "properties": {
+        "deviceId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "channel": {"type": "string", "minLength": 1, "maxLength": 64},
+        "component": {"type": "string", "minLength": 1, "maxLength": 128},
+        "authority": {
+          "type": "string",
+          "description": "Authority of the observation source, never authority to execute an action.",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deploymentId", "subjectType", "subjectId"],
+      "properties": {
+        "deploymentId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "subjectType": {"type": "string", "minLength": 1, "maxLength": 64},
+        "subjectId": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "summary"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "attributes": {
+          "type": "object",
+          "description": "Small JSON values only. Bulk sensor, image, audio, and video data belongs in an artifact store."
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confidence", "novelty", "urgency"],
+      "properties": {
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "novelty": {"type": "number", "minimum": 0, "maximum": 1},
+        "urgency": {"type": "number", "minimum": 0, "maximum": 1},
+        "clockUncertaintyMs": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "references"],
+      "properties": {
+        "kind": {
+          "enum": ["new", "update", "contradiction", "resolution", "heartbeat"]
+        },
+        "references": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["privacy", "execution", "captureConsent"],
+      "properties": {
+        "privacy": {
+          "enum": ["device_only", "deployment_private", "restricted", "shareable"]
+        },
+        "execution": {
+          "const": "observe_only"
+        },
+        "captureConsent": {
+          "enum": ["explicit", "system", "not_required"]
+        },
+        "expiresAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifactRef": {"type": ["string", "null"], "maxLength": 1024},
+        "sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "mimeType": {"type": ["string", "null"], "maxLength": 128}
+      }
+    }
+  }
+}

@@ -347,6 +347,32 @@ def normalize_loop_snapshot(loop: Optional[Dict[str, Any]], warnings: Optional[L
     return merged
 
 
+def normalize_active_task_engine_contract(task: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = copy.deepcopy(task)
+    runtime_config = dict(normalized.get("runtime") or {})
+    runtime_config["engineVersion"] = "v2"
+
+    graph = runtime_config.get("engineGraph")
+    if isinstance(graph, dict):
+        graph = copy.deepcopy(graph)
+        graph["version"] = "v2"
+        runtime_config["engineGraph"] = graph
+
+    plan = runtime_config.get("enginePlan")
+    if isinstance(plan, dict):
+        plan = copy.deepcopy(plan)
+        plan["version"] = "v2"
+        runner = dict(plan.get("runner") or {})
+        live_execution = dict(runner.get("liveExecution") or {})
+        live_execution["mode"] = "v2-plan" if bool(live_execution.get("supported")) else "unsupported"
+        runner["liveExecution"] = live_execution
+        plan["runner"] = runner
+        runtime_config["enginePlan"] = plan
+
+    normalized["runtime"] = runtime_config
+    return normalized
+
+
 def normalize_state_contract(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     current = state if isinstance(state, dict) else {}
     warnings: List[str] = []
@@ -354,7 +380,11 @@ def normalize_state_contract(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
     if current.get("activeTask") is not None and not isinstance(current.get("activeTask"), dict):
         append_contract_warning(warnings, "activeTask was not an object; dropping malformed task state.")
-    normalized["activeTask"] = current.get("activeTask") if isinstance(current.get("activeTask"), dict) else None
+    normalized["activeTask"] = (
+        normalize_active_task_engine_contract(current["activeTask"])
+        if isinstance(current.get("activeTask"), dict)
+        else None
+    )
 
     if current.get("draft") is not None and not isinstance(current.get("draft"), dict):
         append_contract_warning(warnings, "draft was not an object; resetting staged draft state.")

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 import uuid
-from collections import Counter, defaultdict, deque
+from collections import Counter, OrderedDict, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -204,6 +205,38 @@ TEMPORAL_QUERY_TERMS = {
 class MemoryPaths:
     root: Path
     banks: Path
+
+
+@dataclass(frozen=True)
+class RecordSearchIndex:
+    lower_haystack: str
+    tokens: Counter[str]
+    sop_terms: frozenset[str]
+
+
+@dataclass(frozen=True)
+class QueryScoreContext:
+    query: str
+    query_lower: str
+    terms: tuple[str, ...]
+    term_set: frozenset[str]
+    term_counts: Counter[str]
+    wanted_tags: tuple[str, ...]
+    now_timestamp: float
+
+
+class IndexedRecord(dict[str, Any]):
+    __slots__ = ("search_index",)
+
+    search_index: RecordSearchIndex
+
+
+_PERSISTENT_RECORD_CACHE_LIMIT = 32
+_PERSISTENT_RECORD_CACHE_LOCK = threading.RLock()
+_PERSISTENT_RECORD_CACHE: OrderedDict[
+    tuple[Path, int],
+    tuple[tuple[bool, int, int], tuple[Dict[str, Any], ...], tuple[str, ...]],
+] = OrderedDict()
 
 
 def utc_now() -> str:
@@ -493,10 +526,12 @@ def append_records(root: Path | str, bank_id: str, records: List[Dict[str, Any]]
     if not records:
         return
     target = bank_records_path(root, bank_id)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    with _PERSISTENT_RECORD_CACHE_LOCK:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        invalidate_persistent_record_cache(target)
 
 
 def upsert_memory_records(root: Path | str, bank_id: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -504,18 +539,19 @@ def upsert_memory_records(root: Path | str, bank_id: str, records: List[Dict[str
         return {"stored": 0, "duplicates": 0, "records": [], "path": str(bank_records_path(root, bank_id))}
     target = bank_records_path(root, bank_id)
     target.parent.mkdir(parents=True, exist_ok=True)
-    existing, _warnings = read_jsonl_records(target, limit=100000)
-    seen = {record_fingerprint(record) for record in existing}
-    stored_records: List[Dict[str, Any]] = []
-    duplicates = 0
-    for record in records:
-        fingerprint = record_fingerprint(record)
-        if fingerprint in seen:
-            duplicates += 1
-            continue
-        seen.add(fingerprint)
-        stored_records.append(record)
-    append_records(root, bank_id, stored_records)
+    with _PERSISTENT_RECORD_CACHE_LOCK:
+        existing, _warnings = read_jsonl_records(target, limit=100000)
+        seen = {record_fingerprint(record) for record in existing}
+        stored_records: List[Dict[str, Any]] = []
+        duplicates = 0
+        for record in records:
+            fingerprint = record_fingerprint(record)
+            if fingerprint in seen:
+                duplicates += 1
+                continue
+            seen.add(fingerprint)
+            stored_records.append(record)
+        append_records(root, bank_id, stored_records)
     return {"stored": len(stored_records), "duplicates": duplicates, "records": stored_records, "path": str(target)}
 
 
@@ -541,6 +577,44 @@ def read_jsonl_records(path: Path, limit: int = 2000) -> tuple[List[Dict[str, An
             if normalized:
                 records.append(normalized)
     return records, warnings[:20]
+
+
+def persistent_record_signature(path: Path) -> tuple[bool, int, int]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return False, 0, 0
+    return True, int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def invalidate_persistent_record_cache(path: Path) -> None:
+    resolved = path.resolve(strict=False)
+    with _PERSISTENT_RECORD_CACHE_LOCK:
+        stale_keys = [key for key in _PERSISTENT_RECORD_CACHE if key[0] == resolved]
+        for key in stale_keys:
+            _PERSISTENT_RECORD_CACHE.pop(key, None)
+
+
+def read_persistent_records_cached(path: Path, limit: int = 2000) -> tuple[List[Dict[str, Any]], List[str]]:
+    resolved = path.resolve(strict=False)
+    normalized_limit = max(1, int(limit or 1))
+    key = (resolved, normalized_limit)
+    with _PERSISTENT_RECORD_CACHE_LOCK:
+        signature = persistent_record_signature(resolved)
+        cached = _PERSISTENT_RECORD_CACHE.get(key)
+        if cached and cached[0] == signature:
+            _PERSISTENT_RECORD_CACHE.move_to_end(key)
+            return [clone_indexed_record(record) for record in cached[1]], list(cached[2])
+
+        stale_keys = [candidate for candidate in _PERSISTENT_RECORD_CACHE if candidate[0] == resolved]
+        for stale_key in stale_keys:
+            _PERSISTENT_RECORD_CACHE.pop(stale_key, None)
+        records, warnings = read_jsonl_records(resolved, limit=normalized_limit)
+        indexed_records = tuple(index_record(record) for record in records)
+        _PERSISTENT_RECORD_CACHE[key] = (signature, indexed_records, tuple(warnings))
+        while len(_PERSISTENT_RECORD_CACHE) > _PERSISTENT_RECORD_CACHE_LIMIT:
+            _PERSISTENT_RECORD_CACHE.popitem(last=False)
+        return [clone_indexed_record(record) for record in indexed_records], list(warnings)
 
 
 def list_banks(root: Path | str) -> List[Dict[str, Any]]:
@@ -773,11 +847,18 @@ def load_persistent_records(root: Path | str, bank_id: str = "", limit: int = 20
     if bank_id:
         banks = [safe_bank_id(bank_id)]
     else:
-        banks = [bank.get("bankId") for bank in list_banks(root)]
+        banks = [
+            item.name
+            for item in sorted(paths.banks.iterdir(), key=lambda path: path.name)
+            if item.is_dir() and (item / "memory_units.jsonl").is_file()
+        ] if paths.banks.exists() else []
     for current_bank in banks:
         if not current_bank:
             continue
-        loaded, loaded_warnings = read_jsonl_records(paths.banks / str(current_bank) / "memory_units.jsonl", limit=limit)
+        loaded, loaded_warnings = read_persistent_records_cached(
+            paths.banks / str(current_bank) / "memory_units.jsonl",
+            limit=limit,
+        )
         records.extend(loaded)
         warnings.extend(loaded_warnings)
     return records, warnings[:30]
@@ -891,11 +972,9 @@ def parse_timestamp(value: Any) -> Optional[float]:
         return None
 
 
-def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wanted_tags: List[str]) -> tuple[float, Dict[str, float]]:
+def build_record_search_index(record: Dict[str, Any]) -> RecordSearchIndex:
     sop = record.get("sop") if isinstance(record.get("sop"), dict) else {}
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-    query_lower = str(query or "").lower()
-    query_term_set = set(query_terms)
     haystack = " ".join(
         [
             str(record.get("title") or ""),
@@ -911,26 +990,79 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
             " ".join(sop.get("decisionGates") or []),
         ]
     )
-    lower_haystack = haystack.lower()
-    tokens = Counter(tokenize(haystack))
-    overlap = sum(min(tokens.get(term, 0), count) for term, count in Counter(query_terms).items())
-    keyword = overlap / max(1, len(query_terms))
-    phrase = 1.0 if query and query.lower() in lower_haystack else 0.0
-    tag = 1.0 if wanted_tags and tag_matches(record.get("tags") or [], wanted_tags) else 0.0
+    sop_terms = frozenset(
+        tokenize(
+            " ".join(
+                [
+                    str(sop.get("useCase") or ""),
+                    " ".join(sop.get("eventTypes") or []),
+                    " ".join(sop.get("triggers") or []),
+                ]
+            )
+        )
+    ) if sop else frozenset()
+    return RecordSearchIndex(
+        lower_haystack=haystack.lower(),
+        tokens=Counter(tokenize(haystack)),
+        sop_terms=sop_terms,
+    )
+
+
+def index_record(record: Dict[str, Any]) -> IndexedRecord:
+    indexed = IndexedRecord(record)
+    indexed.search_index = build_record_search_index(indexed)
+    return indexed
+
+
+def clone_indexed_record(record: Dict[str, Any]) -> IndexedRecord:
+    cloned = IndexedRecord(record)
+    search_index = getattr(record, "search_index", None)
+    cloned.search_index = search_index if isinstance(search_index, RecordSearchIndex) else build_record_search_index(cloned)
+    return cloned
+
+
+def build_query_score_context(query: str, query_terms: List[str], wanted_tags: List[str]) -> QueryScoreContext:
+    normalized_query = str(query or "")
+    terms = tuple(query_terms)
+    return QueryScoreContext(
+        query=normalized_query,
+        query_lower=normalized_query.lower(),
+        terms=terms,
+        term_set=frozenset(terms),
+        term_counts=Counter(terms),
+        wanted_tags=tuple(wanted_tags),
+        now_timestamp=datetime.now(timezone.utc).timestamp(),
+    )
+
+
+def record_score(
+    record: Dict[str, Any],
+    query: str,
+    query_terms: List[str],
+    wanted_tags: List[str],
+    *,
+    score_context: Optional[QueryScoreContext] = None,
+) -> tuple[float, Dict[str, float]]:
+    context = score_context or build_query_score_context(query, query_terms, wanted_tags)
+    sop = record.get("sop") if isinstance(record.get("sop"), dict) else {}
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    search_index = getattr(record, "search_index", None)
+    if not isinstance(search_index, RecordSearchIndex):
+        search_index = build_record_search_index(record)
+    overlap = sum(min(search_index.tokens.get(term, 0), count) for term, count in context.term_counts.items())
+    keyword = overlap / max(1, len(context.terms))
+    phrase = 1.0 if context.query and context.query_lower in search_index.lower_haystack else 0.0
+    tag = 1.0 if context.wanted_tags and tag_matches(record.get("tags") or [], list(context.wanted_tags)) else 0.0
     source = 0.25 if record.get("source") == "runtime_fallback" else 0.1
     sop_boost = 0.0
-    if sop and query_terms:
-        sop_terms = set(tokenize(" ".join(
-            [
-                str(sop.get("useCase") or ""),
-                " ".join(sop.get("eventTypes") or []),
-                " ".join(sop.get("triggers") or []),
-            ]
-        )))
-        if sop_terms:
-            sop_boost = min(1.0, len(sop_terms & set(query_terms)) / max(1, min(len(sop_terms), len(set(query_terms)))))
+    if sop and context.terms and search_index.sop_terms:
+        sop_boost = min(
+            1.0,
+            len(search_index.sop_terms & context.term_set)
+            / max(1, min(len(search_index.sop_terms), len(context.term_set))),
+        )
     learning_boost = 0.0
-    if metadata.get("learning.kind") and query_terms:
+    if metadata.get("learning.kind") and context.terms:
         try:
             adaptive_weight = float(metadata.get("learning.adaptiveWeight") or 0.0)
         except (TypeError, ValueError):
@@ -941,15 +1073,15 @@ def record_score(record: Dict[str, Any], query: str, query_terms: List[str], wan
             miss_count = 0.0
         learning_boost = min(1.4, adaptive_weight * 0.08 + math.log1p(max(0.0, miss_count)) * 0.18)
     scenario_boost = 0.0
-    if query_terms and record.get("bankId") == MSP_BANK_ID:
+    if context.terms and record.get("bankId") == MSP_BANK_ID:
         scenario_id = str(metadata.get("learning.scenarioId") or MSP_SOURCE_SCENARIOS.get(str(record.get("sourceId") or "").strip()) or "").strip()
-        scenario_boost = msp_scenario_query_score(query_lower, query_term_set, scenario_id)
+        scenario_boost = msp_scenario_query_score(context.query_lower, set(context.term_set), scenario_id)
     timestamp = parse_timestamp(record.get("createdAt"))
     recency = 0.0
     if timestamp is not None:
-        age_days = max(0.0, (datetime.now(timezone.utc).timestamp() - timestamp) / 86400)
+        age_days = max(0.0, (context.now_timestamp - timestamp) / 86400)
         recency = 1.0 / (1.0 + min(age_days, 90.0) / 14.0)
-    if not query_terms:
+    if not context.terms:
         keyword = 0.1
     score = keyword * 4.0 + phrase * 2.0 + tag * 1.2 + source + recency * 0.35 + sop_boost * 1.6 + learning_boost + scenario_boost
     return score, {
@@ -1241,11 +1373,18 @@ def recall(
         filtered.append(record)
 
     query_terms = tokenize(query)
+    score_context = build_query_score_context(query, query_terms, wanted_tags)
     allow_ambient_msp = has_msp_recall_context(query, query_terms, wanted_tags, bank_id)
     scored: List[Dict[str, Any]] = []
     baseline_scored: List[Dict[str, Any]] = []
     for record in filtered:
-        score, parts = record_score(record, query, query_terms, wanted_tags)
+        score, parts = record_score(
+            record,
+            query,
+            query_terms,
+            wanted_tags,
+            score_context=score_context,
+        )
         reason = baseline_reason(record, query, query_terms, wanted_tags, bank_id)
         enriched = {**record, "score": round(score, 4), "scoreParts": parts}
         if reason:

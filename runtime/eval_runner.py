@@ -55,6 +55,7 @@ from runtime.engine import (
     normalize_target_timeout_config,
     normalize_provider_id,
     normalize_provider_routing_config,
+    normalize_reasoning_effort,
     normalize_research_config,
     normalize_string_array_preserve_items,
     normalize_timeout_mode,
@@ -66,6 +67,18 @@ from runtime.engine import (
     target_timeout_seconds,
     utc_now,
 )
+from runtime.provider_torso import (
+    default_provider_id as contract_default_provider_id,
+    model_source_for_auth_route,
+    model_supports_auth_route,
+    provider_default_auth_route,
+    provider_default_model,
+    resolve_auth_route,
+)
+
+
+DEFAULT_EVAL_PROVIDER_ID = contract_default_provider_id()
+DEFAULT_JUDGE_PROVIDER_ID = contract_default_provider_id(judge=True)
 
 
 QUALITY_SCORE_FIELDS = [
@@ -492,7 +505,11 @@ def _normalize_live_score_number(value: Any) -> int:
         candidate = float(value)
     except (TypeError, ValueError):
         candidate = 0.0
-    candidate = max(0.0, min(10.0, candidate))
+    if candidate < 0.0 or candidate > 10.0:
+        raise RuntimeErrorWithCode(
+            f"Live judge returned score outside the 0-10 contract: {candidate:g}.",
+            500,
+        )
     return int(round(candidate))
 
 
@@ -558,6 +575,10 @@ def judge_audit_breakdown_schema() -> Dict[str, Any]:
         "required": JUDGE_AUDIT_SCORE_FIELDS,
         "properties": {field: {"type": "integer", "minimum": 0, "maximum": 10} for field in JUDGE_AUDIT_SCORE_FIELDS},
     }
+
+
+def judge_score_field_schema() -> Dict[str, Any]:
+    return {"type": "integer", "minimum": 1, "maximum": 10}
 
 
 def normalize_judge_audit_breakdown(parsed: Any) -> Dict[str, int]:
@@ -698,6 +719,15 @@ def judge_owner_standard_instruction() -> str:
         "Do not award high memoryGrounding or resolverCompleteness merely because the final decision is cautious; require the answer to use the binding memory or state the resolver needed to settle the conflict. "
         "If memoryCompliance is partial, mostly compliant, conditional, ambiguous, missing a binding memory, or says owner ambiguity remains, ownerVerdict cannot be pass; use conditional_pass or fail. "
         "Set ownerVerdict to pass, conditional_pass, or fail from the owner-impact lens."
+    )
+
+
+def judge_score_scale_instruction() -> str:
+    return (
+        "All numeric scores are quality ratings, never percentages, defect counts, or severity counts. "
+        "Headline scores use integers from 1 to 10. auditBreakdown scores use integers from 0 to 10. "
+        "Higher is always better: 10 means complete, safe, and strongly demonstrated; 0 means absent, unsafe, "
+        "or not demonstrated. Score the evidence shown rather than counting omissions."
     )
 
 
@@ -919,7 +949,7 @@ def quality_judge_schema() -> Dict[str, Any]:
                 "type": "object",
                 "additionalProperties": False,
                 "required": QUALITY_SCORE_FIELDS,
-                "properties": {field: {"type": "integer"} for field in QUALITY_SCORE_FIELDS},
+                "properties": {field: judge_score_field_schema() for field in QUALITY_SCORE_FIELDS},
             },
             "auditBreakdown": judge_audit_breakdown_schema(),
             "ownerVerdict": {"type": "string", "enum": ["pass", "conditional_pass", "fail"]},
@@ -953,7 +983,7 @@ def answer_health_judge_schema() -> Dict[str, Any]:
                 "type": "object",
                 "additionalProperties": False,
                 "required": ANSWER_HEALTH_SCORE_FIELDS,
-                "properties": {field: {"type": "integer"} for field in ANSWER_HEALTH_SCORE_FIELDS},
+                "properties": {field: judge_score_field_schema() for field in ANSWER_HEALTH_SCORE_FIELDS},
             },
             "auditBreakdown": judge_audit_breakdown_schema(),
             "ownerVerdict": {"type": "string", "enum": ["pass", "conditional_pass", "fail"]},
@@ -987,7 +1017,7 @@ def control_judge_schema() -> Dict[str, Any]:
                 "type": "object",
                 "additionalProperties": False,
                 "required": CONTROL_SCORE_FIELDS,
-                "properties": {field: {"type": "integer"} for field in CONTROL_SCORE_FIELDS},
+                "properties": {field: judge_score_field_schema() for field in CONTROL_SCORE_FIELDS},
             },
             "auditBreakdown": judge_audit_breakdown_schema(),
             "ownerVerdict": {"type": "string", "enum": ["pass", "conditional_pass", "fail"]},
@@ -1020,7 +1050,7 @@ def comparison_judge_schema() -> Dict[str, Any]:
                 "type": "object",
                 "additionalProperties": False,
                 "required": COMPARISON_SCORE_FIELDS,
-                "properties": {field: {"type": "integer"} for field in COMPARISON_SCORE_FIELDS},
+                "properties": {field: judge_score_field_schema() for field in COMPARISON_SCORE_FIELDS},
             },
             "verdict": {"type": "string", "enum": ["pressurized_advantage", "baseline_advantage", "mixed"]},
             "decisionRelation": {"type": "string", "enum": ["same_direction", "refined_direction", "different_direction", "opposed_direction"]},
@@ -1992,19 +2022,53 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         raise EvalError(f"Arm {arm_id} must use type 'direct' or 'steered'.")
 
     runtime_payload = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
-    provider = normalize_provider_id(str(runtime_payload.get("provider", "")).strip(), "openai")
-    model = normalize_model_id(str(runtime_payload.get("model", "")).strip(), default_model_for_provider(provider), provider)
-    model_source = normalize_model_source(runtime_payload.get("modelSource"))
+    provider = normalize_provider_id(
+        str(runtime_payload.get("provider", "")).strip(),
+        DEFAULT_EVAL_PROVIDER_ID,
+    )
+    auth_route = resolve_auth_route(
+        provider,
+        runtime_payload.get("authRoute")
+        or runtime_payload.get("modelSource")
+        or None,
+        model=runtime_payload.get("model"),
+    )
+    model_source = model_source_for_auth_route(auth_route)
+    model_fallback = provider_default_model(provider, auth_route=auth_route)
+    model = normalize_model_id(str(runtime_payload.get("model", "")).strip(), model_fallback, provider)
+    if not model_supports_auth_route(provider, model, auth_route):
+        model = model_fallback
     summarizer_provider = normalize_provider_id(str(runtime_payload.get("summarizerProvider", "")).strip(), provider)
+    summarizer_route_default = auth_route if summarizer_provider == provider else provider_default_auth_route(summarizer_provider)
+    summarizer_auth_route = resolve_auth_route(
+        summarizer_provider,
+        runtime_payload.get("summarizerAuthRoute")
+        or runtime_payload.get("summarizerModelSource")
+        or summarizer_route_default,
+        model=runtime_payload.get("summarizerModel") or model,
+    )
+    summarizer_model_source = model_source_for_auth_route(summarizer_auth_route)
+    summarizer_fallback = (
+        model
+        if summarizer_provider == provider and summarizer_auth_route == auth_route
+        else provider_default_model(summarizer_provider, auth_route=summarizer_auth_route)
+    )
     summarizer_model = normalize_model_id(
         str(runtime_payload.get("summarizerModel", "")).strip(),
-        model,
+        summarizer_fallback,
         summarizer_provider,
     )
-    summarizer_model_source = normalize_model_source(runtime_payload.get("summarizerModelSource"), model_source)
-    reasoning_effort = str(runtime_payload.get("reasoningEffort", "low")).strip().lower()
-    if reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
-        reasoning_effort = "low"
+    if not model_supports_auth_route(summarizer_provider, summarizer_model, summarizer_auth_route):
+        summarizer_model = provider_default_model(summarizer_provider, auth_route=summarizer_auth_route)
+    reasoning_effort = normalize_reasoning_effort(runtime_payload.get("reasoningEffort"), "low")
+    worker_reasoning_effort = normalize_reasoning_effort(
+        runtime_payload.get("workerReasoningEffort"),
+        reasoning_effort,
+    )
+    summarizer_reasoning_effort = normalize_reasoning_effort(
+        runtime_payload.get("summarizerReasoningEffort"),
+        reasoning_effort,
+    )
     execution_mode = str(runtime_payload.get("executionMode", "live")).strip().lower() or "live"
     if execution_mode != "live":
         raise EvalError(f"Arm {arm_id} uses unsupported executionMode {execution_mode!r}; eval arms must run live.")
@@ -2014,12 +2078,27 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         default_direct_baseline_mode(),
     )
     direct_provider = normalize_provider_id(str(runtime_payload.get("directProvider", provider)).strip(), provider)
+    direct_route_default = auth_route if direct_provider == provider else provider_default_auth_route(direct_provider)
+    direct_auth_route = resolve_auth_route(
+        direct_provider,
+        runtime_payload.get("directAuthRoute")
+        or runtime_payload.get("directModelSource")
+        or direct_route_default,
+        model=runtime_payload.get("directModel") or model,
+    )
+    direct_model_source = model_source_for_auth_route(direct_auth_route)
+    direct_fallback = (
+        model
+        if direct_provider == provider and direct_auth_route == auth_route
+        else provider_default_model(direct_provider, auth_route=direct_auth_route)
+    )
     direct_model = normalize_model_id(
         str(runtime_payload.get("directModel", "")).strip(),
-        default_model_for_provider(direct_provider),
+        direct_fallback,
         direct_provider,
     )
-    direct_model_source = normalize_model_source(runtime_payload.get("directModelSource"), model_source)
+    if not model_supports_auth_route(direct_provider, direct_model, direct_auth_route):
+        direct_model = provider_default_model(direct_provider, auth_route=direct_auth_route)
     budget = normalize_budget_config(runtime_payload.get("budget") if isinstance(runtime_payload.get("budget"), dict) else {})
     research = normalize_research_config(runtime_payload.get("research") if isinstance(runtime_payload.get("research"), dict) else {})
     vetting = normalize_vetting_config(runtime_payload.get("vetting") if isinstance(runtime_payload.get("vetting"), dict) else {})
@@ -2042,6 +2121,8 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
         default_direct_harness()["concision"],
     )
     direct_memory_mode = normalize_direct_memory_mode(runtime_payload.get("directMemoryMode"))
+    codex_no_timeout = coerce_bool(runtime_payload.get("codexNoTimeout"), False)
+    codex_subagents_enabled = coerce_bool(runtime_payload.get("codexSubagentsEnabled"), False)
     workers = payload.get("workers") if isinstance(payload.get("workers"), list) else []
     normalized_workers = task_workers({"runtime": {"model": model, "provider": provider}, "workers": workers}) if workers else []
     if arm_type == "steered" and not normalized_workers:
@@ -2057,19 +2138,26 @@ def validate_arm_manifest(payload: Dict[str, Any], source: Path) -> Dict[str, An
             "directBaselineMode": direct_baseline_mode,
             "provider": provider,
             "model": model,
+            "authRoute": auth_route,
             "modelSource": model_source,
             "directProvider": direct_provider,
             "directModel": direct_model,
+            "directAuthRoute": direct_auth_route,
             "directModelSource": direct_model_source,
             "ollamaBaseUrl": ollama_base_url,
             "providerRouting": provider_routing,
             "summarizerProvider": summarizer_provider,
             "summarizerModel": summarizer_model,
+            "summarizerAuthRoute": summarizer_auth_route,
             "summarizerModelSource": summarizer_model_source,
             "summarizerHarness": summarizer_harness,
             "directHarness": direct_harness,
             "directMemoryMode": direct_memory_mode,
-            "reasoningEffort": reasoning_effort,
+            "reasoningEffort": worker_reasoning_effort,
+            "workerReasoningEffort": worker_reasoning_effort,
+            "summarizerReasoningEffort": summarizer_reasoning_effort,
+            "codexNoTimeout": codex_no_timeout,
+            "codexSubagentsEnabled": codex_subagents_enabled,
             "budget": budget,
             "research": research,
             "vetting": vetting,
@@ -2112,6 +2200,10 @@ def build_eval_task(case: Dict[str, Any], arm: Dict[str, Any], loop_rounds: int,
             "ollamaBaseUrl": runtime_config["ollamaBaseUrl"],
             "providerRouting": deepcopy(runtime_config["providerRouting"]),
             "reasoningEffort": runtime_config["reasoningEffort"],
+            "workerReasoningEffort": runtime_config["workerReasoningEffort"],
+            "summarizerReasoningEffort": runtime_config["summarizerReasoningEffort"],
+            "codexNoTimeout": bool(runtime_config.get("codexNoTimeout")),
+            "codexSubagentsEnabled": bool(runtime_config.get("codexSubagentsEnabled")),
             "budget": deepcopy(runtime_config["budget"]),
             "research": deepcopy(runtime_config["research"]),
             "vetting": deepcopy(runtime_config["vetting"]),
@@ -2226,7 +2318,7 @@ def run_direct_answer(
     case: Dict[str, Any],
     arm: Dict[str, Any],
 ) -> Dict[str, Any]:
-    provider = str(arm["runtime"].get("provider") or "openai").strip()
+    provider = str(arm["runtime"].get("provider") or DEFAULT_EVAL_PROVIDER_ID).strip()
     if direct_answer_uses_memory(arm["runtime"]):
         hydrate_eval_knowledgebase(runtime, arm["runtime"])
     primary_assignment = (
@@ -2430,10 +2522,22 @@ def run_steered_answer(
 
 def judge_provider_settings(run: Dict[str, Any], judge_provider: str) -> Dict[str, Any]:
     runtime_settings = run.get("judgeRuntime") if isinstance(run.get("judgeRuntime"), dict) else {}
-    provider = normalize_provider_id(judge_provider, "openai")
+    provider = normalize_provider_id(judge_provider, DEFAULT_JUDGE_PROVIDER_ID)
+    auth_route = resolve_auth_route(
+        provider,
+        runtime_settings.get("authRoute")
+        or runtime_settings.get("modelSource")
+        or None,
+        model=run.get("judgeModel"),
+        judge=True,
+    )
     settings: Dict[str, Any] = {
         "requestTimeoutSeconds": target_timeout_seconds(default_target_timeout_config(), "arbiter"),
-        "modelSource": normalize_model_source(runtime_settings.get("modelSource")),
+        "authRoute": auth_route,
+        "modelSource": model_source_for_auth_route(auth_route),
+        "codexIgnoreUserConfig": coerce_bool(runtime_settings.get("codexIgnoreUserConfig"), True),
+        "codexNoTimeout": coerce_bool(runtime_settings.get("codexNoTimeout"), False),
+        "codexSubagentsEnabled": coerce_bool(runtime_settings.get("codexSubagentsEnabled"), False),
         "providerRouting": normalize_provider_routing_config(
             runtime_settings.get("providerRouting") if isinstance(runtime_settings.get("providerRouting"), dict) else {}
         ),
@@ -2690,7 +2794,7 @@ def quality_judge_live(
 ) -> Dict[str, Any]:
     instructions = (
         "You are grading one candidate assistant answer to a benchmark prompt.\n"
-        "Score from 1 to 10 on each quality dimension.\n"
+        f"{judge_score_scale_instruction()}\n"
         "Reward decisiveness, tradeoff handling, objection absorption, actionability, and a clean single assistant voice.\n"
         "Use the hidden rubric and gold notes as guidance, but do not require exact wording.\n"
         "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
@@ -2801,7 +2905,8 @@ def answer_health_judge_live(
 ) -> Dict[str, Any]:
     instructions = (
         "You are grading the operational health of one candidate assistant answer.\n"
-        "Score from 1 to 10 on instruction fit, structural clarity, confidence calibration, evidence hygiene, and efficiency/discipline.\n"
+        f"{judge_score_scale_instruction()}\n"
+        "Score instruction fit, structural clarity, confidence calibration, evidence hygiene, and efficiency/discipline.\n"
         "Use telemetry as supporting context, not as a substitute for reading the answer.\n"
         "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
         f"{judge_owner_standard_instruction()}\n"
@@ -2915,6 +3020,7 @@ def control_judge_live(
     control_audit = summary.get("controlAudit", {}) if isinstance(summary.get("controlAudit"), dict) else {}
     instructions = (
         "You are grading whether a lead assistant thread stayed in control of adversarial pressure.\n"
+        f"{judge_score_scale_instruction()}\n"
         "Reward answers where the lead direction is clear, accepted objections are selective, rejected pressure is actually rejected, and the self-check is meaningful.\n"
         "Penalize funnel-like behavior where internal pressure is merely forwarded or averaged into the final answer.\n"
         "Use judge memory context, when supplied, as relevant operational ground truth; assess memory compliance by equivalent wording and operational meaning, not exact phrasing. If memory compliance is partial or failing, name the missing binding requirement source.\n"
@@ -3140,6 +3246,7 @@ def comparison_judge_live(
 ) -> Dict[str, Any]:
     instructions = (
         "You are comparing a pressurized multi-lane answer against a single-thread baseline for the same prompt.\n"
+        f"{judge_score_scale_instruction()}\n"
         "Judge whether the answers are materially different, whether the difference changes the operational decision, and whether one answer is genuinely better.\n"
         "Do not reward superficial paraphrase. If the answers mostly say the same thing, mark material difference low even if wording changes.\n"
         "Verdict must be exactly one of: pressurized_advantage, baseline_advantage, mixed.\n"
@@ -3951,7 +4058,10 @@ def execute_replicate(
     replicate_dir.mkdir(parents=True, exist_ok=True)
     seed = f"{run['runId']}:{case['caseId']}:{variant_id}:{replicate_index}"
     judge_runtime = LoopRuntime(replicate_dir / "_judge_runtime", auth_path=auth_path)
-    judge_provider = normalize_provider_id(str(run.get("judgeProvider") or "openai").strip(), "openai")
+    judge_provider = normalize_provider_id(
+        str(run.get("judgeProvider") or DEFAULT_JUDGE_PROVIDER_ID).strip(),
+        DEFAULT_JUDGE_PROVIDER_ID,
+    )
     judge_runtime_settings = judge_provider_settings(run, judge_provider)
     selected_judge_instance = judge_runtime.select_provider_instance(
         None,
@@ -4249,7 +4359,7 @@ def execute_replicate(
     }
 
 
-def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
+def _execute_run(root: Path, run_id: str) -> Dict[str, Any]:
     run_dir = root / "data" / "evals" / "runs" / run_id
     run_path = run_dir / "run.json"
     run = read_run(root, run_id)
@@ -4303,12 +4413,24 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
     loop_sweep = [int(value) for value in run.get("loopSweep", []) if int(value) > 0]
     if not loop_sweep:
         loop_sweep = [1]
-    judge_provider = normalize_provider_id(str(run.get("judgeProvider") or "openai").strip(), "openai")
+    judge_provider = normalize_provider_id(
+        str(run.get("judgeProvider") or DEFAULT_JUDGE_PROVIDER_ID).strip(),
+        DEFAULT_JUDGE_PROVIDER_ID,
+    )
+    judge_runtime_settings = judge_provider_settings(run, judge_provider)
+    judge_auth_route = str(judge_runtime_settings.get("authRoute") or "").strip()
+    judge_model_fallback = provider_default_model(
+        judge_provider,
+        auth_route=judge_auth_route,
+        judge=True,
+    )
     judge_model = normalize_model_id(
         str(run.get("judgeModel", "")).strip(),
-        default_judge_model_for_provider(judge_provider),
+        judge_model_fallback,
         judge_provider,
     )
+    if not model_supports_auth_route(judge_provider, judge_model, judge_auth_route):
+        judge_model = judge_model_fallback
 
     for case in suite["cases"]:
         case_entry = find_case_entry(run, case["caseId"])
@@ -4438,6 +4560,13 @@ def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
         }
         persist_run(run_path, run)
     return run
+
+
+def execute_run(root: Path, run_id: str) -> Dict[str, Any]:
+    from runtime.timing import timed_span
+
+    with timed_span(root, "eval", "eval.execute", {"runId": str(run_id or "").strip()}):
+        return _execute_run(root, run_id)
 
 
 def parse_args() -> argparse.Namespace:

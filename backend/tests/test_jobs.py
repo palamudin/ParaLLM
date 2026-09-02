@@ -157,6 +157,19 @@ class LoopJobTests(unittest.TestCase):
         self.assertEqual(env["LOOP_SECRET_BACKEND"], "local_file")
         self.assertEqual(env["LOOP_DEPLOYMENT_PROFILE"], "local-single-node")
 
+    def test_launch_loop_job_runner_uses_in_process_pool_by_default(self) -> None:
+        with (
+            mock.patch("backend.app.jobs.background.submit", return_value="loop-native") as submit,
+            mock.patch("backend.app.jobs.subprocess.Popen") as popen,
+        ):
+            task_id = jobs.launch_loop_job_runner({"jobId": "job-in-process"}, self.root)
+
+        self.assertEqual(task_id, "loop-native")
+        popen.assert_not_called()
+        self.assertEqual(submit.call_args.args[0], "loop")
+        self.assertEqual(submit.call_args.args[1], "job-in-process")
+        self.assertIs(submit.call_args.args[3], jobs.execute_loop_job)
+
     def test_update_loop_job_progress_sets_waiting_target_message(self) -> None:
         paths = storage.project_paths(self.root)
         task_id = storage.read_state_payload(paths)["activeTask"]["taskId"]
@@ -375,24 +388,32 @@ class LoopJobTests(unittest.TestCase):
         task = state["activeTask"]
         job = jobs.create_loop_job(runtime, task, 2, 0, "background")
 
-        env = {"LOOP_FAULT_POINTS": "loop.execute.before_target.commander"}
+        fault_point = "dispatch.execute.before_runtime.commander"
+        env = {"LOOP_FAULT_POINTS": fault_point}
         with mock.patch.dict("os.environ", env, clear=False):
-            with self.assertRaises(RuntimeErrorWithCode) as ctx:
-                jobs.execute_loop_job(job["jobId"], self.root)
+            with mock.patch(
+                "backend.app.dispatch.launch_dispatch_job_runner",
+                side_effect=lambda job_payload, root_path: dispatch.execute_target_job_process(
+                    str(job_payload.get("jobId") or ""),
+                    root_path,
+                ),
+            ):
+                with self.assertRaises(RuntimeErrorWithCode) as ctx:
+                    jobs.execute_loop_job(job["jobId"], self.root)
 
-        self.assertIn("loop.execute.before_target.commander", str(ctx.exception))
+        self.assertIn(fault_point, str(ctx.exception))
         paths = storage.project_paths(self.root)
         updated_state = storage.read_state_payload(paths)
         self.assertEqual(updated_state["loop"]["status"], "idle")
         self.assertIn("Ready after blocker failure:", updated_state["loop"]["lastMessage"])
-        self.assertIn("loop.execute.before_target.commander", updated_state["loop"]["lastMessage"])
+        self.assertIn(fault_point, updated_state["loop"]["lastMessage"])
         self.assertIsNone(updated_state["commander"])
         self.assertIsNone(updated_state["summary"])
 
         updated_job = storage.read_json_file(paths.jobs / f"{job['jobId']}.json")
         self.assertIsInstance(updated_job, dict)
         self.assertEqual(updated_job["status"], "error")
-        self.assertIn("loop.execute.before_target.commander", str(updated_job.get("error")))
+        self.assertIn(fault_point, str(updated_job.get("error")))
 
     def test_restore_task_ready_state_clears_partial_runtime_surfaces(self) -> None:
         runtime = jobs._runtime(self.root)
@@ -474,9 +495,14 @@ class LoopJobTests(unittest.TestCase):
             return {"target": target, "output": f"{target} complete", "exitCode": 0}
 
         with mock.patch("backend.app.jobs.runtime_execution.run_target", side_effect=fake_run_target):
-            with mock.patch("backend.app.jobs._launch_answer_now_sidecar") as launch_answer_now:
+            with mock.patch(
+                "backend.app.dispatch.launch_dispatch_job_runner",
+                side_effect=lambda job_payload, root_path: dispatch.execute_target_job_process(
+                    str(job_payload.get("jobId") or ""),
+                    root_path,
+                ),
+            ):
                 with mock.patch("backend.app.jobs._launch_direct_baseline_sidecar") as launch_direct_baseline:
-                    launch_answer_now.return_value = {"jobId": "dispatch-answer-now", "target": "answer_now"}
                     launch_direct_baseline.return_value = {"jobId": "dispatch-direct-baseline", "target": "direct_baseline"}
                     result = jobs.execute_loop_job(job["jobId"], self.root)
 
@@ -486,11 +512,15 @@ class LoopJobTests(unittest.TestCase):
         self.assertIn("summarizer", seen_targets)
         self.assertIn("A", seen_targets)
         self.assertIn("B", seen_targets)
-        launch_answer_now.assert_called_once()
+        self.assertIn("answer_now", seen_targets)
         launch_direct_baseline.assert_called_once()
         self.assertEqual(result["requestedRounds"], 1)
         self.assertTrue(result["results"])
-        self.assertNotIn("parallelTargets", result["results"][0])
+        self.assertEqual(result["results"][0]["planSource"], "v2-plan")
+        self.assertEqual(
+            [entry.get("target") for entry in result["results"][0].get("parallelTargets", [])],
+            ["answer_now"],
+        )
 
     def test_execute_loop_job_v2_live_compatible_plan_drives_round_sequence(self) -> None:
         paths = storage.project_paths(self.root)

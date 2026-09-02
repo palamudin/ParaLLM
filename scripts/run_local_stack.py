@@ -20,11 +20,11 @@ def build_env(args: argparse.Namespace, root: Path) -> dict[str, str]:
     env.setdefault("LOOP_HOST", args.host)
     env.setdefault("LOOP_PORT", str(args.port))
     env.setdefault("LOOP_DEPLOYMENT_PROFILE", "local-single-node")
-    env.setdefault("LOOP_QUEUE_BACKEND", "local_subprocess")
+    env.setdefault("LOOP_QUEUE_BACKEND", "in_process")
     env.setdefault("LOOP_METADATA_BACKEND", "json_files")
     env.setdefault("LOOP_ARTIFACT_BACKEND", "filesystem")
     env.setdefault("LOOP_SECRET_BACKEND", args.secret_backend)
-    env.setdefault("LOOP_RUNTIME_EXECUTION_BACKEND", "embedded_engine_subprocess")
+    env.setdefault("LOOP_RUNTIME_EXECUTION_BACKEND", "embedded_engine")
     env.setdefault("LOOP_RUNTIME_HOST", args.runtime_host)
     env.setdefault("LOOP_RUNTIME_PORT", str(args.runtime_port))
     if args.with_runtime_service:

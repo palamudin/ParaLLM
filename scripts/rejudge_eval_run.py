@@ -16,19 +16,24 @@ from backend.app.control import auth_file_path
 from runtime.engine import (
     LoopRuntime,
     default_judge_model_for_provider,
+    normalize_direct_baseline_mode,
     normalize_provider_id,
     utc_now,
 )
 from runtime.eval_runner import (
+    QUALITY_SCORE_FIELDS,
     aggregate_run,
     aggregate_variant,
+    answer_similarity_metrics,
     build_answer_telemetry,
     collect_replicate_artifacts,
+    comparison_score_delta,
     judge_provider_settings,
     read_json,
     read_run,
     replicate_dir_for,
     run_answer_health_judge,
+    run_comparison_judge,
     run_control_judge,
     run_quality_judge,
     variant_id_for_arm,
@@ -53,7 +58,15 @@ def _run_id_for(source_run_id: str, provider: str, suffix: str) -> str:
     return f"{source_run_id}-rejudge-{provider}{cleaned_suffix}"
 
 
-def _clone_run_header(source: Dict[str, Any], run_id: str, provider: str, judge_model: str) -> Dict[str, Any]:
+def _clone_run_header(
+    source: Dict[str, Any],
+    run_id: str,
+    provider: str,
+    judge_model: str,
+    judge_reasoning_effort: Optional[str] = None,
+    no_timeout: bool = False,
+    subagents_enabled: bool = False,
+) -> Dict[str, Any]:
     target = {
         key: deepcopy(value)
         for key, value in source.items()
@@ -90,6 +103,19 @@ def _clone_run_header(source: Dict[str, Any], run_id: str, provider: str, judge_
             "summary": None,
         }
     )
+    normalized_reasoning = str(judge_reasoning_effort or "").strip().lower()
+    judge_runtime = target.get("judgeRuntime") if isinstance(target.get("judgeRuntime"), dict) else {}
+    target["judgeRuntime"] = {
+        **judge_runtime,
+        **(
+            {"judgeReasoningEffort": normalized_reasoning}
+            if normalized_reasoning in {"none", "low", "medium", "high", "xhigh"}
+            else {}
+        ),
+        "codexIgnoreUserConfig": True,
+        "codexNoTimeout": bool(no_timeout),
+        "codexSubagentsEnabled": bool(subagents_enabled),
+    }
     return target
 
 
@@ -121,6 +147,9 @@ def rejudge_provider(
     suffix: str,
     force: bool = False,
     judge_model_override: Optional[str] = None,
+    judge_reasoning_effort: Optional[str] = None,
+    no_timeout: bool = False,
+    subagents_enabled: bool = False,
 ) -> Dict[str, Any]:
     source = read_run(root, source_run_id)
     provider = normalize_provider_id(provider, "openai")
@@ -137,7 +166,15 @@ def rejudge_provider(
         shutil.rmtree(resolved)
     target_run_dir.mkdir(parents=True, exist_ok=True)
 
-    target = _clone_run_header(source, run_id, provider, judge_model)
+    target = _clone_run_header(
+        source,
+        run_id,
+        provider,
+        judge_model,
+        judge_reasoning_effort,
+        no_timeout,
+        subagents_enabled,
+    )
     _write_run(target_run_dir, target)
 
     auth_path = auth_file_path(root)
@@ -203,16 +240,20 @@ def rejudge_provider(
                     auth_assignments = judge_runtime.provider_auth_assignments(provider, "judge", salt=seed + ":judge")
                     api_key = judge_runtime.provider_live_api_key(provider, auth_assignments) or None
 
-                    response_meta = source_result.get("responseMeta")
-                    if not isinstance(response_meta, dict):
-                        response_meta = source_result.get("summaryResponseMeta")
-                    if not isinstance(response_meta, dict):
-                        response_meta = None
-                    telemetry = build_answer_telemetry(
-                        public_answer,
-                        response_meta,
-                        str(source_result.get("provider") or ""),
-                        str(source_result.get("model") or ""),
+                    source_comparison = (
+                        source_result.get("comparison")
+                        if isinstance(source_result.get("comparison"), dict)
+                        else {}
+                    )
+                    telemetry = (
+                        deepcopy(source_comparison.get("primaryTelemetry"))
+                        if isinstance(source_comparison.get("primaryTelemetry"), dict)
+                        else build_answer_telemetry(
+                            public_answer,
+                            None,
+                            str(source_result.get("provider") or ""),
+                            str(source_result.get("model") or ""),
+                        )
                     )
                     judge_memory_context = str(
                         source_result.get("judgeMemoryContext") or source_replicate.get("judgeMemoryContext") or ""
@@ -254,6 +295,112 @@ def rejudge_provider(
                         if arm.get("type") == "steered" and isinstance(summary, dict)
                         else None
                     )
+                    baseline_quality = None
+                    baseline_answer_health = None
+                    comparison = None
+                    direct_baseline = (
+                        source_result.get("directBaseline")
+                        if isinstance(source_result.get("directBaseline"), dict)
+                        else {}
+                    )
+                    baseline_answer = (
+                        direct_baseline.get("answer")
+                        if isinstance(direct_baseline.get("answer"), dict)
+                        else {}
+                    )
+                    baseline_text = str(
+                        baseline_answer.get("answer")
+                        or source_comparison.get("baselineAnswer")
+                        or ""
+                    ).strip()
+                    answer_path = normalize_direct_baseline_mode(source_result.get("answerPath"), "off")
+                    if arm.get("type") == "steered" and baseline_text and answer_path == "both":
+                        baseline_telemetry = (
+                            deepcopy(source_comparison.get("baselineTelemetry"))
+                            if isinstance(source_comparison.get("baselineTelemetry"), dict)
+                            else build_answer_telemetry(
+                                baseline_text,
+                                None,
+                                str(direct_baseline.get("provider") or source_result.get("provider") or ""),
+                                str(direct_baseline.get("model") or ""),
+                            )
+                        )
+                        baseline_quality = run_quality_judge(
+                            judge_runtime,
+                            provider,
+                            api_key,
+                            judge_model,
+                            source_case,
+                            target.get("suite", {}).get("judgeRubric", {}),
+                            baseline_text,
+                            provider_settings,
+                            judge_memory_context,
+                        )
+                        baseline_answer_health = run_answer_health_judge(
+                            judge_runtime,
+                            provider,
+                            api_key,
+                            judge_model,
+                            source_case,
+                            baseline_text,
+                            baseline_telemetry,
+                            provider_settings,
+                            judge_memory_context,
+                        )
+                        similarity = answer_similarity_metrics(public_answer, baseline_text)
+                        score_delta = comparison_score_delta(
+                            quality.get("scores") if isinstance(quality.get("scores"), dict) else {},
+                            baseline_quality.get("scores") if isinstance(baseline_quality.get("scores"), dict) else {},
+                            QUALITY_SCORE_FIELDS,
+                        )
+                        comparison = run_comparison_judge(
+                            judge_runtime,
+                            provider,
+                            api_key,
+                            judge_model,
+                            source_case,
+                            target.get("suite", {}).get("judgeRubric", {}),
+                            public_answer,
+                            baseline_text,
+                            quality,
+                            answer_health,
+                            baseline_quality,
+                            baseline_answer_health,
+                            similarity,
+                            provider_settings,
+                            judge_memory_context,
+                        )
+                        comparison = {
+                            **comparison,
+                            "answerPath": answer_path,
+                            "contextMode": source_result.get("contextMode"),
+                            "primaryLabel": "pressurized_answer",
+                            "baselineLabel": "single_thread_baseline",
+                            "primaryAnswer": public_answer,
+                            "baselineAnswer": baseline_text,
+                            "primaryQuality": quality,
+                            "primaryAnswerHealth": answer_health,
+                            "primaryTelemetry": telemetry,
+                            "baselineQuality": baseline_quality,
+                            "baselineAnswerHealth": baseline_answer_health,
+                            "baselineTelemetry": baseline_telemetry,
+                            "scoreDelta": score_delta,
+                            "similarity": similarity,
+                            "identicalAnswers": public_answer == baseline_text,
+                        }
+                        write_json(
+                            target_replicate_dir / "comparison.json",
+                            {
+                                "runId": run_id,
+                                "caseId": case_id,
+                                "armId": arm_id,
+                                "variantId": variant_id,
+                                "replicate": replicate_index,
+                                "sourceRunId": source_run_id,
+                                "generatedAt": utc_now(),
+                                **comparison,
+                            },
+                        )
                     usage = deepcopy(source_replicate.get("usage") or source_result.get("usage") or {})
                     score_payload = {
                         "runId": run_id,
@@ -266,9 +413,9 @@ def rejudge_provider(
                         "quality": quality,
                         "answerHealth": answer_health,
                         "control": control,
-                        "baselineQuality": None,
-                        "baselineAnswerHealth": None,
-                        "comparison": None,
+                        "baselineQuality": baseline_quality,
+                        "baselineAnswerHealth": baseline_answer_health,
+                        "comparison": comparison,
                         "usage": usage,
                         "answerPathCallPlan": deepcopy(source_replicate.get("answerPathCallPlan")),
                         "judgeMemoryContext": judge_memory_context,
@@ -291,7 +438,11 @@ def rejudge_provider(
                         "usage": usage,
                         "judgeMemoryContext": judge_memory_context,
                         "publicAnswer": public_answer,
+                        "directBaseline": deepcopy(source_result.get("directBaseline")),
                         "answerHealth": answer_health,
+                        "baselineQuality": baseline_quality,
+                        "baselineAnswerHealth": baseline_answer_health,
+                        "comparison": comparison,
                         "summary": summary,
                         "quality": quality,
                         "control": control,
@@ -321,9 +472,9 @@ def rejudge_provider(
                         "quality": quality,
                         "answerHealth": answer_health,
                         "control": control,
-                        "baselineQuality": None,
-                        "baselineAnswerHealth": None,
-                        "comparison": None,
+                        "baselineQuality": baseline_quality,
+                        "baselineAnswerHealth": baseline_answer_health,
+                        "comparison": comparison,
                         "artifactIds": [entry["artifactId"] for entry in artifacts],
                         "artifacts": artifacts,
                         "updatedAt": utc_now(),
@@ -375,6 +526,22 @@ def parse_args() -> argparse.Namespace:
         help="Optional model override. Use provider=model for one provider, or model when running a single provider.",
     )
     parser.add_argument("--suffix", default="", help="Run id suffix.")
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["none", "low", "medium", "high", "xhigh"],
+        default=None,
+        help="Optional ordinary-judge reasoning effort override.",
+    )
+    parser.add_argument(
+        "--no-timeout",
+        action="store_true",
+        help="Disable the Codex subprocess timeout for ChatGPT-auth-backed OpenAI judges.",
+    )
+    parser.add_argument(
+        "--enable-subagents",
+        action="store_true",
+        help="Permit nested Codex subagents inside ordinary judge calls. Disabled by default.",
+    )
     parser.add_argument("--force", action="store_true", help="Replace existing target rejudge run directories.")
     return parser.parse_args()
 
@@ -410,6 +577,9 @@ def main() -> int:
             args.suffix,
             force=bool(args.force),
             judge_model_override=model_overrides.get(provider),
+            judge_reasoning_effort=args.reasoning_effort,
+            no_timeout=bool(args.no_timeout),
+            subagents_enabled=bool(args.enable_subagents),
         )
         summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
         print(

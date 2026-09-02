@@ -1,6 +1,7 @@
 (function () {
   const API = {
     state: "/v1/state",
+    models: "/v1/models",
     draft: "/v1/draft",
     frontEvalRuns: "/v1/front/eval/runs",
     frontLiveRuns: "/v1/front/live/runs",
@@ -29,56 +30,20 @@
     codexLimitsManual: "/v1/codex/limits/manual",
     codexAuth: "/v1/codex/auth",
     codexLaneRun: "/v1/codex/lanes/run",
+    agents: "/v1/agents",
+    agentSpawn: "/v1/agents/spawn",
+    agentStart: "/v1/agents/start",
+    agentStop: "/v1/agents/stop",
+    agentProjects: "/v1/agents/projects",
+    agentJobs: "/v1/agents/jobs",
+    agentGoals: "/v1/agents/goals",
+    agentBoard: "/v1/agents/board",
   };
 
   const OPENAI_API_MODEL_SOURCE = "openai_api";
   const OPENAI_CODEX_MODEL_SOURCE = "codex_auth";
-  const OPENAI_API_MODEL_TRANSPORT = "openai_responses";
-  const OPENAI_CODEX_MODEL_TRANSPORT = "codex_cli";
 
-  const OPENAI_BASE_MODELS = [
-    { value: "openai:gpt-5-mini", model: "gpt-5-mini", label: "GPT-5 Mini", shortLabel: "GPT-5 Mini", source: "openai_api", sourceLabel: "API key", transport: "openai_responses" },
-    { value: "openai:gpt-5.4", model: "gpt-5.4", label: "GPT-5.4", shortLabel: "GPT-5.4", source: "openai_api", sourceLabel: "API key", transport: "openai_responses" },
-    { value: "openai:gpt-5.4-mini", model: "gpt-5.4-mini", label: "GPT-5.4 Mini", shortLabel: "GPT-5.4 Mini", source: "openai_api", sourceLabel: "API key", transport: "openai_responses" },
-  ];
-
-  const OPENAI_CODEX_FALLBACK_MODELS = [
-    { value: "codex:gpt-5.5", model: "gpt-5.5", label: "GPT-5.5", shortLabel: "GPT-5.5", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
-    { value: "codex:gpt-5.4", model: "gpt-5.4", label: "GPT-5.4", shortLabel: "GPT-5.4", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
-    { value: "codex:gpt-5.4-mini", model: "gpt-5.4-mini", label: "GPT-5.4 Mini", shortLabel: "GPT-5.4 Mini", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
-    { value: "codex:gpt-5.3-codex", model: "gpt-5.3-codex", label: "GPT-5.3 Codex", shortLabel: "5.3 Codex", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
-    { value: "codex:gpt-5.3-codex-spark", model: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", shortLabel: "5.3 Spark", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
-    { value: "codex:gpt-5.2", model: "gpt-5.2", label: "GPT-5.2", shortLabel: "GPT-5.2", source: "codex_auth", sourceLabel: "Codex", transport: "codex_cli" },
-  ];
-
-  const providerCatalog = {
-    openai: {
-      label: "OpenAI",
-      models: mergeModelOptions(OPENAI_BASE_MODELS, OPENAI_CODEX_FALLBACK_MODELS),
-    },
-    deepseek: {
-      label: "DeepSeek",
-      models: [
-        { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", shortLabel: "V4 Flash" },
-        { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro", shortLabel: "V4 Pro" },
-        { value: "deepseek-chat", label: "DeepSeek Chat (Legacy)", shortLabel: "Chat Legacy" },
-      ],
-    },
-    anthropic: {
-      label: "Anthropic",
-      models: [
-        { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", shortLabel: "Sonnet 4.6" },
-        { value: "claude-opus-4-7", label: "Claude Opus 4.7", shortLabel: "Opus 4.7" },
-      ],
-    },
-    xai: {
-      label: "xAI",
-      models: [
-        { value: "grok-4.20-reasoning", label: "Grok 4.20 Reasoning", shortLabel: "Grok 4.20" },
-        { value: "grok-4-1-fast-reasoning", label: "Grok 4.1 Fast Reasoning", shortLabel: "Grok 4.1 Fast" },
-      ],
-    },
-  };
+  const providerCatalog = {};
 
   const COMPOSER_ATTACHMENT_LIMIT = 4;
   const COMPOSER_ATTACHMENT_MAX_BYTES = 180000;
@@ -86,6 +51,7 @@
   const TEXTAREA_MIN_HEIGHT_PX = 48;
   const TEXTAREA_MAX_VISIBLE_ROWS = 7;
   const SCROLLBAR_PROXIMITY_PX = 30;
+  const REASONING_VALUES = ["none", "low", "medium", "high", "xhigh"];
   const COMPOSER_SUPPORTED_EXTENSIONS = [
     ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx",
     ".html", ".css", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"
@@ -94,18 +60,31 @@
   const runtimeState = {
     backendState: null,
     draft: null,
+    modelCatalog: null,
     saveTimer: null,
     codexLimits: null,
     codexLimitsTimer: null,
     authRequirements: null,
     controlsLoaded: false,
     providerPaneRole: "worker",
+    reasoningEfforts: {
+      worker: "low",
+      summarizer: "low",
+    },
   };
+
+  function setContractControlsReady(ready) {
+    const panel = document.querySelector('[data-home-panel="contract"]');
+    if (!panel) return;
+    panel.inert = !ready;
+    panel.setAttribute("aria-busy", ready ? "false" : "true");
+  }
 
   const shellState = {
     sidebarCollapsed: false,
     inspectorMode: "repo",
     homeCollapsedPanels: new Set(),
+    activeHomePanel: "",
     composerToolMenuOpen: false,
     stagedAttachments: [],
   };
@@ -139,6 +118,17 @@
     selectedName: "",
     transfers: [],
   };
+  const agentWorkspaceState = {
+    loaded: false,
+    loading: false,
+    requestId: 0,
+    projectId: "project_default",
+    projects: [],
+    agents: [],
+    jobs: [],
+    goals: [],
+    board: [],
+  };
   let activeSurfaceDrag = null;
   let scrollbarHotRaf = 0;
   const scrollbarHotElements = new Set();
@@ -149,8 +139,8 @@
   const groupedButtons = Array.from(document.querySelectorAll("[data-group]"));
   const summarizerProviderButtons = Array.from(document.querySelectorAll("[data-summarizer-provider-option]"));
   const providerRoleButtons = Array.from(document.querySelectorAll("[data-provider-role-option]"));
-  const sharedProviderButtons = Array.from(document.querySelectorAll("[data-provider-option]"));
-  const selectorActuators = Array.from(document.querySelectorAll(".igs-selector-actuator, .igs-provider-actuator"));
+  let sharedProviderButtons = Array.from(document.querySelectorAll("[data-provider-option]"));
+  let selectorActuators = Array.from(document.querySelectorAll(".igs-selector-actuator, .igs-provider-actuator"));
   const selectToggleButtons = Array.from(document.querySelectorAll("[data-select-toggle]"));
   const selectCycleButtons = Array.from(document.querySelectorAll("[data-select-cycle]"));
   const inspectorModeButtons = Array.from(document.querySelectorAll("[data-inspector-mode]"));
@@ -166,6 +156,7 @@
   const HOME_COLLAPSIBLE_PANELS = [
     { id: "contract", label: "Run contract", shortLabel: "Contract", side: "left" },
     { id: "lanes", label: "Lane status", shortLabel: "Lanes", side: "right" },
+    { id: "agents", label: "Agent fabric", shortLabel: "Agents", side: "left" },
     { id: "trace", label: "Trace output", shortLabel: "Trace", side: "right" },
     { id: "supporting", label: "Supporting controls", shortLabel: "Supporting", side: "left" },
     { id: "math2code", label: "Math2Code", shortLabel: "Math2Code", side: "left" },
@@ -184,6 +175,7 @@
     contextMode: document.getElementById("previewContextMode"),
     reasoningEffort: document.getElementById("previewReasoningEffort"),
     directBaselineMode: document.getElementById("previewDirectBaselineMode"),
+    codexSubagentsEnabled: document.getElementById("previewCodexSubagentsEnabled"),
     vettingEnabled: document.getElementById("previewVettingEnabled"),
     researchMode: document.getElementById("previewResearchMode"),
     memoryMode: document.getElementById("previewMemoryMode"),
@@ -206,8 +198,30 @@
     laneGrid: document.getElementById("previewLaneGrid"),
     homeLayout: document.querySelector(".igs-home-workspace"),
     homeDrawer: document.getElementById("previewHomeDrawer"),
+    homeDrawerScroll: document.getElementById("previewHomeDrawerScroll"),
+    homeDrawerTitle: document.getElementById("previewHomeDrawerTitle"),
+    homeDrawerClose: document.getElementById("previewHomeDrawerClose"),
     homeSidecar: document.querySelector(".igs-home-sidecar"),
     homeCollapsedPills: document.getElementById("previewHomeCollapsedPills"),
+    agentProjectSelect: document.getElementById("previewAgentProjectSelect"),
+    agentProjectForm: document.getElementById("previewAgentProjectForm"),
+    agentSpawnForm: document.getElementById("previewAgentSpawnForm"),
+    agentTaskForm: document.getElementById("previewAgentTaskForm"),
+    agentBoardForm: document.getElementById("previewAgentBoardForm"),
+    agentTaskTarget: document.getElementById("previewAgentTaskTarget"),
+    agentTaskObjective: document.getElementById("previewAgentTaskObjective"),
+    agentBoardTarget: document.getElementById("previewAgentBoardTarget"),
+    agentBoardContent: document.getElementById("previewAgentBoardContent"),
+    agentRoster: document.getElementById("previewAgentRoster"),
+    agentJobs: document.getElementById("previewAgentJobs"),
+    agentBoard: document.getElementById("previewAgentBoard"),
+    agentStatus: document.getElementById("previewAgentStatus"),
+    agentRefresh: document.getElementById("previewAgentRefresh"),
+    agentCount: document.getElementById("previewAgentCount"),
+    agentOnline: document.getElementById("previewAgentOnline"),
+    agentQueued: document.getElementById("previewAgentQueued"),
+    agentBlockers: document.getElementById("previewAgentBlockers"),
+    agentBoardUnread: document.getElementById("previewAgentBoardUnread"),
     traceSummary: document.getElementById("previewTraceSummary"),
     stepLog: document.getElementById("previewStepLog"),
     eventLog: document.getElementById("previewEventLog"),
@@ -217,6 +231,7 @@
     summaryContext: document.getElementById("previewSummaryContext"),
     summaryResearch: document.getElementById("previewSummaryResearch"),
     summaryMemory: document.getElementById("previewSummaryMemory"),
+    summarySubagents: document.getElementById("previewSummarySubagents"),
     headerTask: document.getElementById("previewHeaderTask"),
     headerRuntime: document.getElementById("previewHeaderRuntime"),
     headerBaseline: document.getElementById("previewHeaderBaseline"),
@@ -281,6 +296,8 @@
     authRequirementBody: document.getElementById("authRequirementBody"),
     authRequirementProvider: document.getElementById("authRequirementProvider"),
     authRequirementKeyInput: document.getElementById("authRequirementKeyInput"),
+    authRequirementWorkspaceField: document.getElementById("authRequirementWorkspaceField"),
+    authRequirementWorkspaceInput: document.getElementById("authRequirementWorkspaceInput"),
     authRequirementSaveKey: document.getElementById("authRequirementSaveKey"),
     authRequirementCodexSignIn: document.getElementById("authRequirementCodexSignIn"),
     authRequirementStatus: document.getElementById("authRequirementStatus"),
@@ -343,26 +360,133 @@
     return providerCatalog[String(providerId || "").trim()]?.label || String(providerId || "unknown");
   }
 
-  function mergeModelOptions() {
-    const merged = [];
-    const seen = new Set();
-    Array.from(arguments).forEach((list) => {
-      (Array.isArray(list) ? list : []).forEach((model) => {
-        const value = String(model?.value || "").trim();
-        if (!value || seen.has(value)) return;
-        seen.add(value);
-        merged.push({
-          value,
-          model: String(model.model || parseModelSelection(value).model || value).trim(),
-          label: String(model.label || value).trim(),
-          shortLabel: String(model.shortLabel || model.label || value).trim(),
-          source: normalizeModelSource(model.source),
-          sourceLabel: String(model.sourceLabel || sourceLabelForModelSource(model.source)).trim(),
-          transport: String(model.transport || transportForModelSource(model.source)).trim(),
-        });
+  function catalogProviderEntries() {
+    return Object.entries(providerCatalog)
+      .filter(([, definition]) => String(definition?.status || "primary") === "primary")
+      .sort((left, right) => {
+        const orderDelta = Number(left[1]?.displayOrder || 0) - Number(right[1]?.displayOrder || 0);
+        return orderDelta || String(left[1]?.label || left[0]).localeCompare(String(right[1]?.label || right[0]));
+      });
+  }
+
+  function modelSourceForAuthRoute(authRoute) {
+    return String(authRoute || "").trim() === "codex_current_user"
+      ? OPENAI_CODEX_MODEL_SOURCE
+      : OPENAI_API_MODEL_SOURCE;
+  }
+
+  function catalogModelOption(modelDefinition, providerId, providerDefinition, authRoute) {
+    const model = String(modelDefinition?.id || "").trim();
+    const source = modelSourceForAuthRoute(authRoute);
+    const exposeSource = providerId === "openai";
+    return {
+      value: exposeSource ? modelSelectionValue(model, source) : model,
+      model,
+      label: String(modelDefinition?.label || model).trim(),
+      shortLabel: String(modelDefinition?.shortLabel || modelDefinition?.label || model).trim(),
+      source,
+      sourceLabel: exposeSource ? sourceLabelForModelSource(source) : "",
+      showSourceLabel: exposeSource,
+      transport: String(providerDefinition?.transportByAuthRoute?.[authRoute] || "").trim(),
+      authRoute: String(authRoute || "api_key").trim(),
+      capabilities: modelDefinition?.capabilities || {},
+    };
+  }
+
+  function populateProviderSelect(select, entries, selectedValue) {
+    if (!select) return;
+    const previous = String(selectedValue || select.value || "").trim();
+    select.replaceChildren();
+    entries.forEach(([providerId, definition]) => {
+      const option = document.createElement("option");
+      option.value = providerId;
+      option.textContent = String(definition?.label || providerId);
+      select.appendChild(option);
+    });
+    const selected = entries.some(([providerId]) => providerId === previous)
+      ? previous
+      : String(entries[0]?.[0] || "");
+    select.value = selected;
+  }
+
+  function createProviderButton(providerId, definition) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "igs-segment-btn igs-provider-actuator";
+    button.setAttribute("data-provider-option", providerId);
+    button.setAttribute("aria-pressed", "false");
+
+    ["actuator-spark", "actuator-depth", "actuator-orbit"].forEach((className) => {
+      const visual = document.createElement("span");
+      visual.className = className;
+      visual.setAttribute("aria-hidden", "true");
+      button.appendChild(visual);
+    });
+    const title = document.createElement("span");
+    title.className = "actuator-title";
+    title.textContent = String(definition?.shortLabel || definition?.label || providerId);
+    button.appendChild(title);
+    const indicator = document.createElement("span");
+    indicator.className = "actuator-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    button.appendChild(indicator);
+    return button;
+  }
+
+  function refreshProviderElements() {
+    sharedProviderButtons = Array.from(document.querySelectorAll("[data-provider-option]"));
+    selectorActuators = Array.from(document.querySelectorAll(".igs-selector-actuator, .igs-provider-actuator"));
+  }
+
+  function renderProviderControls() {
+    const entries = catalogProviderEntries();
+    const previousWorker = elements.workerProvider?.value || runtimeState.draft?.provider || "";
+    const previousSummarizer = elements.summarizerProvider?.value || runtimeState.draft?.summarizerProvider || previousWorker;
+    populateProviderSelect(elements.workerProvider, entries, previousWorker);
+    populateProviderSelect(elements.summarizerProvider, entries, previousSummarizer);
+
+    const segment = document.querySelector(".igs-provider-segment");
+    if (segment) {
+      segment.replaceChildren(...entries.map(([providerId, definition]) => createProviderButton(providerId, definition)));
+      segment.removeAttribute("aria-busy");
+    }
+    refreshProviderElements();
+    bindSharedProviderButtons();
+    seedSelectorActuatorOrbits();
+    syncProviderPaneButtons();
+    syncProviderButtonMetrics();
+  }
+
+  function applyProviderModelCatalog(payload) {
+    if (String(payload?.schemaVersion || "") !== "parallm.provider-model-catalog.v1") {
+      throw new Error("Unsupported provider/model catalog schema");
+    }
+    if (!payload?.providers || !Array.isArray(payload?.models)) {
+      throw new Error("Provider/model catalog is incomplete");
+    }
+
+    Object.keys(providerCatalog).forEach((providerId) => delete providerCatalog[providerId]);
+    Object.entries(payload.providers).forEach(([providerId, definition]) => {
+      providerCatalog[providerId] = Object.assign({}, definition, { models: [] });
+    });
+    payload.models.forEach((modelDefinition) => {
+      const providerId = String(modelDefinition?.provider || "").trim();
+      const providerDefinition = providerCatalog[providerId];
+      if (!providerDefinition) return;
+      const authRoutes = Array.isArray(modelDefinition.authRoutes) && modelDefinition.authRoutes.length
+        ? modelDefinition.authRoutes
+        : ["api_key"];
+      authRoutes.forEach((authRoute) => {
+        providerDefinition.models.push(catalogModelOption(modelDefinition, providerId, providerDefinition, authRoute));
       });
     });
-    return merged;
+    runtimeState.modelCatalog = payload;
+    renderProviderControls();
+    fillModelsForCurrentProviders();
+  }
+
+  async function loadProviderModelCatalog() {
+    applyProviderModelCatalog(await fetchJson(API.models));
   }
 
   function normalizeModelSource(source) {
@@ -378,7 +502,10 @@
   }
 
   function transportForModelSource(source) {
-    return normalizeModelSource(source) === OPENAI_CODEX_MODEL_SOURCE ? OPENAI_CODEX_MODEL_TRANSPORT : OPENAI_API_MODEL_TRANSPORT;
+    const authRoute = normalizeModelSource(source) === OPENAI_CODEX_MODEL_SOURCE
+      ? "codex_current_user"
+      : "api_key";
+    return String(providerCatalog.openai?.transportByAuthRoute?.[authRoute] || "").trim();
   }
 
   function sourcePrefixForModelSource(source) {
@@ -399,7 +526,7 @@
         value: raw,
         model: raw,
         source: OPENAI_API_MODEL_SOURCE,
-        transport: OPENAI_API_MODEL_TRANSPORT,
+        transport: transportForModelSource(OPENAI_API_MODEL_SOURCE),
       };
     }
     const source = normalizeModelSource(match[1]);
@@ -413,14 +540,14 @@
 
   function modelOptionDisplayLabel(optionConfig) {
     const label = String(optionConfig?.label || optionConfig?.model || optionConfig?.value || "").trim();
-    const hasSourceLabel = Boolean(optionConfig?.source || optionConfig?.sourceLabel);
+    const hasSourceLabel = optionConfig?.showSourceLabel !== false && Boolean(optionConfig?.source || optionConfig?.sourceLabel);
     const sourceLabel = hasSourceLabel ? String(optionConfig?.sourceLabel || sourceLabelForModelSource(optionConfig?.source)).trim() : "";
     return sourceLabel ? `${label} · ${sourceLabel}` : label;
   }
 
   function modelOptionPillLabel(optionConfig) {
     const label = String(optionConfig?.shortLabel || optionConfig?.label || optionConfig?.model || optionConfig?.value || "").trim();
-    const hasSourceLabel = Boolean(optionConfig?.source || optionConfig?.sourceLabel);
+    const hasSourceLabel = optionConfig?.showSourceLabel !== false && Boolean(optionConfig?.source || optionConfig?.sourceLabel);
     const sourceLabel = hasSourceLabel ? String(optionConfig?.sourceLabel || sourceLabelForModelSource(optionConfig?.source)).trim() : "";
     return sourceLabel ? `${label} · ${sourceLabel}` : label;
   }
@@ -455,78 +582,6 @@
     return normalizeModelSource(option?.dataset?.modelSource || parseModelSelection(select?.value).source);
   }
 
-  function displayLabelForCodexModel(modelId, displayName) {
-    const raw = String(displayName || modelId || "").trim();
-    if (!raw) return "";
-    return raw
-      .replace(/^gpt-/i, "GPT-")
-      .replace(/-codex-spark$/i, " Codex Spark")
-      .replace(/-codex$/i, " Codex")
-      .replace(/-mini$/i, " Mini");
-  }
-
-  function shortLabelForCodexModel(modelId, displayName) {
-    const label = displayLabelForCodexModel(modelId, displayName);
-    return label.replace(/^GPT-/, "GPT-");
-  }
-
-  function isVisibleCodexCatalogModel(entry) {
-    const model = String(entry?.model || "").trim().toLowerCase();
-    if (!model) return false;
-    if (String(entry?.visibility || "").trim().toLowerCase() === "hide") return false;
-    return model.startsWith("gpt-5") || model.includes("codex");
-  }
-
-  function codexCatalogModelOption(entry) {
-    const model = String(entry?.model || "").trim();
-    const label = displayLabelForCodexModel(model, entry?.displayName);
-    return {
-      value: modelSelectionValue(model, OPENAI_CODEX_MODEL_SOURCE),
-      model,
-      label,
-      shortLabel: shortLabelForCodexModel(model, label),
-      source: OPENAI_CODEX_MODEL_SOURCE,
-      sourceLabel: "Codex",
-      transport: OPENAI_CODEX_MODEL_TRANSPORT,
-    };
-  }
-
-  function refreshOpenAIModelSelects(previousWorker, previousSummarizer) {
-    const workerProvider = selectedGroupedValue("provider", "openai");
-    if (workerProvider === "openai" && elements.workerModel) {
-      populateSelect(
-        elements.workerModel,
-        modelOptions("openai"),
-        previousWorker || elements.workerModel.value || runtimeState.draft?.model || "",
-        runtimeState.draft?.modelSource
-      );
-    }
-    if (elements.summarizerProvider && elements.summarizerProvider.value === "openai" && elements.summarizerModel) {
-      populateSelect(
-        elements.summarizerModel,
-        modelOptions("openai"),
-        previousSummarizer || elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "",
-        runtimeState.draft?.summarizerModelSource
-      );
-    }
-  }
-
-  function mergeCodexCatalogIntoOpenAIModels(status) {
-    const catalogModels = status?.catalog && Array.isArray(status.catalog.models) ? status.catalog.models : [];
-    const codexOptions = catalogModels.filter(isVisibleCodexCatalogModel).map(codexCatalogModelOption);
-    const nextModels = mergeModelOptions(OPENAI_BASE_MODELS, OPENAI_CODEX_FALLBACK_MODELS, codexOptions);
-    const currentModels = providerCatalog.openai.models || [];
-    const currentKey = currentModels.map((model) => model.value).join("|");
-    const nextKey = nextModels.map((model) => model.value).join("|");
-    if (currentKey === nextKey) return;
-    const previousWorker = elements.workerModel?.value || "";
-    const previousSummarizer = elements.summarizerModel?.value || "";
-    providerCatalog.openai.models = nextModels;
-    refreshOpenAIModelSelects(previousWorker, previousSummarizer);
-    syncContractPillSelects();
-    updateNarrative();
-  }
-
   function seedSelectorActuatorOrbits() {
     selectorActuators.forEach((actuator, actuatorIndex) => {
       const orbit = actuator.querySelector(".actuator-orbit");
@@ -555,6 +610,144 @@
 
   function modelOptions(providerId) {
     return providerCatalog[String(providerId || "").trim()]?.models || [];
+  }
+
+  function defaultProviderId(judge = false) {
+    const requested = String(
+      runtimeState.modelCatalog?.[judge ? "defaultJudgeProvider" : "defaultProvider"] || ""
+    ).trim();
+    if (requested && providerCatalog[requested]) return requested;
+    return String(catalogProviderEntries()[0]?.[0] || Object.keys(providerCatalog)[0] || "");
+  }
+
+  function defaultCatalogModel(providerId, authRoute = "") {
+    const provider = providerCatalog[String(providerId || "").trim()] || {};
+    const route = String(authRoute || provider.defaultAuthRoute || "").trim();
+    const requested = String(
+      provider.defaultModelByAuthRoute?.[route]
+      || provider.defaultModel
+      || ""
+    ).trim();
+    const options = Array.isArray(provider.models) ? provider.models : [];
+    const match = options.find((option) => (
+      String(option?.model || "") === requested
+      && (!route || String(option?.authRoute || "") === route)
+    ));
+    return String(match?.model || options.find((option) => !route || option?.authRoute === route)?.model || requested);
+  }
+
+  function codexCatalogDefaultModel() {
+    return defaultCatalogModel("openai", "codex_current_user");
+  }
+
+  function selectedModelConfig(providerId, select) {
+    const options = modelOptions(providerId);
+    const selectedValue = String(select?.value || "").trim();
+    const selectedSource = selectedModelSource(select);
+    return options.find((model) => modelOptionMatches(model, selectedValue, selectedSource)) || null;
+  }
+
+  function normalizeReasoningValue(value, fallback = "low") {
+    const normalized = String(value || "").trim().toLowerCase();
+    return REASONING_VALUES.includes(normalized) ? normalized : fallback;
+  }
+
+  function reasoningEffortForRole(role = activeProviderPaneRole()) {
+    const normalizedRole = role === "summarizer" ? "summarizer" : "worker";
+    return normalizeReasoningValue(runtimeState.reasoningEfforts?.[normalizedRole], "low");
+  }
+
+  function setReasoningEffortForRole(role, value) {
+    const normalizedRole = role === "summarizer" ? "summarizer" : "worker";
+    runtimeState.reasoningEfforts = Object.assign({}, runtimeState.reasoningEfforts || {}, {
+      [normalizedRole]: normalizeReasoningValue(value, "low"),
+    });
+  }
+
+  function selectedModelConfigForRole(role = activeProviderPaneRole()) {
+    const normalizedRole = role === "summarizer" ? "summarizer" : "worker";
+    const workerProvider = selectedGroupedValue("provider", defaultProviderId());
+    const provider = normalizedRole === "summarizer"
+      ? String(elements.summarizerProvider?.value || workerProvider).trim()
+      : workerProvider;
+    const select = normalizedRole === "summarizer" ? elements.summarizerModel : elements.workerModel;
+    return selectedModelConfig(provider, select);
+  }
+
+  function availableReasoningValues(role = activeProviderPaneRole()) {
+    const selectedModels = [selectedModelConfigForRole(role)].filter(Boolean);
+    const available = new Set();
+    selectedModels.forEach((model) => {
+      const capabilities = model.capabilities || {};
+      if (!capabilities.supports_reasoning_effort) return;
+      const declared = Array.isArray(capabilities.supported_reasoning_efforts)
+        ? capabilities.supported_reasoning_efforts
+        : REASONING_VALUES;
+      declared.forEach((value) => available.add(String(value || "").trim().toLowerCase()));
+    });
+    const ordered = REASONING_VALUES.filter((value) => available.has(value));
+    return ordered.length ? ordered : ["none"];
+  }
+
+  function closestAvailableReasoning(value, available) {
+    const options = Array.isArray(available) && available.length ? available : ["none"];
+    const normalized = String(value || "").trim().toLowerCase();
+    const requested = REASONING_VALUES.includes(normalized) ? normalized : "low";
+    if (options.includes(requested)) return requested;
+    const requestedRank = REASONING_VALUES.indexOf(requested);
+    const lower = options.filter((entry) => REASONING_VALUES.indexOf(entry) <= requestedRank);
+    return lower[lower.length - 1] || options[0];
+  }
+
+  function syncModelReasoningReadouts() {
+    [
+      [elements.workerModel, "worker"],
+      [elements.summarizerModel, "summarizer"],
+    ].forEach(([select, role]) => {
+      const wrapper = contractPillSelectFor(select);
+      const meta = wrapper?.querySelector(".igs-pill-select-meta");
+      if (!meta) return;
+      meta.hidden = false;
+      meta.textContent = optionLabelForValue(elements.reasoningEffort, reasoningEffortForRole(role));
+    });
+  }
+
+  function syncReasoningOptionsForModels(preferredValue, role = activeProviderPaneRole()) {
+    if (!elements.reasoningEffort) return;
+    const normalizedRole = role === "summarizer" ? "summarizer" : "worker";
+    const available = availableReasoningValues(normalizedRole);
+    const nextValue = closestAvailableReasoning(
+      preferredValue || reasoningEffortForRole(normalizedRole),
+      available
+    );
+    Array.from(elements.reasoningEffort.options || []).forEach((option) => {
+      const enabled = available.includes(String(option.value || ""));
+      option.disabled = !enabled;
+      option.hidden = !enabled;
+    });
+    elements.reasoningEffort.value = nextValue;
+    setReasoningEffortForRole(normalizedRole, nextValue);
+    composerReasoningOptions.forEach((button) => {
+      const value = String(button.getAttribute("data-composer-reasoning-option") || "");
+      const enabled = available.includes(value);
+      button.disabled = !enabled;
+      button.hidden = !enabled;
+      button.setAttribute("aria-disabled", enabled ? "false" : "true");
+    });
+    syncContractPillSelect(elements.reasoningEffort);
+    if (contractPillSelectFor(elements.reasoningEffort)?.classList.contains("is-open")) {
+      renderContractPillMenu(elements.reasoningEffort);
+    }
+    syncSelectCycleButtons("previewReasoningEffort");
+    syncComposerReasoningOptions();
+    syncModelReasoningReadouts();
+  }
+
+  function syncAllLaneReasoningOptions() {
+    const activeRole = activeProviderPaneRole();
+    const inactiveRole = activeRole === "worker" ? "summarizer" : "worker";
+    syncReasoningOptionsForModels(reasoningEffortForRole(inactiveRole), inactiveRole);
+    syncReasoningOptionsForModels(reasoningEffortForRole(activeRole), activeRole);
   }
 
   function modelLabel(providerId, modelId, modelSource) {
@@ -663,6 +856,21 @@
     ].filter(Boolean).join(" · ");
   }
 
+  function syncAuthWorkspaceField() {
+    if (!elements.authRequirementWorkspaceField || !elements.authRequirementWorkspaceInput) return;
+    const provider = String(elements.authRequirementProvider?.value || "").trim();
+    const isAnthropic = provider === "anthropic";
+    const requirements = Array.isArray(runtimeState.authRequirements?.missing)
+      ? runtimeState.authRequirements.missing
+      : [];
+    const requirement = requirements.find((item) => String(item?.provider || "").trim() === provider);
+    elements.authRequirementWorkspaceField.hidden = !isAnthropic;
+    elements.authRequirementWorkspaceInput.disabled = !isAnthropic;
+    elements.authRequirementWorkspaceInput.placeholder = requirement?.workspaceConfigured
+      ? "Workspace scope configured; enter to replace"
+      : "wrkspc_...";
+  }
+
   function renderAuthRequirementModal(status) {
     runtimeState.authRequirements = status || {};
     if (!elements.authRequirementModal || !elements.authRequirementBody) return;
@@ -693,6 +901,10 @@
       elements.authRequirementKeyInput.value = "";
       elements.authRequirementKeyInput.placeholder = hasApiMissing ? "Paste provider key" : "No API key needed for this missing item";
     }
+    if (elements.authRequirementWorkspaceInput) {
+      elements.authRequirementWorkspaceInput.value = "";
+    }
+    syncAuthWorkspaceField();
     if (elements.authRequirementSaveKey) {
       elements.authRequirementSaveKey.disabled = !hasApiMissing;
     }
@@ -711,15 +923,27 @@
     if (!elements.authRequirementProvider || !elements.authRequirementKeyInput) return;
     const provider = String(elements.authRequirementProvider.value || "").trim();
     const key = String(elements.authRequirementKeyInput.value || "").trim();
+    const workspaceId = provider === "anthropic"
+      ? String(elements.authRequirementWorkspaceInput?.value || "").trim()
+      : "";
     if (!provider || !key) {
       if (elements.authRequirementStatus) elements.authRequirementStatus.textContent = "Pick a provider and paste a key first.";
+      return;
+    }
+    if (workspaceId && !/^wrkspc_[A-Za-z0-9_-]+$/.test(workspaceId)) {
+      if (elements.authRequirementStatus) {
+        elements.authRequirementStatus.textContent = "Anthropic workspace IDs begin with wrkspc_ and contain only letters, numbers, underscores, or hyphens.";
+      }
       return;
     }
     if (elements.authRequirementSaveKey) elements.authRequirementSaveKey.disabled = true;
     if (elements.authRequirementStatus) elements.authRequirementStatus.textContent = "Saving provider key...";
     try {
-      await fetchJson(API.authKeys, jsonPostOptions({ provider, appendKey: key }));
+      const payload = { provider, appendKey: key };
+      if (workspaceId) payload.workspaceId = workspaceId;
+      await fetchJson(API.authKeys, jsonPostOptions(payload));
       elements.authRequirementKeyInput.value = "";
+      if (elements.authRequirementWorkspaceInput) elements.authRequirementWorkspaceInput.value = "";
       if (elements.authRequirementStatus) elements.authRequirementStatus.textContent = "Key saved. Rechecking provider access...";
       if (runtimeState.authRequirementPayload) {
         await ensureAuthRequirementsReady(runtimeState.authRequirementPayload, { silentWhenReady: true });
@@ -902,6 +1126,20 @@
     return HOME_COLLAPSIBLE_PANELS.every((panel) => shellState.homeCollapsedPanels.has(panel.id));
   }
 
+  function visibleHomePanelIds() {
+    return HOME_COLLAPSIBLE_PANELS
+      .filter((panel) => !shellState.homeCollapsedPanels.has(panel.id))
+      .map((panel) => panel.id);
+  }
+
+  function normalizeHomePanelSelection() {
+    const visible = visibleHomePanelIds();
+    if (visible.length <= 1) return visible[0] || "";
+    visible.slice(1).forEach((panelId) => shellState.homeCollapsedPanels.add(panelId));
+    persistHomeCollapsedPanels();
+    return visible[0];
+  }
+
   function renderHomeCollapsedPills() {
     if (!elements.homeCollapsedPills) return;
     const panelStates = HOME_COLLAPSIBLE_PANELS.map((panel) => ({
@@ -920,7 +1158,7 @@
         item.visible && nextVisible ? "is-joined-right" : "",
       ].filter(Boolean).join(" ");
       const label = item.panel.shortLabel || item.panel.label;
-      const action = item.visible ? "Hide" : "Show";
+      const action = item.visible ? "Close" : "Open";
       return `
       <button type="button" class="${classes}" data-home-panel-toggle="${escapeHtml(item.panel.id)}" aria-pressed="${item.visible ? "true" : "false"}" aria-expanded="${item.visible ? "true" : "false"}" aria-label="${action} ${escapeHtml(item.panel.label)}" title="${action} ${escapeHtml(item.panel.label)}">
         ${escapeHtml(label)}
@@ -936,9 +1174,13 @@
   }
 
   function applyHomePanelCollapseState() {
+    const previousActivePanel = shellState.activeHomePanel;
+    const activePanelId = normalizeHomePanelSelection();
+    const activePanel = homePanelConfig(activePanelId);
+    shellState.activeHomePanel = activePanelId;
     homePanels.forEach((panel) => {
       const panelId = String(panel.getAttribute("data-home-panel") || "").trim();
-      const collapsed = panelId !== "chat" && shellState.homeCollapsedPanels.has(panelId);
+      const collapsed = panelId !== "chat" && panelId !== activePanelId;
       panel.hidden = collapsed;
       panel.classList.toggle("is-home-panel-collapsed", collapsed);
     });
@@ -947,24 +1189,31 @@
       const config = homePanelConfig(panelId);
       const collapsed = shellState.homeCollapsedPanels.has(panelId);
       button.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      button.setAttribute("title", config ? `Hide ${config.label}` : "Hide panel");
+      button.setAttribute("title", config ? `Close ${config.label}` : "Close panel");
     });
     if (elements.homeSidecar) {
       elements.homeSidecar.hidden = homeSideEmpty("right");
     }
     if (elements.homeDrawer) {
-      elements.homeDrawer.hidden = homeDrawerEmpty();
+      elements.homeDrawer.hidden = !activePanelId;
+      elements.homeDrawer.dataset.activeHomePanel = activePanelId;
+      elements.homeDrawer.setAttribute("aria-hidden", activePanelId ? "false" : "true");
+    }
+    if (elements.homeDrawerTitle) {
+      elements.homeDrawerTitle.textContent = activePanel?.label || "Workspace panel";
+    }
+    if (elements.homeDrawerScroll && previousActivePanel !== activePanelId) {
+      elements.homeDrawerScroll.scrollTop = 0;
     }
     if (elements.homeLayout) {
-      const visibleHomePanelIds = HOME_COLLAPSIBLE_PANELS
-        .filter((panel) => !shellState.homeCollapsedPanels.has(panel.id))
-        .map((panel) => panel.id);
-      elements.homeLayout.classList.toggle("is-drawer-empty", homeDrawerEmpty());
+      const visiblePanelIds = visibleHomePanelIds();
+      elements.homeLayout.classList.toggle("is-drawer-empty", !activePanelId);
+      elements.homeLayout.classList.toggle("is-drawer-open", Boolean(activePanelId));
       elements.homeLayout.classList.toggle("is-drawer-left-empty", homeSideEmpty("left"));
       elements.homeLayout.classList.toggle("is-drawer-right-empty", homeSideEmpty("right"));
       elements.homeLayout.classList.toggle(
         "is-contract-drawer-only",
-        visibleHomePanelIds.length === 1 && visibleHomePanelIds[0] === "contract"
+        visiblePanelIds.length === 1 && visiblePanelIds[0] === "contract"
       );
     }
     renderHomeCollapsedPills();
@@ -976,6 +1225,7 @@
     if (collapsed) {
       shellState.homeCollapsedPanels.add(normalized);
     } else {
+      HOME_COLLAPSIBLE_PANELS.forEach((panel) => shellState.homeCollapsedPanels.add(panel.id));
       shellState.homeCollapsedPanels.delete(normalized);
     }
     persistHomeCollapsedPanels();
@@ -983,6 +1233,363 @@
     if (!collapsed && normalized === "contract") {
       window.requestAnimationFrame(syncProviderButtonMetrics);
     }
+    if (!collapsed && normalized === "agents") {
+      refreshAgentWorkspace().catch(function (error) {
+        setAgentWorkspaceStatus("Agent fabric failed to load: " + String(error.message || error), true);
+      });
+    }
+  }
+
+  function closeHomePanelCanvas() {
+    const closingPanelId = shellState.activeHomePanel;
+    HOME_COLLAPSIBLE_PANELS.forEach((panel) => shellState.homeCollapsedPanels.add(panel.id));
+    persistHomeCollapsedPanels();
+    applyHomePanelCollapseState();
+    if (closingPanelId && elements.homeCollapsedPills) {
+      window.requestAnimationFrame(() => {
+        elements.homeCollapsedPills
+          .querySelector(`[data-home-panel-toggle="${closingPanelId}"]`)
+          ?.focus();
+      });
+    }
+  }
+
+  function agentUrl(path, parameters) {
+    const query = new URLSearchParams();
+    Object.entries(parameters || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value) !== "") {
+        query.set(key, String(value));
+      }
+    });
+    const encoded = query.toString();
+    return encoded ? path + "?" + encoded : path;
+  }
+
+  function setAgentWorkspaceStatus(message, failed) {
+    if (!elements.agentStatus) return;
+    elements.agentStatus.textContent = String(message || "");
+    elements.agentStatus.classList.toggle("is-error", Boolean(failed));
+  }
+
+  function agentProcessStatus(agent) {
+    if (String(agent?.agentId || "") === "agent_primary") return "supervisor";
+    const instanceStatus = String(agent?.instance?.status || "").trim().toLowerCase();
+    if (instanceStatus) return instanceStatus;
+    return String(agent?.desiredState || "").toLowerCase() === "active" ? "starting" : "stopped";
+  }
+
+  function agentIsOnline(agent) {
+    return ["supervisor", "starting", "idle", "running", "draining"].includes(agentProcessStatus(agent));
+  }
+
+  function activeAgentProject() {
+    return agentWorkspaceState.projects.find((project) => project.projectId === agentWorkspaceState.projectId) || null;
+  }
+
+  function projectAgentIds(project) {
+    return new Set((Array.isArray(project?.members) ? project.members : []).map((member) => String(member?.agentId || "")));
+  }
+
+  function safeAgentStateClass(value) {
+    return String(value || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  }
+
+  function renderAgentProjectOptions() {
+    if (!elements.agentProjectSelect) return;
+    const projects = agentWorkspaceState.projects;
+    if (!projects.some((project) => project.projectId === agentWorkspaceState.projectId)) {
+      agentWorkspaceState.projectId = String(projects[0]?.projectId || "project_default");
+    }
+    elements.agentProjectSelect.innerHTML = projects.length
+      ? projects.map((project) => `<option value="${escapeHtml(project.projectId)}">${escapeHtml(project.name || project.projectId)}</option>`).join("")
+      : `<option value="project_default">Default project</option>`;
+    elements.agentProjectSelect.value = agentWorkspaceState.projectId;
+    try {
+      window.localStorage.setItem("igsShell.agentProjectId", agentWorkspaceState.projectId);
+    } catch (_) {}
+  }
+
+  function renderAgentTargets() {
+    const project = activeAgentProject();
+    const memberIds = projectAgentIds(project);
+    const candidates = agentWorkspaceState.agents.filter((agent) => {
+      return agent.agentId !== "agent_primary"
+        && memberIds.has(String(agent.agentId || ""))
+        && String(agent.desiredState || "active").toLowerCase() === "active";
+    });
+    if (elements.agentTaskTarget) {
+      const selected = String(elements.agentTaskTarget.value || "");
+      elements.agentTaskTarget.innerHTML = candidates.length
+        ? candidates.map((agent) => `<option value="${escapeHtml(agent.agentId)}">${escapeHtml(agent.name || agent.agentId)} / ${escapeHtml(agentProcessStatus(agent))}</option>`).join("")
+        : `<option value="">No worker agent available</option>`;
+      elements.agentTaskTarget.value = candidates.some((agent) => agent.agentId === selected)
+        ? selected
+        : String(candidates[0]?.agentId || "");
+      elements.agentTaskTarget.disabled = candidates.length === 0;
+      const submit = elements.agentTaskForm?.querySelector('button[type="submit"]');
+      if (submit) submit.disabled = candidates.length === 0;
+    }
+    if (elements.agentBoardTarget) {
+      const selected = String(elements.agentBoardTarget.value || "");
+      const members = (Array.isArray(project?.members) ? project.members : []).filter((member) => member.agentId !== "agent_primary");
+      elements.agentBoardTarget.innerHTML = `<option value="">All project members</option>` + members.map((member) => {
+        return `<option value="${escapeHtml(member.agentId)}">${escapeHtml(member.name || member.agentId)}</option>`;
+      }).join("");
+      elements.agentBoardTarget.value = members.some((member) => member.agentId === selected) ? selected : "";
+    }
+  }
+
+  function renderAgentRoster() {
+    if (!elements.agentRoster) return;
+    const project = activeAgentProject();
+    const memberIds = projectAgentIds(project);
+    const agents = agentWorkspaceState.agents.filter((agent) => memberIds.has(String(agent.agentId || "")));
+    elements.agentRoster.innerHTML = agents.length ? agents.map((agent) => {
+      const status = agentProcessStatus(agent);
+      const primary = agent.agentId === "agent_primary";
+      const pid = agent?.instance?.processId || "-";
+      const heartbeat = agent?.instance?.heartbeatAt ? formatTimestamp(agent.instance.heartbeatAt) : "-";
+      const actions = primary
+        ? `<span class="igs-agent-fixed">Supervisor</span>`
+        : `<button type="button" class="igs-agent-secondary" data-agent-action="queue" data-agent-id="${escapeHtml(agent.agentId)}">Task</button>
+           <button type="button" class="igs-agent-secondary" data-agent-action="${agentIsOnline(agent) ? "stop" : "start"}" data-agent-id="${escapeHtml(agent.agentId)}">${agentIsOnline(agent) ? "Stop" : "Start"}</button>`;
+      return `
+        <article class="igs-agent-row" data-agent-id="${escapeHtml(agent.agentId)}">
+          <div class="igs-agent-row-head">
+            <strong>${escapeHtml(agent.name || agent.agentId)}</strong>
+            <span class="igs-agent-state is-${safeAgentStateClass(status)}">${escapeHtml(status)}</span>
+          </div>
+          <p>${escapeHtml(agent.function || "No function declared.")}</p>
+          <div class="igs-agent-row-meta">
+            <span>PID <b>${escapeHtml(pid)}</b></span>
+            <span>Heartbeat <b>${escapeHtml(heartbeat)}</b></span>
+          </div>
+          <div class="igs-agent-row-actions">${actions}</div>
+        </article>`;
+    }).join("") : `<div class="igs-agent-empty">No agents belong to this project.</div>`;
+
+    const online = agents.filter(agentIsOnline).length;
+    if (elements.agentCount) elements.agentCount.textContent = String(agents.length);
+    if (elements.agentOnline) elements.agentOnline.textContent = String(online);
+  }
+
+  function renderAgentJobs() {
+    if (!elements.agentJobs) return;
+    const jobs = agentWorkspaceState.jobs
+      .filter((job) => String(job.projectId || "") === agentWorkspaceState.projectId)
+      .slice(0, 40);
+    elements.agentJobs.innerHTML = jobs.length ? jobs.map((job) => {
+      const status = String(job.status || "queued");
+      const time = formatTimestamp(job.completedAt || job.startedAt || job.createdAt || "");
+      const result = firstText(job.error, job.result);
+      return `
+        <article class="igs-agent-job-row">
+          <div class="igs-agent-row-head">
+            <strong>${escapeHtml(job.targetName || job.targetAgentId || "Agent")}</strong>
+            <span class="igs-agent-state is-${safeAgentStateClass(status)}">${escapeHtml(status)}</span>
+          </div>
+          <p>${escapeHtml(job.objective || "No objective recorded.")}</p>
+          <div class="igs-agent-row-meta">
+            <span>Priority <b>${escapeHtml(job.priority ?? "-")}</b></span>
+            <span>${escapeHtml(time || "-")}</span>
+          </div>
+          ${result ? `<details><summary>Result</summary><pre>${escapeHtml(result)}</pre></details>` : ""}
+        </article>`;
+    }).join("") : `<div class="igs-agent-empty">No work has been queued for this project.</div>`;
+
+    const queued = jobs.filter((job) => String(job.status || "") === "queued").length;
+    if (elements.agentQueued) elements.agentQueued.textContent = String(queued);
+  }
+
+  function renderAgentBoard() {
+    if (!elements.agentBoard) return;
+    const messages = agentWorkspaceState.board.slice(-60).reverse();
+    elements.agentBoard.innerHTML = messages.length ? messages.map((message) => {
+      const route = message.targetName ? `${message.kind || "note"} to ${message.targetName}` : (message.kind || "note");
+      return `
+        <article class="igs-agent-message is-${safeAgentStateClass(message.severity || "info")}">
+          <div class="igs-agent-row-head">
+            <strong>${escapeHtml(message.sourceName || message.sourceAgentId || "Agent")}</strong>
+            <time>${escapeHtml(formatTimestamp(message.createdAt || ""))}</time>
+          </div>
+          <span>${escapeHtml(route)}</span>
+          <p>${escapeHtml(message.content || "")}</p>
+        </article>`;
+    }).join("") : `<div class="igs-agent-empty">No project messages.</div>`;
+    if (elements.agentBoardUnread) {
+      elements.agentBoardUnread.textContent = `${messages.length} message${messages.length === 1 ? "" : "s"}`;
+    }
+  }
+
+  function renderAgentWorkspace() {
+    renderAgentProjectOptions();
+    renderAgentTargets();
+    renderAgentRoster();
+    renderAgentJobs();
+    renderAgentBoard();
+    const blockers = agentWorkspaceState.goals.filter((goal) => {
+      return String(goal.status || "") === "blocked" || String(goal.blockerSeverity || "") === "showstopper";
+    }).length;
+    if (elements.agentBlockers) elements.agentBlockers.textContent = String(blockers);
+  }
+
+  async function refreshAgentWorkspace() {
+    if (!elements.agentRoster) return;
+    const requestId = agentWorkspaceState.requestId + 1;
+    agentWorkspaceState.requestId = requestId;
+    agentWorkspaceState.loading = true;
+    setAgentWorkspaceStatus("Refreshing agent fabric...", false);
+    try {
+      const [projectsPayload, agentsPayload, jobsPayload] = await Promise.all([
+        fetchJson(API.agentProjects),
+        fetchJson(API.agents),
+        fetchJson(agentUrl(API.agentJobs, { limit: 100 })),
+      ]);
+      if (requestId !== agentWorkspaceState.requestId) return;
+      agentWorkspaceState.projects = Array.isArray(projectsPayload?.items) ? projectsPayload.items : [];
+      agentWorkspaceState.agents = Array.isArray(agentsPayload?.items) ? agentsPayload.items : [];
+      agentWorkspaceState.jobs = Array.isArray(jobsPayload?.items) ? jobsPayload.items : [];
+      renderAgentProjectOptions();
+      const projectId = agentWorkspaceState.projectId;
+      const [goalsPayload, boardPayload] = await Promise.all([
+        fetchJson(agentUrl(API.agentGoals, { projectId, limit: 100 })),
+        fetchJson(agentUrl(API.agentBoard, { projectId, agentId: "agent_primary", unreadOnly: false, limit: 100 })),
+      ]);
+      if (requestId !== agentWorkspaceState.requestId || projectId !== agentWorkspaceState.projectId) return;
+      agentWorkspaceState.goals = Array.isArray(goalsPayload?.items) ? goalsPayload.items : [];
+      agentWorkspaceState.board = Array.isArray(boardPayload?.items) ? boardPayload.items : [];
+      agentWorkspaceState.loaded = true;
+      renderAgentWorkspace();
+      setAgentWorkspaceStatus("Agent fabric current.", false);
+    } finally {
+      if (requestId === agentWorkspaceState.requestId) {
+        agentWorkspaceState.loading = false;
+      }
+    }
+  }
+
+  function agentFormPayload(form) {
+    return Object.fromEntries(Array.from(new FormData(form).entries()).map(([key, value]) => [key, String(value || "").trim()]));
+  }
+
+  function setAgentFormBusy(form, busy) {
+    form?.querySelectorAll("button,input,select,textarea").forEach((control) => {
+      control.disabled = Boolean(busy);
+    });
+    if (!busy && form === elements.agentTaskForm) {
+      renderAgentTargets();
+    }
+  }
+
+  async function changeAgentProcessState(agentId, action) {
+    const endpoint = action === "start" ? API.agentStart : API.agentStop;
+    setAgentWorkspaceStatus(action === "start" ? "Starting agent process..." : "Stopping agent process...", false);
+    await fetchJson(endpoint, jsonPostOptions({ agentId }));
+    await refreshAgentWorkspace();
+  }
+
+  function bindAgentWorkspaceControls() {
+    elements.agentRefresh?.addEventListener("click", function () {
+      refreshAgentWorkspace().catch((error) => setAgentWorkspaceStatus(String(error.message || error), true));
+    });
+    elements.agentProjectSelect?.addEventListener("change", function () {
+      agentWorkspaceState.projectId = String(elements.agentProjectSelect.value || "project_default");
+      try {
+        window.localStorage.setItem("igsShell.agentProjectId", agentWorkspaceState.projectId);
+      } catch (_) {}
+      refreshAgentWorkspace().catch((error) => setAgentWorkspaceStatus(String(error.message || error), true));
+    });
+    elements.agentProjectForm?.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const form = event.currentTarget;
+      setAgentFormBusy(form, true);
+      setAgentWorkspaceStatus("Creating project...", false);
+      try {
+        const created = await fetchJson(API.agentProjects, jsonPostOptions(agentFormPayload(form)));
+        agentWorkspaceState.projectId = String(created?.projectId || agentWorkspaceState.projectId);
+        form.reset();
+        form.closest("details")?.removeAttribute("open");
+        await refreshAgentWorkspace();
+      } catch (error) {
+        setAgentWorkspaceStatus("Project creation failed: " + String(error.message || error), true);
+      } finally {
+        setAgentFormBusy(form, false);
+      }
+    });
+    elements.agentSpawnForm?.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const form = event.currentTarget;
+      setAgentFormBusy(form, true);
+      setAgentWorkspaceStatus("Spawning agent process...", false);
+      try {
+        const payload = agentFormPayload(form);
+        payload.projectId = agentWorkspaceState.projectId;
+        await fetchJson(API.agentSpawn, jsonPostOptions(payload));
+        form.reset();
+        await refreshAgentWorkspace();
+      } catch (error) {
+        setAgentWorkspaceStatus("Agent spawn failed: " + String(error.message || error), true);
+      } finally {
+        setAgentFormBusy(form, false);
+      }
+    });
+    elements.agentTaskForm?.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const form = event.currentTarget;
+      setAgentFormBusy(form, true);
+      setAgentWorkspaceStatus("Queueing agent task...", false);
+      try {
+        const payload = agentFormPayload(form);
+        payload.projectId = agentWorkspaceState.projectId;
+        payload.sourceAgentId = "agent_primary";
+        payload.priority = Number(payload.priority || 50);
+        await fetchJson(API.agentJobs, jsonPostOptions(payload));
+        if (elements.agentTaskObjective) elements.agentTaskObjective.value = "";
+        await refreshAgentWorkspace();
+      } catch (error) {
+        setAgentWorkspaceStatus("Task queue failed: " + String(error.message || error), true);
+      } finally {
+        setAgentFormBusy(form, false);
+      }
+    });
+    elements.agentBoardForm?.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const form = event.currentTarget;
+      setAgentFormBusy(form, true);
+      setAgentWorkspaceStatus("Posting project message...", false);
+      try {
+        const payload = agentFormPayload(form);
+        payload.projectId = agentWorkspaceState.projectId;
+        payload.sourceAgentId = "agent_primary";
+        payload.kind = "note";
+        payload.severity = "info";
+        await fetchJson(API.agentBoard, jsonPostOptions(payload));
+        if (elements.agentBoardContent) elements.agentBoardContent.value = "";
+        await refreshAgentWorkspace();
+      } catch (error) {
+        setAgentWorkspaceStatus("Board post failed: " + String(error.message || error), true);
+      } finally {
+        setAgentFormBusy(form, false);
+      }
+    });
+    elements.agentRoster?.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-agent-action]");
+      if (!button) return;
+      const action = String(button.getAttribute("data-agent-action") || "");
+      const agentId = String(button.getAttribute("data-agent-id") || "");
+      if (action === "queue") {
+        if (elements.agentTaskTarget) elements.agentTaskTarget.value = agentId;
+        elements.agentTaskObjective?.focus();
+        return;
+      }
+      if (!agentId || !["start", "stop"].includes(action)) return;
+      if (action === "stop" && !window.confirm("Stop this agent process after its current operation?")) return;
+      button.disabled = true;
+      changeAgentProcessState(agentId, action).catch((error) => {
+        button.disabled = false;
+        setAgentWorkspaceStatus("Agent state change failed: " + String(error.message || error), true);
+      });
+    });
   }
 
   function prettyJson(value) {
@@ -1116,7 +1723,7 @@
   }
 
   function codexManualEditorTemplate(status) {
-    const selectedModel = String(status?.selectedModel || elements.settingsCodexModel?.value || "gpt-5.5");
+    const selectedModel = String(status?.selectedModel || elements.settingsCodexModel?.value || codexCatalogDefaultModel());
     const manual = status?.manualAccountLimits || {};
     const general = manual.general && typeof manual.general === "object"
       ? manual.general
@@ -1172,7 +1779,7 @@
   function renderCodexLimitsStatus(payload) {
     if (!elements.settingsCodexLimits) return;
     const status = payload && typeof payload === "object" ? payload : {};
-    const selectedModel = String(status.selectedModel || elements.settingsCodexModel?.value || "gpt-5.5");
+    const selectedModel = String(status.selectedModel || elements.settingsCodexModel?.value || codexCatalogDefaultModel());
     const auth = status.auth || {};
     const catalog = status.catalog || {};
     const catalogModel = catalog.selectedModel || {};
@@ -1299,11 +1906,10 @@
 
   async function loadCodexLimits() {
     if (!elements.settingsCodexLimits) return;
-    const model = String(elements.settingsCodexModel?.value || "gpt-5.5").trim();
+    const model = String(elements.settingsCodexModel?.value || codexCatalogDefaultModel()).trim();
     elements.settingsCodexLimits.innerHTML = `<div class="igs-inline-note">Refreshing Codex limits for ${escapeHtml(model)}...</div>`;
     const payload = await fetchJson(API.codexLimits + "?model=" + encodeURIComponent(model));
     runtimeState.codexLimits = payload;
-    mergeCodexCatalogIntoOpenAIModels(payload);
     renderCodexLimitsStatus(payload);
   }
 
@@ -1331,7 +1937,7 @@
 
   async function runCodexArmSmoke() {
     if (!elements.settingsCodexArmRun) return;
-    const model = String(elements.settingsCodexModel?.value || "gpt-5.5").trim();
+    const model = String(elements.settingsCodexModel?.value || codexCatalogDefaultModel()).trim();
     const authMode = String(elements.settingsCodexAuthMode?.value || "inherit_chatgpt").trim();
     const activeProvider = selectedGroupedValue("provider", "openai");
     if (activeProvider !== "openai") {
@@ -1438,7 +2044,7 @@
 
   function setGroupedButton(group, value) {
     if (group === "provider" && elements.workerProvider) {
-      elements.workerProvider.value = String(value || "openai").trim();
+      elements.workerProvider.value = String(value || defaultProviderId()).trim();
     }
     groupedButtons
       .filter((button) => button.getAttribute("data-group") === group)
@@ -1473,7 +2079,7 @@
 
   function setSummarizerProviderValue(value, options) {
     if (!elements.summarizerProvider) return;
-    const nextValue = String(value || selectedGroupedValue("provider", "openai") || "openai").trim();
+    const nextValue = String(value || selectedGroupedValue("provider", defaultProviderId()) || defaultProviderId()).trim();
     elements.summarizerProvider.value = nextValue;
     syncSummarizerProviderButtons(nextValue);
     if (options?.dispatch) {
@@ -1497,9 +2103,9 @@
 
   function providerValueForRole(role) {
     const normalizedRole = role === "summarizer" ? "summarizer" : "worker";
-    const workerProvider = selectedGroupedValue("provider", "openai");
+    const workerProvider = selectedGroupedValue("provider", defaultProviderId());
     return normalizedRole === "summarizer"
-      ? String(elements.summarizerProvider?.value || workerProvider || "openai").trim()
+      ? String(elements.summarizerProvider?.value || workerProvider || defaultProviderId()).trim()
       : workerProvider;
   }
 
@@ -1548,10 +2154,12 @@
   function setProviderPaneRole(role) {
     runtimeState.providerPaneRole = role === "summarizer" ? "summarizer" : "worker";
     syncProviderPaneButtons();
+    syncReasoningOptionsForModels(reasoningEffortForRole(runtimeState.providerPaneRole), runtimeState.providerPaneRole);
+    updateNarrative();
   }
 
   function setWorkerProviderValue(value) {
-    const nextValue = String(value || "openai").trim();
+    const nextValue = String(value || defaultProviderId()).trim();
     const previousSummarizerProvider = elements.summarizerProvider?.value || "";
     const previousSummarizerModel = elements.summarizerModel?.value || "";
     setGroupedButton("provider", nextValue);
@@ -1636,7 +2244,7 @@
     const normalized = String(value || "").toLowerCase();
     if (targetId === "previewDirectBaselineMode") return normalized !== "off";
     if (targetId === "previewReasoningEffort") return normalized !== "low";
-    if (targetId === "previewVettingEnabled" || targetId === "previewResearchMode" || targetId === "previewMemoryMode") {
+    if (targetId === "previewVettingEnabled" || targetId === "previewResearchMode" || targetId === "previewMemoryMode" || targetId === "previewCodexSubagentsEnabled") {
       return normalized === "1" || normalized === "on";
     }
     return Boolean(normalized);
@@ -1773,12 +2381,12 @@
     const menu = wrapper.querySelector(".igs-pill-select-menu");
     if (!menu) return;
     const selectedValue = String(select.value || "");
-    menu.innerHTML = Array.from(select.options || []).map((option) => {
+    menu.innerHTML = Array.from(select.options || []).filter((option) => !option.hidden).map((option) => {
       const value = String(option.value || "");
       const label = String(option.textContent || value || "Option").trim();
       const active = value === selectedValue;
       return `
-        <button type="button" class="igs-pill-select-option${active ? " is-active" : ""}" role="option" aria-selected="${active ? "true" : "false"}" data-pill-select-value="${escapeHtml(value)}">
+        <button type="button" class="igs-pill-select-option${active ? " is-active" : ""}" role="option" aria-selected="${active ? "true" : "false"}" data-pill-select-value="${escapeHtml(value)}"${option.disabled ? " disabled" : ""}>
           ${escapeHtml(label)}
         </button>
       `;
@@ -1812,6 +2420,7 @@
       wrapper.innerHTML = `
         <div class="igs-pill-select-trigger" aria-haspopup="listbox" aria-expanded="false">
           <strong class="igs-pill-select-value">${escapeHtml(contractSelectDisplayLabel(select))}</strong>
+          <span class="igs-pill-select-meta" hidden></span>
         </div>
         <div class="igs-pill-select-menu" role="listbox" hidden></div>
       `;
@@ -1860,6 +2469,12 @@
 
   function installMainWorkbenchPanes() {
     document.querySelectorAll(".igs-surface").forEach((surface) => {
+      if (surface.closest("#previewHomeDrawer")) {
+        surface.classList.remove("igs-workbench-pane", "is-shell-panel-dragging");
+        surface.style.removeProperty("--rs-pane-x");
+        surface.style.removeProperty("--rs-pane-y");
+        return;
+      }
       if (surface.dataset.shellWorkbenchPane === "1") {
         return;
       }
@@ -1928,10 +2543,12 @@
   }
 
   function currentControlState() {
-    const workerProvider = selectedGroupedValue("provider", "openai");
+    const workerProvider = selectedGroupedValue("provider", defaultProviderId());
+    const workerReasoningEffort = reasoningEffortForRole("worker");
+    const summarizerReasoningEffort = reasoningEffortForRole("summarizer");
     return {
       executionMode: String(elements.runtimeMode.value || "live"),
-      engineVersion: String(elements.engineVersion?.value || selectedGroupedValue("engine", "v1")),
+      engineVersion: "v2",
       provider: workerProvider,
       model: selectedModelId(elements.workerModel),
       modelSource: selectedModelSource(elements.workerModel),
@@ -1939,8 +2556,11 @@
       summarizerModel: selectedModelId(elements.summarizerModel),
       summarizerModelSource: selectedModelSource(elements.summarizerModel),
       contextMode: String(elements.contextMode.value || "weighted"),
-      reasoningEffort: String(elements.reasoningEffort?.value || "low"),
+      reasoningEffort: workerReasoningEffort,
+      workerReasoningEffort,
+      summarizerReasoningEffort,
       directBaselineMode: String(elements.directBaselineMode.value || "off"),
+      codexSubagentsEnabled: String(elements.codexSubagentsEnabled?.value || "0"),
       vettingEnabled: String(elements.vettingEnabled.value || "1"),
       researchEnabled: String(elements.researchMode.value || "0"),
       knowledgebaseEnabled: String(elements.memoryMode?.value || "0"),
@@ -1963,13 +2583,15 @@
         : "skip the single-thread baseline";
     const researchLabel = control.researchEnabled === "1" ? "on" : "off";
     const memoryLabel = control.knowledgebaseEnabled === "1" ? "on" : "off";
+    const subagentsLabel = control.codexSubagentsEnabled === "1" ? "enabled" : "disabled";
     const vettingLabel = control.vettingEnabled === "1" ? "summarizer vetting on" : "summarizer vetting off";
     const contextLabel = control.contextMode === "full" ? "full worker packets" : "weighted worker packets";
-    const reasoningLabel = optionLabelForValue(elements.reasoningEffort, control.reasoningEffort);
+    const workerReasoningLabel = optionLabelForValue(elements.reasoningEffort, control.workerReasoningEffort);
+    const summarizerReasoningLabel = optionLabelForValue(elements.reasoningEffort, control.summarizerReasoningEffort);
 
     if (elements.contractNarrative) {
       elements.contractNarrative.textContent =
-        `Run the ${control.engineVersion.toUpperCase()} engine in ${control.executionMode} mode with ${providerLabel(control.provider)} / ${workerModelLabel} for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} on the final answer lane, ${baselineLabel}, use ${contextLabel}, use ${reasoningLabel.toLowerCase()} reasoning, keep research ${researchLabel}, keep fractal memory ${memoryLabel}, and leave ${vettingLabel}.`;
+        `Run the ${control.engineVersion.toUpperCase()} engine in ${control.executionMode} mode with ${providerLabel(control.provider)} / ${workerModelLabel} at ${workerReasoningLabel.toLowerCase()} reasoning for the worker path, keep ${providerLabel(control.summarizerProvider)} / ${summarizerModelLabel} at ${summarizerReasoningLabel.toLowerCase()} reasoning on the final answer lane, ${baselineLabel}, use ${contextLabel}, keep research ${researchLabel}, keep fractal memory ${memoryLabel}, keep nested provider subagents ${subagentsLabel}, and leave ${vettingLabel}.`;
     }
 
     elements.summaryPath.textContent =
@@ -1980,14 +2602,18 @@
           : "Para only";
     elements.summaryLimits.textContent = `${control.loopRounds} rounds, $${control.maxCostUsd.toFixed(1)} spend wall`;
     if (elements.summaryReasoning) {
-      elements.summaryReasoning.textContent = reasoningLabel;
+      elements.summaryReasoning.textContent = `W ${workerReasoningLabel} · S ${summarizerReasoningLabel}`;
     }
+    syncModelReasoningReadouts();
     if (elements.summaryContext) {
       elements.summaryContext.textContent = control.contextMode === "full" ? "Full" : "Light";
     }
     elements.summaryResearch.textContent = control.researchEnabled === "1" ? "On" : "Off";
     if (elements.summaryMemory) {
       elements.summaryMemory.textContent = control.knowledgebaseEnabled === "1" ? "On" : "Off";
+    }
+    if (elements.summarySubagents) {
+      elements.summarySubagents.textContent = control.codexSubagentsEnabled === "1" ? "On" : "Off";
     }
 
     elements.headerRuntime.textContent =
@@ -2144,8 +2770,11 @@
   function setComposerReasoning(value) {
     if (!elements.reasoningEffort) return;
     const nextValue = String(value || "low").trim();
-    if (!nextValue) return;
+    const role = activeProviderPaneRole();
+    if (!nextValue || !availableReasoningValues(role).includes(nextValue)) return;
     elements.reasoningEffort.value = nextValue;
+    setReasoningEffortForRole(role, nextValue);
+    syncContractPillSelect(elements.reasoningEffort);
     syncSelectCycleButtons("previewReasoningEffort");
     syncComposerReasoningOptions();
     updateNarrative();
@@ -2953,6 +3582,9 @@
       ollamaTimeoutProfile: existing.ollamaTimeoutProfile || null,
       targetTimeouts: existing.targetTimeouts || null,
       reasoningEffort: control.reasoningEffort,
+      workerReasoningEffort: control.workerReasoningEffort,
+      summarizerReasoningEffort: control.summarizerReasoningEffort,
+      codexSubagentsEnabled: control.codexSubagentsEnabled === "1",
       maxCostUsd: control.maxCostUsd,
       maxTotalTokens: Number(existing.maxTotalTokens || 0),
       maxOutputTokens: Number(existing.maxOutputTokens || 0),
@@ -3020,7 +3652,7 @@
   }
 
   function fillModelsForCurrentProviders() {
-    const workerProvider = selectedGroupedValue("provider", "openai");
+    const workerProvider = selectedGroupedValue("provider", defaultProviderId());
     syncSummarizerProviderButtons(elements.summarizerProvider?.value || workerProvider);
     populateSelect(
       elements.workerModel,
@@ -3034,30 +3666,40 @@
       elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "",
       runtimeState.draft?.summarizerModelSource
     );
+    syncAllLaneReasoningOptions();
     syncContractPillSelects();
   }
 
   function hydrateControls(draft, state) {
+    setContractControlsReady(false);
     runtimeState.controlsLoaded = false;
     runtimeState.backendState = state;
     runtimeState.draft = clone(draft);
 
     elements.runtimeMode.value = String(draft.executionMode || "live");
     if (elements.engineVersion) {
-      elements.engineVersion.value = String(draft.engineVersion || "v1");
+      elements.engineVersion.value = "v2";
     } else {
-      setGroupedButton("engine", String(draft.engineVersion || "v1"));
+      setGroupedButton("engine", "v2");
     }
-    setGroupedButton("provider", String(draft.provider || "openai"));
-    setSummarizerProviderValue(String(draft.summarizerProvider || draft.provider || "openai"));
+    setGroupedButton("provider", String(draft.provider || defaultProviderId()));
+    setSummarizerProviderValue(String(draft.summarizerProvider || draft.provider || defaultProviderId()));
     fillModelsForCurrentProviders();
-    populateSelect(elements.workerModel, modelOptions(draft.provider || "openai"), String(draft.model || elements.workerModel.value || ""), draft.modelSource);
+    populateSelect(elements.workerModel, modelOptions(draft.provider || defaultProviderId()), String(draft.model || elements.workerModel.value || ""), draft.modelSource);
     populateSelect(elements.summarizerModel, modelOptions(elements.summarizerProvider.value), String(draft.summarizerModel || ""), draft.summarizerModelSource);
     elements.contextMode.value = String(draft.contextMode || "weighted");
     if (elements.reasoningEffort) {
-      elements.reasoningEffort.value = String(draft.reasoningEffort || "low");
+      const legacyReasoningEffort = String(draft.reasoningEffort || "low");
+      runtimeState.reasoningEfforts = {
+        worker: normalizeReasoningValue(draft.workerReasoningEffort, normalizeReasoningValue(legacyReasoningEffort, "low")),
+        summarizer: normalizeReasoningValue(draft.summarizerReasoningEffort, normalizeReasoningValue(legacyReasoningEffort, "low")),
+      };
+      syncAllLaneReasoningOptions();
     }
     elements.directBaselineMode.value = String(draft.directBaselineMode || "off");
+    if (elements.codexSubagentsEnabled) {
+      elements.codexSubagentsEnabled.value = draft.codexSubagentsEnabled ? "1" : "0";
+    }
     elements.vettingEnabled.value = toBoolString(draft.vettingEnabled);
     elements.researchMode.value = draft.researchEnabled ? "1" : "0";
     if (elements.memoryMode) {
@@ -3076,6 +3718,7 @@
     syncContractPillSelects();
     updateNarrative();
     runtimeState.controlsLoaded = true;
+    setContractControlsReady(true);
     elements.draftState.textContent = "Loaded staged draft from /v1/state.";
   }
 
@@ -4283,6 +4926,15 @@
     });
   });
 
+  elements.homeDrawerClose?.addEventListener("click", closeHomePanelCanvas);
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape" || !shellState.activeHomePanel || event.defaultPrevented) return;
+    if (event.target instanceof Element && event.target.closest(".igs-pill-select.is-open, .igs-composer-tool-menu")) return;
+    event.preventDefault();
+    closeHomePanelCanvas();
+  });
+
   themeButtons.forEach((button) => {
     button.addEventListener("click", function () {
       const theme = button.getAttribute("data-theme-option");
@@ -4333,19 +4985,23 @@
     });
   });
 
-  sharedProviderButtons.forEach((button) => {
-    button.addEventListener("click", function () {
-      const value = String(button.getAttribute("data-provider-option") || "").trim();
-      if (!value) return;
-      if (activeProviderPaneRole() === "summarizer") {
-        setSummarizerProviderValue(value, { dispatch: true });
-        return;
-      }
-      setWorkerProviderValue(value);
-      updateNarrative();
-      queueDraftSave();
+  function bindSharedProviderButtons() {
+    sharedProviderButtons.forEach((button) => {
+      if (button.dataset.providerBinding === "1") return;
+      button.dataset.providerBinding = "1";
+      button.addEventListener("click", function () {
+        const value = String(button.getAttribute("data-provider-option") || "").trim();
+        if (!value) return;
+        if (activeProviderPaneRole() === "summarizer") {
+          setSummarizerProviderValue(value, { dispatch: true });
+          return;
+        }
+        setWorkerProviderValue(value);
+        updateNarrative();
+        queueDraftSave();
+      });
     });
-  });
+  }
 
   selectToggleButtons.forEach((button) => {
     button.addEventListener("click", function () {
@@ -4368,6 +5024,7 @@
     elements.contextMode,
     elements.reasoningEffort,
     elements.directBaselineMode,
+    elements.codexSubagentsEnabled,
     elements.vettingEnabled,
     elements.researchMode,
     elements.memoryMode,
@@ -4391,6 +5048,16 @@
           runtimeState.draft?.summarizerModelSource
         );
       }
+      if (
+        element === elements.workerModel
+        || element === elements.summarizerProvider
+        || element === elements.summarizerModel
+      ) {
+        syncAllLaneReasoningOptions();
+      }
+      if (element === elements.reasoningEffort) {
+        setReasoningEffortForRole(activeProviderPaneRole(), elements.reasoningEffort.value);
+      }
       if (element.matches?.("[data-contract-pill-select]")) {
         syncContractPillSelect(element);
       }
@@ -4410,6 +5077,16 @@
           elements.summarizerModel.value || runtimeState.draft?.summarizerModel || "",
           runtimeState.draft?.summarizerModelSource
         );
+      }
+      if (
+        element === elements.workerModel
+        || element === elements.summarizerProvider
+        || element === elements.summarizerModel
+      ) {
+        syncAllLaneReasoningOptions();
+      }
+      if (element === elements.reasoningEffort) {
+        setReasoningEffortForRole(activeProviderPaneRole(), elements.reasoningEffort.value);
       }
       if (element.matches?.("[data-contract-pill-select]")) {
         syncContractPillSelect(element);
@@ -4528,6 +5205,13 @@
 
   if (elements.authRequirementClose) {
     elements.authRequirementClose.addEventListener("click", closeAuthRequirementModal);
+  }
+
+  if (elements.authRequirementProvider) {
+    elements.authRequirementProvider.addEventListener("change", function () {
+      if (elements.authRequirementWorkspaceInput) elements.authRequirementWorkspaceInput.value = "";
+      syncAuthWorkspaceField();
+    });
   }
 
   if (elements.authRequirementModal) {
@@ -4879,15 +5563,14 @@
   window.addEventListener("pointerleave", clearScrollbarHotState);
   window.addEventListener("blur", clearScrollbarHotState);
 
-  seedSelectorActuatorOrbits();
-  syncProviderButtonMetrics();
   if (document.fonts?.ready) {
     document.fonts.ready.then(syncProviderButtonMetrics).catch(function () {});
   }
   installContractPillSelects();
-  fillModelsForCurrentProviders();
+  setContractControlsReady(false);
   syncSelectToggleButtons();
   syncSelectCycleButtons();
+  bindAgentWorkspaceControls();
   resizeObjectiveTextarea();
   window.addEventListener("resize", resizeObjectiveTextarea);
   window.addEventListener("resize", syncProviderButtonMetrics);
@@ -4901,17 +5584,32 @@
   } catch (_) {
     setInspectorMode("repo");
   }
+  try {
+    agentWorkspaceState.projectId = window.localStorage.getItem("igsShell.agentProjectId") || "project_default";
+  } catch (_) {
+    agentWorkspaceState.projectId = "project_default";
+  }
   shellState.homeCollapsedPanels = new Set(readHomeCollapsedPanels());
   applyHomePanelCollapseState();
+  if (!shellState.homeCollapsedPanels.has("agents")) {
+    refreshAgentWorkspace().catch(function (error) {
+      setAgentWorkspaceStatus("Agent fabric failed to load: " + String(error.message || error), true);
+    });
+  }
   window.requestAnimationFrame(syncProviderButtonMetrics);
   try {
     scoreState.selectedRunId = window.localStorage.getItem("igsShell.scoreRunId") || "";
     scoreState.selectedSessionId = window.localStorage.getItem("igsShell.scoreSessionId") || "";
   } catch (_) {}
-  loadState({ hydrate: true }).catch(function (error) {
+  loadProviderModelCatalog().then(function () {
+    return loadState({ hydrate: true });
+  }).catch(function (error) {
     elements.draftState.textContent = "Load failed: " + String(error.message || error);
   });
   window.setInterval(function () {
     loadState({ hydrate: false }).catch(function () {});
+    if (!shellState.homeCollapsedPanels.has("agents") && !agentWorkspaceState.loading) {
+      refreshAgentWorkspace().catch(function () {});
+    }
   }, 5000);
 })();

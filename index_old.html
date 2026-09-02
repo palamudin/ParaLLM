@@ -114,8 +114,7 @@
           </div>
           <div class="workspace-header-switches">
             <div class="engine-switch" role="tablist" aria-label="Engine version">
-              <button type="button" class="engine-switch-btn" data-engine-version="v1" aria-selected="true">V1 engine</button>
-              <button type="button" class="engine-switch-btn" data-engine-version="v2" aria-selected="false">V2 engine</button>
+              <button type="button" class="engine-switch-btn active" data-engine-version="v2" aria-selected="true">V2 engine</button>
             </div>
             <div class="front-canvas-switch" role="tablist" aria-label="Front canvas mode">
               <button type="button" class="front-canvas-switch-btn" data-canvas="live" aria-selected="true">Live</button>
@@ -180,7 +179,7 @@
       </div>
 
       <section class="workspace-view active" data-view="home">
-        <input type="hidden" id="engineVersion" value="v1" />
+        <input type="hidden" id="engineVersion" value="v2" />
         <div class="home-layout home-layout-chat-focused">
           <details class="home-controls-collapsible">
             <summary class="home-controls-summary">
@@ -235,7 +234,7 @@
                 </div>
               </section>
 
-              <section id="topologyPanel" class="panel rail-panel topology-panel" data-engine-version="v1">
+              <section id="topologyPanel" class="panel rail-panel topology-panel" data-engine-version="v2">
                 <div class="panel-head compact">
                   <div>
                     <div class="panel-kicker">Architecture</div>
@@ -252,7 +251,7 @@
 
                 <p id="topologySummary" class="topology-summary">Commander shapes the debate, workers push from narrow lanes, and the summarizer returns one accountable voice with the tool plane feeding evidence where needed.</p>
 
-                <div class="topology-canvas" data-topology-canvas="v1" aria-label="Agentic architecture map">
+                <div class="topology-canvas" data-topology-canvas="v1" aria-label="Retired V1 architecture map" hidden>
                   <div class="topology-grid"></div>
                   <div id="topologyNodeCommander" class="topology-node topology-node-commander is-active">
                     <span class="topology-node-label">Commander</span>
@@ -276,10 +275,10 @@
                   <span class="topology-edge edge-tools-workers" aria-hidden="true"></span>
                 </div>
 
-                <div class="topology-canvas topology-canvas-v2" data-topology-canvas="v2" aria-label="Modular engine topology map" hidden>
+                <div class="topology-canvas topology-canvas-v2 active" data-topology-canvas="v2" aria-label="Modular engine topology map">
                   <div class="topology-grid"></div>
                   <div class="topology-v2-toolbar">
-                    <div id="topologyV2ModeHint" class="topology-v2-mode-hint">V2 graph is editable. Execution still falls back to the proven V1 runner.</div>
+                    <div id="topologyV2ModeHint" class="topology-v2-mode-hint">V2 graph is the production execution contract.</div>
                     <div class="topology-v2-toolbar-actions">
                       <button type="button" id="topologyV2AddWorker">+ Adversarial</button>
                       <button type="button" id="topologyV2Reset">Reset graph</button>

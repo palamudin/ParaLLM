@@ -3,12 +3,23 @@ from __future__ import annotations
 import json
 import math
 import os
+import socket
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
+
+from runtime.provider_torso import (
+    AUTH_ROUTE_CODEX_CURRENT_USER,
+    REASONING_EFFORTS,
+    provider_catalog,
+    provider_default_model,
+    provider_model_catalog,
+)
 
 from . import artifacts, storage
 
@@ -21,6 +32,17 @@ CODEX_AUTH_MODE_INHERIT = "inherit_chatgpt"
 CODEX_AUTH_MODE_ISOLATED_CHATGPT = "isolated_chatgpt"
 CODEX_AUTH_MODE_API_KEY = "api_key"
 CODEX_AUTH_MODE_DISABLED = "disabled"
+CODEX_PWSH_PATH_ENV = "LOOP_CODEX_PWSH_PATH"
+_OPENAI_PROVIDER_CONTRACT = provider_catalog()[CODEX_ARM_PROVIDER_FAMILY]
+CODEX_DEFAULT_MODEL = provider_default_model(
+    CODEX_ARM_PROVIDER_FAMILY,
+    auth_route=AUTH_ROUTE_CODEX_CURRENT_USER,
+)
+CODEX_CHATGPT_RESPONSES_URL = str(
+    _OPENAI_PROVIDER_CONTRACT["endpointByAuthRoute"][AUTH_ROUTE_CODEX_CURRENT_USER]
+)
+CODEX_CHATGPT_RESPONSE_LIMIT_BYTES = 64 * 1024 * 1024
+CODEX_REASONING_EFFORTS = set(REASONING_EFFORTS)
 CODEX_AUTH_MODES = {
     CODEX_AUTH_MODE_INHERIT,
     CODEX_AUTH_MODE_ISOLATED_CHATGPT,
@@ -29,7 +51,51 @@ CODEX_AUTH_MODES = {
 }
 
 
+# Public account/rate-limit telemetry is intentionally separate from the runtime
+# catalog. It describes observed service limits; it never creates routing options.
 PUBLIC_CODEX_MODEL_LIMITS: Dict[str, Dict[str, Any]] = {
+    "gpt-5.6-sol": {
+        "source": "OpenAI model docs",
+        "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+        "contextWindow": 1_050_000,
+        "maxOutputTokens": 128_000,
+        "rateLimitClass": "Long Context",
+        "tiers": [
+            {"tier": "Tier 1", "rpm": 500, "tpm": 500_000, "batchQueueLimit": 1_500_000},
+            {"tier": "Tier 2", "rpm": 5_000, "tpm": 1_000_000, "batchQueueLimit": 3_000_000},
+            {"tier": "Tier 3", "rpm": 5_000, "tpm": 2_000_000, "batchQueueLimit": 100_000_000},
+            {"tier": "Tier 4", "rpm": 10_000, "tpm": 4_000_000, "batchQueueLimit": 200_000_000},
+            {"tier": "Tier 5", "rpm": 15_000, "tpm": 40_000_000, "batchQueueLimit": 15_000_000_000},
+        ],
+    },
+    "gpt-5.6-terra": {
+        "source": "OpenAI model docs",
+        "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+        "contextWindow": 1_050_000,
+        "maxOutputTokens": 128_000,
+        "rateLimitClass": "Long Context",
+        "tiers": [
+            {"tier": "Tier 1", "rpm": 500, "tpm": 500_000, "batchQueueLimit": 1_500_000},
+            {"tier": "Tier 2", "rpm": 5_000, "tpm": 1_000_000, "batchQueueLimit": 3_000_000},
+            {"tier": "Tier 3", "rpm": 5_000, "tpm": 2_000_000, "batchQueueLimit": 100_000_000},
+            {"tier": "Tier 4", "rpm": 10_000, "tpm": 4_000_000, "batchQueueLimit": 200_000_000},
+            {"tier": "Tier 5", "rpm": 15_000, "tpm": 40_000_000, "batchQueueLimit": 15_000_000_000},
+        ],
+    },
+    "gpt-5.6-luna": {
+        "source": "OpenAI model docs",
+        "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+        "contextWindow": 1_050_000,
+        "maxOutputTokens": 128_000,
+        "rateLimitClass": "Long Context",
+        "tiers": [
+            {"tier": "Tier 1", "rpm": 500, "tpm": 500_000, "batchQueueLimit": 5_000_000},
+            {"tier": "Tier 2", "rpm": 5_000, "tpm": 2_000_000, "batchQueueLimit": 20_000_000},
+            {"tier": "Tier 3", "rpm": 5_000, "tpm": 4_000_000, "batchQueueLimit": 40_000_000},
+            {"tier": "Tier 4", "rpm": 10_000, "tpm": 10_000_000, "batchQueueLimit": 1_000_000_000},
+            {"tier": "Tier 5", "rpm": 30_000, "tpm": 180_000_000, "batchQueueLimit": 15_000_000_000},
+        ],
+    },
     "gpt-5.4": {
         "source": "OpenAI model docs",
         "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4",
@@ -75,16 +141,16 @@ LAST_MEASURED_CODEX_SMOKE: Dict[str, Any] = {
 
 
 CODEX_MODEL_PRICING_USD_PER_1M: Dict[str, Dict[str, float]] = {
-    "gpt-5.5": {"input": 5.00, "cachedInput": 0.50, "output": 30.00},
-    "gpt-5.4": {"input": 2.50, "cachedInput": 0.25, "output": 15.00},
-    "gpt-5.4-mini": {"input": 0.75, "cachedInput": 0.075, "output": 4.50},
-    "gpt-5.4-nano": {"input": 0.20, "cachedInput": 0.02, "output": 1.25},
-    "gpt-5.3-codex": {"input": 1.75, "cachedInput": 0.175, "output": 14.00},
-    "gpt-5.3-codex-spark": {"input": 1.75, "cachedInput": 0.175, "output": 14.00},
-    "gpt-5.2-codex": {"input": 1.75, "cachedInput": 0.175, "output": 14.00},
-    "gpt-5.1-codex-max": {"input": 1.25, "cachedInput": 0.125, "output": 10.00},
-    "gpt-5.1-codex": {"input": 1.25, "cachedInput": 0.125, "output": 10.00},
-    "gpt-5-codex": {"input": 1.25, "cachedInput": 0.125, "output": 10.00},
+    model_id.lower(): {
+        "input": float(metadata.get("inputPer1M") or 0.0),
+        "cachedInput": float(metadata.get("cachedInputPer1M") or 0.0),
+        "output": float(metadata.get("outputPer1M") or 0.0),
+    }
+    for model_id, metadata in provider_model_catalog(CODEX_ARM_PROVIDER_FAMILY).items()
+    if any(
+        float(metadata.get(field) or 0.0) > 0.0
+        for field in ("inputPer1M", "cachedInputPer1M", "outputPer1M")
+    )
 }
 
 
@@ -121,7 +187,9 @@ class CodexLaneRequest:
     lane_id: str
     prompt: str
     root: Path
-    model: str = "gpt-5.4"
+    model: str = CODEX_DEFAULT_MODEL
+    reasoning_effort: str = ""
+    subagents_enabled: bool = False
     sandbox: str = "read-only"
     timeout_seconds: int = 900
     max_total_tokens: int = 0
@@ -133,6 +201,12 @@ class CodexLaneRequest:
     ephemeral: bool = True
     disable_plugins: bool = True
     disable_general_analytics: bool = True
+
+
+class CodexChatGptTransportError(RuntimeError):
+    def __init__(self, message: str, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = int(status_code or 502)
 
 
 def utc_now() -> str:
@@ -153,6 +227,13 @@ def _as_int(value: Any) -> int:
         return 0
 
 
+def _configured_timeout_seconds(payload: Dict[str, Any], default: int = 900) -> int:
+    for key in ("timeoutSeconds", "timeout_seconds"):
+        if key in payload and payload.get(key) is not None:
+            return _as_int(payload.get(key))
+    return max(0, int(default or 0))
+
+
 def _as_float(value: Any) -> float:
     try:
         return max(0.0, float(value or 0.0))
@@ -166,6 +247,26 @@ def _as_bool(value: Any, fallback: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_codex_reasoning_effort(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in CODEX_REASONING_EFFORTS else ""
+
+
+def effective_codex_prompt(request: CodexLaneRequest) -> str:
+    if request.subagents_enabled:
+        contract = (
+            "Nested Codex subagents are enabled for this provider call. You may delegate only when it "
+            "materially improves the requested lane, while preserving the required output contract."
+        )
+    else:
+        contract = (
+            "Nested Codex subagents are disabled for this provider call. Do not delegate, spawn, or hand "
+            "work to subagents; complete this provider lane yourself."
+        )
+    prompt = str(request.prompt or "").strip()
+    return (prompt + "\n\nProvider subagent contract:\n" + contract).strip()
 
 
 def _pricing_for_model(model: str) -> Optional[Dict[str, float]]:
@@ -305,19 +406,23 @@ def _last_agent_message(events: Iterable[Dict[str, Any]]) -> str:
 
 
 def default_codex_limits(request: CodexLaneRequest) -> Dict[str, Any]:
+    timeout_seconds = int(request.timeout_seconds or 0)
     return {
         "localBudget": {
             "maxTotalTokens": max(0, int(request.max_total_tokens or 0)),
             "maxCostUsd": max(0.0, float(request.max_cost_usd or 0.0)),
-            "timeoutSeconds": max(1, int(request.timeout_seconds or 1)),
+            "timeoutSeconds": timeout_seconds if timeout_seconds > 0 else None,
+            "timeoutDisabled": timeout_seconds <= 0,
             "sandbox": request.sandbox,
+            "reasoningEffort": normalize_codex_reasoning_effort(request.reasoning_effort) or None,
+            "subagentsEnabled": bool(request.subagents_enabled),
         },
         "providerRateLimits": {
             "known": False,
             "source": "codex exec JSONL",
             "note": "Codex CLI JSONL exposes turn usage, but not authoritative account/project RPM or TPM limits.",
         },
-        "estimatedPromptTokens": estimate_text_tokens(request.prompt),
+        "estimatedPromptTokens": estimate_text_tokens(effective_codex_prompt(request)),
         "reasons": [],
     }
 
@@ -342,6 +447,236 @@ def codex_auth_policy_path(root: Optional[Path] = None) -> Path:
 def app_codex_home_path(root: Optional[Path] = None) -> Path:
     base = Path(root) if root is not None else Path.cwd()
     return base / "data" / "codex_home"
+
+
+def _codex_chatgpt_auth_material(
+    root: Optional[Path] = None,
+    auth_mode: str = CODEX_AUTH_MODE_INHERIT,
+) -> Dict[str, str]:
+    access_token = str(os.getenv("CODEX_ACCESS_TOKEN") or "").strip()
+    account_id = str(os.getenv("CODEX_CHATGPT_ACCOUNT_ID") or "").strip()
+    if access_token or account_id:
+        if not access_token or not account_id:
+            raise CodexChatGptTransportError(
+                "Codex ChatGPT environment authentication requires both CODEX_ACCESS_TOKEN and CODEX_CHATGPT_ACCOUNT_ID.",
+                401,
+            )
+        return {
+            "accessToken": access_token,
+            "accountId": account_id,
+            "source": "codex_environment",
+        }
+
+    normalized_mode = normalize_codex_auth_mode(auth_mode)
+    if normalized_mode == CODEX_AUTH_MODE_INHERIT:
+        auth_path = codex_home_path() / "auth.json"
+        source = "codex_current_user"
+    elif normalized_mode == CODEX_AUTH_MODE_ISOLATED_CHATGPT:
+        auth_path = app_codex_home_path(root) / "auth.json"
+        source = "codex_isolated_user"
+    else:
+        raise CodexChatGptTransportError(
+            "The direct ChatGPT Responses transport requires inherited or isolated ChatGPT authentication.",
+            401,
+        )
+
+    try:
+        if auth_path.stat().st_size > 4 * 1024 * 1024:
+            raise CodexChatGptTransportError("The Codex authentication file is unexpectedly large.", 401)
+        auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    except CodexChatGptTransportError:
+        raise
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CodexChatGptTransportError(
+            "No readable current-user Codex ChatGPT authentication was found on this device.",
+            401,
+        ) from exc
+
+    tokens = auth_payload.get("tokens") if isinstance(auth_payload.get("tokens"), dict) else {}
+    stored_mode = str(auth_payload.get("auth_mode") or "").strip().lower()
+    access_token = str(tokens.get("access_token") or "").strip()
+    account_id = str(tokens.get("account_id") or "").strip()
+    if stored_mode and stored_mode != "chatgpt":
+        raise CodexChatGptTransportError("The current Codex session is not authenticated through ChatGPT.", 401)
+    if not access_token or not account_id:
+        raise CodexChatGptTransportError(
+            "The current Codex session does not contain a usable ChatGPT access token and account id.",
+            401,
+        )
+    return {
+        "accessToken": access_token,
+        "accountId": account_id,
+        "source": source,
+    }
+
+
+def _codex_response_output_text(response: Any) -> str:
+    current = response if isinstance(response, dict) else {}
+    parts: List[str] = []
+    for item in current.get("output", []):
+        if not isinstance(item, dict) or str(item.get("type") or "") != "message":
+            continue
+        for content in item.get("content", []):
+            if not isinstance(content, dict) or str(content.get("type") or "") != "output_text":
+                continue
+            text = str(content.get("text") or "")
+            if text:
+                parts.append(text)
+    return "".join(parts).strip()
+
+
+def run_codex_chatgpt_response(
+    *,
+    model: str,
+    instructions: str,
+    input_text: str,
+    schema_name: str,
+    output_schema: Dict[str, Any],
+    reasoning_effort: str = "low",
+    max_output_tokens: int = 0,
+    timeout_seconds: Optional[float] = 900,
+    root: Optional[Path] = None,
+    auth_mode: str = CODEX_AUTH_MODE_INHERIT,
+    subagents_enabled: bool = False,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> Dict[str, Any]:
+    auth = _codex_chatgpt_auth_material(root, auth_mode)
+    normalized_schema_name = "_".join(
+        part for part in str(schema_name or "parallm_output").strip().replace("-", "_").split() if part
+    )
+    normalized_schema_name = "".join(
+        character if character.isalnum() or character == "_" else "_"
+        for character in normalized_schema_name
+    )[:64] or "parallm_output"
+    effort = normalize_codex_reasoning_effort(reasoning_effort) or "low"
+    subagent_contract = (
+        "Nested model subagents are enabled for this call. Delegate only when it materially improves the requested output."
+        if subagents_enabled
+        else "Nested model subagents are disabled for this call. Complete the requested output without delegation."
+    )
+    effective_instructions = (str(instructions or "").strip() + "\n\n" + subagent_contract).strip()
+    body: Dict[str, Any] = {
+        "model": str(model or CODEX_DEFAULT_MODEL).strip() or CODEX_DEFAULT_MODEL,
+        "instructions": effective_instructions,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": str(input_text or "")}],
+            }
+        ],
+        "reasoning": {"effort": effort},
+        "text": {
+            "verbosity": "low",
+            "format": {
+                "type": "json_schema",
+                "name": normalized_schema_name,
+                "strict": True,
+                "schema": output_schema,
+            },
+        },
+        "store": False,
+        "stream": True,
+    }
+    request = urllib.request.Request(
+        CODEX_CHATGPT_RESPONSES_URL,
+        data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {auth['accessToken']}",
+            "ChatGPT-Account-ID": auth["accountId"],
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "OpenAI-Beta": "responses=v1",
+            "originator": "parallm_python",
+        },
+        method="POST",
+    )
+
+    output_done: List[str] = []
+    output_deltas: List[str] = []
+    final_response: Dict[str, Any] = {}
+    response_error = ""
+    received_bytes = 0
+    http_status = 0
+    try:
+        with opener(request, timeout=timeout_seconds) as handle:
+            http_status = int(getattr(handle, "status", 0) or getattr(handle, "code", 0) or 200)
+            for raw_line in handle:
+                encoded_line = raw_line if isinstance(raw_line, bytes) else str(raw_line).encode("utf-8", errors="replace")
+                received_bytes += len(encoded_line)
+                if received_bytes > CODEX_CHATGPT_RESPONSE_LIMIT_BYTES:
+                    raise CodexChatGptTransportError("Codex ChatGPT response exceeded the 64 MiB transport limit.", 502)
+                line = encoded_line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload_text = line[5:].strip()
+                if not payload_text or payload_text == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(payload_text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                event_type = str(event.get("type") or "")
+                if event_type == "response.output_text.done":
+                    output_done.append(str(event.get("text") or ""))
+                elif event_type == "response.output_text.delta":
+                    output_deltas.append(str(event.get("delta") or ""))
+                elif event_type == "response.completed" and isinstance(event.get("response"), dict):
+                    final_response = dict(event["response"])
+                elif event_type == "response.failed":
+                    failed_response = event.get("response") if isinstance(event.get("response"), dict) else {}
+                    final_response = dict(failed_response)
+                    failure = failed_response.get("error") if isinstance(failed_response.get("error"), dict) else {}
+                    response_error = str(failure.get("message") or event.get("message") or "Codex ChatGPT response failed.")
+                elif event_type == "error":
+                    response_error = str(event.get("message") or event.get("error") or "Codex ChatGPT transport returned an error event.")
+    except CodexChatGptTransportError:
+        raise
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read(8192).decode("utf-8", errors="replace").strip()
+        except OSError:
+            detail = ""
+        raise CodexChatGptTransportError(
+            f"Codex ChatGPT HTTP {int(exc.code or 502)}: {detail or exc.reason}",
+            int(exc.code or 502),
+        ) from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise CodexChatGptTransportError("Codex ChatGPT response timed out.", 504) from exc
+    except urllib.error.URLError as exc:
+        raise CodexChatGptTransportError(f"Codex ChatGPT connection failed: {exc.reason}", 502) from exc
+    except OSError as exc:
+        raise CodexChatGptTransportError(f"Codex ChatGPT transport failed: {exc}", 502) from exc
+
+    if response_error:
+        raise CodexChatGptTransportError(response_error, 502)
+    output_text = "".join(output_done).strip() if output_done else "".join(output_deltas).strip()
+    if not output_text:
+        output_text = _codex_response_output_text(final_response)
+    if not output_text:
+        raise CodexChatGptTransportError("Codex ChatGPT response did not include output text.", 502)
+    response_status = str(final_response.get("status") or "completed").strip().lower()
+    if response_status not in {"completed", ""}:
+        incomplete = final_response.get("incomplete_details") if isinstance(final_response.get("incomplete_details"), dict) else {}
+        reason = str(incomplete.get("reason") or response_status)
+        raise CodexChatGptTransportError(f"Codex ChatGPT response was {response_status}: {reason}", 502)
+    final_response.setdefault("status", "completed")
+    final_response.setdefault("model", body["model"])
+    final_response["_paraTransport"] = "chatgpt_responses"
+    return {
+        "status": "completed",
+        "response": final_response,
+        "responseId": str(final_response.get("id") or ""),
+        "outputText": output_text,
+        "httpStatus": http_status,
+        "receivedBytes": received_bytes,
+        "authSource": auth["source"],
+        "endpoint": CODEX_CHATGPT_RESPONSES_URL,
+        "reasoningEffort": effort,
+        "subagentsEnabled": bool(subagents_enabled),
+    }
 
 
 def normalize_codex_auth_mode(value: Any, fallback: str = CODEX_AUTH_MODE_INHERIT) -> str:
@@ -616,7 +951,7 @@ def _codex_pricing_status(model: str) -> Dict[str, Any]:
 
 
 def codex_limits_status(root: Optional[Path] = None, model: str = "") -> Dict[str, Any]:
-    selected_model = str(model or "").strip().lower() or "gpt-5.4"
+    selected_model = str(model or "").strip().lower() or CODEX_DEFAULT_MODEL
     manual_limits = read_manual_codex_limits(root)
     return {
         "provider": CODEX_PROVIDER_ID,
@@ -748,7 +1083,21 @@ def run_codex_arm(root: Optional[Path], payload: Dict[str, Any], *, runner: Runn
         draft.get("objective") if isinstance(draft, dict) else "",
         ((state_packet.get("activeTask") or {}) if isinstance(state_packet.get("activeTask"), dict) else {}).get("objective"),
     )
-    model = str(current.get("model") or current.get("codexModel") or current.get("codex_model") or "gpt-5.4").strip() or "gpt-5.4"
+    model = str(
+        current.get("model")
+        or current.get("codexModel")
+        or current.get("codex_model")
+        or CODEX_DEFAULT_MODEL
+    ).strip() or CODEX_DEFAULT_MODEL
+    reasoning_effort = normalize_codex_reasoning_effort(
+        current.get("reasoningEffort")
+        or current.get("reasoning_effort")
+        or (draft.get("reasoningEffort") if isinstance(draft, dict) else "")
+    )
+    subagents_enabled = _as_bool(
+        current.get("codexSubagentsEnabled", current.get("subagentsEnabled")),
+        _as_bool(draft.get("codexSubagentsEnabled"), False) if isinstance(draft, dict) else False,
+    )
     auth_mode = normalize_codex_auth_mode(current.get("authMode") or current.get("auth_mode"), read_codex_auth_policy(paths.root)["mode"])
     auth_status = codex_auth_status(paths.root)
     env_overrides: Dict[str, str] = {}
@@ -775,8 +1124,10 @@ def run_codex_arm(root: Optional[Path], payload: Dict[str, Any], *, runner: Runn
         prompt=build_codex_arm_prompt(lane_id, objective, state_packet),
         root=paths.root,
         model=model,
+        reasoning_effort=reasoning_effort,
+        subagents_enabled=subagents_enabled,
         sandbox=str(current.get("sandbox") or "read-only").strip() or "read-only",
-        timeout_seconds=_as_int(current.get("timeoutSeconds") or current.get("timeout_seconds")) or 900,
+        timeout_seconds=_configured_timeout_seconds(current),
         max_total_tokens=_as_int(current.get("maxTotalTokens") or current.get("max_total_tokens")),
         max_cost_usd=_as_float(current.get("maxCostUsd") or current.get("max_cost_usd")),
         ignore_user_config=ignore_user_config,
@@ -817,6 +1168,8 @@ def run_codex_arm(root: Optional[Path], payload: Dict[str, Any], *, runner: Runn
             "appManagedCodexHome": auth_mode == CODEX_AUTH_MODE_ISOLATED_CHATGPT,
             "apiKeyBillingMode": auth_mode == CODEX_AUTH_MODE_API_KEY,
             "pluginsDisabled": request.disable_plugins,
+            "reasoningEffort": request.reasoning_effort or None,
+            "subagentsEnabled": request.subagents_enabled,
         },
         "output": lane_artifact,
         "responseText": lane_artifact.get("responseText"),
@@ -827,14 +1180,15 @@ def run_codex_arm(root: Optional[Path], payload: Dict[str, Any], *, runner: Runn
     safe_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     artifact_name = f"codex_{lane_id}_{safe_stamp}.json"
     artifact_meta = artifacts.write_json_artifact(paths.root, "outputs", artifact_name, stored_payload)
+    lane_status = str(lane_artifact.get("status") or "unknown")
     return {
-        "ok": True,
+        "ok": lane_status in {"completed", "budget_exhausted"},
         "providerFamily": CODEX_ARM_PROVIDER_FAMILY,
         "provider": CODEX_PROVIDER_ID,
         "interface": CODEX_ARM_INTERFACE,
         "laneId": lane_id,
         "model": request.model,
-        "status": str(lane_artifact.get("status") or "unknown"),
+        "status": lane_status,
         "artifactFile": artifact_meta["name"],
         "artifactMeta": artifact_meta,
         "laneArtifact": lane_artifact,
@@ -894,18 +1248,25 @@ def codex_artifact_from_jsonl(
 ) -> Dict[str, Any]:
     events, warnings = parse_codex_jsonl_events(jsonl)
     usage = codex_usage_from_events(events, model)
+    response_text = _last_agent_message(events)
     status = "completed" if int(exit_code or 0) == 0 else "error"
     limits = default_codex_limits(
         request
         if request is not None
         else CodexLaneRequest(lane_id=lane_id, prompt="", root=Path("."), model=model)
     )
+    if status == "completed" and not events:
+        status = "error"
+        warnings.append("Codex exited successfully but emitted no JSONL events.")
+    elif status == "completed" and not response_text:
+        status = "error"
+        warnings.append("Codex emitted events but no completed agent response.")
     if request is not None and status == "completed":
         reasons = _budget_reasons(request, usage)
         if reasons:
             status = "budget_exhausted"
             limits["reasons"] = reasons
-    if int(exit_code or 0) != 0 and stderr:
+    if status == "error" and stderr:
         warnings.append(str(stderr).strip()[:1000])
     return {
         "laneId": lane_id,
@@ -914,7 +1275,7 @@ def codex_artifact_from_jsonl(
         "status": status,
         "exitCode": int(exit_code or 0),
         "threadId": _thread_id_from_events(events),
-        "responseText": _last_agent_message(events),
+        "responseText": response_text,
         "usage": usage,
         "limits": limits,
         "eventCount": len(events),
@@ -940,6 +1301,11 @@ def build_codex_exec_command(request: CodexLaneRequest, schema_path: Path) -> Li
         command.append("--ephemeral")
     if request.disable_plugins:
         command.extend(["--disable", "plugins"])
+    reasoning_effort = normalize_codex_reasoning_effort(request.reasoning_effort)
+    if reasoning_effort:
+        command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+    command.extend(["-c", f"agents.enabled={'true' if request.subagents_enabled else 'false'}"])
+    command.extend(["--enable" if request.subagents_enabled else "--disable", "multi_agent"])
     command.extend(
         [
             "--sandbox",
@@ -947,7 +1313,7 @@ def build_codex_exec_command(request: CodexLaneRequest, schema_path: Path) -> Li
             "--cd",
             str(Path(request.root).resolve()),
             "--model",
-            str(request.model or "gpt-5.4"),
+            str(request.model or CODEX_DEFAULT_MODEL),
             "--output-schema",
             str(schema_path),
             "-",
@@ -959,6 +1325,32 @@ def build_codex_exec_command(request: CodexLaneRequest, schema_path: Path) -> Li
 Runner = Callable[..., Any]
 
 
+def _codex_subprocess_environment(request: CodexLaneRequest) -> Optional[Dict[str, str]]:
+    overrides = {
+        str(key): str(value)
+        for key, value in (request.env_overrides or {}).items()
+        if str(key).strip()
+    }
+    configured_pwsh = str(overrides.get(CODEX_PWSH_PATH_ENV) or os.getenv(CODEX_PWSH_PATH_ENV) or "").strip()
+    if not overrides and not configured_pwsh:
+        return None
+
+    run_env = dict(os.environ)
+    run_env.update(overrides)
+    if configured_pwsh:
+        pwsh_path = Path(os.path.expandvars(configured_pwsh)).expanduser()
+        try:
+            pwsh_path = pwsh_path.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(f"{CODEX_PWSH_PATH_ENV} does not point to an accessible executable: {configured_pwsh}") from exc
+        if not pwsh_path.is_file():
+            raise RuntimeError(f"{CODEX_PWSH_PATH_ENV} does not point to a file: {pwsh_path}")
+        existing_path = str(run_env.get("PATH") or "")
+        run_env["PATH"] = str(pwsh_path.parent) + (os.pathsep + existing_path if existing_path else "")
+        run_env[CODEX_PWSH_PATH_ENV] = str(pwsh_path)
+    return run_env
+
+
 def run_codex_lane(request: CodexLaneRequest, *, runner: Runner = subprocess.run) -> Dict[str, Any]:
     blocked = _preflight_budget_block(request)
     if blocked is not None:
@@ -968,16 +1360,16 @@ def run_codex_lane(request: CodexLaneRequest, *, runner: Runner = subprocess.run
     with tempfile.TemporaryDirectory(prefix="parallm-codex-lane-") as tmpdir:
         schema_path = _write_schema_file(Path(tmpdir), schema)
         command = build_codex_exec_command(request, schema_path)
-        run_env = None
-        if request.env_overrides:
-            run_env = dict(os.environ)
-            run_env.update({str(key): str(value) for key, value in request.env_overrides.items() if str(key).strip()})
+        run_env = _codex_subprocess_environment(request)
+        timeout_seconds = int(request.timeout_seconds or 0)
         completed = runner(
             command,
-            input=str(request.prompt or ""),
+            input=effective_codex_prompt(request),
             capture_output=True,
             text=True,
-            timeout=max(1, int(request.timeout_seconds or 1)),
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds if timeout_seconds > 0 else None,
             shell=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             **({"env": run_env} if run_env is not None else {}),

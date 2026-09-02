@@ -877,7 +877,277 @@ def file_summary(files: List[SourceFile], functions: List[FunctionRecord]) -> Li
     return summaries
 
 
-def build_ai_readout(functions: List[FunctionRecord], edges: List[Dict[str, Any]], files: List[Dict[str, Any]], scan_meta: Dict[str, Any]) -> Dict[str, Any]:
+def _strongly_connected_modules(modules: Iterable[str], adjacency: Dict[str, set[str]]) -> List[List[str]]:
+    index = 0
+    indices: Dict[str, int] = {}
+    lowlinks: Dict[str, int] = {}
+    stack: List[str] = []
+    on_stack: set[str] = set()
+    components: List[List[str]] = []
+
+    def visit(module: str) -> None:
+        nonlocal index
+        indices[module] = index
+        lowlinks[module] = index
+        index += 1
+        stack.append(module)
+        on_stack.add(module)
+
+        for target in sorted(adjacency.get(module, set())):
+            if target not in indices:
+                visit(target)
+                lowlinks[module] = min(lowlinks[module], lowlinks[target])
+            elif target in on_stack:
+                lowlinks[module] = min(lowlinks[module], indices[target])
+
+        if lowlinks[module] != indices[module]:
+            return
+        component: List[str] = []
+        while stack:
+            candidate = stack.pop()
+            on_stack.remove(candidate)
+            component.append(candidate)
+            if candidate == module:
+                break
+        components.append(sorted(component))
+
+    for module in sorted(set(modules)):
+        if module not in indices:
+            visit(module)
+    return sorted(components, key=lambda component: component[0] if component else "")
+
+
+def build_architecture_map(
+    functions: List[FunctionRecord],
+    edges: List[Dict[str, Any]],
+    files: List[Dict[str, Any]],
+    parse_errors: List[Dict[str, str]],
+    scan_meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    module_stats: Dict[str, Dict[str, Any]] = {}
+    files_by_module: Dict[str, List[str]] = defaultdict(list)
+    functions_by_module: Dict[str, List[FunctionRecord]] = defaultdict(list)
+    parse_errors_by_module: Counter[str] = Counter()
+
+    for item in files:
+        module = str(item.get("module") or ".")
+        stat = module_stats.setdefault(
+            module,
+            {
+                "module": module,
+                "fileCount": 0,
+                "functionCount": 0,
+                "inboundFunctionEdges": 0,
+                "outboundFunctionEdges": 0,
+            },
+        )
+        stat["fileCount"] += 1
+        stat["functionCount"] += int(item.get("functionCount") or 0)
+        stat["inboundFunctionEdges"] += int(item.get("inboundInternalEdges") or 0)
+        stat["outboundFunctionEdges"] += int(item.get("outboundInternalEdges") or 0)
+        files_by_module[module].append(str(item.get("path") or ""))
+
+    function_by_id = {record.id: record for record in functions}
+    for record in functions:
+        functions_by_module[module_key(record.file)].append(record)
+
+    for error in parse_errors:
+        parse_errors_by_module[module_key(str(error.get("file") or "."))] += 1
+
+    dependency_stats: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for edge in edges:
+        source = function_by_id.get(str(edge.get("sourceId") or ""))
+        target = function_by_id.get(str(edge.get("targetId") or ""))
+        if source is None or target is None:
+            continue
+        source_module = module_key(source.file)
+        target_module = module_key(target.file)
+        if source_module == target_module:
+            continue
+        key = (source_module, target_module)
+        dependency = dependency_stats.setdefault(
+            key,
+            {
+                "sourceModule": source_module,
+                "targetModule": target_module,
+                "weight": 0,
+                "edgeCount": 0,
+                "ambiguousEdgeCount": 0,
+            },
+        )
+        dependency["weight"] += int(edge.get("weight") or 1)
+        dependency["edgeCount"] += 1
+        dependency["ambiguousEdgeCount"] += int(bool(edge.get("ambiguous")))
+
+    modules = sorted(module_stats)
+    adjacency: Dict[str, set[str]] = {module: set() for module in modules}
+    for source_module, target_module in dependency_stats:
+        adjacency.setdefault(source_module, set()).add(target_module)
+        adjacency.setdefault(target_module, set())
+
+    components = _strongly_connected_modules(modules, adjacency)
+    component_by_module: Dict[str, int] = {}
+    for component_index, component in enumerate(components):
+        for module in component:
+            component_by_module[module] = component_index
+
+    component_edges: Dict[int, set[int]] = {index: set() for index in range(len(components))}
+    component_indegree: Counter[int] = Counter()
+    for source_module, targets in adjacency.items():
+        source_component = component_by_module.get(source_module)
+        if source_component is None:
+            continue
+        for target_module in targets:
+            target_component = component_by_module.get(target_module)
+            if target_component is None or target_component == source_component:
+                continue
+            if target_component not in component_edges[source_component]:
+                component_edges[source_component].add(target_component)
+                component_indegree[target_component] += 1
+
+    component_layer: Dict[int, int] = {index: 0 for index in range(len(components))}
+    ready = sorted(
+        (index for index in range(len(components)) if component_indegree[index] == 0),
+        key=lambda item: components[item][0] if components[item] else "",
+    )
+    while ready:
+        component_index = ready.pop(0)
+        for target_index in sorted(
+            component_edges.get(component_index, set()),
+            key=lambda item: components[item][0] if components[item] else "",
+        ):
+            component_layer[target_index] = max(component_layer[target_index], component_layer[component_index] + 1)
+            component_indegree[target_index] -= 1
+            if component_indegree[target_index] == 0:
+                ready.append(target_index)
+                ready.sort(key=lambda item: components[item][0] if components[item] else "")
+
+    layer_modules: Dict[int, List[str]] = defaultdict(list)
+    for module in modules:
+        layer = component_layer.get(component_by_module.get(module, 0), 0)
+        layer_modules[layer].append(module)
+    for layer in layer_modules:
+        layer_modules[layer].sort()
+
+    inbound_dependencies: Counter[str] = Counter()
+    outbound_dependencies: Counter[str] = Counter()
+    inbound_calls: Counter[str] = Counter()
+    outbound_calls: Counter[str] = Counter()
+    dependencies: List[Dict[str, Any]] = []
+    for (source_module, target_module), dependency in sorted(dependency_stats.items()):
+        inbound_dependencies[target_module] += 1
+        outbound_dependencies[source_module] += 1
+        inbound_calls[target_module] += int(dependency["weight"])
+        outbound_calls[source_module] += int(dependency["weight"])
+        dependencies.append(
+            {
+                "id": f"module-call:{source_module}:{target_module}",
+                "sourceId": f"module:{source_module}",
+                "targetId": f"module:{target_module}",
+                **dependency,
+                "ambiguous": bool(dependency["ambiguousEdgeCount"]),
+            }
+        )
+
+    module_packets: List[Dict[str, Any]] = []
+    cyclic_modules: set[str] = set()
+    for component in components:
+        if len(component) > 1:
+            cyclic_modules.update(component)
+
+    for module in modules:
+        records = functions_by_module.get(module, [])
+        entrypoints = sorted(
+            (record for record in records if not record.callers and len(record.callees) >= 2),
+            key=lambda record: (-len(record.callees), record.file, record.line),
+        )
+        isolated_count = sum(1 for record in records if record.degree == 0)
+        hotspot_count = sum(1 for record in records if record.degree >= 10)
+        ambiguous_count = sum(sum(record.ambiguous_calls.values()) for record in records)
+        layer = component_layer.get(component_by_module.get(module, 0), 0)
+        signals: List[Dict[str, Any]] = []
+        if parse_errors_by_module[module]:
+            signals.append({"kind": "parse-errors", "severity": "warning", "count": parse_errors_by_module[module]})
+        if ambiguous_count:
+            signals.append({"kind": "ambiguous-calls", "severity": "investigate", "count": ambiguous_count})
+        if hotspot_count:
+            signals.append({"kind": "high-degree-functions", "severity": "review", "count": hotspot_count})
+        if isolated_count:
+            signals.append({"kind": "isolated-functions", "severity": "review", "count": isolated_count})
+        if module in cyclic_modules:
+            signals.append({"kind": "dependency-cycle", "severity": "review", "count": 1})
+        module_packets.append(
+            {
+                "id": f"module:{module}",
+                "module": module,
+                "layer": layer,
+                "order": layer_modules[layer].index(module),
+                **module_stats[module],
+                "files": sorted(path for path in files_by_module[module] if path),
+                "inboundDependencies": inbound_dependencies[module],
+                "outboundDependencies": outbound_dependencies[module],
+                "inboundCalls": inbound_calls[module],
+                "outboundCalls": outbound_calls[module],
+                "entrypointCandidates": [record.id for record in entrypoints[:8]],
+                "isolatedFunctionCount": isolated_count,
+                "hotspotCount": hotspot_count,
+                "ambiguousCallCount": ambiguous_count,
+                "parseErrorCount": parse_errors_by_module[module],
+                "cyclic": module in cyclic_modules,
+                "signals": signals,
+            }
+        )
+
+    scan_signals: List[Dict[str, Any]] = []
+    for key, severity in (
+        ("readErrors", "warning"),
+        ("skippedLarge", "coverage"),
+        ("skippedByGitIgnore", "policy"),
+        ("skippedByPath", "policy"),
+    ):
+        count = int(scan_meta.get(key) or 0)
+        if count:
+            scan_signals.append({"kind": key, "severity": severity, "count": count})
+    if scan_meta.get("maxFilesHit"):
+        scan_signals.append({"kind": "maxFilesHit", "severity": "coverage", "count": 1})
+    if parse_errors:
+        scan_signals.append({"kind": "parseErrors", "severity": "warning", "count": len(parse_errors)})
+
+    return {
+        "schemaVersion": "repo-architecture-map/v1",
+        "summary": {
+            "moduleCount": len(modules),
+            "dependencyCount": len(dependencies),
+            "layerCount": len(layer_modules),
+            "entryModuleCount": sum(1 for module in modules if inbound_dependencies[module] == 0),
+            "leafModuleCount": sum(1 for module in modules if outbound_dependencies[module] == 0),
+            "cyclicModuleCount": len(cyclic_modules),
+            "isolatedFunctionCount": sum(1 for record in functions if record.degree == 0),
+            "hotspotCount": sum(1 for record in functions if record.degree >= 10),
+            "parseErrorCount": len(parse_errors),
+            "scanSignals": scan_signals,
+        },
+        "layers": [
+            {"index": layer, "modules": [f"module:{module}" for module in layer_modules[layer]]}
+            for layer in sorted(layer_modules)
+        ],
+        "modules": sorted(module_packets, key=lambda item: (int(item["layer"]), int(item["order"]), str(item["module"]))),
+        "dependencies": dependencies,
+        "claimCalibration": {
+            "fact": "Module layers aggregate detected function-call edges and file containment from this scan.",
+            "inference": "High fan-in, cycles, hotspots, and ambiguity are review signals, not proof of a defect.",
+            "unknown": "Dynamic dispatch, reflection, dependency injection, and runtime-only paths may not appear.",
+        },
+    }
+
+
+def build_ai_readout(
+    functions: List[FunctionRecord],
+    edges: List[Dict[str, Any]],
+    files: List[Dict[str, Any]],
+    scan_meta: Dict[str, Any],
+    architecture: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     hotspots = sorted(functions, key=lambda item: (-item.degree, -len(item.callers), item.file, item.line))[:20]
     ambiguous_counter: Counter[str] = Counter()
     external_counter: Counter[str] = Counter()
@@ -912,6 +1182,10 @@ def build_ai_readout(functions: List[FunctionRecord], edges: List[Dict[str, Any]
     if scan_meta.get("skippedLarge"):
         recommendations.append("Large files were skipped; raise maxFileBytes or add a parser-side chunking strategy for full coverage.")
 
+    architecture_summary = dict((architecture or {}).get("summary") or {})
+    architecture_modules = list((architecture or {}).get("modules") or [])
+    architecture_dependencies = list((architecture or {}).get("dependencies") or [])
+
     return {
         "purpose": "AI-friendly repo relation packet for orientation, refactor planning, test impact analysis, and hotspot review.",
         "claimCalibration": {
@@ -943,6 +1217,23 @@ def build_ai_readout(functions: List[FunctionRecord], edges: List[Dict[str, Any]
             for record in entrypoints[:12]
         ],
         "denseModules": sorted(module_stats.values(), key=lambda item: (-int(item["functions"]), item["module"]))[:12],
+        "architectureSummary": architecture_summary,
+        "architectureFlow": {
+            "modules": [
+                {
+                    "module": item.get("module"),
+                    "layer": item.get("layer"),
+                    "files": item.get("fileCount"),
+                    "functions": item.get("functionCount"),
+                    "inboundDependencies": item.get("inboundDependencies"),
+                    "outboundDependencies": item.get("outboundDependencies"),
+                    "cyclic": item.get("cyclic"),
+                    "signals": item.get("signals"),
+                }
+                for item in architecture_modules
+            ],
+            "dependencies": architecture_dependencies,
+        },
         "ambiguousCallNames": [
             {"name": name, "count": count}
             for name, count in ambiguous_counter.most_common(20)
@@ -1010,8 +1301,10 @@ def build_repo_graph(
     functions = dedupe_functions(functions)
     edges = build_edges(functions, include_ambiguous=include_ambiguous, ambiguous_target_limit=4)
     files_out = file_summary(files, functions)
-    ai_readout = build_ai_readout(functions, edges, files_out, scan_meta)
+    architecture = build_architecture_map(functions, edges, files_out, parse_errors, scan_meta)
+    ai_readout = build_ai_readout(functions, edges, files_out, scan_meta, architecture)
     capped_functions, capped_edges, truncated = cap_graph(functions, edges, max_nodes)
+    architecture["summary"]["functionGraphTruncated"] = truncated
 
     nodes_out = [
         {
@@ -1067,5 +1360,6 @@ def build_repo_graph(
         "nodes": nodes_out,
         "edges": capped_edges,
         "parseErrors": parse_errors[:100],
+        "architecture": architecture,
         "aiReadout": ai_readout,
     }

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import control, settings, storage
-from backend.app.secrets import write_auth_backend_mode_override
+from backend.app.secrets import read_anthropic_workspace_id, write_auth_backend_mode_override
 from runtime.engine import RuntimeErrorWithCode
 
 
@@ -53,6 +53,27 @@ class SettingsTests(unittest.TestCase):
             settings.set_auth_keys({"provider": "anthropic", "clear": 1}, self.root)
             self.assertEqual(control.read_auth_key_pool(self.root, "openai"), ["sk-openai-1111"])
             self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), [])
+
+    def test_set_auth_keys_stores_anthropic_workspace_outside_key_pool(self) -> None:
+        env = {
+            "LOOP_SECRET_BACKEND": "local_file",
+            "LOOP_ANTHROPIC_WORKSPACE_ID": "",
+            "ANTHROPIC_WORKSPACE_ID": "",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            status = settings.set_auth_keys(
+                {
+                    "provider": "anthropic",
+                    "appendKey": "sk-anthropic-2222",
+                    "workspaceId": "wrkspc_settings_test",
+                },
+                self.root,
+            )
+            workspace_id = read_anthropic_workspace_id(self.root / "Auth.txt")
+            self.assertEqual(control.read_auth_key_pool(self.root, "anthropic"), ["sk-anthropic-2222"])
+            self.assertEqual(workspace_id, "wrkspc_settings_test")
+            self.assertTrue(status["providerGroups"]["anthropic"]["workspaceConfigured"])
+            self.assertIn("AntWrkspc:wrkspc_settings_test", (self.root / "Auth.txt").read_text(encoding="utf-8"))
 
     def test_set_auth_keys_migrates_provider_group_into_shared_auth_file(self) -> None:
         (self.root / "Auth.anthropic.txt").write_text("sk-legacy-1111\n", encoding="utf-8")
@@ -109,7 +130,7 @@ class SettingsTests(unittest.TestCase):
                 "summarizerProvider": "openai",
                 "summarizerModel": "gpt-5.4-mini",
                 "frontMode": "eval",
-                "engineVersion": "v2",
+                "engineVersion": "v1",
                 "contextMode": "full",
                 "directBaselineMode": "both",
                 "directProvider": "anthropic",
@@ -150,7 +171,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["contextMode"], "full")
         self.assertEqual(result["directBaselineMode"], "both")
         self.assertEqual(result["directProvider"], "anthropic")
-        self.assertEqual(result["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(result["directModel"], "claude-sonnet-4-6")
         self.assertEqual(result["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
         self.assertEqual(result["summarizerHarness"]["concision"], "none")
         self.assertEqual(result["ollamaBaseUrl"], "http://192.168.0.26:11434")
@@ -174,7 +195,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["contextMode"], "full")
         self.assertEqual(state["activeTask"]["runtime"]["directBaselineMode"], "both")
         self.assertEqual(state["activeTask"]["runtime"]["directProvider"], "anthropic")
-        self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["activeTask"]["runtime"]["directModel"], "claude-sonnet-4-6")
         self.assertEqual(state["activeTask"]["runtime"]["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
         self.assertEqual(state["activeTask"]["runtime"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(state["activeTask"]["runtime"]["providerRouting"]["ollama"]["selectionMode"], "mix")
@@ -192,20 +213,20 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["draft"]["contextMode"], "full")
         self.assertEqual(state["draft"]["directBaselineMode"], "both")
         self.assertEqual(state["draft"]["directProvider"], "anthropic")
-        self.assertEqual(state["draft"]["directModel"], "claude-sonnet-4-20250514")
+        self.assertEqual(state["draft"]["directModel"], "claude-sonnet-4-6")
         self.assertEqual(state["draft"]["directHarness"]["instruction"], "Give the fullest factual baseline you can support.")
         self.assertEqual(state["draft"]["ollamaBaseUrl"], "http://192.168.0.26:11434")
         self.assertEqual(state["draft"]["providerRouting"]["ollama"]["selectionMode"], "mix")
         self.assertEqual(state["draft"]["targetTimeouts"]["commander"], 100)
         self.assertEqual(state["draft"]["targetTimeouts"]["workerDefault"], 120)
         self.assertEqual(state["draft"]["targetTimeouts"]["workers"]["A"], 80)
-        self.assertFalse(state["activeTask"]["runtime"]["research"]["enabled"])
+        self.assertTrue(state["activeTask"]["runtime"]["research"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["localFiles"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["githubTools"]["enabled"])
         self.assertTrue(state["activeTask"]["runtime"]["knowledgebase"]["enabled"])
         self.assertEqual(state["activeTask"]["runtime"]["knowledgebase"]["bankId"], "msp-knowledgebase")
         self.assertFalse(state["activeTask"]["runtime"]["knowledgebase"]["includeRuntime"])
-        self.assertFalse(state["draft"]["researchEnabled"])
+        self.assertTrue(state["draft"]["researchEnabled"])
         self.assertTrue(state["draft"]["localFilesEnabled"])
         self.assertTrue(state["draft"]["githubToolsEnabled"])
         self.assertTrue(state["draft"]["knowledgebaseEnabled"])
