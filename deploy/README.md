@@ -1,6 +1,8 @@
 # Deploy Stack
 
-This directory holds the Python-only deployment shape for ParaLLM.
+This directory holds the current Python-only development deployment shape for ParaLLM.
+
+It is not the accepted production artifact boundary. Both images currently install the Python dependency graph and copy the source checkout, while hosted-dev packaging intentionally carries QA and diagnostic tooling. The native production target is an allowlisted binary package with no tests, smoke harnesses, fixtures, source tree, interpreter, compiler, or silent compatibility fallback. See [Native Runtime and Vectorese Memory Architecture](../docs/native-runtime-architecture.md).
 
 ## Current Shape
 

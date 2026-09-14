@@ -323,6 +323,80 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(draft["summarizerModelSource"], "openai_api")
         self.assertEqual(draft["summarizerAuthRoute"], "api_key")
 
+    def test_save_draft_round_trips_lane_and_graph_operator_controls(self) -> None:
+        defaults = control.default_draft_state()
+        graph = control.orchestration_catalog()["defaultGraph"]
+        graph["nodes"]["workers"].update(
+            {
+                "x": 377,
+                "y": 244,
+                "width": 286,
+                "spawnCount": 4,
+                "packetMode": "references",
+                "timeoutControlMode": "override",
+                "timeoutSeconds": 93,
+            }
+        )
+        workers = [
+            {
+                "id": "A",
+                "type": "proponent",
+                "label": "Feasibility lead",
+                "role": "utility",
+                "focus": "prove a practical execution path",
+                "temperature": "balanced",
+                "model": defaults["model"],
+                "activeFromRound": 1,
+                "harness": {"concision": "balanced", "instruction": "Quantify the workable path."},
+            },
+            {
+                "id": "B",
+                "type": "security",
+                "label": "Hostile review",
+                "role": "adversarial",
+                "focus": "privilege boundaries and concrete exploit paths",
+                "temperature": "hot",
+                "model": defaults["model"],
+                "activeFromRound": 2,
+                "harness": {"concision": "tight", "instruction": "Reject unsupported safety claims."},
+            },
+        ]
+
+        saved = control.save_draft(
+            {
+                "objective": "Persist the operator-authored V2 contract.",
+                "provider": defaults["provider"],
+                "model": defaults["model"],
+                "modelSource": defaults["modelSource"],
+                "workers": workers,
+                "summarizerHarness": {
+                    "concision": "expansive",
+                    "instruction": "Resolve pressure into one accountable answer.",
+                },
+                "dynamicSpinupEnabled": True,
+                "loopRounds": 5,
+                "engineGraph": graph,
+            },
+            self.root,
+        )["draft"]
+
+        self.assertEqual(saved["workers"][0]["label"], "Feasibility lead")
+        self.assertEqual(saved["workers"][1]["activeFromRound"], 2)
+        self.assertEqual(saved["workers"][1]["harness"]["instruction"], "Reject unsupported safety claims.")
+        self.assertEqual(saved["summarizerHarness"]["concision"], "expansive")
+        self.assertTrue(saved["dynamicSpinupEnabled"])
+        self.assertEqual(saved["loopRounds"], 5)
+        self.assertEqual(saved["engineGraph"]["nodes"]["workers"]["x"], 377)
+        self.assertEqual(saved["engineGraph"]["nodes"]["workers"]["spawnCount"], 4)
+        self.assertEqual(saved["engineGraph"]["nodes"]["workers"]["timeoutSeconds"], 93)
+
+        resaved = control.save_draft({"objective": "An unrelated composer edit."}, self.root)["draft"]
+
+        self.assertEqual(resaved["workers"], saved["workers"])
+        self.assertEqual(resaved["summarizerHarness"], saved["summarizerHarness"])
+        self.assertEqual(resaved["engineGraph"], saved["engineGraph"])
+        self.assertTrue(resaved["dynamicSpinupEnabled"])
+
     def test_default_draft_budget_is_cost_only(self) -> None:
         draft = control.default_draft_state()
 

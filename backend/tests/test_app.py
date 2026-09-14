@@ -47,6 +47,7 @@ class AppRouteTests(unittest.TestCase):
         self.assertIn("/webviewindex.html", paths)
         self.assertIn("/health", paths)
         self.assertIn("/v1/models", paths)
+        self.assertIn("/v1/orchestration/catalog", paths)
         self.assertIn("/v1/system/topology", paths)
         self.assertIn("/v1/system/infrastructure", paths)
         self.assertIn("/v1/repo/graph", paths)
@@ -130,6 +131,32 @@ class AppRouteTests(unittest.TestCase):
                 for model in payload["models"]
             )
         )
+
+    def test_orchestration_catalog_exposes_v2_lane_and_graph_contracts(self) -> None:
+        response = TestClient(create_app(self.root)).get("/v1/orchestration/catalog")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["schemaVersion"], "parallm.orchestration-catalog.v1")
+        self.assertEqual(payload["engineVersion"], "v2")
+        self.assertTrue(any(item["id"] == "security" for item in payload["workerTypes"]))
+        self.assertEqual({item["id"] for item in payload["temperatures"]}, {"cool", "balanced", "hot"})
+        self.assertIn("expansive", {item["id"] for item in payload["concisionModes"]})
+        self.assertEqual(payload["nodeContracts"]["workers"]["executionClass"], "fanout")
+        self.assertIn("workers", payload["defaultGraph"]["nodes"])
+        self.assertEqual(payload["limits"]["workersMin"], 2)
+
+    def test_orchestration_graph_projects_the_effective_run_mode(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "assets" / "replacement-shell.js").read_text(encoding="utf-8")
+        css = (root / "assets" / "replacement-shell.css").read_text(encoding="utf-8")
+
+        self.assertIn("function graphNodeEffectiveState", js)
+        self.assertIn('node.moduleType === "judge" && graphExecutionMode() === "live"', js)
+        self.assertIn('if (effectiveState.state !== "attached") return;', js)
+        self.assertIn('button.dataset.effectiveState = effectiveState.state;', js)
+        self.assertIn("Effective ${graphExecutionModeLabel()} topology", js)
+        self.assertIn(".igs-chain-node.is-detached", css)
 
     def test_root_serves_replacement_shell_defaults(self) -> None:
         client = TestClient(create_app())

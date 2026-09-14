@@ -1,0 +1,39 @@
+{
+  "area": {
+    "name": "Kotor",
+    "country": "Montenegro",
+    "lat": 42.4247,
+    "lon": 18.7712,
+    "half_span_deg": 0.0065,
+    "reason": "steep terrain, old town roads, dense buildings"
+  },
+  "selectedCorridor": {
+    "osmWayId": 165439817,
+    "name": "",
+    "highway": "residential",
+    "widthM": 5.5,
+    "pointCount": 13,
+    "lengthM": 123.03,
+    "reliefM": 43.0,
+    "meanReliefGrade": 0.3495
+  },
+  "cropBoundsMeters": {
+    "minX": -172.02,
+    "minY": -611.6,
+    "maxX": 108.16,
+    "maxY": -403.01
+  },
+  "generated": {
+    "baselinePanel": "curve road with bevel depth",
+    "variantPanel": "terrain-following roadbed ribbon mesh",
+    "nearbyRoads": 16,
+    "nearbyBuildings": 51
+  },
+  "limitations": [
+    "Roadbed mesh is a simple offset ribbon; it does not cut or flatten the DEM yet.",
+    "No true graph intersection split is performed in this A/B proof.",
+    "DEM banding remains visible because source elevation is coarse.",
+    "Side-by-side panels duplicate local context for visual comparison only."
+  ],
+  "nextCheck": "Add graph splitting and flatten terrain under the roadbed ribbon for the selected corridor."
+}

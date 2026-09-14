@@ -4,6 +4,20 @@
 
 Build a local prototype for a two-process reasoning loop that keeps independent viewpoints, shares only structured checkpoints, preserves contradictions, and maintains an audit trail of every meaningful step.
 
+## Current Strategic Target
+
+The prototype has now proved enough behavior to define the product boundary beyond Python-first experimentation. The accepted direction is documented in [ParaLLM Native Runtime and Vectorese Memory Architecture](docs/native-runtime-architecture.md).
+
+- Python remains the behavioral oracle during migration, not the final deployed runtime.
+- The product target is a headless Rust/C native core behind a stable C ABI, with the GUI as an optional presentation adapter.
+- Canonical memory and state move from JSON/JSONL to an embedded indexed binary store; human-readable output becomes an inspection projection.
+- V1 and V2 must compile into one native scheduler contract while preserving their distinct topologies.
+- PERCSI sensory input enters through typed observation-only frames and cannot create execution authority.
+- Production packaging is an allowlist artifact with no tests, smoke harnesses, fixtures, source tree, interpreter, compiler, or silent fallback path.
+- The same core must compile for Windows, Linux, and Android ARM64, with the Xiaomi Pad 8 Pro as the first embodied host.
+
+The older roadmap below records how the working prototype was built. Where it conflicts with the native architecture document, the native architecture is authoritative for future work.
+
 ## Core Idea
 
 This is not "two minds." It is two separate process lanes with distinct roles:
@@ -533,7 +547,7 @@ V2 starts as a modular engine track rather than an immediate runtime replacement
   - `requirements-ci.txt` pins the deployment Python graph
   - `requirements-dev.txt` adds CI/developer audit tooling on top of the pinned runtime graph
   - `.github/workflows/ci.yml` runs the repo QA on Linux with Python and Node installed deliberately
-  - `.github/dependabot.yml` keeps GitHub Actions and pip dependencies under automated update review
+  - Dependency updates are handled by reviewed human/agent maintenance instead of automated Dependabot PRs
   - `scripts/qa_supply_chain_check.py` enforces local browser assets, SHA-pinned workflows, pinned Python manifests, and a clean `pip-audit` result
   - `SECURITY.md` records the current reporting and dependency-hardening posture for the repo
 

@@ -1,0 +1,34 @@
+{
+  "area": {
+    "name": "Kotor",
+    "country": "Montenegro",
+    "lat": 42.4247,
+    "lon": 18.7712,
+    "half_span_deg": 0.0065,
+    "reason": "steep terrain, old town roads, dense buildings"
+  },
+  "bbox": {
+    "south": 42.4182,
+    "west": 18.7647,
+    "north": 42.431200000000004,
+    "east": 18.7777
+  },
+  "sources": {
+    "osm": "https://overpass-api.de/api/interpreter",
+    "overpassQuery": "\n[out:json][timeout:35];\n(\n  way[\"highway\"~\"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|path|footway|cycleway)$\"](42.4182,18.7647,42.431200000000004,18.7777);\n  way[\"building\"](42.4182,18.7647,42.431200000000004,18.7777);\n  node[\"place\"](42.4182,18.7647,42.431200000000004,18.7777);\n  node[\"population\"](42.4182,18.7647,42.431200000000004,18.7777);\n  way[\"population\"](42.4182,18.7647,42.431200000000004,18.7777);\n  relation[\"population\"](42.4182,18.7647,42.431200000000004,18.7777);\n);\nout tags geom;\n",
+    "elevation": "https://api.open-elevation.com/api/v1/lookup",
+    "elevationDataset": "Open-Elevation API; public DEM aggregation per provider"
+  },
+  "generated": {
+    "terrainMesh": true,
+    "roadCurveCount": 344,
+    "buildingMassingCount": 300,
+    "junctionPadCount": 30
+  },
+  "limitations": [
+    "Roads are curve centerlines with bevel depth, not yet terrain-cut roadbed ribbons.",
+    "Junctions are heuristic pads based on endpoint degree; mid-way intersections need graph splitting.",
+    "Elevation is sampled from 90 m DEM, too coarse for final high-detail game terrain.",
+    "Buildings are simple massing extrusions from OSM footprints and tags."
+  ]
+}

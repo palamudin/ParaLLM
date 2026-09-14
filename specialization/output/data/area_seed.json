@@ -1,0 +1,11 @@
+{
+  "seed": 1780366549,
+  "selected": {
+    "name": "Kotor",
+    "country": "Montenegro",
+    "lat": 42.4247,
+    "lon": 18.7712,
+    "half_span_deg": 0.0065,
+    "reason": "steep terrain, old town roads, dense buildings"
+  }
+}

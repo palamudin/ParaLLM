@@ -1,0 +1,136 @@
+{
+  "area": {
+    "name": "San Francisco",
+    "country": "United States",
+    "lat": 37.80215,
+    "lon": -122.41885,
+    "half_span_deg": 0.0048,
+    "reason": "Russian Hill / Nob Hill steep urban grid, Lombard-adjacent road network"
+  },
+  "selectedCorridor": {
+    "osmWayId": 1253937430,
+    "name": "Union Street",
+    "highway": "tertiary",
+    "widthM": 8.0,
+    "pointCount": 16,
+    "lengthM": 292.09,
+    "reliefM": 66.0,
+    "meanReliefGrade": 0.226
+  },
+  "corridorProfile": {
+    "segmentCount": 15,
+    "minSegmentLengthM": 1.779,
+    "maxSegmentLengthM": 76.028,
+    "maxAbsSegmentGrade": 0.3276,
+    "meanAbsSegmentGrade": 0.2039,
+    "minElevationM": 28.0,
+    "maxElevationM": 94.0
+  },
+  "cropBoundsMeters": {
+    "minX": 330.11,
+    "minY": -341.7,
+    "maxX": 788.55,
+    "maxY": -125.72
+  },
+  "generated": {
+    "baselinePanel": "curve road with bevel depth",
+    "variantPanel": "terrain-following roadbed ribbon mesh",
+    "flattenedPanel": "terrain-flattened roadbed ribbon with first-order graph-node junction geometry",
+    "nearbyRoads": 23,
+    "nearbyBuildings": 59,
+    "junctionCandidates": 2,
+    "splitCorridorPointCount": 17,
+    "junctionPads": 2,
+    "connectorStubs": 2
+  },
+  "junctions": [
+    {
+      "stationM": 205.492,
+      "x": 500.64371403888185,
+      "y": -243.16138167693398,
+      "z": 85.07223414221298,
+      "segmentIndex": 11,
+      "segmentT": 0.0381,
+      "distanceM": 6.703,
+      "kinds": [
+        "near_endpoint"
+      ],
+      "connections": [
+        {
+          "roadId": 1513956266,
+          "highway": "footway",
+          "kind": "near_endpoint",
+          "distanceM": 6.703,
+          "endpoint": "end"
+        }
+      ]
+    },
+    {
+      "stationM": 292.094,
+      "x": 415.10660501070396,
+      "y": -256.69754100008333,
+      "z": 94.0,
+      "segmentIndex": 14,
+      "segmentT": 1.0,
+      "distanceM": 0.0,
+      "kinds": [
+        "near_endpoint"
+      ],
+      "connections": [
+        {
+          "roadId": 399156531,
+          "highway": "tertiary",
+          "kind": "near_endpoint",
+          "distanceM": 0.0,
+          "endpoint": "start"
+        }
+      ]
+    }
+  ],
+  "continuity": {
+    "validationType": "surface overlap between pad and connector stubs; not shared-vertex or boolean-unioned mesh connectivity",
+    "surfaceOverlapPass": true,
+    "mergedMeshConnectivityTested": false,
+    "checks": [
+      {
+        "stationM": 205.492,
+        "padRadiusM": 7.0,
+        "corridorPassesThroughPad": true,
+        "connectors": [
+          {
+            "roadId": 1513956266,
+            "endpoint": "end",
+            "startGapM": 0.0,
+            "stubLengthM": 86.437,
+            "surfaceOverlapsPad": true
+          }
+        ],
+        "surfaceOverlapPass": true
+      },
+      {
+        "stationM": 292.094,
+        "padRadiusM": 7.0,
+        "corridorPassesThroughPad": true,
+        "connectors": [
+          {
+            "roadId": 399156531,
+            "endpoint": "start",
+            "startGapM": 0.0,
+            "stubLengthM": 13.181,
+            "surfaceOverlapsPad": true
+          }
+        ],
+        "surfaceOverlapPass": true
+      }
+    ]
+  },
+  "limitations": [
+    "Flattening is local to the selected corridor and is not yet propagated into full-road graph topology.",
+    "Junction geometry is first-order pad-and-stub geometry; it is not yet rule-based road engineering.",
+    "Continuity is currently surface-overlap validation, not shared-vertex or boolean-unioned mesh connectivity.",
+    "Graph splitting currently recognizes exact crossings plus near-endpoint junction candidates; this corridor has endpoint graph nodes rather than mid-segment crossings.",
+    "DEM banding remains visible because source elevation is coarse.",
+    "Side-by-side panels duplicate local context for visual comparison only."
+  ],
+  "nextCheck": "Replace overlapping pad/stub surfaces with shared-vertex or boolean-unioned junction meshes, then add road-rule-based bend and grade smoothing."
+}

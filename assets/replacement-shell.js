@@ -2,6 +2,7 @@
   const API = {
     state: "/v1/state",
     models: "/v1/models",
+    orchestrationCatalog: "/v1/orchestration/catalog",
     draft: "/v1/draft",
     frontEvalRuns: "/v1/front/eval/runs",
     frontLiveRuns: "/v1/front/live/runs",
@@ -67,6 +68,14 @@
     authRequirements: null,
     controlsLoaded: false,
     providerPaneRole: "worker",
+    orchestrationCatalog: null,
+    selectedLaneId: "",
+    laneDraft: null,
+    graphDraft: null,
+    graphSaved: null,
+    selectedGraphNodeId: "",
+    graphDrag: null,
+    orchestrationFocusRestore: null,
     reasoningEfforts: {
       worker: "low",
       summarizer: "low",
@@ -236,6 +245,8 @@
     headerRuntime: document.getElementById("previewHeaderRuntime"),
     headerBaseline: document.getElementById("previewHeaderBaseline"),
     headerProvider: document.getElementById("previewHeaderProvider"),
+    laneConfigOpen: document.getElementById("previewLaneConfigOpen"),
+    chainConfigOpen: document.getElementById("previewChainConfigOpen"),
     headerVetting: document.getElementById("previewHeaderVetting"),
     headerProgress: document.getElementById("previewHeaderProgress"),
     headerElapsed: document.getElementById("previewHeaderElapsed"),
@@ -291,6 +302,57 @@
     debugSchedulerEvents: document.getElementById("debugSchedulerEvents"),
     debugStepLog: document.getElementById("debugStepLog"),
     debugEventLog: document.getElementById("debugEventLog"),
+    laneModal: document.getElementById("orchestrationLaneModal"),
+    laneModalClose: document.getElementById("orchestrationLaneClose"),
+    laneRoster: document.getElementById("orchestrationLaneRoster"),
+    laneForm: document.getElementById("orchestrationLaneForm"),
+    laneKicker: document.getElementById("orchestrationLaneKicker"),
+    laneEditorTitle: document.getElementById("orchestrationLaneEditorTitle"),
+    laneState: document.getElementById("orchestrationLaneState"),
+    laneStatus: document.getElementById("orchestrationLaneStatus"),
+    laneDynamicSpinup: document.getElementById("orchestrationDynamicSpinup"),
+    laneLoopRounds: document.getElementById("orchestrationLoopRounds"),
+    laneAdd: document.getElementById("orchestrationLaneAdd"),
+    laneRemove: document.getElementById("orchestrationLaneRemove"),
+    laneWorkerFields: document.getElementById("orchestrationWorkerFields"),
+    laneCoreInheritance: document.getElementById("orchestrationCoreInheritance"),
+    laneLabel: document.getElementById("orchestrationLaneLabel"),
+    laneType: document.getElementById("orchestrationLaneType"),
+    laneRole: document.getElementById("orchestrationLaneRole"),
+    laneTemperature: document.getElementById("orchestrationLaneTemperature"),
+    laneFocus: document.getElementById("orchestrationLaneFocus"),
+    laneModel: document.getElementById("orchestrationLaneModel"),
+    laneActiveRound: document.getElementById("orchestrationLaneActiveRound"),
+    laneConcision: document.getElementById("orchestrationLaneConcision"),
+    laneInstruction: document.getElementById("orchestrationLaneInstruction"),
+    graphModal: document.getElementById("orchestrationChainModal"),
+    graphModalClose: document.getElementById("orchestrationChainClose"),
+    graphStage: document.getElementById("orchestrationGraphStage"),
+    graphEdges: document.getElementById("orchestrationGraphEdges"),
+    graphNodes: document.getElementById("orchestrationGraphNodes"),
+    graphForm: document.getElementById("orchestrationGraphForm"),
+    graphKicker: document.getElementById("orchestrationGraphKicker"),
+    graphTitle: document.getElementById("orchestrationGraphTitle"),
+    graphState: document.getElementById("orchestrationGraphState"),
+    graphStatus: document.getElementById("orchestrationGraphStatus"),
+    graphLabel: document.getElementById("orchestrationGraphLabel"),
+    graphKickerInput: document.getElementById("orchestrationGraphKickerInput"),
+    graphMeta: document.getElementById("orchestrationGraphMeta"),
+    graphPacket: document.getElementById("orchestrationGraphPacket"),
+    graphBlocking: document.getElementById("orchestrationGraphBlocking"),
+    graphX: document.getElementById("orchestrationGraphX"),
+    graphY: document.getElementById("orchestrationGraphY"),
+    graphWidth: document.getElementById("orchestrationGraphWidth"),
+    graphSpawnField: document.getElementById("orchestrationGraphSpawnField"),
+    graphSpawn: document.getElementById("orchestrationGraphSpawn"),
+    graphTimeoutMode: document.getElementById("orchestrationGraphTimeoutMode"),
+    graphTimeout: document.getElementById("orchestrationGraphTimeout"),
+    graphEnabledField: document.getElementById("orchestrationGraphEnabledField"),
+    graphEnabled: document.getElementById("orchestrationGraphEnabled"),
+    graphContract: document.getElementById("orchestrationGraphContract"),
+    graphConnections: document.getElementById("orchestrationGraphConnections"),
+    graphRevert: document.getElementById("orchestrationGraphRevert"),
+    graphReset: document.getElementById("orchestrationGraphReset"),
     authRequirementModal: document.getElementById("authRequirementModal"),
     authRequirementClose: document.getElementById("authRequirementClose"),
     authRequirementBody: document.getElementById("authRequirementBody"),
@@ -487,6 +549,11 @@
 
   async function loadProviderModelCatalog() {
     applyProviderModelCatalog(await fetchJson(API.models));
+  }
+
+  async function loadOrchestrationCatalog() {
+    runtimeState.orchestrationCatalog = await fetchJson(API.orchestrationCatalog);
+    return runtimeState.orchestrationCatalog;
   }
 
   function normalizeModelSource(source) {
@@ -2174,6 +2241,7 @@
         elements.summarizerModel.value = elements.workerModel.value;
       }
     }
+    applyDefaultWorkerModelToDraft();
     syncProviderPaneButtons();
   }
 
@@ -3602,7 +3670,7 @@
       vettingEnabled: control.vettingEnabled === "1",
       loopRounds: control.loopRounds,
       loopDelayMs: Number(existing.loopDelayMs || 1000),
-      workers: Array.isArray(existing.workers) ? existing.workers.map((worker) => Object.assign({}, worker, { model: control.model, modelSource: control.modelSource })) : [],
+      workers: Array.isArray(existing.workers) ? clone(existing.workers) : [],
     };
   }
 
@@ -3635,6 +3703,670 @@
         elements.draftState.textContent = "Draft sync failed: " + String(error.message || error);
       });
     }, 450);
+  }
+
+  const ORCHESTRATION_CORE_LANE_ID = "__core__";
+  const ORCHESTRATION_GRAPH_NS = "http://www.w3.org/2000/svg";
+  const ORCHESTRATION_NODE_HEIGHT = 92;
+
+  function orchestrationLimits() {
+    return runtimeState.orchestrationCatalog?.limits || {};
+  }
+
+  function clampNumber(value, minimum, maximum, fallback) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(minimum, Math.min(maximum, Math.round(parsed)));
+  }
+
+  function replacePlainOptions(select, options, selectedValue) {
+    if (!select) return;
+    const preferred = String(selectedValue ?? "");
+    select.replaceChildren();
+    (Array.isArray(options) ? options : []).forEach((entry) => {
+      const option = document.createElement("option");
+      option.value = String(entry?.value ?? "");
+      option.textContent = String(entry?.label ?? entry?.value ?? "");
+      if (entry?.title) option.title = String(entry.title);
+      select.appendChild(option);
+    });
+    if (Array.from(select.options).some((option) => option.value === preferred)) {
+      select.value = preferred;
+    }
+  }
+
+  function setOrchestrationModalOpen(modal, trigger) {
+    if (!modal) return;
+    runtimeState.orchestrationFocusRestore = trigger || document.activeElement;
+    modal.hidden = false;
+    document.body.classList.add("igs-orchestration-open");
+  }
+
+  function closeOrchestrationModal(modal) {
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    if (elements.laneModal?.hidden && elements.graphModal?.hidden) {
+      document.body.classList.remove("igs-orchestration-open");
+    }
+    const restore = runtimeState.orchestrationFocusRestore;
+    runtimeState.orchestrationFocusRestore = null;
+    if (restore && typeof restore.focus === "function") restore.focus();
+  }
+
+  async function persistOrchestrationDraft(patch, statusElement) {
+    clearTimeout(runtimeState.saveTimer);
+    runtimeState.saveTimer = null;
+    runtimeState.draft = Object.assign({}, runtimeState.draft || {}, clone(patch || {}));
+    const payload = Object.assign(draftPayloadForSave(), clone(patch || {}));
+    if (statusElement) statusElement.textContent = "Validating and saving V2 contract...";
+    if (elements.draftState) elements.draftState.textContent = "Saving staged V2 contract...";
+    const response = await fetchJson(API.draft, jsonPostOptions(payload));
+    runtimeState.draft = clone(response?.draft || payload);
+    if (elements.loopRounds) elements.loopRounds.value = String(runtimeState.draft.loopRounds || elements.loopRounds.value || 1);
+    if (elements.draftState) elements.draftState.textContent = "Staged draft synced to /v1/draft.";
+    updateNarrative();
+    return runtimeState.draft;
+  }
+
+  function applyDefaultWorkerModelToDraft() {
+    const model = selectedModelId(elements.workerModel);
+    if (!model || !Array.isArray(runtimeState.draft?.workers)) return;
+    runtimeState.draft.workers = runtimeState.draft.workers.map((worker) => Object.assign({}, worker, { model }));
+    if (Array.isArray(runtimeState.laneDraft?.workers)) {
+      runtimeState.laneDraft.workers = runtimeState.laneDraft.workers.map((worker) => Object.assign({}, worker, { model }));
+    }
+  }
+
+  function laneCatalogEntry(laneType) {
+    return (runtimeState.orchestrationCatalog?.workerTypes || []).find((entry) => entry.id === laneType) || null;
+  }
+
+  function selectedStagedLane() {
+    if (runtimeState.selectedLaneId === ORCHESTRATION_CORE_LANE_ID) return null;
+    return (runtimeState.laneDraft?.workers || []).find((worker) => worker.id === runtimeState.selectedLaneId) || null;
+  }
+
+  function laneModelOptions(worker) {
+    const provider = String(runtimeState.draft?.provider || defaultProviderId());
+    const source = normalizeModelSource(runtimeState.draft?.modelSource);
+    let options = modelOptions(provider);
+    if (provider === "openai") {
+      options = options.filter((option) => normalizeModelSource(option.source) === source);
+    }
+    const seen = new Set();
+    const result = options.reduce((items, option) => {
+      const model = String(option.model || parseModelSelection(option.value).model || "").trim();
+      if (!model || seen.has(model)) return items;
+      seen.add(model);
+      items.push({ value: model, label: modelOptionDisplayLabel(option) });
+      return items;
+    }, []);
+    const currentModel = String(worker?.model || runtimeState.draft?.model || "").trim();
+    if (currentModel && !seen.has(currentModel)) {
+      result.unshift({ value: currentModel, label: currentModel + " (current)" });
+    }
+    return result;
+  }
+
+  function populateLaneCatalogControls(worker) {
+    replacePlainOptions(
+      elements.laneType,
+      (runtimeState.orchestrationCatalog?.workerTypes || []).map((entry) => ({ value: entry.id, label: entry.label || entry.id })),
+      worker?.type || "sceptic"
+    );
+    replacePlainOptions(
+      elements.laneTemperature,
+      (runtimeState.orchestrationCatalog?.temperatures || []).map((entry) => ({ value: entry.id, label: entry.label || entry.id, title: entry.instruction || "" })),
+      worker?.temperature || "balanced"
+    );
+    replacePlainOptions(
+      elements.laneConcision,
+      (runtimeState.orchestrationCatalog?.concisionModes || []).map((entry) => ({ value: entry.id, label: entry.label || entry.id })),
+      worker?.harness?.concision || "tight"
+    );
+    replacePlainOptions(elements.laneModel, laneModelOptions(worker), worker?.model || runtimeState.draft?.model || "");
+  }
+
+  function applyLaneEditorToDraft() {
+    if (!runtimeState.laneDraft || !runtimeState.selectedLaneId) return;
+    const limits = orchestrationLimits();
+    if (runtimeState.selectedLaneId === ORCHESTRATION_CORE_LANE_ID) {
+      runtimeState.laneDraft.summarizerHarness = {
+        concision: String(elements.laneConcision?.value || "none"),
+        instruction: String(elements.laneInstruction?.value || "").trim().slice(0, Number(limits.instructionMaxChars || 600)),
+      };
+      return;
+    }
+    const worker = selectedStagedLane();
+    if (!worker) return;
+    worker.label = String(elements.laneLabel?.value || worker.label || worker.id).trim() || worker.id;
+    worker.type = String(elements.laneType?.value || worker.type || "sceptic");
+    worker.role = String(elements.laneRole?.value || worker.role || "adversarial").trim() || "adversarial";
+    worker.focus = String(elements.laneFocus?.value || worker.focus || "general adversarial review").trim() || "general adversarial review";
+    worker.temperature = String(elements.laneTemperature?.value || worker.temperature || "balanced");
+    worker.model = String(elements.laneModel?.value || worker.model || runtimeState.draft?.model || "").trim();
+    worker.activeFromRound = clampNumber(
+      elements.laneActiveRound?.value,
+      Number(limits.roundsMin || 1),
+      Number(limits.roundsMax || 12),
+      Number(worker.activeFromRound || 1)
+    );
+    worker.harness = {
+      concision: String(elements.laneConcision?.value || worker.harness?.concision || "tight"),
+      instruction: String(elements.laneInstruction?.value || "").trim().slice(0, Number(limits.instructionMaxChars || 600)),
+    };
+  }
+
+  function renderLaneRoster() {
+    if (!elements.laneRoster) return;
+    elements.laneRoster.replaceChildren();
+    const core = document.createElement("button");
+    core.type = "button";
+    core.className = "igs-lane-roster-button";
+    core.dataset.laneId = ORCHESTRATION_CORE_LANE_ID;
+    core.classList.toggle("is-selected", runtimeState.selectedLaneId === ORCHESTRATION_CORE_LANE_ID);
+    const coreName = document.createElement("strong");
+    coreName.textContent = "Core response";
+    const coreMeta = document.createElement("span");
+    coreMeta.textContent = "commander / review / summarizer";
+    core.append(coreName, coreMeta);
+    elements.laneRoster.appendChild(core);
+
+    (runtimeState.laneDraft?.workers || []).forEach((worker) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "igs-lane-roster-button";
+      button.dataset.laneId = worker.id;
+      button.classList.toggle("is-selected", runtimeState.selectedLaneId === worker.id);
+      const name = document.createElement("strong");
+      name.textContent = `${worker.id} / ${worker.label || worker.type || "Worker"}`;
+      const meta = document.createElement("span");
+      meta.textContent = `${worker.type || "worker"} / ${worker.temperature || "balanced"} / round ${worker.activeFromRound || 1}`;
+      button.append(name, meta);
+      elements.laneRoster.appendChild(button);
+    });
+  }
+
+  function renderLaneEditor() {
+    if (!runtimeState.laneDraft || !elements.laneForm) return;
+    const isCore = runtimeState.selectedLaneId === ORCHESTRATION_CORE_LANE_ID;
+    const worker = selectedStagedLane();
+    const hasSelection = isCore || Boolean(worker);
+    Array.from(elements.laneForm.elements).forEach((field) => {
+      if (field.type !== "submit") field.disabled = !hasSelection;
+    });
+    elements.laneWorkerFields.hidden = isCore || !worker;
+    Array.from(elements.laneWorkerFields.querySelectorAll("input, select, textarea")).forEach((field) => {
+      field.disabled = isCore || !worker;
+    });
+    elements.laneCoreInheritance.hidden = !isCore;
+    elements.laneRemove.disabled = isCore || !worker || (runtimeState.laneDraft.workers || []).length <= Number(orchestrationLimits().workersMin || 2);
+    if (!hasSelection) {
+      elements.laneEditorTitle.textContent = "Select a lane";
+      elements.laneKicker.textContent = "Lane";
+      elements.laneState.textContent = "No selection";
+      return;
+    }
+
+    if (isCore) {
+      const harness = runtimeState.laneDraft.summarizerHarness || { concision: "none", instruction: "" };
+      populateLaneCatalogControls({ harness, model: runtimeState.draft?.summarizerModel });
+      elements.laneEditorTitle.textContent = "Core response harness";
+      elements.laneKicker.textContent = "Lead path";
+      elements.laneState.textContent = "Inherited runtime";
+      elements.laneConcision.value = String(harness.concision || "none");
+      elements.laneInstruction.value = String(harness.instruction || "");
+      const provider = String(runtimeState.draft?.summarizerProvider || runtimeState.draft?.provider || defaultProviderId());
+      const model = String(runtimeState.draft?.summarizerModel || runtimeState.draft?.model || "default");
+      const reasoning = String(runtimeState.draft?.summarizerReasoningEffort || runtimeState.draft?.reasoningEffort || "low");
+      elements.laneCoreInheritance.textContent = `Commander, review, answer-now, and summarizer inherit ${provider} / ${model} / ${reasoning} reasoning. Their shared harness is edited here.`;
+    } else {
+      populateLaneCatalogControls(worker);
+      elements.laneEditorTitle.textContent = worker.label || `Worker ${worker.id}`;
+      elements.laneKicker.textContent = `Worker ${worker.id}`;
+      elements.laneState.textContent = Number(worker.activeFromRound || 1) > 1 ? `Joins round ${worker.activeFromRound}` : "Initial pressure";
+      elements.laneLabel.value = String(worker.label || "");
+      elements.laneType.value = String(worker.type || "sceptic");
+      elements.laneRole.value = String(worker.role || "adversarial");
+      elements.laneTemperature.value = String(worker.temperature || "balanced");
+      elements.laneFocus.value = String(worker.focus || "");
+      elements.laneModel.value = String(worker.model || runtimeState.draft?.model || "");
+      elements.laneActiveRound.value = String(worker.activeFromRound || 1);
+      elements.laneConcision.value = String(worker.harness?.concision || "tight");
+      elements.laneInstruction.value = String(worker.harness?.instruction || "");
+    }
+  }
+
+  function selectStagedLane(laneId) {
+    applyLaneEditorToDraft();
+    runtimeState.selectedLaneId = String(laneId || "");
+    renderLaneRoster();
+    renderLaneEditor();
+  }
+
+  async function openLaneConfiguration() {
+    if (!runtimeState.orchestrationCatalog) await loadOrchestrationCatalog();
+    const current = runtimeState.draft || {};
+    runtimeState.laneDraft = {
+      workers: clone(Array.isArray(current.workers) ? current.workers : []),
+      summarizerHarness: clone(current.summarizerHarness || { concision: "none", instruction: "" }),
+      dynamicSpinupEnabled: current.dynamicSpinupEnabled === true,
+      loopRounds: Number(current.loopRounds || 3),
+    };
+    const ids = new Set(runtimeState.laneDraft.workers.map((worker) => worker.id));
+    if (!ids.has(runtimeState.selectedLaneId) && runtimeState.selectedLaneId !== ORCHESTRATION_CORE_LANE_ID) {
+      runtimeState.selectedLaneId = runtimeState.laneDraft.workers[0]?.id || ORCHESTRATION_CORE_LANE_ID;
+    }
+    elements.laneDynamicSpinup.checked = runtimeState.laneDraft.dynamicSpinupEnabled;
+    elements.laneLoopRounds.value = String(runtimeState.laneDraft.loopRounds);
+    elements.laneStatus.textContent = "Changes remain staged until the lane contract is saved.";
+    renderLaneRoster();
+    renderLaneEditor();
+    setOrchestrationModalOpen(elements.laneModal, elements.laneConfigOpen);
+    window.requestAnimationFrame(() => elements.laneRoster.querySelector(".is-selected")?.focus());
+  }
+
+  function addStagedLane() {
+    applyLaneEditorToDraft();
+    const workers = runtimeState.laneDraft?.workers || [];
+    const limits = orchestrationLimits();
+    if (workers.length >= Number(limits.workersMax || 26)) {
+      elements.laneStatus.textContent = "All 26 worker slots are already assigned.";
+      return;
+    }
+    const usedIds = new Set(workers.map((worker) => String(worker.id || "").toUpperCase()));
+    const id = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").find((candidate) => !usedIds.has(candidate));
+    if (!id) return;
+    const usedTypes = new Set(workers.map((worker) => worker.type));
+    const definition = (runtimeState.orchestrationCatalog?.workerTypes || []).find((entry) => !usedTypes.has(entry.id))
+      || runtimeState.orchestrationCatalog?.workerTypes?.[0]
+      || { id: "sceptic", label: "Sceptic", role: "adversarial", focus: "failure modes", temperature: "cool" };
+    workers.push({
+      id,
+      type: definition.id,
+      label: definition.label || `Worker ${id}`,
+      role: definition.role || "adversarial",
+      focus: definition.focus || "general adversarial review",
+      temperature: definition.temperature || "balanced",
+      model: String(runtimeState.draft?.model || selectedModelId(elements.workerModel) || ""),
+      activeFromRound: 1,
+      harness: { concision: "tight", instruction: "" },
+    });
+    runtimeState.selectedLaneId = id;
+    elements.laneStatus.textContent = `Worker ${id} added to the staged roster.`;
+    renderLaneRoster();
+    renderLaneEditor();
+  }
+
+  function removeStagedLane() {
+    const worker = selectedStagedLane();
+    const workers = runtimeState.laneDraft?.workers || [];
+    if (!worker || workers.length <= Number(orchestrationLimits().workersMin || 2)) return;
+    const index = workers.findIndex((item) => item.id === worker.id);
+    workers.splice(index, 1);
+    runtimeState.selectedLaneId = workers[Math.max(0, index - 1)]?.id || ORCHESTRATION_CORE_LANE_ID;
+    elements.laneStatus.textContent = `Worker ${worker.id} removed from the staged roster.`;
+    renderLaneRoster();
+    renderLaneEditor();
+  }
+
+  function graphNodes() {
+    return runtimeState.graphDraft?.nodes && typeof runtimeState.graphDraft.nodes === "object"
+      ? runtimeState.graphDraft.nodes
+      : {};
+  }
+
+  function stagedGraphNode(nodeId) {
+    return graphNodes()[String(nodeId || "")] || null;
+  }
+
+  function graphNodeContract(node) {
+    return runtimeState.orchestrationCatalog?.nodeContracts?.[String(node?.moduleType || "")] || {};
+  }
+
+  function graphExecutionMode() {
+    const mode = String(elements.runtimeMode?.value || runtimeState.draft?.executionMode || "live").toLowerCase();
+    return mode === "eval" || mode === "judge" ? mode : "live";
+  }
+
+  function graphExecutionModeLabel() {
+    const mode = graphExecutionMode();
+    return mode === "eval" ? "Eval" : (mode === "judge" ? "Judge" : "Para");
+  }
+
+  function graphNodeEffectiveState(node) {
+    if (!node || node.enabled === false) {
+      return { state: "disabled", label: "Disabled", reason: "disabled in the stored graph" };
+    }
+    if (node.moduleType === "judge" && graphExecutionMode() === "live") {
+      return { state: "detached", label: "Detached", reason: "attaches only to Eval or Judge runs" };
+    }
+    return { state: "attached", label: "Attached", reason: `executable in ${graphExecutionModeLabel()} mode` };
+  }
+
+  function graphEdgeEffectiveState(edge) {
+    const source = graphNodeEffectiveState(stagedGraphNode(edge?.from));
+    const target = graphNodeEffectiveState(stagedGraphNode(edge?.to));
+    if (source.state === "disabled" || target.state === "disabled") {
+      return { state: "disabled", label: "disabled in the stored graph" };
+    }
+    if (source.state === "detached" || target.state === "detached") {
+      return { state: "detached", label: `detached in ${graphExecutionModeLabel()} mode` };
+    }
+    return { state: "attached", label: `effective ${graphExecutionModeLabel()} route` };
+  }
+
+  function graphNodeDisplayMeta(node, effectiveState) {
+    if (effectiveState.state !== "attached") {
+      return `${effectiveState.label}: ${effectiveState.reason}`;
+    }
+    return node.moduleType === "workers"
+      ? `${node.spawnCount || 1} initial lanes`
+      : String(node.meta || graphNodeContract(node).executionClass || node.blockingMode || "");
+  }
+
+  function graphEffectiveSummary() {
+    const nodes = Object.values(graphNodes());
+    const states = nodes.map(graphNodeEffectiveState);
+    const attached = states.filter((item) => item.state === "attached").length;
+    const detached = states.filter((item) => item.state === "detached").length;
+    const disabled = states.filter((item) => item.state === "disabled").length;
+    const routes = (runtimeState.graphDraft?.edges || []).filter((edge) => graphEdgeEffectiveState(edge).state === "attached").length;
+    return `Effective ${graphExecutionModeLabel()} topology: ${attached} attached, ${detached} detached, ${disabled} disabled, ${routes} executable routes. Stored graph unchanged.`;
+  }
+
+  function graphDimensions() {
+    const nodes = Object.values(graphNodes());
+    return {
+      width: Math.max(1180, ...nodes.map((node) => Number(node.x || 0) + Number(node.width || 208) + 64)),
+      height: Math.max(560, ...nodes.map((node) => Number(node.y || 0) + ORCHESTRATION_NODE_HEIGHT + 64)),
+    };
+  }
+
+  function graphNodePoint(node, side) {
+    const x = Number(node?.x || 0);
+    const y = Number(node?.y || 0);
+    const width = Number(node?.width || 208);
+    return {
+      x: side === "left" ? x : (side === "right" ? x + width : x + width / 2),
+      y: y + ORCHESTRATION_NODE_HEIGHT / 2,
+    };
+  }
+
+  function renderOrchestrationGraphEdges() {
+    if (!elements.graphEdges || !runtimeState.graphDraft) return;
+    const dimensions = graphDimensions();
+    elements.graphStage.style.width = dimensions.width + "px";
+    elements.graphStage.style.height = dimensions.height + "px";
+    elements.graphEdges.setAttribute("viewBox", `0 0 ${dimensions.width} ${dimensions.height}`);
+    elements.graphEdges.replaceChildren();
+    (runtimeState.graphDraft.edges || []).forEach((edge) => {
+      const sourceNode = stagedGraphNode(edge.from);
+      const targetNode = stagedGraphNode(edge.to);
+      if (!sourceNode || !targetNode) return;
+      const effectiveState = graphEdgeEffectiveState(edge);
+      if (effectiveState.state !== "attached") return;
+      const source = graphNodePoint(sourceNode, "right");
+      const target = graphNodePoint(targetNode, "left");
+      const curve = Math.max(46, Math.abs(target.x - source.x) * 0.42);
+      const path = document.createElementNS(ORCHESTRATION_GRAPH_NS, "path");
+      path.setAttribute("d", `M ${source.x} ${source.y} C ${source.x + curve} ${source.y}, ${target.x - curve} ${target.y}, ${target.x} ${target.y}`);
+      path.dataset.graphEdge = `${edge.from}->${edge.to}`;
+      path.dataset.effectiveState = effectiveState.state;
+      elements.graphEdges.appendChild(path);
+      if (edge.label) {
+        const label = document.createElementNS(ORCHESTRATION_GRAPH_NS, "text");
+        label.setAttribute("x", String((source.x + target.x) / 2));
+        label.setAttribute("y", String((source.y + target.y) / 2 - 8));
+        label.dataset.graphEdge = `${edge.from}->${edge.to}`;
+        label.textContent = String(edge.label);
+        elements.graphEdges.appendChild(label);
+      }
+    });
+  }
+
+  function renderOrchestrationGraphNodes() {
+    if (!elements.graphNodes) return;
+    elements.graphNodes.replaceChildren();
+    Object.values(graphNodes()).forEach((node) => {
+      const effectiveState = graphNodeEffectiveState(node);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `igs-chain-node igs-chain-node-${node.moduleType || "custom"}`;
+      button.dataset.graphNodeId = node.id;
+      button.dataset.effectiveState = effectiveState.state;
+      button.classList.toggle("is-selected", node.id === runtimeState.selectedGraphNodeId);
+      button.classList.toggle("is-disabled", effectiveState.state === "disabled");
+      button.classList.toggle("is-detached", effectiveState.state === "detached");
+      button.style.left = Number(node.x || 0) + "px";
+      button.style.top = Number(node.y || 0) + "px";
+      button.style.width = Number(node.width || 208) + "px";
+      button.title = `${effectiveState.label}: ${effectiveState.reason}`;
+      button.setAttribute("aria-label", `${node.label || node.id}. ${effectiveState.label}: ${effectiveState.reason}`);
+      const kicker = document.createElement("span");
+      kicker.className = "igs-chain-node-kicker";
+      kicker.textContent = String(node.kicker || node.moduleType || "Node");
+      const label = document.createElement("strong");
+      label.textContent = String(node.label || node.id);
+      const metadata = document.createElement("small");
+      metadata.textContent = graphNodeDisplayMeta(node, effectiveState);
+      const inputPort = document.createElement("i");
+      inputPort.className = "igs-chain-node-port is-input";
+      const outputPort = document.createElement("i");
+      outputPort.className = "igs-chain-node-port is-output";
+      button.append(kicker, label, metadata, inputPort, outputPort);
+      button.addEventListener("pointerdown", beginGraphNodeDrag);
+      button.addEventListener("click", () => selectGraphNode(node.id));
+      elements.graphNodes.appendChild(button);
+    });
+  }
+
+  function renderGraphConnections(node) {
+    if (!elements.graphConnections) return;
+    elements.graphConnections.replaceChildren();
+    if (!node) return;
+    const heading = document.createElement("p");
+    heading.textContent = "CONFIGURED CONNECTIONS";
+    elements.graphConnections.appendChild(heading);
+    const edges = (runtimeState.graphDraft?.edges || []).filter((edge) => edge.from === node.id || edge.to === node.id);
+    edges.forEach((edge) => {
+      const outgoing = edge.from === node.id;
+      const peer = stagedGraphNode(outgoing ? edge.to : edge.from);
+      const effectiveState = graphEdgeEffectiveState(edge);
+      const row = document.createElement("div");
+      row.classList.toggle("is-detached", effectiveState.state === "detached");
+      row.classList.toggle("is-disabled", effectiveState.state === "disabled");
+      row.dataset.effectiveState = effectiveState.state;
+      const direction = document.createElement("span");
+      direction.textContent = outgoing ? "OUT" : "IN";
+      const peerName = document.createElement("strong");
+      peerName.textContent = String(peer?.label || (outgoing ? edge.to : edge.from));
+      const packet = document.createElement("small");
+      packet.textContent = `${edge.label || "packet"} / ${effectiveState.label}`;
+      row.append(direction, peerName, packet);
+      elements.graphConnections.appendChild(row);
+    });
+    if (!edges.length) {
+      const empty = document.createElement("small");
+      empty.textContent = "No configured connection.";
+      elements.graphConnections.appendChild(empty);
+    }
+  }
+
+  function renderGraphContract(node) {
+    if (!elements.graphContract) return;
+    elements.graphContract.replaceChildren();
+    if (!node) return;
+    const contract = graphNodeContract(node);
+    const effectiveState = graphNodeEffectiveState(node);
+    const state = document.createElement("span");
+    state.textContent = `STATE ${effectiveState.label.toUpperCase()}`;
+    const role = document.createElement("span");
+    role.textContent = `ROLE ${contract.role || "custom"}`;
+    const execution = document.createElement("span");
+    execution.textContent = `EXECUTION ${contract.executionClass || node.blockingMode || "blocking"}`;
+    const output = document.createElement("span");
+    output.textContent = `OUTPUT ${(contract.outputs || []).join(", ") || "none"}`;
+    elements.graphContract.append(state, role, execution, output);
+  }
+
+  function renderGraphNodeEditor() {
+    const node = stagedGraphNode(runtimeState.selectedGraphNodeId);
+    if (!elements.graphForm) return;
+    Array.from(elements.graphForm.elements).forEach((field) => {
+      if (field.type !== "submit" && field !== elements.graphRevert && field !== elements.graphReset) field.disabled = !node;
+    });
+    if (!node) {
+      elements.graphTitle.textContent = "Select a node";
+      elements.graphKicker.textContent = "Node";
+      elements.graphState.textContent = "No selection";
+      renderGraphContract(null);
+      renderGraphConnections(null);
+      return;
+    }
+    const contract = graphNodeContract(node);
+    const effectiveState = graphNodeEffectiveState(node);
+    elements.graphTitle.textContent = String(node.label || node.id);
+    elements.graphKicker.textContent = String(node.moduleType || "node").toUpperCase();
+    elements.graphState.textContent = effectiveState.state === "attached"
+      ? `${effectiveState.label} / ${graphExecutionModeLabel()}`
+      : `${effectiveState.label} / ${effectiveState.reason}`;
+    elements.graphLabel.value = String(node.label || "");
+    elements.graphKickerInput.value = String(node.kicker || "");
+    elements.graphMeta.value = String(node.meta || "");
+    elements.graphPacket.value = String(node.packetMode || "full");
+    elements.graphBlocking.value = String(contract.executionClass || node.blockingMode || "blocking");
+    elements.graphBlocking.disabled = true;
+    elements.graphBlocking.title = "Execution class is enforced by the V2 module contract.";
+    elements.graphX.value = String(node.x || 0);
+    elements.graphY.value = String(node.y || 0);
+    elements.graphWidth.value = String(node.width || 208);
+    elements.graphSpawnField.hidden = !contract.supportsSpawnCount;
+    elements.graphSpawn.value = String(node.spawnCount || 1);
+    elements.graphSpawn.disabled = !contract.supportsSpawnCount;
+    elements.graphTimeoutMode.value = String(node.timeoutControlMode || "session");
+    elements.graphTimeout.value = String(node.timeoutSeconds || 0);
+    elements.graphTimeout.disabled = elements.graphTimeoutMode.value !== "override";
+    elements.graphEnabledField.hidden = false;
+    elements.graphEnabled.checked = node.enabled !== false;
+    elements.graphEnabled.disabled = Boolean(node.protected);
+    renderGraphContract(node);
+    renderGraphConnections(node);
+  }
+
+  function renderOrchestrationGraph() {
+    if (elements.graphStage) elements.graphStage.dataset.effectiveMode = graphExecutionMode();
+    renderOrchestrationGraphEdges();
+    renderOrchestrationGraphNodes();
+    renderGraphNodeEditor();
+  }
+
+  function selectGraphNode(nodeId) {
+    runtimeState.selectedGraphNodeId = String(nodeId || "");
+    Array.from(elements.graphNodes?.children || []).forEach((nodeElement) => {
+      nodeElement.classList.toggle("is-selected", nodeElement.dataset.graphNodeId === runtimeState.selectedGraphNodeId);
+    });
+    renderGraphNodeEditor();
+  }
+
+  function graphNodeElement(nodeId) {
+    return Array.from(elements.graphNodes?.children || []).find((nodeElement) => nodeElement.dataset.graphNodeId === nodeId) || null;
+  }
+
+  function applyGraphNodeEditor() {
+    const node = stagedGraphNode(runtimeState.selectedGraphNodeId);
+    if (!node) return null;
+    const limits = orchestrationLimits();
+    const contract = graphNodeContract(node);
+    node.label = String(elements.graphLabel?.value || node.label || node.id).trim() || node.id;
+    node.kicker = String(elements.graphKickerInput?.value || node.kicker || "Module").trim() || "Module";
+    node.meta = String(elements.graphMeta?.value || "").trim();
+    node.packetMode = String(elements.graphPacket?.value || node.packetMode || "full");
+    node.x = clampNumber(elements.graphX?.value, 0, Number(limits.graphXMax || 1800), Number(node.x || 0));
+    node.y = clampNumber(elements.graphY?.value, 0, Number(limits.graphYMax || 1200), Number(node.y || 0));
+    node.width = clampNumber(elements.graphWidth?.value, Number(limits.graphWidthMin || 168), Number(limits.graphWidthMax || 360), Number(node.width || 208));
+    if (contract.supportsSpawnCount) {
+      node.spawnCount = clampNumber(elements.graphSpawn?.value, Number(limits.spawnCountMin || 1), Number(limits.spawnCountMax || 12), Number(node.spawnCount || 1));
+    }
+    node.timeoutControlMode = elements.graphTimeoutMode?.value === "override" ? "override" : "session";
+    node.timeoutSeconds = clampNumber(elements.graphTimeout?.value, 0, Number(limits.timeoutSecondsMax || 3600), Number(node.timeoutSeconds || 0));
+    if (!node.protected) node.enabled = Boolean(elements.graphEnabled?.checked);
+    return node;
+  }
+
+  function refreshEditedGraphNode(node) {
+    const button = graphNodeElement(node?.id);
+    if (!button || !node) return;
+    button.style.left = node.x + "px";
+    button.style.top = node.y + "px";
+    button.style.width = node.width + "px";
+    const effectiveState = graphNodeEffectiveState(node);
+    button.dataset.effectiveState = effectiveState.state;
+    button.classList.toggle("is-disabled", effectiveState.state === "disabled");
+    button.classList.toggle("is-detached", effectiveState.state === "detached");
+    button.title = `${effectiveState.label}: ${effectiveState.reason}`;
+    button.querySelector(".igs-chain-node-kicker").textContent = node.kicker;
+    button.querySelector("strong").textContent = node.label;
+    button.querySelector("small").textContent = graphNodeDisplayMeta(node, effectiveState);
+    elements.graphTitle.textContent = node.label;
+    renderOrchestrationGraphEdges();
+    renderGraphContract(node);
+    renderGraphConnections(node);
+  }
+
+  function beginGraphNodeDrag(event) {
+    if (event.button !== 0) return;
+    const node = stagedGraphNode(event.currentTarget.dataset.graphNodeId);
+    if (!node) return;
+    runtimeState.selectedGraphNodeId = node.id;
+    Array.from(elements.graphNodes.children).forEach((item) => item.classList.toggle("is-selected", item === event.currentTarget));
+    renderGraphNodeEditor();
+    runtimeState.graphDrag = {
+      node,
+      element: event.currentTarget,
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      nodeX: Number(node.x || 0),
+      nodeY: Number(node.y || 0),
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function moveGraphNode(event) {
+    const drag = runtimeState.graphDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const limits = orchestrationLimits();
+    drag.node.x = clampNumber(drag.nodeX + event.clientX - drag.originX, 0, Number(limits.graphXMax || 1800), drag.nodeX);
+    drag.node.y = clampNumber(drag.nodeY + event.clientY - drag.originY, 0, Number(limits.graphYMax || 1200), drag.nodeY);
+    drag.moved = drag.moved || Math.abs(event.clientX - drag.originX) > 2 || Math.abs(event.clientY - drag.originY) > 2;
+    drag.element.style.left = drag.node.x + "px";
+    drag.element.style.top = drag.node.y + "px";
+    elements.graphX.value = String(drag.node.x);
+    elements.graphY.value = String(drag.node.y);
+    elements.graphStatus.textContent = "Unsaved topology position.";
+    renderOrchestrationGraphEdges();
+  }
+
+  function endGraphNodeDrag(event) {
+    const drag = runtimeState.graphDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.element.releasePointerCapture?.(event.pointerId);
+    runtimeState.graphDrag = null;
+  }
+
+  async function openChainConfiguration() {
+    if (!runtimeState.orchestrationCatalog) await loadOrchestrationCatalog();
+    const graph = runtimeState.draft?.engineGraph || runtimeState.orchestrationCatalog?.defaultGraph;
+    runtimeState.graphDraft = clone(graph || { version: "v2", nodes: {}, edges: [] });
+    runtimeState.graphSaved = clone(runtimeState.graphDraft);
+    const nodeIds = Object.keys(graphNodes());
+    if (!nodeIds.includes(runtimeState.selectedGraphNodeId)) runtimeState.selectedGraphNodeId = nodeIds[0] || "";
+    renderOrchestrationGraph();
+    elements.graphStatus.textContent = graphEffectiveSummary();
+    setOrchestrationModalOpen(elements.graphModal, elements.chainConfigOpen);
+    window.requestAnimationFrame(() => graphNodeElement(runtimeState.selectedGraphNodeId)?.focus());
   }
 
   function clearComposerAfterSend() {
@@ -4929,10 +5661,161 @@
   elements.homeDrawerClose?.addEventListener("click", closeHomePanelCanvas);
 
   document.addEventListener("keydown", function (event) {
-    if (event.key !== "Escape" || !shellState.activeHomePanel || event.defaultPrevented) return;
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (elements.laneModal && !elements.laneModal.hidden) {
+      event.preventDefault();
+      closeOrchestrationModal(elements.laneModal);
+      return;
+    }
+    if (elements.graphModal && !elements.graphModal.hidden) {
+      event.preventDefault();
+      closeOrchestrationModal(elements.graphModal);
+      return;
+    }
+    if (!shellState.activeHomePanel) return;
     if (event.target instanceof Element && event.target.closest(".igs-pill-select.is-open, .igs-composer-tool-menu")) return;
     event.preventDefault();
     closeHomePanelCanvas();
+  });
+
+  if (elements.laneConfigOpen) {
+    elements.laneConfigOpen.addEventListener("click", function () {
+      openLaneConfiguration().catch((error) => {
+        if (elements.draftState) elements.draftState.textContent = "Lane controls failed to open: " + String(error.message || error);
+      });
+    });
+  }
+
+  if (elements.chainConfigOpen) {
+    elements.chainConfigOpen.addEventListener("click", function () {
+      openChainConfiguration().catch((error) => {
+        if (elements.draftState) elements.draftState.textContent = "Chain controls failed to open: " + String(error.message || error);
+      });
+    });
+  }
+
+  elements.laneModalClose?.addEventListener("click", () => closeOrchestrationModal(elements.laneModal));
+  elements.graphModalClose?.addEventListener("click", () => closeOrchestrationModal(elements.graphModal));
+
+  elements.laneModal?.addEventListener("click", function (event) {
+    if (event.target === elements.laneModal) closeOrchestrationModal(elements.laneModal);
+  });
+
+  elements.graphModal?.addEventListener("click", function (event) {
+    if (event.target === elements.graphModal) closeOrchestrationModal(elements.graphModal);
+  });
+
+  elements.laneRoster?.addEventListener("click", function (event) {
+    const button = event.target.closest("[data-lane-id]");
+    if (button) selectStagedLane(button.dataset.laneId);
+  });
+
+  elements.laneAdd?.addEventListener("click", addStagedLane);
+  elements.laneRemove?.addEventListener("click", removeStagedLane);
+
+  elements.laneType?.addEventListener("change", function () {
+    const worker = selectedStagedLane();
+    const definition = laneCatalogEntry(elements.laneType.value);
+    if (!worker || !definition) return;
+    elements.laneRole.value = String(definition.role || worker.role || "adversarial");
+    elements.laneFocus.value = String(definition.focus || worker.focus || "general adversarial review");
+    elements.laneTemperature.value = String(definition.temperature || worker.temperature || "balanced");
+    elements.laneStatus.textContent = "Lane pressure defaults staged. Save to apply.";
+  });
+
+  elements.laneForm?.addEventListener("input", function () {
+    elements.laneStatus.textContent = "Unsaved lane contract changes.";
+  });
+
+  [elements.laneDynamicSpinup, elements.laneLoopRounds].forEach((field) => {
+    field?.addEventListener("input", function () {
+      elements.laneStatus.textContent = "Unsaved lane policy changes.";
+    });
+  });
+
+  elements.laneForm?.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    if (!elements.laneForm.reportValidity()) return;
+    applyLaneEditorToDraft();
+    const limits = orchestrationLimits();
+    runtimeState.laneDraft.dynamicSpinupEnabled = Boolean(elements.laneDynamicSpinup.checked);
+    runtimeState.laneDraft.loopRounds = clampNumber(
+      elements.laneLoopRounds.value,
+      Number(limits.roundsMin || 1),
+      Number(limits.roundsMax || 12),
+      Number(runtimeState.laneDraft.loopRounds || 3)
+    );
+    const submit = event.currentTarget.querySelector("button[type='submit']");
+    submit.disabled = true;
+    try {
+      const saved = await persistOrchestrationDraft({
+        workers: runtimeState.laneDraft.workers,
+        summarizerHarness: runtimeState.laneDraft.summarizerHarness,
+        dynamicSpinupEnabled: runtimeState.laneDraft.dynamicSpinupEnabled,
+        loopRounds: runtimeState.laneDraft.loopRounds,
+      }, elements.laneStatus);
+      runtimeState.laneDraft = {
+        workers: clone(saved.workers || []),
+        summarizerHarness: clone(saved.summarizerHarness || { concision: "none", instruction: "" }),
+        dynamicSpinupEnabled: saved.dynamicSpinupEnabled === true,
+        loopRounds: Number(saved.loopRounds || 3),
+      };
+      elements.laneDynamicSpinup.checked = runtimeState.laneDraft.dynamicSpinupEnabled;
+      elements.laneLoopRounds.value = String(runtimeState.laneDraft.loopRounds);
+      elements.laneStatus.textContent = "V2 lane contract saved and ready for the next run.";
+      renderLaneRoster();
+      renderLaneEditor();
+    } catch (error) {
+      elements.laneStatus.textContent = "Lane save failed: " + String(error.message || error);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  elements.graphStage?.addEventListener("pointermove", moveGraphNode);
+  elements.graphStage?.addEventListener("pointerup", endGraphNodeDrag);
+  elements.graphStage?.addEventListener("pointercancel", endGraphNodeDrag);
+
+  elements.graphForm?.addEventListener("input", function () {
+    const node = applyGraphNodeEditor();
+    if (!node) return;
+    if (elements.graphTimeout) elements.graphTimeout.disabled = node.timeoutControlMode !== "override";
+    elements.graphStatus.textContent = "Unsaved node contract changes.";
+    refreshEditedGraphNode(node);
+  });
+
+  elements.graphForm?.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    if (!elements.graphForm.reportValidity()) return;
+    applyGraphNodeEditor();
+    const submit = event.currentTarget.querySelector("button[type='submit']");
+    submit.disabled = true;
+    try {
+      const saved = await persistOrchestrationDraft({ engineGraph: runtimeState.graphDraft }, elements.graphStatus);
+      runtimeState.graphDraft = clone(saved.engineGraph || runtimeState.graphDraft);
+      runtimeState.graphSaved = clone(runtimeState.graphDraft);
+      elements.graphStatus.textContent = "V2 execution chain saved and compiled for the next run.";
+      renderOrchestrationGraph();
+    } catch (error) {
+      elements.graphStatus.textContent = "Chain save failed: " + String(error.message || error);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  elements.graphRevert?.addEventListener("click", function () {
+    runtimeState.graphDraft = clone(runtimeState.graphSaved || runtimeState.graphDraft);
+    const nodeIds = Object.keys(graphNodes());
+    if (!nodeIds.includes(runtimeState.selectedGraphNodeId)) runtimeState.selectedGraphNodeId = nodeIds[0] || "";
+    elements.graphStatus.textContent = "Reverted to the persisted V2 chain.";
+    renderOrchestrationGraph();
+  });
+
+  elements.graphReset?.addEventListener("click", function () {
+    runtimeState.graphDraft = clone(runtimeState.orchestrationCatalog?.defaultGraph || runtimeState.graphDraft);
+    runtimeState.selectedGraphNodeId = Object.keys(graphNodes())[0] || "";
+    elements.graphStatus.textContent = "Default V2 chain staged. Save to apply it.";
+    renderOrchestrationGraph();
   });
 
   themeButtons.forEach((button) => {
@@ -4966,6 +5849,7 @@
             elements.summarizerModel.value = elements.workerModel.value;
           }
         }
+        applyDefaultWorkerModelToDraft();
       }
       updateNarrative();
       queueDraftSave();
@@ -5055,6 +5939,7 @@
       ) {
         syncAllLaneReasoningOptions();
       }
+      if (element === elements.workerModel) applyDefaultWorkerModelToDraft();
       if (element === elements.reasoningEffort) {
         setReasoningEffortForRole(activeProviderPaneRole(), elements.reasoningEffort.value);
       }
@@ -5066,6 +5951,10 @@
         syncSelectCycleButtons(element.id);
       }
       updateNarrative();
+      if (element === elements.runtimeMode && runtimeState.graphDraft) {
+        renderOrchestrationGraph();
+        elements.graphStatus.textContent = graphEffectiveSummary();
+      }
       queueDraftSave();
     });
     element.addEventListener("change", function () {
@@ -5085,6 +5974,7 @@
       ) {
         syncAllLaneReasoningOptions();
       }
+      if (element === elements.workerModel) applyDefaultWorkerModelToDraft();
       if (element === elements.reasoningEffort) {
         setReasoningEffortForRole(activeProviderPaneRole(), elements.reasoningEffort.value);
       }
@@ -5096,6 +5986,10 @@
         syncSelectCycleButtons(element.id);
       }
       updateNarrative();
+      if (element === elements.runtimeMode && runtimeState.graphDraft) {
+        renderOrchestrationGraph();
+        elements.graphStatus.textContent = graphEffectiveSummary();
+      }
       if (element === elements.objective) {
         resizeObjectiveTextarea();
       }
@@ -5601,7 +6495,7 @@
     scoreState.selectedRunId = window.localStorage.getItem("igsShell.scoreRunId") || "";
     scoreState.selectedSessionId = window.localStorage.getItem("igsShell.scoreSessionId") || "";
   } catch (_) {}
-  loadProviderModelCatalog().then(function () {
+  Promise.all([loadProviderModelCatalog(), loadOrchestrationCatalog()]).then(function () {
     return loadState({ hydrate: true });
   }).catch(function (error) {
     elements.draftState.textContent = "Load failed: " + String(error.message || error);

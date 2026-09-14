@@ -1,0 +1,177 @@
+{
+  "area": {
+    "name": "Kotor",
+    "country": "Montenegro",
+    "lat": 42.4247,
+    "lon": 18.7712,
+    "half_span_deg": 0.0065,
+    "reason": "steep terrain, old town roads, dense buildings"
+  },
+  "selectedCorridor": {
+    "osmWayId": 165439817,
+    "name": "",
+    "highway": "residential",
+    "widthM": 5.5,
+    "pointCount": 13,
+    "lengthM": 123.03,
+    "reliefM": 43.0,
+    "meanReliefGrade": 0.3495
+  },
+  "cropBoundsMeters": {
+    "minX": -172.02,
+    "minY": -611.6,
+    "maxX": 108.16,
+    "maxY": -403.01
+  },
+  "generated": {
+    "baselinePanel": "curve road with bevel depth",
+    "variantPanel": "terrain-following roadbed ribbon mesh",
+    "flattenedPanel": "terrain-flattened roadbed ribbon with first-order graph-node junction geometry",
+    "nearbyRoads": 16,
+    "nearbyBuildings": 51,
+    "junctionCandidates": 3,
+    "splitCorridorPointCount": 13,
+    "junctionPads": 3,
+    "connectorStubs": 4
+  },
+  "junctions": [
+    {
+      "stationM": 0.0,
+      "x": -87.02065774980393,
+      "y": -495.74747159978193,
+      "z": 7.0,
+      "segmentIndex": 0,
+      "segmentT": 0.0,
+      "distanceM": 0.0,
+      "kinds": [
+        "near_endpoint"
+      ],
+      "connections": [
+        {
+          "roadId": 146404250,
+          "highway": "service",
+          "kind": "near_endpoint",
+          "distanceM": 0.0,
+          "endpoint": "start"
+        },
+        {
+          "roadId": 451185926,
+          "highway": "residential",
+          "kind": "near_endpoint",
+          "distanceM": 0.0,
+          "endpoint": "end"
+        }
+      ]
+    },
+    {
+      "stationM": 46.939,
+      "x": -42.35169688790163,
+      "y": -491.2139376002285,
+      "z": 9.085169230670884,
+      "segmentIndex": 4,
+      "segmentT": 1.0,
+      "distanceM": 0.0,
+      "kinds": [
+        "near_endpoint"
+      ],
+      "connections": [
+        {
+          "roadId": 1442670239,
+          "highway": "service",
+          "kind": "near_endpoint",
+          "distanceM": 0.0,
+          "endpoint": "start"
+        }
+      ]
+    },
+    {
+      "stationM": 123.035,
+      "x": 23.156205244420345,
+      "y": -526.5976176004604,
+      "z": 50.0,
+      "segmentIndex": 11,
+      "segmentT": 1.0,
+      "distanceM": 0.0,
+      "kinds": [
+        "near_endpoint"
+      ],
+      "connections": [
+        {
+          "roadId": 1169401607,
+          "highway": "path",
+          "kind": "near_endpoint",
+          "distanceM": 0.0,
+          "endpoint": "start"
+        }
+      ]
+    }
+  ],
+  "continuity": {
+    "validationType": "surface overlap between pad and connector stubs; not shared-vertex or boolean-unioned mesh connectivity",
+    "surfaceOverlapPass": true,
+    "mergedMeshConnectivityTested": false,
+    "checks": [
+      {
+        "stationM": 0.0,
+        "padRadiusM": 7.0,
+        "corridorPassesThroughPad": true,
+        "connectors": [
+          {
+            "roadId": 146404250,
+            "endpoint": "start",
+            "startGapM": 0.0,
+            "stubLengthM": 68.908,
+            "surfaceOverlapsPad": true
+          },
+          {
+            "roadId": 451185926,
+            "endpoint": "end",
+            "startGapM": 0.0,
+            "stubLengthM": 27.283,
+            "surfaceOverlapsPad": true
+          }
+        ],
+        "surfaceOverlapPass": true
+      },
+      {
+        "stationM": 46.939,
+        "padRadiusM": 7.0,
+        "corridorPassesThroughPad": true,
+        "connectors": [
+          {
+            "roadId": 1442670239,
+            "endpoint": "start",
+            "startGapM": 0.0,
+            "stubLengthM": 55.136,
+            "surfaceOverlapsPad": true
+          }
+        ],
+        "surfaceOverlapPass": true
+      },
+      {
+        "stationM": 123.035,
+        "padRadiusM": 7.0,
+        "corridorPassesThroughPad": true,
+        "connectors": [
+          {
+            "roadId": 1169401607,
+            "endpoint": "start",
+            "startGapM": 0.0,
+            "stubLengthM": 57.836,
+            "surfaceOverlapsPad": true
+          }
+        ],
+        "surfaceOverlapPass": true
+      }
+    ]
+  },
+  "limitations": [
+    "Flattening is local to the selected corridor and is not yet propagated into full-road graph topology.",
+    "Junction geometry is first-order pad-and-stub geometry; it is not yet rule-based road engineering.",
+    "Continuity is currently surface-overlap validation, not shared-vertex or boolean-unioned mesh connectivity.",
+    "Graph splitting currently recognizes exact crossings plus near-endpoint junction candidates; this corridor has endpoint graph nodes rather than mid-segment crossings.",
+    "DEM banding remains visible because source elevation is coarse.",
+    "Side-by-side panels duplicate local context for visual comparison only."
+  ],
+  "nextCheck": "Replace overlapping pad/stub surfaces with shared-vertex or boolean-unioned junction meshes, then add road-rule-based bend and grade smoothing."
+}

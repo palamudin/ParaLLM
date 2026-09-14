@@ -3,7 +3,7 @@
 ![Status](https://img.shields.io/badge/status-live%20orchestration%20system-22c55e)
 ![Platform](https://img.shields.io/badge/platform-local%20%2B%20Docker-0ea5e9)
 ![UI](https://img.shields.io/badge/UI-Bootstrap%205-7952b3)
-![Runtime](https://img.shields.io/badge/runtime-Python%20control%20plane-3776ab)
+![Runtime](https://img.shields.io/badge/runtime-Python%20%2B%20C17%20dual%20core-3776ab)
 ![Reasoning](https://img.shields.io/badge/reasoning-adversarial%20lane%20stack-22c55e)
 
 Local-first orchestration system for parallel reasoning: adversarial review, repo intelligence, knowledgebase recall, provider arms, structured scheduling, and live evaluation in one operator loop.
@@ -38,6 +38,7 @@ The system makes that test inspectable and repeatable through:
 - Review-only control audit showing accepted, rejected, and held-out objections
 - Self-analytical repo graph and knowledgebase graph views designed for both human operators and AI agents
 - Isolated eval subsystem for side-by-side benchmark runs
+- Para-owned local-browser research, rendered-page capture, content-addressed downloads, document extraction, and model-decided exact-source memory promotion
 - Read-only local file tools for commander and worker lanes with allow-root policy and audit logs
 - Read-only GitHub repo tools for commander and worker lanes with owner/repo allowlist and audit logs
 - Provider-grouped API key pools with deterministic per-position assignment per vendor
@@ -51,6 +52,14 @@ The system makes that test inspectable and repeatable through:
 - Reversible QA scripts for live and eval smoke tests
 
 ## Architecture
+
+Conceptual lineage: [PERCSI and ParaLLM: Cognitive Architecture Lineage](docs/percsi-parallm-lineage.md) records the perception-memory-hypothesis architecture that precedes ParaLLM, maps it against the working runtime, and frames the next deployment-education phase.
+
+Embodied edge work: [PERCSI Body Port: Xiaomi Pad 8 Pro](docs/percsi-xiaomi-pad-8-pro-port.md) fixes the first tablet boundary, observation contract, Android constraints, authority separation, and physical proof sequence.
+
+Native product direction: [Native Runtime and Vectorese Memory Architecture](docs/native-runtime-architecture.md) defines the headless native core, indexed binary memory substrate, stable C ABI, precise failure contract, production artifact boundary, Android path, and phased retirement of Python from deployment. The measured Python/C17 groundwork is retained in the [Runtime Optimization Audit](docs/runtime-optimization-audit.md).
+
+Research and migration boundary: [Para-Owned Research and Native Port Boundary](docs/owned-research-and-native-port-boundary.md) records the verified Python browser/download/document contracts, exact-source memory arbitration, native port order, and the rule that deployed chat may never proxy the Python reference runtime.
 
 Current confirmed execution path:
 
@@ -85,12 +94,15 @@ flowchart LR
 | Layer | Tech |
 | --- | --- |
 | Control plane | Python ASGI backend |
-| Runtime | Resident Python service |
+| Runtime | Resident Python orchestration with bounded in-process workers |
+| Native core | C17 ABI with Python-reference, native, and dual-parity modes |
 | Self-host packaging | Docker Compose Python stack |
 | Frontend | HTML, jQuery, local Bootstrap 5.3, custom CSS |
-| Storage | Local JSON / JSONL artifacts |
+| Storage | Local JSON / JSONL artifacts today; embedded indexed binary memory is the accepted native target |
 | Model path | OpenAI Responses, Anthropic Messages, xAI/OpenAI-compatible Responses, DeepSeek, MiniMax, native Ollama `/api/chat` |
 | QA | Python harnesses + JS syntax check |
+
+The source repository intentionally retains QA, profiling, migration, and parity tooling. The accepted production boundary does not: the current Docker stack is a development deployment, while the native release will be built from an explicit allowlist and contain no tests, smoke harnesses, fixtures, source tree, interpreter, or compiler.
 
 ## Project Layout
 
@@ -100,7 +112,9 @@ flowchart LR
 |-- AGENTS.md               shared advisor conventions for repo-aware agents
 |-- backend/                Python-first control plane
 |-- assets/                 frontend JS, CSS, vendored Bootstrap
+|-- contracts/              versioned native schemas and golden fixtures
 |-- deploy/                 Docker Compose stack and container images
+|-- native/                 C17 deterministic core and reproducible build docs
 |-- runtime/                reasoning engine + eval runner
 |-- scripts/                QA harnesses and benchmarks
 |-- data/                   local state, checkpoints, outputs, jobs, evals
@@ -170,8 +184,12 @@ Current Home operator surface:
 
 ### Runtime / Ops
 
-- Detached background loop execution
-- Shared lock discipline between the Python control plane and worker subprocesses
+- Bounded in-process pools for local loop, target-dispatch, and eval work; Redis remains the distributed queue boundary
+- Explicit `local_subprocess` and `embedded_engine_subprocess` compatibility modes for rollback, not the local default
+- Shared lock discipline across the Python control plane, in-process workers, and durable local state
+- Monotonic `parallm.timing.v1` JSONL spans for queue wait, background execution, target/provider calls, storage, evals, and memory recall
+- C17 deterministic core loaded in-process through a versioned ABI; `dual` mode runs native and Python references side by side and reports parity through `/health`
+- Provider-owned nested subagents are visible, default-off controls propagated into live, eval, and judge calls rather than an implicit model behavior
 - Stale-job recovery
 - Output artifact persistence for every worker and summary pass
 - Runtime-selectable worker context routing: `Light Workers` keeps full context on the main thread while adversarial lanes receive weighted digests; `Full Workers` sends the broader packet to workers too
@@ -220,9 +238,10 @@ Current Home operator surface:
 
 ### Requirements
 
-- Python 3
+- Python 3.12 or a compatible newer Python 3 release
 - Node optional, only for JS syntax checks
 - Docker optional for the self-host stack
+- A C compiler is not required at runtime; the optional native rebuild uses the pinned workspace-local Zig toolchain
 
 ### Install
 
@@ -525,6 +544,9 @@ python scripts/qa_supply_chain_check.py
 python scripts/qa_container_check.py
 python scripts/qa_python_crossover_check.py
 python scripts/qa_memory_conflict_lock_probe.py
+python scripts/build_native_core.py
+python scripts/benchmark_native_core.py
+python scripts/benchmark_knowledgebase.py
 python scripts/quality_benchmark.py
 python -m unittest backend.tests.test_storage backend.tests.test_control backend.tests.test_metadata backend.tests.test_queueing backend.tests.test_artifacts backend.tests.test_jobs backend.tests.test_dispatch backend.tests.test_settings backend.tests.test_sessions backend.tests.test_evals backend.tests.test_infrastructure backend.tests.test_runtime_auth backend.tests.test_runtime_execution backend.tests.test_app
 ```
@@ -536,7 +558,7 @@ CI baseline:
 - Deployment Python dependencies are pinned in `requirements-ci.txt`
 - CI/developer Python dependencies are installed from `requirements-dev.txt`
 - GitHub Actions QA lives in `.github/workflows/ci.yml`
-- Dependabot updates GitHub Actions and pip manifests through `.github/dependabot.yml`
+- Dependency updates are handled by reviewed human/agent maintenance, not automated Dependabot PRs
 - Runtime browser dependencies are local-only; jQuery is vendored under `assets/vendor/jquery`
 
 Supply-chain checks:
@@ -600,6 +622,7 @@ The current system is already functional in the places that matter:
 - optional MSP knowledgebase with `retain`, `recall`, `reflect`, persistent JSONL banks, runtime-log fallback, lane-aware recall packets, and baseline/adaptive SOP retrieval
 - replacement shell that brings chat, review, repo inspection, knowledgebase, evals, provider controls, and runtime controls into one operator surface
 - cost, token, auth-key, retry, timeout, and artifact telemetry that makes expensive reasoning auditable instead of mystical
+- side-by-side Python/C deterministic execution with ABI fixtures, optimized x86-64 assembly evidence, immutable Windows DLL activation, and measured rollback modes
 
 ## Feature Roadmap
 

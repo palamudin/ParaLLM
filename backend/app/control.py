@@ -10,6 +10,10 @@ from typing import Any, Dict, Optional
 from runtime.engine import (
     DEFAULT_MODEL_ID,
     DEFAULT_PROVIDER_ID,
+    ENGINE_V2_NODE_CONTRACTS,
+    HARNESS_CONCISION_CATALOG,
+    WORKER_TEMPERATURE_CATALOG,
+    WORKER_TYPE_CATALOG,
     LoopRuntime,
     RuntimeErrorWithCode,
     coerce_bool,
@@ -752,6 +756,45 @@ def auth_key_pool_state(root: Optional[Path] = None, provider: Any = None) -> Di
         "localFilePrefix": local_file_prefix,
         "localFileFormat": local_file_format,
         "localFileGuidance": local_file_guidance,
+    }
+
+
+def orchestration_catalog() -> Dict[str, Any]:
+    """Return the operator-facing vocabulary for the executable V2 contract."""
+    return {
+        "schemaVersion": "parallm.orchestration-catalog.v1",
+        "engineVersion": default_engine_version(),
+        "workerTypes": [
+            {"id": worker_type, **definition}
+            for worker_type, definition in WORKER_TYPE_CATALOG.items()
+        ],
+        "temperatures": [
+            {"id": temperature, **definition}
+            for temperature, definition in WORKER_TEMPERATURE_CATALOG.items()
+        ],
+        "concisionModes": [
+            {"id": mode, **definition}
+            for mode, definition in HARNESS_CONCISION_CATALOG.items()
+        ],
+        "nodeContracts": {
+            module_type: dict(definition)
+            for module_type, definition in ENGINE_V2_NODE_CONTRACTS.items()
+        },
+        "defaultGraph": default_engine_graph(),
+        "limits": {
+            "workersMin": 2,
+            "workersMax": 26,
+            "roundsMin": 1,
+            "roundsMax": 12,
+            "instructionMaxChars": 600,
+            "graphXMax": 1800,
+            "graphYMax": 1200,
+            "graphWidthMin": 168,
+            "graphWidthMax": 360,
+            "spawnCountMin": 1,
+            "spawnCountMax": 12,
+            "timeoutSecondsMax": 3600,
+        },
     }
 
 

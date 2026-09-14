@@ -64,8 +64,21 @@ def main() -> None:
         runtime.assert_budget_available = lambda *args, **kwargs: None  # type: ignore[method-assign]
         runtime.update_usage_tracking = lambda *args, **kwargs: None  # type: ignore[method-assign]
         runtime.get_api_key_assignment = lambda *args, **kwargs: {"apiKey": "test-key", "slot": 1, "masked": "sk-test"}  # type: ignore[method-assign]
+        runtime.provider_live_api_key = lambda *args, **kwargs: "test-key"  # type: ignore[method-assign]
+        runtime.raise_if_managed_secret_backend_unavailable = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        runtime.raise_live_stage_missing_credentials = lambda *args, **kwargs: None  # type: ignore[method-assign]
 
-        def fake_live_commander_review(api_key, task_arg, commander_arg, workers_arg, worker_state_arg, runtime_arg, line_catalog_arg):
+        def fake_live_commander_review(
+            api_key,
+            auth_assignments,
+            task_arg,
+            commander_arg,
+            prior_summary_arg,
+            workers_arg,
+            worker_state_arg,
+            runtime_arg,
+            line_catalog_arg,
+        ):
             checkpoint = runtime.new_offline_fixture_commander_review(task_arg, commander_arg, workers_arg, worker_state_arg)
             checkpoint["dynamicLaneDecision"] = {
                 "shouldSpawn": True,

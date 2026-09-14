@@ -331,6 +331,10 @@ def create_app(root: Path | None = None) -> FastAPI:
     def get_models(validationOnly: bool = False) -> JSONResponse:
         return JSONResponse(model_catalog_manifest(validation_only=validationOnly))
 
+    @app.get("/v1/orchestration/catalog")
+    def get_orchestration_catalog() -> JSONResponse:
+        return JSONResponse(control.orchestration_catalog())
+
     @app.get("/v1/system/topology")
     def get_topology() -> JSONResponse:
         return JSONResponse(config.deployment_topology(paths.root).as_dict())

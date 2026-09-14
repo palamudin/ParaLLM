@@ -6,7 +6,7 @@
   <title>ParaLLM</title>
   <link rel="icon" href="favicon.ico" sizes="any" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
-  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260902-018" />
+  <link rel="stylesheet" href="assets/replacement-shell.css?v=20260903-002" />
   <link rel="stylesheet" href="assets/fractal-memory.css?v=20260501-003" />
   <link rel="stylesheet" href="assets/repo-review.css?v=20260829-001" />
 </head>
@@ -90,6 +90,12 @@
           <span class="igs-status-label">Provider</span>
           <span id="previewHeaderProvider" class="igs-status-value">DeepSeek</span>
         </div>
+        <button type="button" id="previewLaneConfigOpen" class="igs-status-icon-button" aria-label="Configure V2 execution lanes" title="Configure V2 execution lanes">
+          <span aria-hidden="true">&#9881;</span>
+        </button>
+        <button type="button" id="previewChainConfigOpen" class="igs-status-icon-button" aria-label="Configure V2 execution chain" title="Configure V2 execution chain">
+          <span aria-hidden="true">&#9939;</span>
+        </button>
         <div class="igs-status-chip">
           <span class="igs-status-label">Progress</span>
           <span id="previewHeaderProgress" class="igs-status-value">0 / 0</span>
@@ -1165,6 +1171,204 @@
     </div>
   </div>
 
+  <div id="orchestrationLaneModal" class="igs-orchestration-modal" hidden role="dialog" aria-modal="true" aria-labelledby="orchestrationLaneTitle">
+    <section class="igs-orchestration-panel igs-lane-config-panel">
+      <header class="igs-orchestration-head">
+        <div>
+          <div class="igs-surface-kicker">V2 lane control</div>
+          <h2 id="orchestrationLaneTitle">Execution lanes</h2>
+        </div>
+        <button type="button" id="orchestrationLaneClose" class="igs-orchestration-close" aria-label="Close lane configuration" title="Close">&times;</button>
+      </header>
+
+      <div class="igs-lane-policy" aria-label="Lane policy">
+        <label class="igs-orchestration-toggle" for="orchestrationDynamicSpinup">
+          <input id="orchestrationDynamicSpinup" type="checkbox" />
+          <span>Dynamic lane spin-up</span>
+        </label>
+        <label class="igs-orchestration-field igs-orchestration-field-compact" for="orchestrationLoopRounds">
+          <span>Maximum rounds</span>
+          <input id="orchestrationLoopRounds" type="number" min="1" max="12" step="1" />
+        </label>
+        <div class="igs-lane-policy-actions">
+          <button type="button" id="orchestrationLaneAdd" class="igs-orchestration-button">Add lane</button>
+          <button type="button" id="orchestrationLaneRemove" class="igs-orchestration-button">Remove selected</button>
+        </div>
+      </div>
+
+      <div class="igs-lane-editor-layout">
+        <nav id="orchestrationLaneRoster" class="igs-lane-roster" aria-label="Configured V2 lanes"></nav>
+        <form id="orchestrationLaneForm" class="igs-lane-editor-form" autocomplete="off">
+          <div class="igs-orchestration-selection-head">
+            <div>
+              <div id="orchestrationLaneKicker" class="igs-surface-kicker">Lane</div>
+              <h3 id="orchestrationLaneEditorTitle">Select a lane</h3>
+            </div>
+            <span id="orchestrationLaneState" class="igs-orchestration-state">Staged</span>
+          </div>
+
+          <div id="orchestrationWorkerFields" class="igs-orchestration-form-grid">
+            <label class="igs-orchestration-field" for="orchestrationLaneLabel">
+              <span>Label</span>
+              <input id="orchestrationLaneLabel" maxlength="96" required />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationLaneType">
+              <span>Pressure type</span>
+              <select id="orchestrationLaneType"></select>
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationLaneRole">
+              <span>Role</span>
+              <input id="orchestrationLaneRole" maxlength="96" required />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationLaneTemperature">
+              <span>Temperature</span>
+              <select id="orchestrationLaneTemperature"></select>
+            </label>
+            <label class="igs-orchestration-field igs-orchestration-field-wide" for="orchestrationLaneFocus">
+              <span>Focus</span>
+              <input id="orchestrationLaneFocus" maxlength="320" required />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationLaneModel">
+              <span>Model override</span>
+              <select id="orchestrationLaneModel"></select>
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationLaneActiveRound">
+              <span>Active from round</span>
+              <input id="orchestrationLaneActiveRound" type="number" min="1" max="12" step="1" required />
+            </label>
+          </div>
+
+          <div id="orchestrationCoreInheritance" class="igs-core-inheritance" hidden></div>
+          <div class="igs-orchestration-form-grid igs-harness-fields">
+            <label class="igs-orchestration-field" for="orchestrationLaneConcision">
+              <span>Harness profile</span>
+              <select id="orchestrationLaneConcision"></select>
+            </label>
+            <label class="igs-orchestration-field igs-orchestration-field-wide" for="orchestrationLaneInstruction">
+              <span>Instructions</span>
+              <textarea id="orchestrationLaneInstruction" rows="8" maxlength="600" spellcheck="true"></textarea>
+            </label>
+          </div>
+
+          <footer class="igs-orchestration-actions">
+            <span id="orchestrationLaneStatus" class="igs-inline-note" aria-live="polite">Select a lane to inspect its executable contract.</span>
+            <button type="submit" class="igs-orchestration-button is-primary">Save lane contract</button>
+          </footer>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <div id="orchestrationChainModal" class="igs-orchestration-modal" hidden role="dialog" aria-modal="true" aria-labelledby="orchestrationChainTitle">
+    <section class="igs-orchestration-panel igs-chain-config-panel">
+      <header class="igs-orchestration-head">
+        <div>
+          <div class="igs-surface-kicker">V2 execution chain</div>
+          <h2 id="orchestrationChainTitle">Orchestration topology</h2>
+        </div>
+        <button type="button" id="orchestrationChainClose" class="igs-orchestration-close" aria-label="Close chain configuration" title="Close">&times;</button>
+      </header>
+
+      <div class="igs-chain-editor-layout">
+        <div class="igs-chain-stage-scroll igs-scrollbar-hot">
+          <div id="orchestrationGraphStage" class="igs-chain-stage" tabindex="0" aria-label="Interactive V2 execution graph">
+            <svg id="orchestrationGraphEdges" class="igs-chain-edges" aria-hidden="true"></svg>
+            <div id="orchestrationGraphNodes" class="igs-chain-nodes"></div>
+          </div>
+        </div>
+
+        <form id="orchestrationGraphForm" class="igs-graph-editor-form" autocomplete="off">
+          <div class="igs-orchestration-selection-head">
+            <div>
+              <div id="orchestrationGraphKicker" class="igs-surface-kicker">Node</div>
+              <h3 id="orchestrationGraphTitle">Select a node</h3>
+            </div>
+            <span id="orchestrationGraphState" class="igs-orchestration-state">Core path</span>
+          </div>
+
+          <div class="igs-orchestration-form-grid">
+            <label class="igs-orchestration-field" for="orchestrationGraphLabel">
+              <span>Label</span>
+              <input id="orchestrationGraphLabel" maxlength="64" required />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphKickerInput">
+              <span>Kicker</span>
+              <input id="orchestrationGraphKickerInput" maxlength="32" required />
+            </label>
+            <label class="igs-orchestration-field igs-orchestration-field-wide" for="orchestrationGraphMeta">
+              <span>Purpose</span>
+              <input id="orchestrationGraphMeta" maxlength="160" />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphPacket">
+              <span>Packet mode</span>
+              <select id="orchestrationGraphPacket">
+                <option value="full">Full</option>
+                <option value="weighted">Weighted</option>
+                <option value="on-demand">On demand</option>
+                <option value="compact">Compact</option>
+                <option value="merge">Merge</option>
+                <option value="blind">Blind</option>
+                <option value="references">References</option>
+                <option value="summary">Summary</option>
+              </select>
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphBlocking">
+              <span>Execution class</span>
+              <select id="orchestrationGraphBlocking">
+                <option value="virtual">Virtual</option>
+                <option value="blocking">Blocking</option>
+                <option value="fanout">Fanout</option>
+                <option value="optional">Optional</option>
+                <option value="sidecar">Sidecar</option>
+                <option value="post">Post-run</option>
+              </select>
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphX">
+              <span>X position</span>
+              <input id="orchestrationGraphX" type="number" min="0" max="1800" step="1" />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphY">
+              <span>Y position</span>
+              <input id="orchestrationGraphY" type="number" min="0" max="1200" step="1" />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphWidth">
+              <span>Node width</span>
+              <input id="orchestrationGraphWidth" type="number" min="168" max="360" step="1" />
+            </label>
+            <label id="orchestrationGraphSpawnField" class="igs-orchestration-field" for="orchestrationGraphSpawn">
+              <span>Initial lanes</span>
+              <input id="orchestrationGraphSpawn" type="number" min="1" max="12" step="1" />
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphTimeoutMode">
+              <span>Timeout source</span>
+              <select id="orchestrationGraphTimeoutMode">
+                <option value="session">Session</option>
+                <option value="override">Override</option>
+              </select>
+            </label>
+            <label class="igs-orchestration-field" for="orchestrationGraphTimeout">
+              <span>Timeout override (s)</span>
+              <input id="orchestrationGraphTimeout" type="number" min="0" max="3600" step="5" />
+            </label>
+            <label id="orchestrationGraphEnabledField" class="igs-orchestration-toggle" for="orchestrationGraphEnabled">
+              <input id="orchestrationGraphEnabled" type="checkbox" />
+              <span>Node enabled</span>
+            </label>
+          </div>
+
+          <div id="orchestrationGraphContract" class="igs-node-contract-summary"></div>
+          <div id="orchestrationGraphConnections" class="igs-chain-connections"></div>
+          <footer class="igs-orchestration-actions">
+            <span id="orchestrationGraphStatus" class="igs-inline-note" aria-live="polite">The visible routes are the executable V2 connections.</span>
+            <button type="button" id="orchestrationGraphRevert" class="igs-orchestration-button">Revert</button>
+            <button type="button" id="orchestrationGraphReset" class="igs-orchestration-button">Reset default</button>
+            <button type="submit" class="igs-orchestration-button is-primary">Save chain</button>
+          </footer>
+        </form>
+      </div>
+    </section>
+  </div>
+
   <div id="authRequirementModal" class="igs-auth-modal" hidden role="dialog" aria-modal="true" aria-labelledby="authRequirementTitle">
     <div class="igs-auth-modal-panel">
       <div class="igs-auth-modal-head">
@@ -1201,6 +1405,6 @@
   </script>
   <script src="assets/repo-review.js?v=20260829-001"></script>
   <script src="assets/fractal-memory.js?v=20260501-003"></script>
-  <script src="assets/replacement-shell.js?v=20260902-013"></script>
+  <script src="assets/replacement-shell.js?v=20260903-002"></script>
 </body>
 </html>
