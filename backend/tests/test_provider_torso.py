@@ -31,13 +31,13 @@ class ProviderTorsoTests(unittest.TestCase):
     def test_openai_auth_source_changes_transport_not_lane_contract(self) -> None:
         api = resolve_lane_process(
             "openai",
-            "gpt-5.4-mini",
+            "gpt-5.4",
             "high",
             auth_route=AUTH_ROUTE_API_KEY,
         )
         codex = resolve_lane_process(
             "openai",
-            "gpt-5.4-mini",
+            "gpt-5.4",
             "high",
             {"modelSource": MODEL_SOURCE_CODEX_AUTH},
         )

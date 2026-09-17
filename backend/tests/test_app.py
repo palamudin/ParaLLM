@@ -520,12 +520,12 @@ class AppRouteTests(unittest.TestCase):
             ("gpt-5.4", "api_key"),
             ("gpt-5.4", "codex_current_user"),
             ("gpt-5.4-mini", "api_key"),
-            ("gpt-5.4-mini", "codex_current_user"),
             ("gpt-5.3-codex", "api_key"),
             ("gpt-5.3-codex-spark", "codex_current_user"),
             ("gpt-5.2", "api_key"),
         ):
             self.assertIn((model, auth_route), openai_models)
+        self.assertNotIn(("gpt-5.4-mini", "codex_current_user"), openai_models)
         for model in (
             "gpt-5.6-sol",
             "gpt-5.6-terra",

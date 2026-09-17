@@ -8611,8 +8611,9 @@ class LoopRuntime:
                             body["max_output_tokens"] = effective_tokens
                         if tools:
                             body["tools"] = tools
-                        if tool_choice is not None:
-                            body["tool_choice"] = tool_choice
+                        effective_tool_choice = self.tool_choice_for_turn(tool_choice, tool_turns)
+                        if effective_tool_choice is not None:
+                            body["tool_choice"] = effective_tool_choice
                         if include:
                             body["include"] = include
 
@@ -8867,6 +8868,15 @@ class LoopRuntime:
             )
         return converted
 
+    def tool_choice_for_turn(self, tool_choice: Optional[Any], tool_turns: int) -> Optional[Any]:
+        if tool_turns <= 0 or tool_choice is None:
+            return tool_choice
+        if isinstance(tool_choice, str):
+            return "auto" if tool_choice.strip().lower() in {"required", "any"} else tool_choice
+        if isinstance(tool_choice, dict):
+            return "auto"
+        return tool_choice
+
     def anthropic_tool_choice(self, tool_choice: Optional[Any]) -> Optional[Dict[str, Any]]:
         if tool_choice is None:
             return None
@@ -8874,6 +8884,8 @@ class LoopRuntime:
             normalized = tool_choice.strip().lower()
             if normalized == "auto":
                 return {"type": "auto"}
+            if normalized in {"required", "any"}:
+                return {"type": "any"}
             if normalized == "none":
                 return {"type": "none"}
         return None
@@ -9005,8 +9017,9 @@ class LoopRuntime:
                             body["tools"] = chat_completion_tools
                         elif chat_capabilities.structured_output_mode == "json_object":
                             body["response_format"] = {"type": "json_object"}
-                        if tool_choice is not None:
-                            body["tool_choice"] = tool_choice
+                        effective_tool_choice = self.tool_choice_for_turn(tool_choice, tool_turns)
+                        if effective_tool_choice is not None:
+                            body["tool_choice"] = effective_tool_choice
 
                         request = urllib.request.Request(
                             request_url,
@@ -9477,8 +9490,9 @@ class LoopRuntime:
                             body["max_output_tokens"] = effective_tokens
                         if tools:
                             body["tools"] = tools
-                        if tool_choice is not None:
-                            body["tool_choice"] = tool_choice
+                        effective_tool_choice = self.tool_choice_for_turn(tool_choice, tool_turns)
+                        if effective_tool_choice is not None:
+                            body["tool_choice"] = effective_tool_choice
                         if include and any(str(item or "").strip() for item in include):
                             body["include"] = [item for item in include if str(item or "").strip() in {"no_inline_citations"}]
 
@@ -9857,7 +9871,9 @@ class LoopRuntime:
                             }
                         if messages_tools:
                             body["tools"] = messages_tools
-                        converted_tool_choice = self.anthropic_tool_choice(tool_choice)
+                        converted_tool_choice = self.anthropic_tool_choice(
+                            self.tool_choice_for_turn(tool_choice, tool_turns)
+                        )
                         if converted_tool_choice:
                             body["tool_choice"] = converted_tool_choice
 

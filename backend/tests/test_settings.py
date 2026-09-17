@@ -128,7 +128,7 @@ class SettingsTests(unittest.TestCase):
                 "provider": "ollama",
                 "model": "qwen3",
                 "summarizerProvider": "openai",
-                "summarizerModel": "gpt-5.4-mini",
+                "summarizerModel": "gpt-5.4",
                 "frontMode": "eval",
                 "engineVersion": "v1",
                 "contextMode": "full",
@@ -162,7 +162,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(result["provider"], "ollama")
         self.assertEqual(result["workerModel"], "qwen3")
         self.assertEqual(result["summarizerProvider"], "openai")
-        self.assertEqual(result["summarizerModel"], "gpt-5.4-mini")
+        self.assertEqual(result["summarizerModel"], "gpt-5.4")
         self.assertEqual(result["frontMode"], "eval")
         self.assertEqual(result["engineVersion"], "v2")
         self.assertTrue(result["enginePlan"]["valid"])
@@ -203,11 +203,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workerDefault"], 120)
         self.assertEqual(state["activeTask"]["runtime"]["targetTimeouts"]["workers"]["A"], 80)
         self.assertEqual(state["activeTask"]["summarizer"]["provider"], "openai")
-        self.assertEqual(state["activeTask"]["summarizer"]["model"], "gpt-5.4-mini")
+        self.assertEqual(state["activeTask"]["summarizer"]["model"], "gpt-5.4")
         self.assertTrue(all(worker["model"] == "qwen3" for worker in state["activeTask"]["workers"]))
         self.assertEqual(state["draft"]["provider"], "ollama")
         self.assertEqual(state["draft"]["summarizerProvider"], "openai")
-        self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4-mini")
+        self.assertEqual(state["draft"]["summarizerModel"], "gpt-5.4")
         self.assertEqual(state["draft"]["frontMode"], "eval")
         self.assertEqual(state["draft"]["engineVersion"], "v2")
         self.assertEqual(state["draft"]["contextMode"], "full")

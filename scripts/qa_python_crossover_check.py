@@ -83,6 +83,46 @@ def require_text(value: Any, label: str) -> str:
     return text
 
 
+def select_openai_smoke_model(
+    auth_status: Dict[str, Any],
+    codex_status: Dict[str, Any],
+    model_catalog: Dict[str, Any],
+) -> tuple[str, str]:
+    provider_groups = auth_status.get("providerGroups") if isinstance(auth_status.get("providerGroups"), dict) else {}
+    openai_group = provider_groups.get("openai") if isinstance(provider_groups.get("openai"), dict) else {}
+    providers = model_catalog.get("providers") if isinstance(model_catalog.get("providers"), dict) else {}
+    openai_catalog = providers.get("openai") if isinstance(providers.get("openai"), dict) else {}
+    defaults = openai_catalog.get("defaultModelByAuthRoute") if isinstance(openai_catalog.get("defaultModelByAuthRoute"), dict) else {}
+    models = model_catalog.get("models") if isinstance(model_catalog.get("models"), list) else []
+    policy = codex_status.get("policy") if isinstance(codex_status.get("policy"), dict) else {}
+    policy_mode = str(policy.get("mode") or "").strip().lower()
+    inherited = codex_status.get("inheritedChatGpt") if isinstance(codex_status.get("inheritedChatGpt"), dict) else {}
+    isolated = codex_status.get("isolatedChatGpt") if isinstance(codex_status.get("isolatedChatGpt"), dict) else {}
+    codex_available = (
+        policy_mode == "inherit_chatgpt" and bool(inherited.get("available"))
+    ) or (
+        policy_mode == "isolated_chatgpt" and bool(isolated.get("available"))
+    )
+    api_key_available = bool(openai_group.get("available"))
+    route = "api_key" if api_key_available else "codex_current_user"
+    if route == "codex_current_user" and not codex_available:
+        raise QAError("The Python crossover smoke has no available OpenAI API-key or ChatGPT/Codex route.")
+
+    compatible = {
+        str(item.get("id") or "")
+        for item in models
+        if isinstance(item, dict)
+        and str(item.get("provider") or "") == "openai"
+        and bool(item.get("liveValidation"))
+        and route in (item.get("authRoutes") or [])
+    }
+    preferred = ["gpt-5.6-luna", str(defaults.get(route) or "")]
+    model = next((candidate for candidate in preferred if candidate in compatible), "")
+    if not model:
+        raise QAError(f"The Python crossover smoke found no live-validated OpenAI model for {route}.")
+    return model, route
+
+
 def wait_for_health(backend_base: str, timeout_seconds: float = 12.0) -> None:
     deadline = time.time() + timeout_seconds
     last_error = ""
@@ -97,16 +137,19 @@ def wait_for_health(backend_base: str, timeout_seconds: float = 12.0) -> None:
     raise QAError(f"Python backend did not become healthy within {timeout_seconds:.1f}s. {last_error}".strip())
 
 
-def wait_for_dispatch_idle(backend_base: str, timeout_seconds: float = 180.0) -> Dict[str, Any]:
-    deadline = time.time() + timeout_seconds
+def wait_for_dispatch_idle(backend_base: str, timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
+    deadline = time.time() + timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
     last_state: Dict[str, Any] | None = None
-    while time.time() < deadline:
+    while deadline is None or time.time() < deadline:
         last_state = request_json(backend_base.rstrip("/") + "/v1/state", timeout=10)
         dispatch = last_state.get("dispatch") if isinstance(last_state.get("dispatch"), dict) else {}
         if str(dispatch.get("status") or "idle") == "idle":
             return last_state
         time.sleep(0.4)
-    raise QAError(f"Dispatch did not settle within {timeout_seconds:.1f}s. Last state: {json.dumps(last_state or {}, indent=2)}")
+    raise QAError(
+        f"Dispatch did not settle within {float(timeout_seconds):.1f}s. "
+        + f"Last state: {json.dumps(last_state or {}, indent=2)}"
+    )
 
 
 def wait_for_eval_completion(backend_base: str, run_id: str, timeout_seconds: float = 90.0) -> Dict[str, Any]:
@@ -184,7 +227,13 @@ class PreservedWorkspace:
                         continue
                     seen.add(path)
                     path.unlink(missing_ok=True)
-        for directory in (self.root / "data" / "jobs", self.root / "data" / "sessions"):
+        for directory in (
+            self.root / "data" / "jobs",
+            self.root / "data" / "sessions",
+            self.root / "data" / "failed_calls",
+            self.root / "data" / "node_transfers",
+            self.root / "data" / "provider_calls",
+        ):
             if not directory.exists():
                 continue
             for path in directory.glob("*.json"):
@@ -237,6 +286,7 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
     port = find_free_port()
     backend_base = f"http://127.0.0.1:{port}"
     backend_proc = start_backend(root, port)
+    preserved_workspace: PreservedWorkspace | None = None
     wait_for_health(backend_base)
 
     try:
@@ -253,6 +303,7 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             raise QAError("The Python-served shell did not return the expected app HTML.")
 
         with PreservedWorkspace(root) as preserved:
+            preserved_workspace = preserved
             qa_print("Ensuring the current workspace is idle before reversible crossover smoke")
             initial_state = request_json(backend_base + "/v1/state", timeout=10)
             loop = initial_state.get("loop") if isinstance(initial_state.get("loop"), dict) else {}
@@ -267,6 +318,13 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
 
             qa_print("Checking auth mutation parity against the Python API")
             auth_status = request_json(backend_base + "/v1/auth/status", timeout=20)
+            codex_status = request_json(backend_base + "/v1/codex/auth", timeout=20)
+            model_catalog = request_json(backend_base + "/v1/models", timeout=20)
+            smoke_model, smoke_model_source = select_openai_smoke_model(
+                auth_status,
+                codex_status,
+                model_catalog,
+            )
             provider_groups = auth_status.get("providerGroups") if isinstance(auth_status.get("providerGroups"), dict) else {}
             openai_group = provider_groups.get("openai") if isinstance(provider_groups.get("openai"), dict) else {}
             openai_selected_mode = str(openai_group.get("selectedMode") or "").strip().lower()
@@ -314,17 +372,23 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             draft = state_after_add.get("draft") if isinstance(state_after_add.get("draft"), dict) else None
             if not isinstance(draft, dict):
                 raise QAError("Draft was missing after adding a worker through Python.")
+            smoke_workers = []
+            for worker in draft.get("workers") or []:
+                if isinstance(worker, dict):
+                    smoke_workers.append({**worker, "model": smoke_model, "modelSource": smoke_model_source})
 
-            qa_print("Starting a live task through the Python control plane")
+            qa_print(f"Starting a live task through the Python control plane with {smoke_model} via {smoke_model_source}")
             start = request_json(
                 backend_base + "/v1/tasks",
                 method="POST",
                 form_data={
                     "objective": "QA the Python control-plane crossover path.",
                     "executionMode": "live",
-                    "model": "gpt-5.4-mini",
-                    "summarizerModel": "gpt-5.4-mini",
-                    "workers": json.dumps(draft.get("workers") or []),
+                    "model": smoke_model,
+                    "modelSource": smoke_model_source,
+                    "summarizerModel": smoke_model,
+                    "summarizerModelSource": smoke_model_source,
+                    "workers": json.dumps(smoke_workers),
                     "loopRounds": "2",
                     "loopDelayMs": "0",
                 },
@@ -337,8 +401,10 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
                 backend_base + "/v1/runtime/apply",
                 method="POST",
                 form_data={
-                    "model": "gpt-5.4-mini",
-                    "summarizerModel": "gpt-5.4-mini",
+                    "model": smoke_model,
+                    "modelSource": smoke_model_source,
+                    "summarizerModel": smoke_model,
+                    "summarizerModelSource": smoke_model_source,
                     "reasoningEffort": "medium",
                     "loopRounds": "2",
                     "loopDelayMs": "0",
@@ -362,7 +428,7 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             request_json(
                 backend_base + "/v1/positions/model",
                 method="POST",
-                form_data={"positionId": "summarizer", "model": "gpt-5.4-mini"},
+                form_data={"positionId": "summarizer", "model": smoke_model, "modelSource": smoke_model_source},
                 timeout=20,
             )
 
@@ -371,7 +437,11 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
             settled_state = wait_for_dispatch_idle(backend_base)
             summary = settled_state.get("summary") if isinstance(settled_state.get("summary"), dict) else None
             if not isinstance(summary, dict):
-                raise QAError("Python round dispatch completed without producing a summary.")
+                execution_health = settled_state.get("executionHealth") if isinstance(settled_state.get("executionHealth"), dict) else {}
+                raise QAError(
+                    "Python round dispatch completed without producing a summary. "
+                    + json.dumps({"dispatch": settled_state.get("dispatch"), "executionHealth": execution_health}, sort_keys=True)
+                )
             front_answer = summary.get("frontAnswer") if isinstance(summary.get("frontAnswer"), dict) else None
             if not isinstance(front_answer, dict):
                 raise QAError("Python summary was missing frontAnswer.")
@@ -455,6 +525,12 @@ def run_crossover_smoke(root: Path) -> Dict[str, Any]:
                 "summaryAnswer": front_answer.get("answer"),
             }
     finally:
+        if preserved_workspace is not None and task_id:
+            preserved_workspace.cleanup_task_artifacts(task_id)
+        if archive_file:
+            (root / "data" / "sessions" / archive_file).unlink(missing_ok=True)
+        if eval_run_id and eval_run_id != "retired" and preserved_workspace is not None:
+            preserved_workspace.cleanup_eval_run(eval_run_id)
         backend_proc.terminate()
         try:
             backend_proc.wait(timeout=5)

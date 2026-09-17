@@ -85,7 +85,7 @@ class RuntimeAuthTests(unittest.TestCase):
                 "response": {
                     "id": "codex-response-123",
                     "status": "completed",
-                    "model": "gpt-5.4-mini",
+                    "model": "gpt-5.4",
                     "usage": {
                         "input_tokens": 12,
                         "output_tokens": 7,
@@ -105,7 +105,7 @@ class RuntimeAuthTests(unittest.TestCase):
                 result = runtime.invoke_provider_json(
                     provider="openai",
                     api_key="",
-                    model="gpt-5.4-mini",
+                    model="gpt-5.4",
                     reasoning_effort="low",
                     instructions="Return the answer.",
                     input_text="Question?",
@@ -128,7 +128,7 @@ class RuntimeAuthTests(unittest.TestCase):
             self.assertEqual(result.parsed["answer"], "Codex-auth answer")
             self.assertEqual(result.response["usage"]["input_tokens"], 12)
             self.assertEqual(result.response["usage"]["input_tokens_details"]["cached_tokens"], 2)
-            self.assertEqual(run_codex.call_args.kwargs["model"], "gpt-5.4-mini")
+            self.assertEqual(run_codex.call_args.kwargs["model"], "gpt-5.4")
             self.assertEqual(result.auth_assignment["interface"], "chatgpt_responses")
             self.assertEqual(result.provider_trace["transport"], "chatgpt_responses")
             self.assertEqual(seen_root_exists_at_call, [True])
@@ -145,7 +145,7 @@ class RuntimeAuthTests(unittest.TestCase):
 
             with mock.patch("backend.app.codex_lanes.run_codex_chatgpt_response", return_value=codex_payload) as run_codex:
                 runtime.invoke_codex_auth_json(
-                    model="gpt-5.4-mini",
+                    model="gpt-5.4",
                     reasoning_effort="low",
                     instructions="Return JSON.",
                     input_text="Question?",
@@ -182,7 +182,7 @@ class RuntimeAuthTests(unittest.TestCase):
                 runtime.invoke_provider_json(
                     provider="openai",
                     api_key="",
-                    model="gpt-5.4-mini",
+                    model="gpt-5.4",
                     reasoning_effort="low",
                     instructions="Return JSON.",
                     input_text="Question?",
@@ -904,6 +904,84 @@ class RuntimeAuthTests(unittest.TestCase):
         self.assertEqual(result.auth_failover_history[0]["failedKeySlot"], 1)
         self.assertEqual(result.auth_failover_history[0]["nextKeySlot"], 2)
         self.assertEqual(seen_auth_headers, ["Bearer sk-first", "Bearer sk-second"])
+
+    def test_invoke_openai_json_requires_only_the_first_tool_turn(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["answer"],
+            "properties": {"answer": {"type": "string"}},
+        }
+        responses = [
+            {
+                "id": "resp-tool-call",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call-research",
+                        "name": "web_research",
+                        "arguments": json.dumps({"query": "ParaLLM crossover QA"}),
+                    }
+                ],
+            },
+            {
+                "id": "resp-final",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": json.dumps({"answer": "verified"})}
+                        ],
+                    }
+                ],
+            },
+        ]
+        request_bodies: list[dict] = []
+
+        def fake_urlopen(request, timeout=0):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return _FakeHTTPResponse(responses.pop(0))
+
+        tools = [
+            {
+                "type": "function",
+                "name": "web_research",
+                "description": "Research a query.",
+                "parameters": {
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {"query": {"type": "string"}},
+                },
+            }
+        ]
+        handlers = {
+            "web_research": lambda arguments: (
+                {"query": arguments["query"], "sources": ["https://example.com/evidence"]},
+                {"summary": "Research completed.", "sources": ["https://example.com/evidence"]},
+            )
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = LoopRuntime(tmpdir)
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = runtime.invoke_openai_json(
+                    api_key="sk-test",
+                    model="gpt-5-mini",
+                    reasoning_effort="low",
+                    instructions="Return JSON only.",
+                    input_text="Verify the crossover path.",
+                    schema_name="tool_turn_test",
+                    schema=schema,
+                    target_kind="worker",
+                    tools=tools,
+                    tool_choice="required",
+                    function_handlers=handlers,
+                )
+
+        self.assertEqual(result.parsed, {"answer": "verified"})
+        self.assertEqual(request_bodies[0]["tool_choice"], "required")
+        self.assertEqual(request_bodies[1]["tool_choice"], "auto")
+        self.assertEqual(request_bodies[1]["previous_response_id"], "resp-tool-call")
 
     def test_invoke_openai_json_captures_provider_trace_headers(self) -> None:
         schema = {
